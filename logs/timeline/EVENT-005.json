@@ -1,0 +1,11 @@
+{
+  "event_id": "EVENT-005",
+  "event_type": "ARCHITECTURE_UPDATED",
+  "agent": "Antigravity",
+  "summary": "Logged architectural decision DEC-004 regarding application and CLI hot-update systems.",
+  "related_entities": [
+    "DEC-004",
+    "TASK-001"
+  ],
+  "timestamp": "2026-06-03T17:19:23+08:00"
+}

@@ -1,0 +1,25 @@
+{
+  "decision_id": "DEC-004",
+  "topic": "Application and CLI Hot-Update and Version Control System",
+  "context": "We are designing the client auto-update engine and local CLI tool version detection system for OMNIX DevFlow.",
+  "options_considered": [
+    "Require users to manually re-download the desktop application and CLI binaries from GitHub.",
+    "Implement an integrated Auto-Updater Service that checks a central remote manifest, fetches delta/patch releases, signature-verifies download payloads, and performs silent background hot-swaps for both the main client and internal CLI scripts (skills)."
+  ],
+  "chosen_option": "Implement an integrated Auto-Updater Service with signature verification for the application client, and a dynamic semver comparison system for internal CLI scripts.",
+  "reasoning": [
+    "For the App Client: If we choose Tauri, we will leverage the native signature-verified Tauri auto-updater. If Electron, we will use electron-updater. Both pull from a central manifest file (e.g., update.json).",
+    "For CLIs / Skills: Because skills are plain folders with metadata files (e.g. SKILL.md containing a version string), we can easily compare local semver against the remote repository version via HTTP and trigger background node/python package manager installations (like bun or uv) or pull git delta patches to execute silent hot-updates."
+  ],
+  "tradeoffs": [
+    "Silent background updates require user consent or configurations to avoid disrupting developer workflows during critical coding tasks."
+  ],
+  "impact_scope": [
+    "System lifecycle (auto-update service, security check)",
+    "Skill/CLI manager (version checks and git-pull updater)"
+  ],
+  "future_risks": [
+    "Network restrictions blocking update server endpoints: mitigated by supporting multiple mirror registries (e.g., GitHub releases and CNB/Gitee mirrors)."
+  ],
+  "timestamp": "2026-06-03T17:19:23+08:00"
+}
