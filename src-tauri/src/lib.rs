@@ -38,7 +38,14 @@ pub fn run() {
             commands::stop_agent_session,
             commands::install_agent_cli,
             commands::repair_installed_agent,
-            commands::sync_external_agent_configs
+            commands::sync_external_agent_configs,
+            commands::get_all_skills,
+            commands::get_skill_content,
+            commands::save_skill_content,
+            commands::toggle_skill_active,
+            commands::update_skill_profile,
+            commands::fuse_skills_api,
+            commands::create_skill
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

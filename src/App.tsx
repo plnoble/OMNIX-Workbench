@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { SkillHub } from "./SkillHub";
 import "./App.css";
 
 // Struct for detected agent from backend
@@ -189,6 +190,13 @@ function App() {
               <span>Agent 仓库</span>
             </div>
             <div 
+              className={`nav-item ${activeTab === "skills" ? "active" : ""}`}
+              onClick={() => setActiveTab("skills")}
+            >
+              <span className="nav-icon">🧠</span>
+              <span>自进化技能</span>
+            </div>
+            <div 
               className={`nav-item ${activeTab === "settings" ? "active" : ""}`}
               onClick={() => setActiveTab("settings")}
             >
@@ -218,6 +226,7 @@ function App() {
           <h1>
             {activeTab === "dashboard" && "控制面板"}
             {activeTab === "agents" && "Agent 发现与管理 (Agent Hub)"}
+            {activeTab === "skills" && "自进化智能技能资产中枢 (Skill Hub)"}
             {activeTab === "settings" && "服务配置与中转网关"}
           </h1>
           
@@ -543,6 +552,10 @@ function App() {
                 </div>
               </div>
             </div>
+          )}
+
+          {activeTab === "skills" && (
+            <SkillHub />
           )}
 
         </div>

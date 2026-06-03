@@ -50,6 +50,7 @@ impl AgentManager {
             ("Codex", "codex"),
             ("Qwen Code", "qwen-code"),
             ("GitHub Copilot CLI", "github-copilot-cli"),
+            ("Google Antigravity", "agy"),
         ];
 
         let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("C:\\Users\\87953"));
@@ -279,6 +280,26 @@ impl AgentManager {
     }
 
     pub async fn install_agent(&self, agent_name: &str) -> Result<(), String> {
+        if agent_name == "Google Antigravity" {
+            let mut cmd = if cfg!(windows) {
+                let mut c = Command::new("powershell");
+                c.args(&["-Command", "irm https://antigravity.google/cli/install.ps1 | iex"]);
+                c
+            } else {
+                let mut c = Command::new("sh");
+                c.args(&["-c", "curl -fsSL https://antigravity.google/cli/install.sh | bash"]);
+                c
+            };
+            cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+            let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn Antigravity installer: {}", e))?;
+            let status = child.wait().await.map_err(|e| format!("Antigravity installer run error: {}", e))?;
+            if status.success() {
+                return Ok(());
+            } else {
+                return Err(format!("Antigravity installer failed with code {:?}", status.code()));
+            }
+        }
+
         let package = match agent_name {
             "Claude Code" => "@anthropic-ai/claude-code@latest",
             "Gemini CLI" => "@google/gemini-cli@latest",
