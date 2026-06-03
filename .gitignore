@@ -1,0 +1,43 @@
+# Build and output directories
+bin/
+obj/
+dist/
+build/
+out/
+.next/
+
+# Dependencies
+node_modules/
+jspm_packages/
+web_modules/
+
+# Environment and secrets
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.pem
+*.key
+
+# IDEs and editors
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+*.swo
+
+# OS files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Keep log/memory directories but ignore their contents if desired (or keep them versioned)
+# If we want to commit the logs to maintain project history:
+# logs/tasks/*
+# !logs/tasks/.gitkeep
+# (We will keep them unignored for now so that the development memory travels with the repository,
+# which matches "保证任何新Agent/新模型都能快速接管项目")
