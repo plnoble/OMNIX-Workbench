@@ -1,0 +1,28 @@
+{
+  "decision_id": "DEC-011",
+  "topic": "OMNIX Code Topology Graph, Guided Onboarding Tours, and Ripple-Effect Impact Guard",
+  "context": "We researched the seventh reference library, Understand-Anything, to integrate codebase visualization, structured guided tours, and recursive impact analysis into OMNIX DevFlow.",
+  "options_considered": [
+    "Rely solely on standard chat messages and text-based git diffs to verify agent outputs and explore project structures.",
+    "Implement: 1. A hybrid Tree-sitter (deterministic parsing) + LLM (semantic summaries) codebase knowledge graph builder; 2. Automated dependencies-ordered Guided Onboarding Tours; 3. Ripple-Effect Impact Guard that intersects git diff paths, crawls the dependency graph, references history lessons in `ai-memory.json`, and triggers alerts for high-risk changes before approval."
+  ],
+  "chosen_option": "Implement Tree-sitter hybrid graph builder, Guided Onboarding, and the Ripple-Effect Impact Guard.",
+  "reasoning": [
+    "Visualizing ripple effects transforms code review: Developers often approve agent refactoring files (like helper utilities) without realizing it breaks 5 downstream components. Marking impacted paths in a visual graph before clicking Confirm makes the code review process highly defensive and safe.",
+    "Pre-emptive Error Prevention: By intersecting the recursive impact analysis with the Anti-Failure Memory Bank (`ai-memory.json`), the system can automatically block changes if a file edit triggers a path that historically caused production crashes or bugs.",
+    "Fast Local Parsing: Running Tree-sitter natively in Rust (Tauri core) avoids generating heavy API bills while scanning files, ensuring rapid incremental topological rebuilds during local developer sessions."
+  ],
+  "tradeoffs": [
+    "Generating semantic summaries for huge legacy codebases (1000+ files) can still consume excessive API tokens: resolved by running Tree-sitter for structural link generation first, and lazily fetching LLM semantic summaries only when the developer selects a specific node."
+  ],
+  "impact_scope": [
+    "Tauri code scanner (Rust Tree-sitter AST parser, dependency compiler)",
+    "Impact analyzer (graph traversal engine)",
+    "Frontend visualizer (force-directed D3.js workspace graph, guided onboarding view)",
+    "Approval panel (Ripple-Effect warning overlays)"
+  ],
+  "future_risks": [
+    "Parsing dynamic features in interpreted languages (like JavaScript closures or reflection) can lead to incomplete edges: resolved by combining static import/export dependency edges with runtime file change signatures as a heuristic fallback."
+  ],
+  "timestamp": "2026-06-03T20:33:08+08:00"
+}
