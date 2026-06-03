@@ -128,3 +128,11 @@ pub fn stop_agent_session(
     agent_manager.terminate_agent(&session_id);
     Ok(())
 }
+
+#[tauri::command]
+pub async fn install_agent_cli(
+    agent_name: String,
+    agent_manager: State<'_, Arc<AgentManager>>,
+) -> Result<(), String> {
+    agent_manager.install_agent(&agent_name).await
+}

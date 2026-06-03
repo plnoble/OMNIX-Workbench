@@ -51,6 +51,7 @@ function App() {
   // Agents list state
   const [agents, setAgents] = useState<DetectedAgent[]>([]);
   const [scanning, setScanning] = useState(false);
+  const [installingAgent, setInstallingAgent] = useState("");
 
   // Status dock state
   const [dockState, setDockState] = useState<"idle" | "busy" | "error">("idle");
@@ -127,6 +128,20 @@ function App() {
       console.error("Failed to detect agents:", e);
     } finally {
       setScanning(false);
+    }
+  };
+
+  const handleInstallAgent = async (name: string) => {
+    setInstallingAgent(name);
+    try {
+      await invoke("install_agent_cli", { agentName: name });
+      alert(`${name} 部署/升级成功！已跳过首启交互确认。`);
+      await detectAgents();
+    } catch (e) {
+      console.error("Installation failed:", e);
+      alert("部署失败：" + e);
+    } finally {
+      setInstallingAgent("");
     }
   };
 
@@ -314,21 +329,38 @@ function App() {
               <div className="agent-grid">
                 {agents.map((agent) => (
                   <div className="agent-card" key={agent.name.toString()}>
-                    <div className="agent-info">
-                      <h3>{agent.name}</h3>
-                      <div className="agent-path" title={agent.path.toString()}>
-                        {agent.path ? agent.path : "未检测到可执行路径"}
+                    <div>
+                      <div className="agent-info">
+                        <h3>{agent.name}</h3>
+                        <div className="agent-path" title={agent.path.toString()}>
+                          {agent.path ? agent.path : "未检测到可执行路径"}
+                        </div>
+                      </div>
+                      
+                      <div className="agent-meta" style={{ marginBottom: "16px" }}>
+                        <span className={`badge ${agent.status.toLowerCase()}`}>
+                          {agent.status === "installed" ? "就绪" : "未安装"}
+                        </span>
+                        <span className="version-tag">
+                          {agent.version ? `v${agent.version}` : "--"}
+                        </span>
                       </div>
                     </div>
-                    
-                    <div className="agent-meta">
-                      <span className={`badge ${agent.status.toLowerCase()}`}>
-                        {agent.status === "installed" ? "就绪" : "未安装"}
-                      </span>
-                      <span className="version-tag">
-                        {agent.version ? `v${agent.version}` : "--"}
-                      </span>
-                    </div>
+
+                    <button 
+                      className={`btn ${agent.status === "installed" ? "btn-secondary" : ""}`}
+                      style={{ width: "100%", padding: "8px 16px", fontSize: "13px" }}
+                      disabled={installingAgent !== "" || agent.name === "Codex" || agent.name === "Qwen Code"}
+                      onClick={() => handleInstallAgent(agent.name.toString())}
+                    >
+                      {installingAgent === agent.name.toString() ? (
+                        <span>正在部署中...</span>
+                      ) : agent.status === "installed" ? (
+                        <span>🔄 一键升级</span>
+                      ) : (
+                        <span>📥 一键安装</span>
+                      )}
+                    </button>
                   </div>
                 ))}
               </div>

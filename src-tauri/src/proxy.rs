@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::oneshot;
 use tower_http::cors::CorsLayer;
 
@@ -21,6 +22,7 @@ use crate::db::DbManager;
 pub struct ProxyState {
     pub db: Arc<DbManager>,
     pub http_client: Client,
+    pub request_counter: AtomicUsize,
 }
 
 // Anthropic Request format
@@ -88,6 +90,7 @@ impl ProxyServer {
         let state = Arc::new(ProxyState {
             db,
             http_client: Client::new(),
+            request_counter: AtomicUsize::new(0),
         });
 
         let app = Router::new()
@@ -124,19 +127,23 @@ async fn handle_messages(
     State(state): State<Arc<ProxyState>>,
     Json(payload): Json<AnthropicRequest>,
 ) -> impl IntoResponse {
-    // 1. Fetch configurations from SQLite DB
-    let api_key = state.db.get_setting("api_key").unwrap_or(None).unwrap_or_default();
-    let api_host = state.db.get_setting("api_host").unwrap_or(None)
-        .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
-    
-    // Fallback if no api_key configured
-    if api_key.is_empty() {
+    // 1. Fetch configurations from SQLite DB (supporting comma-separated load balancing)
+    let api_key_raw = state.db.get_setting("api_key").unwrap_or(None).unwrap_or_default();
+    let keys: Vec<&str> = api_key_raw.split(',').map(|k| k.trim()).filter(|k| !k.is_empty()).collect();
+
+    if keys.is_empty() {
         return (
             StatusCode::UNAUTHORIZED,
             "API Key is not configured. Please set it in OMNIX Settings.",
         )
             .into_response();
     }
+
+    let idx = state.request_counter.fetch_add(1, Ordering::Relaxed) % keys.len();
+    let api_key = keys[idx];
+
+    let api_host = state.db.get_setting("api_host").unwrap_or(None)
+        .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
 
     // 2. Map Anthropic schema to OpenAI messages layout
     let mut messages = Vec::new();
@@ -324,17 +331,22 @@ async fn handle_openai_forward(
     mut headers: HeaderMap,
     Json(mut payload): Json<Value>,
 ) -> impl IntoResponse {
-    let api_key = state.db.get_setting("api_key").unwrap_or(None).unwrap_or_default();
-    let api_host = state.db.get_setting("api_host").unwrap_or(None)
-        .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+    let api_key_raw = state.db.get_setting("api_key").unwrap_or(None).unwrap_or_default();
+    let keys: Vec<&str> = api_key_raw.split(',').map(|k| k.trim()).filter(|k| !k.is_empty()).collect();
 
-    if api_key.is_empty() {
+    if keys.is_empty() {
         return (
             StatusCode::UNAUTHORIZED,
             "API Key is not configured. Please set it in OMNIX Settings.",
         )
             .into_response();
     }
+
+    let idx = state.request_counter.fetch_add(1, Ordering::Relaxed) % keys.len();
+    let api_key = keys[idx];
+
+    let api_host = state.db.get_setting("api_host").unwrap_or(None)
+        .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
 
     // Rewrite model if set in OMNIX settings
     if let Some(payload_obj) = payload.as_object_mut() {

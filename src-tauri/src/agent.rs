@@ -278,6 +278,44 @@ impl AgentManager {
         Ok(stdin_tx)
     }
 
+    pub async fn install_agent(&self, agent_name: &str) -> Result<(), String> {
+        let package = match agent_name {
+            "Claude Code" => "@anthropic-ai/claude-code@latest",
+            "Gemini CLI" => "@google/gemini-cli@latest",
+            "GitHub Copilot CLI" => "@github/copilot-cli@latest",
+            _ => return Err(format!("Unsupported agent CLI auto-install: {}", agent_name)),
+        };
+
+        let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("C:\\Users\\87953"));
+        let mut sandbox_dir = home_dir.clone();
+        sandbox_dir.push(".omnix");
+        sandbox_dir.push("agents");
+
+        // Ensure directory exists
+        let _ = fs::create_dir_all(&sandbox_dir);
+        let sandbox_str = sandbox_dir.to_string_lossy().to_string();
+
+        println!("Installing agent {} in sandbox prefix {}", agent_name, sandbox_str);
+
+        // Run npm install --prefix <sandbox> <package>
+        let mut cmd = Command::new(if cfg!(windows) { "npm.cmd" } else { "npm" });
+        cmd.args(&["install", "--prefix", &sandbox_str, package])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let mut child = cmd.spawn().map_err(|e| format!("Failed to run npm command: {}", e))?;
+        let status = child.wait().await.map_err(|e| format!("Npm install process error: {}", e))?;
+
+        if status.success() {
+            if agent_name == "Claude Code" {
+                self.bootstrap_claude_code();
+            }
+            Ok(())
+        } else {
+            Err(format!("Npm install failed with status exit code {:?}", status.code()))
+        }
+    }
+
     pub fn terminate_agent(&self, session_id: &str) {
         if let Ok(mut procs) = self.active_processes.lock() {
             if let Some(proc) = procs.remove(session_id) {
