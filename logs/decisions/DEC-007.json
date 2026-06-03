@@ -1,0 +1,30 @@
+{
+  "decision_id": "DEC-007",
+  "topic": "OMNIX DevFlow System Capabilities, Agent Hub Diagnostics, Cron Remote, and Floating Status Dock",
+  "context": "We aligned on the full features borrowed from AionUi to build a robust development agent orchestrator, detailing versioning/repairs, automation, web access, visual feedback, and resource cleanup.",
+  "options_considered": [
+    "Build a barebones CLI wrapping terminal tool without background execution, diagnostics, or visual overlays.",
+    "Implement a complete orchestrator featuring: 1. Auto-detection/installation/one-click updates and self-repair for 7+ Agent CLIs; 2. Tauri background Cron engine; 3. Internal WebUI tunnel proxy; 4. Leader-Teammate Multi-agent setup; 5. Glassmorphism status indicator dock (pulses green/orange/blue/red); 6. Rust idle-reaper for zombie Agent processes, GPU switches, and Tray options."
+  ],
+  "chosen_option": "Implement the complete orchestrator (Agent Hub, Cron/Remote, Status Dock, and Idle Reaper).",
+  "reasoning": [
+    "Agent Lifecycle & Maintenance: Building a true Developer Control Center requires keeping CLI agents up-to-date and auto-repairing dependency/environment bugs automatically.",
+    "Tauri Background Automation: Since we use Tauri 2.0, the core application can run silently in the system tray. Combining this with a native Cron daemon allows 24/7 background AI task completion.",
+    "Aesthetic & Responsive Status Dock: A full-fledged virtual pet takes too much screen real estate and resources. A sleek, top-most glassmorphic Status Dock with organic colors (pulsing green/orange/blue/red) and drag-and-drop magnetic docking perfectly matches our 'premium and rich aesthetics' guideline.",
+    "Resource Efficiency (Idle Reaper): External CLI processes (Node.js/Python/Rust) consume significant memory (often 500MB+ per session). Implementing a Rust process killer that reclaims resources after a customizable idle timeout is critical for local developer environments."
+  ],
+  "tradeoffs": [
+    "Automatic installations of complex CLI dependencies (like npm/python) might fail: resolved by providing a detailed manual guide overlay inside the diagnostic interface."
+  ],
+  "impact_scope": [
+    "Tauri process supervisor (idle-reaper daemon, command auto-installer)",
+    "Diagnostics service (agent CLI environment probe)",
+    "Frontend float window (magnetic status dock, diff2html view)",
+    "Cron daemon (background timer)",
+    "WebUI bridge (local Express/Axum server with remote tunnel)"
+  ],
+  "future_risks": [
+    "CLI processes refusing SIGTERM might hang: resolved by enforcing a strict 5-second graceful exit timeout, after which SIGKILL is applied."
+  ],
+  "timestamp": "2026-06-03T20:00:07+08:00"
+}
