@@ -1,26 +1,28 @@
 {
   "decision_id": "DEC-002",
-  "topic": "LibSQL Local RAG Database and Symlink-Based Skill Evolution",
-  "context": "We researched the second reference library, Cherry Studio, to design our local vector database and dynamic skill evolution mechanism.",
+  "topic": "Adaptation of Cherry Studio Features: RAG Embeddings, Translation, Model Services, and Floating Lookup Helper",
+  "context": "The user selected 4 specific features to borrow from Cherry Studio for OMNIX DevFlow. We are documenting the technical alignment and design for these features.",
   "options_considered": [
-    "Use separate local databases (e.g. SQLite for chat history, LanceDB for vector store, and filesystem files for configuration)",
-    "Consolidate on LibSQL (SQLite fork with vector support) to handle relational data, vector search, and hybrid BM25 FTS, and implement symlink-based hot-reloading for local skills"
+    "Implement features with separate packages and complex plugins",
+    "Design a unified core with 4 modules: (1) RAG manager with multi-embedding support, (2) Chat-based translation interface, (3) General LLM Provider Registry, and (4) Context-aware floating select-text widget."
   ],
-  "chosen_option": "Consolidate on LibSQL/SQLite for relational + vector + FTS database, and implement folder-based symlink hot-reloading for skills in /memory/skill_memory/.",
+  "chosen_option": "Design a unified core with 4 modules: (1) RAG manager with multi-embedding support, (2) Chat-based translation interface, (3) General LLM Provider Registry, and (4) Context-aware floating select-text widget.",
   "reasoning": [
-    "LibSQL is SQLite-compatible, meaning zero setup overhead for the user. Having relational schema, vector blobs, and FTS5 search in one single file database simplifies local state management.",
-    "Symlinking skill directories from /memory/skill_memory/ directly to the execution workspace allows the Agent to write and modify its own skills in-place, achieving instant hot-reload without building a complex plugin runtime."
+    "Embedding Models: Implementing a standard adapter for local (Ollama) and API-based (OpenAI/SiliconFlow) embedding services ensures high flexibility for indexing codebases.",
+    "Translation: Relying on prompt engineering and structured markdown rendering achieves highly accurate side-by-side translations without relying on paid legacy translation APIs.",
+    "Model Services: Abstracting model providers into a clean registry decouples UI components from API specifics, adhering to the dependency inversion principle.",
+    "Floating Lookup Helper: A custom UI overlay triggered by text selection (or keyboard shortcuts) provides a frictionless experience for explaining or refactoring code snippets."
   ],
   "tradeoffs": [
-    "LibSQL vector bindings require native compilation, but package size is much smaller than spinning up heavy external vector DB processes."
+    "System-wide floating lookups require OS-level accessibility hooks, whereas application-wide floating is lightweight and easy to implement. We will consult the user on this scope."
   ],
   "impact_scope": [
-    "Database architecture",
-    "Local RAG and workspace indexer",
-    "Skill evolution engine"
+    "UI layer (floating components, translation side-by-side view)",
+    "LLM provider integration",
+    "Local vector store manager"
   ],
   "future_risks": [
-    "Ensuring stable precompiled binaries of LibSQL/SQLite-vector for all OS platforms during local setup."
+    "Potential OS-level permission blocks for system-wide text selection hook capture."
   ],
-  "timestamp": "2026-06-03T16:55:00+08:00"
+  "timestamp": "2026-06-03T16:57:12+08:00"
 }
