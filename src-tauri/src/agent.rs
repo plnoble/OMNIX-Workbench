@@ -51,6 +51,7 @@ impl AgentManager {
             ("Qwen Code", "qwen-code"),
             ("GitHub Copilot CLI", "github-copilot-cli"),
             ("Google Antigravity", "agy"),
+            ("OpenCode", "opencode"),
         ];
 
         let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("C:\\Users\\87953"));
@@ -304,6 +305,7 @@ impl AgentManager {
             "Claude Code" => "@anthropic-ai/claude-code@latest",
             "Gemini CLI" => "@google/gemini-cli@latest",
             "GitHub Copilot CLI" => "@github/copilot-cli@latest",
+            "OpenCode" => "opencode-ai@latest",
             _ => return Err(format!("Unsupported agent CLI auto-install: {}", agent_name)),
         };
 
