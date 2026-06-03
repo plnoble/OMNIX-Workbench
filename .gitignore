@@ -41,3 +41,7 @@ Desktop.ini
 # !logs/tasks/.gitkeep
 # (We will keep them unignored for now so that the development memory travels with the repository,
 # which matches "保证任何新Agent/新模型都能快速接管项目")
+
+# Temporary scratch space for clones/downloads
+scratch/
+
