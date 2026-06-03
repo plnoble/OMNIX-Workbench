@@ -1,0 +1,27 @@
+{
+  "decision_id": "DEC-008",
+  "topic": "Unified Agent Storage Directory, Target CLI Matrix, and Claude Code Bootstrap Bypass",
+  "context": "We aligned on specific installation directories, priorities for high-value programming CLI agents, and handling headless bootstrap prompts (such as Claude Code's terms agreement).",
+  "options_considered": [
+    "Let each agent CLI install in its default global path (e.g. general npm root, global pip) and manually reply to bootstrap CLI stdin prompts.",
+    "Enforce a unified installation sandbox directory (e.g. `~/.omnix/agents/`), focus heavily on key developer CLIs (Claude Code, Gemini CLI, Codex, Qwen Code, GitHub Copilot CLI), and bypass bootstrap interactive questions (e.g. terms agreement, analytics) via headless arguments or env variables."
+  ],
+  "chosen_option": "Enforce unified sandboxed path, focus on 5+ premium developer CLIs, and implement headless automated prompts bypass.",
+  "reasoning": [
+    "Unified Storage: Keeping files clean and avoiding system pollution is a core design standard. Placing npm/pip/binary agents under `~/.omnix/agents/` ensures easy uninstallation and debugging.",
+    "Bypassing Interactive Terms: Autonomous execution fails if a background CLI process blocks on an interactive stdin request (e.g., Claude Code's initial 'Do you agree to the terms?' prompt). We must pre-seed configuration files, pass automated flags (like `--yes`), or inject environment variables (like `ACCEPT_TERMS=y`) to suppress these prompts.",
+    "Premium CLI Matrix Focus: Directing implementation efforts toward Claude Code, Gemini CLI, Codex, Qwen Code, and GitHub Copilot CLI covers the absolute best-in-class tools developers actually use."
+  ],
+  "tradeoffs": [
+    "Bypassing bootstrap checks depends on CLI-specific args which might change in newer versions. We will monitor upstream releases and keep our bypass strategies modular."
+  ],
+  "impact_scope": [
+    "CLI executing service (stdio bootstrap prompt interceptor)",
+    "Agent installation engine (sandboxed path overrides)",
+    "Diagnostic panel"
+  ],
+  "future_risks": [
+    "Upstreams breaking bypass variables: resolved by providing a fallback interactive terminal window if bootstrap diagnostics timeout."
+  ],
+  "timestamp": "2026-06-03T20:05:51+08:00"
+}
