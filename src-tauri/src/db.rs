@@ -26,11 +26,17 @@ impl DbManager {
         db
     }
 
+    pub fn new_with_path(db_path: PathBuf) -> Self {
+        let db = Self { db_path };
+        db.init_schema().expect("Failed to initialize database schema");
+        db
+    }
+
     pub fn get_connection(&self) -> Result<Connection> {
         Connection::open(&self.db_path)
     }
 
-    fn init_schema(&self) -> Result<()> {
+    pub fn init_schema(&self) -> Result<()> {
         let conn = self.get_connection()?;
         
         // 1. Settings Table (atomic key-value config)
@@ -449,4 +455,38 @@ pub struct ActiveAccountInfo {
     pub api_host: String,
     pub target_model: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_db_manager_and_active_account() {
+        let temp_dir = std::env::temp_dir();
+        let test_db_path = temp_dir.join("omnix_test.db");
+        if test_db_path.exists() {
+            let _ = std::fs::remove_file(&test_db_path);
+        }
+
+        let db = DbManager::new_with_path(test_db_path.clone());
+
+        // Check seeded accounts
+        let active_acc = db.get_active_account().unwrap();
+        assert!(active_acc.is_some());
+        let acc = active_acc.unwrap();
+        assert_eq!(acc.id, "default_profile");
+        assert_eq!(acc.account_name, "默认账户 (Default Profile)");
+
+        // Set a setting and retrieve it
+        db.set_setting("test_key", "test_value").unwrap();
+        let val = db.get_setting("test_key").unwrap();
+        assert_eq!(val, Some("test_value".to_string()));
+
+        // Clean up
+        if test_db_path.exists() {
+            let _ = std::fs::remove_file(&test_db_path);
+        }
+    }
+}
+
 
