@@ -166,6 +166,9 @@ impl AgentManager {
             self.bootstrap_claude_code();
         }
 
+        // Inject long-term memory anti-failure files into the workspace directory
+        let _ = self.inject_workspace_memories(&workspace_dir);
+
         // Configure environment variables (redirect Claude to our local HTTP proxy gateway)
         let proxy_port = self.db.get_setting("proxy_port").unwrap_or(None).unwrap_or_else(|| "1421".to_string());
         let local_proxy_url = format!("http://localhost:{}", proxy_port);
@@ -501,4 +504,72 @@ impl AgentManager {
             }
         });
     }
+
+    fn inject_workspace_memories(&self, workspace_dir: &str) -> Result<(), String> {
+        let conn = self.db.get_connection().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare("SELECT incident_desc, code_pattern, remediation, keywords FROM memories")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        }).map_err(|e| e.to_string())?;
+
+        let mut memories_md = String::new();
+        memories_md.push_str("\n<!--- OMNIX MEMORY START --->\n");
+        memories_md.push_str("## 🧠 OMNIX Anti-Failure Guidelines & Memory Bank\n");
+        memories_md.push_str("以下是历史项目踩坑事故记录与规约，请在此工作区内严加防范，避免重犯相同错误：\n\n");
+
+        let mut count = 0;
+        for r in rows {
+            if let Ok((desc, pattern, remediation, keywords)) = r {
+                count += 1;
+                memories_md.push_str(&format!("### ❌ 坑点 {}: {}\n", count, desc));
+                memories_md.push_str(&format!("* **危险模式/命令**: `{}`\n", pattern));
+                memories_md.push_str(&format!("* **安全修复方案**: {}\n", remediation));
+                memories_md.push_str(&format!("* **相关标签**: `{}`\n\n", keywords));
+            }
+        }
+        memories_md.push_str("<!--- OMNIX MEMORY END --->\n");
+
+        if count == 0 {
+            return Ok(());
+        }
+
+        let workspace_path = PathBuf::from(workspace_dir);
+        if !workspace_path.exists() {
+            return Ok(());
+        }
+
+        // Write to CLAUDE.md
+        let claude_md_path = workspace_path.join("CLAUDE.md");
+        if claude_md_path.exists() {
+            if let Ok(mut content) = fs::read_to_string(&claude_md_path) {
+                if let (Some(start_idx), Some(end_idx)) = (content.find("<!--- OMNIX MEMORY START --->"), content.find("<!--- OMNIX MEMORY END --->")) {
+                    let end_block_len = "<!--- OMNIX MEMORY END --->\n".len();
+                    let actual_end = if end_idx + end_block_len <= content.len() {
+                        end_idx + end_block_len
+                    } else {
+                        end_idx
+                    };
+                    content.replace_range(start_idx..actual_end, &memories_md);
+                } else {
+                    content.push_str(&memories_md);
+                }
+                let _ = fs::write(&claude_md_path, content);
+            }
+        } else {
+            let _ = fs::write(&claude_md_path, &memories_md);
+        }
+
+        // Also write to OMNIX_MEMORY.md for generic model reference
+        let omnix_md_path = workspace_path.join("OMNIX_MEMORY.md");
+        let _ = fs::write(&omnix_md_path, &memories_md);
+
+        Ok(())
+    }
 }
+

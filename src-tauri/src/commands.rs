@@ -448,3 +448,301 @@ pub fn create_skill(
     
     Ok(())
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentAccount {
+    pub id: String,
+    pub account_name: String,
+    pub api_key: String,
+    pub api_host: String,
+    pub target_model: String,
+    pub is_active: bool,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Memory {
+    pub id: String,
+    pub incident_desc: String,
+    pub code_pattern: String,
+    pub remediation: String,
+    pub keywords: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemorySuggestion {
+    pub incident_desc: String,
+    pub code_pattern: String,
+    pub remediation: String,
+    pub keywords: String,
+}
+
+#[tauri::command]
+pub fn get_agent_accounts(
+    db: State<'_, Arc<DbManager>>,
+) -> Result<Vec<AgentAccount>, String> {
+    let conn = db.get_connection().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT id, account_name, api_key, api_host, target_model, is_active, updated_at FROM agent_accounts ORDER BY updated_at DESC")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |row| {
+        let is_active_int: i32 = row.get(5)?;
+        Ok(AgentAccount {
+            id: row.get(0)?,
+            account_name: row.get(1)?,
+            api_key: row.get(2)?,
+            api_host: row.get(3)?,
+            target_model: row.get(4)?,
+            is_active: is_active_int != 0,
+            updated_at: row.get(6)?,
+        })
+    }).map_err(|e| e.to_string())?;
+
+    let mut result = Vec::new();
+    for r in rows {
+        if let Ok(acc) = r {
+            result.push(acc);
+        }
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+pub fn create_agent_account(
+    id: String,
+    account_name: String,
+    api_key: String,
+    api_host: String,
+    target_model: String,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<(), String> {
+    let conn = db.get_connection().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT OR REPLACE INTO agent_accounts (id, account_name, api_key, api_host, target_model, is_active, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, 0, CURRENT_TIMESTAMP)",
+        params![id, account_name, api_key, api_host, target_model],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn switch_agent_account(
+    id: String,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<(), String> {
+    let conn = db.get_connection().map_err(|e| e.to_string())?;
+    conn.execute("UPDATE agent_accounts SET is_active = 0", []).map_err(|e| e.to_string())?;
+    conn.execute("UPDATE agent_accounts SET is_active = 1 WHERE id = ?1", params![id]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_agent_account(
+    id: String,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<(), String> {
+    let conn = db.get_connection().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM agent_accounts WHERE id = ?1", params![id]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_all_memories(
+    db: State<'_, Arc<DbManager>>,
+) -> Result<Vec<Memory>, String> {
+    let conn = db.get_connection().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT id, incident_desc, code_pattern, remediation, keywords, created_at FROM memories ORDER BY created_at DESC")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |row| {
+        Ok(Memory {
+            id: row.get(0)?,
+            incident_desc: row.get(1)?,
+            code_pattern: row.get(2)?,
+            remediation: row.get(3)?,
+            keywords: row.get(4)?,
+            created_at: row.get(5)?,
+        })
+    }).map_err(|e| e.to_string())?;
+
+    let mut result = Vec::new();
+    for r in rows {
+        if let Ok(mem) = r {
+            result.push(mem);
+        }
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+pub fn create_memory(
+    id: String,
+    incident_desc: String,
+    code_pattern: String,
+    remediation: String,
+    keywords: String,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<(), String> {
+    let conn = db.get_connection().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT OR REPLACE INTO memories (id, incident_desc, code_pattern, remediation, keywords, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP)",
+        params![id, incident_desc, code_pattern, remediation, keywords],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_memory(
+    id: String,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<(), String> {
+    let conn = db.get_connection().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM memories WHERE id = ?1", params![id]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn distill_session_memory(
+    conversation_id: String,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<MemorySuggestion, String> {
+    let conversation_log = {
+        let conn = db.get_connection().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare("SELECT role, content FROM messages WHERE conversation_id = ?1 ORDER BY timestamp ASC")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(params![conversation_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        }).map_err(|e| e.to_string())?;
+
+        let mut log = String::new();
+        let mut count = 0;
+        for r in rows {
+            if let Ok((role, content)) = r {
+                count += 1;
+                log.push_str(&format!("{}: {}\n\n", role.to_uppercase(), content));
+            }
+        }
+
+        if count == 0 {
+            return Err("No messages found in this session to distill.".to_string());
+        }
+        log
+    };
+
+    // Fetch upstream LLM credentials
+    let active_acc = db.get_active_account().map_err(|e| e.to_string())?;
+    let (api_key_raw, api_host, target_model) = if let Some(acc) = active_acc {
+        (acc.api_key, acc.api_host, acc.target_model)
+    } else {
+        let api_key = db.get_setting("api_key").unwrap_or(None).unwrap_or_default();
+        let api_host = db.get_setting("api_host").unwrap_or(None).unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+        let target_model = db.get_setting("target_model").unwrap_or(None).unwrap_or_else(|| "deepseek-chat".to_string());
+        (api_key, api_host, target_model)
+    };
+
+    let keys: Vec<&str> = api_key_raw.split(',').map(|k| k.trim()).filter(|k| !k.is_empty()).collect();
+    if keys.is_empty() {
+        return Err("API Key is not configured. Please configure credentials first.".to_string());
+    }
+    let api_key = keys[0];
+
+    let system_prompt = "You are a Senior Engineering Lead and Code Experience Distillation Engine. \
+Your task is to analyze the developer's chat session timeline (questions, code diffs, errors, and fixes) and distill a single key anti-failure lesson/pitfall. \
+You must extract:
+1. Incident Description: What went wrong or what mistake was made (e.g., deadlock, API key leak, git push force, CORS conflict, etc.).
+2. Code Pattern: The specific risky code pattern or CLI command that triggered the incident.
+3. Remediation: How to resolve and prevent this error next time.
+4. Keywords: Comma-separated tag keywords (e.g., tokio,cors,git).
+
+Return the response strictly as a JSON object matching this schema:
+{
+  \"incident_desc\": \"...\",
+  \"code_pattern\": \"...\",
+  \"remediation\": \"...\",
+  \"keywords\": \"tag1,tag2,...\"
+}
+DO NOT wrap the response in markdown blocks like ```json. Return ONLY the raw JSON string.";
+
+    let user_prompt = format!(
+        "Please analyze the following conversation history and distill a valuable anti-failure lesson card:\n\n{}",
+        conversation_log
+    );
+
+    let client = reqwest::Client::new();
+    let upstream_url = format!("{}/chat/completions", api_host.trim_end_matches('/'));
+
+    let response = client.post(&upstream_url)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({
+            "model": target_model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            "temperature": 0.3
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to connect to LLM upstream: {}", e))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let err_body = response.text().await.unwrap_or_default();
+        return Err(format!("Upstream LLM returned error ({}): {}", status, err_body));
+    }
+
+    let res_json: serde_json::Value = response.json().await
+        .map_err(|e| format!("Failed to parse JSON response from LLM: {}", e))?;
+
+    let text_content = res_json["choices"][0]["message"]["content"].as_str()
+        .ok_or_else(|| "Failed to retrieve content from LLM response".to_string())?;
+
+    let clean_json_str = text_content
+        .trim()
+        .trim_start_matches("```json")
+        .trim_end_matches("```")
+        .trim();
+
+    let result: MemorySuggestion = serde_json::from_str(clean_json_str)
+        .map_err(|e| format!("LLM output did not match expected JSON schema: {}. Raw output: {}", e, clean_json_str))?;
+
+    Ok(result)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationInfo {
+    pub id: String,
+    pub title: String,
+    pub workspace_path: String,
+    pub active_agent: String,
+    pub created_at: String,
+}
+
+#[tauri::command]
+pub fn get_all_conversations(
+    db: State<'_, Arc<DbManager>>,
+) -> Result<Vec<ConversationInfo>, String> {
+    let conn = db.get_connection().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT id, title, workspace_path, active_agent, created_at FROM conversations ORDER BY created_at DESC")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |row| {
+        Ok(ConversationInfo {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            workspace_path: row.get(2)?,
+            active_agent: row.get(3)?,
+            created_at: row.get(4)?,
+        })
+    }).map_err(|e| e.to_string())?;
+
+    let mut result = Vec::new();
+    for r in rows {
+        if let Ok(conv) = r {
+            result.push(conv);
+        }
+    }
+    Ok(result)
+}
+
+

@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { SkillHub } from "./SkillHub";
+import { MemoryHub } from "./MemoryHub";
 import "./App.css";
 
 // Struct for detected agent from backend
@@ -49,6 +50,24 @@ function App() {
   const [autoStart, setAutoStart] = useState(false);
   const [startToTray, setStartToTray] = useState(true);
 
+  // Agent Accounts states
+  interface AgentAccount {
+    id: string;
+    account_name: string;
+    api_key: string;
+    api_host: string;
+    target_model: string;
+    is_active: boolean;
+    updated_at: string;
+  }
+  const [accounts, setAccounts] = useState<AgentAccount[]>([]);
+  const [isAccountModalOpen, setIsAccountModalOpen] = useState(false);
+  const [accFormId, setAccFormId] = useState("");
+  const [accFormName, setAccFormName] = useState("");
+  const [accFormKey, setAccFormKey] = useState("");
+  const [accFormHost, setAccFormHost] = useState("");
+  const [accFormModel, setAccFormModel] = useState("deepseek-chat");
+
   // Agents list state
   const [agents, setAgents] = useState<DetectedAgent[]>([]);
   const [scanning, setScanning] = useState(false);
@@ -63,6 +82,7 @@ function App() {
   useEffect(() => {
     loadSettings();
     detectAgents();
+    loadAccounts();
     // Rotate tip cards on start
     setTipIndex(Math.floor(Math.random() * OMNIX_TIPS.length));
   }, []);
@@ -96,6 +116,72 @@ function App() {
       console.error("Failed to load settings:", e);
       setDockState("error");
     }
+  };
+
+  const loadAccounts = async () => {
+    try {
+      const list = await invoke<AgentAccount[]>("get_agent_accounts");
+      setAccounts(list);
+    } catch (e) {
+      console.error("Failed to load agent accounts:", e);
+    }
+  };
+
+  const handleSwitchAccount = async (id: string) => {
+    try {
+      await invoke("switch_agent_account", { id });
+      await loadAccounts();
+      // Synchronize credentials to CLIs
+      await invoke("sync_external_agent_configs");
+      alert("账号切换成功！中转代理网关已即时切换上游通道。");
+    } catch (e) {
+      console.error("Failed to switch account:", e);
+      alert("切换失败：" + e);
+    }
+  };
+
+  const handleDeleteAccount = async (id: string) => {
+    if (!confirm("确定要删除此账号凭证吗？")) return;
+    try {
+      await invoke("delete_agent_account", { id });
+      await loadAccounts();
+    } catch (e) {
+      console.error("Failed to delete account:", e);
+      alert("删除失败：" + e);
+    }
+  };
+
+  const handleSaveAccount = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!accFormName.trim() || !accFormKey.trim() || !accFormHost.trim()) {
+      alert("请填写完整账号配置信息");
+      return;
+    }
+    const id = accFormId || `acc_${Date.now()}`;
+    try {
+      await invoke("create_agent_account", {
+        id,
+        accountName: accFormName,
+        apiKey: accFormKey,
+        apiHost: accFormHost,
+        targetModel: accFormModel
+      });
+      setIsAccountModalOpen(false);
+      resetAccountForm();
+      await loadAccounts();
+      alert("账号保存成功！");
+    } catch (err) {
+      console.error("Failed to save account:", err);
+      alert("保存失败：" + err);
+    }
+  };
+
+  const resetAccountForm = () => {
+    setAccFormId("");
+    setAccFormName("");
+    setAccFormKey("");
+    setAccFormHost("");
+    setAccFormModel("deepseek-chat");
   };
 
   const saveSettings = async () => {
@@ -190,10 +276,17 @@ function App() {
               <span>Agent 仓库</span>
             </div>
             <div 
+              className={`nav-item ${activeTab === "memories" ? "active" : ""}`}
+              onClick={() => setActiveTab("memories")}
+            >
+              <span className="nav-icon">🧠</span>
+              <span>长期防错记忆</span>
+            </div>
+            <div 
               className={`nav-item ${activeTab === "skills" ? "active" : ""}`}
               onClick={() => setActiveTab("skills")}
             >
-              <span className="nav-icon">🧠</span>
+              <span className="nav-icon">🧬</span>
               <span>自进化技能</span>
             </div>
             <div 
@@ -226,6 +319,7 @@ function App() {
           <h1>
             {activeTab === "dashboard" && "控制面板"}
             {activeTab === "agents" && "Agent 发现与管理 (Agent Hub)"}
+            {activeTab === "memories" && "长期避坑记忆库与经验蒸馏 (Memory Hub)"}
             {activeTab === "skills" && "自进化智能技能资产中枢 (Skill Hub)"}
             {activeTab === "settings" && "服务配置与中转网关"}
           </h1>
@@ -340,6 +434,89 @@ function App() {
           {/* B. AGENT HUB VIEW */}
           {activeTab === "agents" && (
             <div>
+              {/* Multi-Account Switcher Panel */}
+              <div className="card animate-fade-in" style={{ marginBottom: "24px", border: "1px solid var(--border-color)", padding: "18px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid var(--border-color)", paddingBottom: "12px", marginBottom: "16px" }}>
+                  <div>
+                    <h3 style={{ margin: 0, fontSize: "16px", display: "flex", alignItems: "center", gap: "8px" }}>
+                      🔑 零中断多账号切换面板
+                    </h3>
+                    <p style={{ margin: "4px 0 0 0", color: "var(--text-secondary)", fontSize: "12px" }}>
+                      实时切换大模型 upstream 接口凭证，切换账号不中断当前工作空间与进行中的 Agent 调试会话。
+                    </p>
+                  </div>
+                  
+                  <button 
+                    className="btn btn-primary" 
+                    onClick={() => {
+                      setIsAccountModalOpen(true);
+                      resetAccountForm();
+                    }}
+                    style={{ padding: "6px 12px", fontSize: "12px" }}
+                  >
+                    ➕ 添加账号凭证
+                  </button>
+                </div>
+
+                {/* Grid of Accounts */}
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "12px" }}>
+                  {accounts.map(acc => (
+                    <div 
+                      key={acc.id}
+                      style={{
+                        padding: "12px",
+                        borderRadius: "8px",
+                        border: acc.is_active ? "1px solid var(--color-success)" : "1px solid var(--border-color)",
+                        background: acc.is_active ? "rgba(34, 197, 94, 0.03)" : "rgba(255, 255, 255, 0.01)",
+                        display: "flex",
+                        flexDirection: "column",
+                        justifyContent: "space-between",
+                        transition: "all 0.2s"
+                      }}
+                    >
+                      <div>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+                          <span style={{ fontWeight: 600, fontSize: "14px", color: acc.is_active ? "var(--color-success)" : "var(--text-primary)" }}>
+                            {acc.account_name}
+                          </span>
+                          {acc.is_active && (
+                            <span style={{ fontSize: "11px", color: "var(--color-success)", background: "rgba(34, 197, 94, 0.1)", padding: "2px 6px", borderRadius: "10px", fontWeight: 500 }}>
+                              活动中
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ fontSize: "12px", color: "var(--text-secondary)", fontFamily: "var(--font-mono)", display: "flex", flexDirection: "column", gap: "4px" }}>
+                          <div><span style={{ color: "var(--text-muted)" }}>Host:</span> {acc.api_host}</div>
+                          <div><span style={{ color: "var(--text-muted)" }}>Model:</span> {acc.target_model}</div>
+                          <div><span style={{ color: "var(--text-muted)" }}>Key:</span> sk-***{acc.api_key.slice(-4)}</div>
+                        </div>
+                      </div>
+
+                      <div style={{ display: "flex", gap: "8px", marginTop: "12px", borderTop: "1px solid var(--border-color)", paddingTop: "8px" }}>
+                        {!acc.is_active && (
+                          <button 
+                            className="btn btn-primary"
+                            onClick={() => handleSwitchAccount(acc.id)}
+                            style={{ flex: 1, padding: "4px 8px", fontSize: "12px" }}
+                          >
+                            切换至此账号
+                          </button>
+                        )}
+                        {acc.id !== "default_profile" && (
+                          <button 
+                            className="btn btn-secondary"
+                            onClick={() => handleDeleteAccount(acc.id)}
+                            style={{ padding: "4px 8px", fontSize: "12px", color: "var(--color-danger)" }}
+                          >
+                            删除
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
                 <p style={{ color: "var(--text-secondary)", fontSize: "14px" }}>
                   OMNIX 会静默扫描您的环境变量和本地沙箱文件夹，检测可用的开发命令行 Agent。
@@ -558,8 +735,108 @@ function App() {
             <SkillHub />
           )}
 
+          {activeTab === "memories" && (
+            <MemoryHub />
+          )}
+
         </div>
       </div>
+
+      {/* Account Modal Popup */}
+      {isAccountModalOpen && (
+        <div style={{ 
+          position: "fixed", 
+          top: 0, 
+          left: 0, 
+          width: "100vw", 
+          height: "100vh", 
+          background: "rgba(0,0,0,0.6)", 
+          backdropFilter: "blur(4px)",
+          display: "flex", 
+          alignItems: "center", 
+          justifyContent: "center",
+          zIndex: 1000 
+        }}>
+          <div 
+            className="card animate-fade-in"
+            style={{ 
+              width: "440px", 
+              background: "rgba(20, 20, 25, 0.95)",
+              border: "1px solid var(--border-color)",
+              boxShadow: "0 10px 30px rgba(0,0,0,0.5)"
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid var(--border-color)", paddingBottom: "12px", marginBottom: "16px" }}>
+              <h3 style={{ margin: 0, fontSize: "16px" }}>🔑 添加/编辑大模型账号凭证</h3>
+              <button 
+                onClick={() => setIsAccountModalOpen(false)}
+                style={{ background: "transparent", border: "none", color: "var(--text-secondary)", cursor: "pointer" }}
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveAccount} style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+              <div className="form-group">
+                <label>账户显示名称</label>
+                <input 
+                  type="text" 
+                  className="form-input"
+                  placeholder="例如：公司企业专线 (High-Capacity Pro)"
+                  value={accFormName}
+                  onChange={(e) => setAccFormName(e.target.value)}
+                  required
+                />
+              </div>
+
+              <div className="form-group">
+                <label>API Key</label>
+                <input 
+                  type="password" 
+                  className="form-input"
+                  placeholder="sk-........................"
+                  value={accFormKey}
+                  onChange={(e) => setAccFormKey(e.target.value)}
+                  required
+                />
+              </div>
+
+              <div className="form-group">
+                <label>API Host Endpoint</label>
+                <input 
+                  type="text" 
+                  className="form-input"
+                  placeholder="https://api.openai.com/v1"
+                  value={accFormHost}
+                  onChange={(e) => setAccFormHost(e.target.value)}
+                  required
+                />
+              </div>
+
+              <div className="form-group">
+                <label>映射目标模型</label>
+                <input 
+                  type="text" 
+                  className="form-input"
+                  placeholder="deepseek-chat 或 gpt-4o"
+                  value={accFormModel}
+                  onChange={(e) => setAccFormModel(e.target.value)}
+                  required
+                />
+              </div>
+
+              <div style={{ display: "flex", gap: "10px", marginTop: "10px", justifyContent: "flex-end" }}>
+                <button type="button" className="btn btn-secondary" onClick={() => setIsAccountModalOpen(false)}>
+                  取消
+                </button>
+                <button type="submit" className="btn btn-primary">
+                  保存凭证
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

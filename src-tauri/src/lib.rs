@@ -45,7 +45,16 @@ pub fn run() {
             commands::toggle_skill_active,
             commands::update_skill_profile,
             commands::fuse_skills_api,
-            commands::create_skill
+            commands::create_skill,
+            commands::get_agent_accounts,
+            commands::create_agent_account,
+            commands::switch_agent_account,
+            commands::delete_agent_account,
+            commands::get_all_memories,
+            commands::create_memory,
+            commands::delete_memory,
+            commands::distill_session_memory,
+            commands::get_all_conversations
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

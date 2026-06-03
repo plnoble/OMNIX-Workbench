@@ -107,6 +107,20 @@ impl DbManager {
             [],
         )?;
 
+        // 6b. Agent Accounts Table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS agent_accounts (
+                id TEXT PRIMARY KEY,
+                account_name TEXT NOT NULL,
+                api_key TEXT NOT NULL,
+                api_host TEXT NOT NULL,
+                target_model TEXT NOT NULL,
+                is_active INTEGER NOT NULL DEFAULT 0,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )?;
+
         // 7. Tasks Table (pipeline/todo plans)
         conn.execute(
             "CREATE TABLE IF NOT EXISTS tasks (
@@ -126,6 +140,139 @@ impl DbManager {
 
         // Seed default skills if empty
         self.seed_default_skills(&conn)?;
+
+        // Seed default accounts if empty
+        self.seed_default_accounts(&conn)?;
+
+        // Seed default memories if empty
+        self.seed_default_memories(&conn)?;
+
+        // Seed default conversations if empty
+        self.seed_default_conversations(&conn)?;
+
+        Ok(())
+    }
+
+    fn seed_default_conversations(&self, conn: &Connection) -> Result<()> {
+        let mut stmt = conn.prepare("SELECT COUNT(*) FROM conversations")?;
+        let count: i64 = stmt.query_row([], |r| r.get(0))?;
+        if count > 0 {
+            return Ok(());
+        }
+
+        // Insert a mock conversation
+        conn.execute(
+            "INSERT INTO conversations (id, title, workspace_path, active_agent)
+             VALUES (?1, ?2, ?3, ?4)",
+            params!["mock_sess_cors", "会话 #1: Web 前端 CORS 调试", "d:/Agent/Project/MyWebDemo", "Claude Code"],
+        )?;
+
+        // Insert messages showing a CORS issue being discussed and fixed
+        let messages = vec![
+            ("msg_1", "user", "我遇到了预检请求(Preflight)拦截错误，CORS 报错，说 Origin 不能是通配符 *，因为 credentials 设为了 include。"),
+            ("msg_2", "assistant", "对的，当在 fetch 中设置 `credentials: 'include'` 时，浏览器的安全策略要求后端响应的 CORS 头 `Access-Control-Allow-Origin` 必须指定明确的域名（比如 `http://localhost:3000`），而不能是通配符 `*`。此外，`Access-Control-Allow-Credentials` 必须设为 `true`。"),
+            ("msg_3", "user", "明白了，修改了后端的 Access-Control-Allow-Origin 为具体的请求源后成功了。"),
+            ("msg_4", "assistant", "太棒了！这是一个非常经典的 Web 踩坑点。在处理跨域凭证传递时，切记不要使用 *。"),
+        ];
+
+        for (msg_id, role, content) in messages {
+            conn.execute(
+                "INSERT INTO messages (id, conversation_id, role, content)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![msg_id, "mock_sess_cors", role, content],
+            )?;
+        }
+
+        // Insert another mock conversation for a Tokio lock deadlock
+        conn.execute(
+            "INSERT INTO conversations (id, title, workspace_path, active_agent)
+             VALUES (?1, ?2, ?3, ?4)",
+            params!["mock_sess_lock", "会话 #2: Rust Tokio 异步死锁排查", "d:/Agent/Project/MyRustService", "Google Antigravity"],
+        )?;
+
+        let messages_lock = vec![
+            ("msg_l1", "user", "我的 Rust 异步服务卡住了，日志停在一个 await 处。我用了 std::sync::Mutex。"),
+            ("msg_l2", "assistant", "在异步任务中跨越 `.await` 点持有 `std::sync::MutexGuard` 会导致线程被阻塞或者出现 Send 校验失败、死锁。你应该使用 `tokio::sync::Mutex`，或者用一个花括号作用域，在 `.await` 之前显式 drop 掉 `MutexGuard`。"),
+            ("msg_l3", "user", "我用 tokio::sync::Mutex 替换了 std::sync::Mutex，并把持有锁的代码段包在了作用域内。重新测试，程序不再卡死了。"),
+            ("msg_l4", "assistant", "完美！在异步上下文中，一定要防范同步锁跨 await 点的情况，否则很容易造成死锁崩溃。"),
+        ];
+
+        for (msg_id, role, content) in messages_lock {
+            conn.execute(
+                "INSERT INTO messages (id, conversation_id, role, content)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![msg_id, "mock_sess_lock", role, content],
+            )?;
+        }
+
+        Ok(())
+    }
+
+    fn seed_default_accounts(&self, conn: &Connection) -> Result<()> {
+        let mut stmt = conn.prepare("SELECT COUNT(*) FROM agent_accounts")?;
+        let count: i64 = stmt.query_row([], |r| r.get(0))?;
+        if count > 0 {
+            return Ok(());
+        }
+
+        // Fetch current setting configurations to establish default profile
+        let api_key = self.get_setting("api_key")?.unwrap_or_default();
+        let api_host = self.get_setting("api_host")?.unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+        
+        conn.execute(
+            "INSERT INTO agent_accounts (id, account_name, api_key, api_host, target_model, is_active)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params!["default_profile", "默认账户 (Default Profile)", api_key, api_host, "deepseek-chat", 1],
+        )?;
+
+        // Seed a corporate/alternative mock account for switcher demonstration
+        conn.execute(
+            "INSERT INTO agent_accounts (id, account_name, api_key, api_host, target_model, is_active)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params!["company_pro", "企业专线 (High-Capacity Pro)", "sk-corp-unlimited-token-key-profile", "https://api.openai.com/v1", "gpt-4o", 0],
+        )?;
+
+        Ok(())
+    }
+
+    fn seed_default_memories(&self, conn: &Connection) -> Result<()> {
+        let mut stmt = conn.prepare("SELECT COUNT(*) FROM memories")?;
+        let count: i64 = stmt.query_row([], |r| r.get(0))?;
+        if count > 0 {
+            return Ok(());
+        }
+
+        let defaults = vec![
+            (
+                "mem_001",
+                "跨域请求中 credentials 与 Origin 冲突导致预检拦截。",
+                "fetch(url, { credentials: 'include', mode: 'cors' })",
+                "当请求设置 credentials 为 include 时，后端 CORS 响应头 Access-Control-Allow-Origin 不能设为通配符 *，必须指定明确的域名 Origin。",
+                "cors,fetch,credentials,web"
+            ),
+            (
+                "mem_002",
+                "Tokio 线程手动锁死：在 async fn 内阻塞等待 sync 互斥锁发生 panic 死锁。",
+                "std::sync::MutexGuard across await point",
+                "在异步 Task 跨 await 时不能持有 std::sync::MutexGuard，否则会导致 Send 校验失败或死锁。必须使用 tokio::sync::Mutex 或者在 await 前显式释放锁作用域。",
+                "tokio,lock,deadlock,async"
+            ),
+            (
+                "mem_003",
+                "Git 强制覆写推送导致公共代码库提交日志被覆盖损坏。",
+                "git push -f",
+                "在多人协作仓库中绝不能执行 git push -f。强制更新必须通过分支审批 PR，或使用 --force-with-lease 安全锁推送。",
+                "git,push,deploy,safety"
+            )
+        ];
+
+        for (id, desc, pattern, rem, kw) in defaults {
+            conn.execute(
+                "INSERT INTO memories (id, incident_desc, code_pattern, remediation, keywords)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![id, desc, pattern, rem, kw],
+            )?;
+        }
 
         Ok(())
     }
@@ -275,4 +422,31 @@ impl DbManager {
         )?;
         Ok(())
     }
+
+    pub fn get_active_account(&self) -> Result<Option<ActiveAccountInfo>> {
+        let conn = self.get_connection()?;
+        let mut stmt = conn.prepare("SELECT id, account_name, api_key, api_host, target_model FROM agent_accounts WHERE is_active = 1 LIMIT 1")?;
+        let mut rows = stmt.query([])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(ActiveAccountInfo {
+                id: row.get(0)?,
+                account_name: row.get(1)?,
+                api_key: row.get(2)?,
+                api_host: row.get(3)?,
+                target_model: row.get(4)?,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
 }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ActiveAccountInfo {
+    pub id: String,
+    pub account_name: String,
+    pub api_key: String,
+    pub api_host: String,
+    pub target_model: String,
+}
+
