@@ -1,0 +1,28 @@
+{
+  "decision_id": "DEC-013",
+  "topic": "OMNIX DevFlow AI Proxy Gateway Integration, Subscription-to-API Bridging, and Upstream Synchronization Maintenance Strategy",
+  "context": "We analyzed the reverse proxy capabilities of sub2api and new-api to determine their value for OMNIX DevFlow, and defined a robust software engineering strategy for maintaining borrowed/copied features that are actively updated upstream.",
+  "options_considered": [
+    "Do not include proxy translation or subscription bridging; require users to provide direct official API keys only.",
+    "Integrate lightweight protocol translation (Anthropic <-> OpenAI) and subscription-to-API reverse proxies, using a 4-tier upstream sync strategy (Sidecars, Decoupled Adapters, Git Patches, and Dynamic Selector Hot-patches)."
+  ],
+  "chosen_option": "Integrate translation proxies & subscription bridging, and enforce a strict Sidecar/Adapter decoupled structure for upstream maintenance.",
+  "reasoning": [
+    "Lowering Developer Costs: Official APIs for heavy agentic coding are cost-prohibitive. Enabling subscription-to-API proxies (like sub2api) allows developers to utilize $20/month flat-rate subscriptions.",
+    "Cross-Model Compatibility: CLI tools like Claude Code are hardcoded to Anthropic API formats. A built-in new-api-style format translator allows running Claude Code on DeepSeek or local Ollama models.",
+    "Avoiding Upstream Maintenance Dead-ends: Direct code copying leads to high maintenance costs when upstream repositories fix bugs or upgrade. Decoupling upstream dependencies into independent Sidecar processes or Dynamic Rule Parsers keeps the OMNIX core codebase clean and easily upgradeable."
+  ],
+  "tradeoffs": [
+    "Managing sidecar processes increases local memory footprint and launch latency. Resolved by implementing lazy loading and the 'Idle Reaper' process terminator to clean up idle processes."
+  ],
+  "impact_scope": [
+    "OMNIX Core Gateway (port listener, payload mapper)",
+    "BackendLifecycleManager (sidecar binary executor and version manager)",
+    "API Channel Settings UI (support subscription credentials and translation models)",
+    "Update Daemon (dynamic cloud rule updates for scraping selectors)"
+  ],
+  "future_risks": [
+    "Web interface changes by upstream AI providers (e.g. Anthropic/OpenAI changing web headers or JSON format) causing immediate proxy breakage: mitigated by the dynamic selector patch mechanism."
+  ],
+  "timestamp": "2026-06-03T20:53:00+08:00"
+}
