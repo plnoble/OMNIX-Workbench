@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initialized Task [TASK-001](file:///d:/Agent/Project/OMNIX-Development%20Tools/logs/tasks/TASK-001.json) for collaborative tool research and planning.
 - Completed research on reference library **AingDesk**.
 - Created Decision Log [DEC-001](file:///d:/Agent/Project/OMNIX-Development%20Tools/logs/decisions/DEC-001.json) outlining architectural alignment and adaptations for OMNIX DevFlow.
+- Completed research on reference library **Cherry Studio**.
+- Created Decision Log [DEC-002](file:///d:/Agent/Project/OMNIX-Development%20Tools/logs/decisions/DEC-002.json) outlining LibSQL local RAG and symlink-based hot-reloading skill manager.
 
 ### Changed
 - Translated the [implementation_plan.md](file:///C:/Users/87953/.gemini/antigravity/brain/3f914f04-1d71-4ba6-8ae2-d68b38776171/implementation_plan.md) to Chinese.

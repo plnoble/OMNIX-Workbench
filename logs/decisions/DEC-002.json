@@ -1,0 +1,26 @@
+{
+  "decision_id": "DEC-002",
+  "topic": "LibSQL Local RAG Database and Symlink-Based Skill Evolution",
+  "context": "We researched the second reference library, Cherry Studio, to design our local vector database and dynamic skill evolution mechanism.",
+  "options_considered": [
+    "Use separate local databases (e.g. SQLite for chat history, LanceDB for vector store, and filesystem files for configuration)",
+    "Consolidate on LibSQL (SQLite fork with vector support) to handle relational data, vector search, and hybrid BM25 FTS, and implement symlink-based hot-reloading for local skills"
+  ],
+  "chosen_option": "Consolidate on LibSQL/SQLite for relational + vector + FTS database, and implement folder-based symlink hot-reloading for skills in /memory/skill_memory/.",
+  "reasoning": [
+    "LibSQL is SQLite-compatible, meaning zero setup overhead for the user. Having relational schema, vector blobs, and FTS5 search in one single file database simplifies local state management.",
+    "Symlinking skill directories from /memory/skill_memory/ directly to the execution workspace allows the Agent to write and modify its own skills in-place, achieving instant hot-reload without building a complex plugin runtime."
+  ],
+  "tradeoffs": [
+    "LibSQL vector bindings require native compilation, but package size is much smaller than spinning up heavy external vector DB processes."
+  ],
+  "impact_scope": [
+    "Database architecture",
+    "Local RAG and workspace indexer",
+    "Skill evolution engine"
+  ],
+  "future_risks": [
+    "Ensuring stable precompiled binaries of LibSQL/SQLite-vector for all OS platforms during local setup."
+  ],
+  "timestamp": "2026-06-03T16:55:00+08:00"
+}
