@@ -136,3 +136,18 @@ pub async fn install_agent_cli(
 ) -> Result<(), String> {
     agent_manager.install_agent(&agent_name).await
 }
+
+#[tauri::command]
+pub async fn repair_installed_agent(
+    agent_name: String,
+    agent_manager: State<'_, Arc<AgentManager>>,
+) -> Result<(), String> {
+    agent_manager.repair_agent_cli(&agent_name).await
+}
+
+#[tauri::command]
+pub fn sync_external_agent_configs(
+    agent_manager: State<'_, Arc<AgentManager>>,
+) -> Result<(), String> {
+    agent_manager.sync_agent_configs()
+}

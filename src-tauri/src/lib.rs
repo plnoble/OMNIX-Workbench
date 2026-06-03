@@ -36,7 +36,9 @@ pub fn run() {
             commands::start_agent_session,
             commands::send_agent_stdin,
             commands::stop_agent_session,
-            commands::install_agent_cli
+            commands::install_agent_cli,
+            commands::repair_installed_agent,
+            commands::sync_external_agent_configs
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

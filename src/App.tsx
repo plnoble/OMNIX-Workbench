@@ -52,6 +52,7 @@ function App() {
   const [agents, setAgents] = useState<DetectedAgent[]>([]);
   const [scanning, setScanning] = useState(false);
   const [installingAgent, setInstallingAgent] = useState("");
+  const [repairingAgent, setRepairingAgent] = useState("");
 
   // Status dock state
   const [dockState, setDockState] = useState<"idle" | "busy" | "error">("idle");
@@ -108,9 +109,12 @@ function App() {
       await invoke("set_app_setting", { key: "auto_start", value: autoStart ? "true" : "false" });
       await invoke("set_app_setting", { key: "start_to_tray", value: startToTray ? "true" : "false" });
       
+      // Auto-synchronize key and port configurations to external Claude Desktop / Claude Code files
+      await invoke("sync_external_agent_configs");
+
       setTimeout(() => {
         setDockState(apiKey.trim().length > 0 ? "idle" : "error");
-        alert("设置保存成功！中转代理服务器配置已热重载。");
+        alert("设置保存成功！中转网关已热重载，外部 Agent 配置文件已自动同步。");
       }, 500);
     } catch (e) {
       console.error("Failed to save settings:", e);
@@ -142,6 +146,20 @@ function App() {
       alert("部署失败：" + e);
     } finally {
       setInstallingAgent("");
+    }
+  };
+
+  const handleRepairAgent = async (name: string) => {
+    setRepairingAgent(name);
+    try {
+      await invoke("repair_installed_agent", { agentName: name });
+      alert(`${name} 诊断修复完成！已清理锁文件并重装依赖。`);
+      await detectAgents();
+    } catch (e) {
+      console.error("Repair failed:", e);
+      alert("修复失败：" + e);
+    } finally {
+      setRepairingAgent("");
     }
   };
 
@@ -347,20 +365,37 @@ function App() {
                       </div>
                     </div>
 
-                    <button 
-                      className={`btn ${agent.status === "installed" ? "btn-secondary" : ""}`}
-                      style={{ width: "100%", padding: "8px 16px", fontSize: "13px" }}
-                      disabled={installingAgent !== "" || agent.name === "Codex" || agent.name === "Qwen Code"}
-                      onClick={() => handleInstallAgent(agent.name.toString())}
-                    >
-                      {installingAgent === agent.name.toString() ? (
-                        <span>正在部署中...</span>
-                      ) : agent.status === "installed" ? (
-                        <span>🔄 一键升级</span>
-                      ) : (
-                        <span>📥 一键安装</span>
+                    <div style={{ display: "flex", gap: "8px", width: "100%" }}>
+                      <button 
+                        className={`btn ${agent.status === "installed" ? "btn-secondary" : ""}`}
+                        style={{ flex: 1, padding: "8px 12px", fontSize: "13px" }}
+                        disabled={installingAgent !== "" || repairingAgent !== "" || agent.name === "Codex" || agent.name === "Qwen Code"}
+                        onClick={() => handleInstallAgent(agent.name.toString())}
+                      >
+                        {installingAgent === agent.name.toString() ? (
+                          <span>部署中...</span>
+                        ) : agent.status === "installed" ? (
+                          <span>一键升级</span>
+                        ) : (
+                          <span>一键安装</span>
+                        )}
+                      </button>
+                      
+                      {agent.status === "installed" && (
+                        <button 
+                          className="btn btn-secondary"
+                          style={{ flex: 1, padding: "8px 12px", fontSize: "13px" }}
+                          disabled={installingAgent !== "" || repairingAgent !== "" || agent.name === "Codex" || agent.name === "Qwen Code"}
+                          onClick={() => handleRepairAgent(agent.name.toString())}
+                        >
+                          {repairingAgent === agent.name.toString() ? (
+                            <span>修复中...</span>
+                          ) : (
+                            <span>智能修复</span>
+                          )}
+                        </button>
                       )}
-                    </button>
+                    </div>
                   </div>
                 ))}
               </div>

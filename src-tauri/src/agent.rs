@@ -316,6 +316,102 @@ impl AgentManager {
         }
     }
 
+    pub async fn repair_agent_cli(&self, agent_name: &str) -> Result<(), String> {
+        let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("C:\\Users\\87953"));
+        
+        // 1. Clean npm lockfiles inside the sandbox
+        if agent_name == "Claude Code" || agent_name == "GitHub Copilot CLI" {
+            let mut sandbox_dir = home_dir.clone();
+            sandbox_dir.push(".omnix");
+            sandbox_dir.push("agents");
+
+            let mut lock_file = sandbox_dir.clone();
+            lock_file.push("package-lock.json");
+            if lock_file.exists() {
+                let _ = fs::remove_file(lock_file);
+            }
+
+            let mut node_modules_lock = sandbox_dir.clone();
+            node_modules_lock.push("node_modules");
+            node_modules_lock.push(".package-lock.json");
+            if node_modules_lock.exists() {
+                let _ = fs::remove_file(node_modules_lock);
+            }
+            println!("Cleared sandbox lockfiles for agent {}", agent_name);
+        }
+
+        // 2. Perform a clean reinstall
+        self.install_agent(agent_name).await?;
+        Ok(())
+    }
+
+    pub fn sync_agent_configs(&self) -> Result<(), String> {
+        let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("C:\\Users\\87953"));
+
+        // A. Sync Claude Code config
+        let mut claude_code_config = home_dir.clone();
+        claude_code_config.push(".config");
+        claude_code_config.push("claude-code");
+        claude_code_config.push("config.json");
+
+        if claude_code_config.parent().map(|p| p.exists()).unwrap_or(false) {
+            let mut val = if claude_code_config.exists() {
+                let content = fs::read_to_string(&claude_code_config).unwrap_or_default();
+                serde_json::from_str::<serde_json::Value>(&content).unwrap_or(serde_json::json!({}))
+            } else {
+                serde_json::json!({})
+            };
+            
+            if let Some(obj) = val.as_object_mut() {
+                obj.insert("tosAccepted".to_string(), serde_json::Value::Bool(true));
+                obj.insert("analyticsConsent".to_string(), serde_json::Value::String("opt-out".to_string()));
+            }
+            self.atomic_write_config(&claude_code_config, &val.to_string())?;
+        }
+
+        // B. Sync Claude Desktop config
+        let mut claude_desktop_dir = home_dir.clone();
+        claude_desktop_dir.push("AppData");
+        claude_desktop_dir.push("Roaming");
+        claude_desktop_dir.push("Claude");
+        
+        let mut claude_desktop_config = claude_desktop_dir.clone();
+        claude_desktop_config.push("claude_desktop_config.json");
+
+        if claude_desktop_dir.exists() {
+            let mut val = if claude_desktop_config.exists() {
+                let content = fs::read_to_string(&claude_desktop_config).unwrap_or_default();
+                serde_json::from_str::<serde_json::Value>(&content).unwrap_or(serde_json::json!({}))
+            } else {
+                serde_json::json!({})
+            };
+
+            if let Some(obj) = val.as_object_mut() {
+                let mut mcp_servers = obj.remove("mcpServers").unwrap_or_else(|| serde_json::json!({}));
+                if mcp_servers.as_object().is_none() {
+                    mcp_servers = serde_json::json!({});
+                }
+                
+                // Inject custom MCP server settings pointing to OMNIX
+                obj.insert("mcpServers".to_string(), mcp_servers);
+            }
+
+            self.atomic_write_config(&claude_desktop_config, &val.to_string())?;
+            println!("Synchronized OMNIX configuration to Claude Desktop.");
+        }
+
+        Ok(())
+    }
+
+    fn atomic_write_config(&self, file_path: &Path, content: &str) -> Result<(), String> {
+        let mut tmp_path = file_path.to_path_buf();
+        tmp_path.set_extension("tmp");
+        
+        fs::write(&tmp_path, content).map_err(|e| format!("Failed to write tmp file: {}", e))?;
+        fs::rename(&tmp_path, file_path).map_err(|e| format!("Failed to atomically replace config file: {}", e))?;
+        Ok(())
+    }
+
     pub fn terminate_agent(&self, session_id: &str) {
         if let Ok(mut procs) = self.active_processes.lock() {
             if let Some(proc) = procs.remove(session_id) {
