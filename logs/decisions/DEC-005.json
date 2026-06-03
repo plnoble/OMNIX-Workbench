@@ -1,0 +1,27 @@
+{
+  "decision_id": "DEC-005",
+  "topic": "Unified Provider Registry, System Tray Switcher, and Atomic Configuration Writing",
+  "context": "We are designing the core configuration management layer, the system tray interaction, and the multi-CLI hot-switching mechanics for OMNIX DevFlow.",
+  "options_considered": [
+    "Write configuration files directly to user home directories on demand, using generic text replacement.",
+    "Implement a robust SQLite-backed configuration registry with: (1) 50+ pre-configured provider templates, (2) an Atomic Writing Service (temp file + rename swap) to prevent corruption, (3) a system tray native menu listener for background profile switching, and (4) bidirectional MCP/Skill syncing across active CLI configuration files."
+  ],
+  "chosen_option": "Implement a robust SQLite-backed configuration registry with 50+ presets, Atomic Writing Service, system tray native switcher, and bidirectional MCP/Skill syncing.",
+  "reasoning": [
+    "Atomic Writing: Directly overwriting active CLI configurations (like Claude Desktop's config.json or Claude Code's shell configs) can corrupt files if the app crashes mid-write. Writing to a temp file first and performing a native OS rename ensures atomic operations.",
+    "System Tray: Providing a background daemon in the tray (utilizing Tauri's SystemTray API) enables developers to swap profiles (e.g. from Anthropic to SiliconFlow DeepSeek) in less than a second without breaking their terminal flow.",
+    "Preset Directory: Built-in configuration maps for 50+ endpoints (including local Ollama, SiliconFlow, volcanengine, OpenRouter, AWS Bedrock, etc.) minimizes setup friction."
+  ],
+  "tradeoffs": [
+    "Managing multiple CLI config schemas (JSON for Claude Desktop, dotenv files for custom CLIs) requires writing individual parser/generator adapters, which increases code complexity but yields a seamless experience."
+  ],
+  "impact_scope": [
+    "Database schema layer (providers, MCP, usage logs)",
+    "System tray module (Rust native event dispatcher)",
+    "Config manager service (atomic writer, schemas parser)"
+  ],
+  "future_risks": [
+    "Race conditions if the user edits CLI configurations externally: mitigated by implementing a File Watcher or reloading live configurations before writing."
+  ],
+  "timestamp": "2026-06-03T19:39:48+08:00"
+}

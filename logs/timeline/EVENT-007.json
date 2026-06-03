@@ -1,0 +1,11 @@
+{
+  "event_id": "EVENT-007",
+  "event_type": "ARCHITECTURE_UPDATED",
+  "agent": "Antigravity",
+  "summary": "Logged architectural decision DEC-005 regarding unified provider registry, tray switching, and atomic configuration writes.",
+  "related_entities": [
+    "DEC-005",
+    "TASK-001"
+  ],
+  "timestamp": "2026-06-03T19:39:48+08:00"
+}

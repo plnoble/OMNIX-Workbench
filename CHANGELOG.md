@@ -16,7 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Created/Updated Decision Log [DEC-002](file:///d:/Agent/Project/OMNIX-Development%20Tools/logs/decisions/DEC-002.json) detailing integration designs for Cherry Studio's features: RAG Embeddings, Translation, Model Services, and Floating Lookup Helper.
 - Created Decision Log [DEC-003](file:///d:/Agent/Project/OMNIX-Development%20Tools/logs/decisions/DEC-003.json) detailing native system-wide shortcut hooks, active model retrieval, and local hardware auto-detection recommendation engine.
 - Completed research on reference library **cc-switch**.
-- Created/Updated Decision Log [DEC-004](file:///d:/Agent/Project/OMNIX-Development%20Tools/logs/decisions/DEC-004.json) detailing App Client update verification and global AI Agent CLI (e.g. Claude Code, Gemini CLI, Codex, OpenCode, Hermes) version checking and one-click cloud updates, incorporating cc-switch architecture patterns.
+- Created/Updated Decision Log [DEC-004](file:///d:/Agent/Project/OMNIX-Development%20Tools/logs/decisions/DEC-004.json) detailing App Client update verification and global AI Agent CLI version checking and one-click cloud updates.
+- Created Decision Log [DEC-005](file:///d:/Agent/Project/OMNIX-Development%20Tools/logs/decisions/DEC-005.json) detailing unified multi-CLI provider management, 50+ presets, atomic configuration writes, and background system tray quick-switching.
 
 ### Changed
 - Translated the [implementation_plan.md](file:///C:/Users/87953/.gemini/antigravity/brain/3f914f04-1d71-4ba6-8ae2-d68b38776171/implementation_plan.md) to Chinese.
