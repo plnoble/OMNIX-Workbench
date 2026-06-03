@@ -1,25 +1,26 @@
 {
   "decision_id": "DEC-004",
-  "topic": "Application and CLI Hot-Update and Version Control System",
-  "context": "We are designing the client auto-update engine and local CLI tool version detection system for OMNIX DevFlow.",
+  "topic": "Application and External AI Agent CLI Hot-Update and Version Control System",
+  "context": "We researched the third reference library, cc-switch, to design our AI Agent CLI Control Center (for tools like Claude Code, Gemini CLI, Codex, OpenCode, and Hermes).",
   "options_considered": [
-    "Require users to manually re-download the desktop application and CLI binaries from GitHub.",
-    "Implement an integrated Auto-Updater Service that checks a central remote manifest, fetches delta/patch releases, signature-verifies download payloads, and performs silent background hot-swaps for both the main client and internal CLI scripts (skills)."
+    "Implement a basic shell execution dashboard that runs user-provided upgrade command strings.",
+    "Implement a structured version detection and one-click cloud update manager using: (1) PATH-based probe runners to detect local CLI versions, (2) registry query adapters for NPM, PyPI, and GitHub APIs to get remote versions, and (3) a silent native sub-process builder to execute installer scripts securely."
   ],
-  "chosen_option": "Implement an integrated Auto-Updater Service with signature verification for the application client, and a dynamic semver comparison system for internal CLI scripts.",
+  "chosen_option": "Implement a structured version detection and one-click cloud update manager with registry adapters and silent process execution.",
   "reasoning": [
-    "For the App Client: If we choose Tauri, we will leverage the native signature-verified Tauri auto-updater. If Electron, we will use electron-updater. Both pull from a central manifest file (e.g., update.json).",
-    "For CLIs / Skills: Because skills are plain folders with metadata files (e.g. SKILL.md containing a version string), we can easily compare local semver against the remote repository version via HTTP and trigger background node/python package manager installations (like bun or uv) or pull git delta patches to execute silent hot-updates."
+    "Scanning version output (running '{cli} --version') in PATH is the most reliable way to verify local CLI presence without assumptions.",
+    "Using specific API adapters for NPM (registry.npmjs.org), PyPI, and GitHub Releases is the industry standard to retrieve remote versions safely without HTML scraping.",
+    "Executing updates via silent native background tasks (using tokio::process in Tauri or child_process in Electron) with CREATE_NO_WINDOW on Windows keeps the UI smooth and provides clean error logging back to the user."
   ],
   "tradeoffs": [
-    "Silent background updates require user consent or configurations to avoid disrupting developer workflows during critical coding tasks."
+    "Querying public registries might fail under restricted offline corporate environments; we will support offline caching and network timeouts gracefully."
   ],
   "impact_scope": [
-    "System lifecycle (auto-update service, security check)",
-    "Skill/CLI manager (version checks and git-pull updater)"
+    "CLI Manager module (Rust backend or Node service layer)",
+    "UI Settings and Tool Dashboard (showing update badges and install buttons)"
   ],
   "future_risks": [
-    "Network restrictions blocking update server endpoints: mitigated by supporting multiple mirror registries (e.g., GitHub releases and CNB/Gitee mirrors)."
+    "Varying command syntax formats (e.g. some CLIs return 'version is x.y' while others return 'x.y') require robust regex parsing to prevent extraction crashes."
   ],
-  "timestamp": "2026-06-03T17:19:23+08:00"
+  "timestamp": "2026-06-03T17:21:02+08:00"
 }
