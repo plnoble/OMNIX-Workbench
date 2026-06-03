@@ -1,0 +1,10 @@
+{
+  "event_id": "EVENT-001",
+  "event_type": "TASK_STARTED",
+  "agent": "Antigravity",
+  "summary": "Started task TASK-001: Collaborative Research and Concept Definition for OMNIX Dev Tool",
+  "related_entities": [
+    "TASK-001"
+  ],
+  "timestamp": "2026-06-03T16:23:09+08:00"
+}
