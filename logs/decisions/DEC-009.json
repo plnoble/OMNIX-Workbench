@@ -1,0 +1,27 @@
+{
+  "decision_id": "DEC-009",
+  "topic": "OMNIX Local Kanban Board, Workspace Isolation, and Multiplexed Squads Router",
+  "context": "We researched the fifth reference library, multica, to design a task-centric managed agent workflow, multi-workspace isolation, and agent squad routing.",
+  "options_considered": [
+    "Run agents purely inside conversation tabs, requiring the developer to copy-paste prompts and manually watch raw console outputs.",
+    "Implement: 1. A local Task Kanban Board mapping issues through states (Todo -> In Progress -> Confirming -> Done), rendering execution timeline trees inside issue cards; 2. Strict Workspace-level isolation protecting paths, SQLite records, and environment variables; 3. Squads multiplexed router where a Leader agent parses, delegates, and coordinates subtasks to concurrent Teammates."
+  ],
+  "chosen_option": "Implement local Kanban workspace, strict project isolation, and Squads multi-agent routing.",
+  "reasoning": [
+    "Task-Centric Managed Flow: Modern software engineering is organized around tickets/tasks. Moving from 'chat sessions' to 'Kanban issues' lets developers assign work to AI agents and walk away, returning only when the Status Dock turns blue (Confirming) or green (Done).",
+    "Zero Cross-Project Leakage: Working on multiple client projects concurrently requires strict security. Restricting agents to a sandboxed workspace path and setting specific workspace-level database scopes prevents leaking API keys or files across project directories.",
+    "Squad Routing Orchestration: Complex refactoring tasks require modifying different layers (e.g. Frontend React UI vs Backend LibSQL). Assigning an issue to a Squad allows a smart Leader agent (e.g. Sonnet-based Claude Code) to route specific components to specialized sub-agents running in parallel, maximizing speed."
+  ],
+  "tradeoffs": [
+    "Running multiple local CLI agents concurrently will stress system RAM and CPU: resolved by setting strict Max Concurrent Agent limits and enforcing the Rust Idle Reaper (reclaiming zombified agent RAM after customizable inactivity)."
+  ],
+  "impact_scope": [
+    "Frontend board rendering (React Kanban board, issue detail drawer)",
+    "Tauri workdir executor (environment variable injector, workspace boundaries)",
+    "Squad orchestrator (sub-process router, mailbox buffer)"
+  ],
+  "future_risks": [
+    "High concurrent CPU usage during parallel agent executions: mitigated by queuing agent tasks when CPU load exceeds a customizable threshold (e.g. 85%)."
+  ],
+  "timestamp": "2026-06-03T20:09:13+08:00"
+}

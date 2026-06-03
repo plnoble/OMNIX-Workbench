@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Created Decision Log [DEC-006](file:///d:/Agent/Project/OMNIX-Development%20Tools/logs/decisions/DEC-006.json) detailing ACP JSON-RPC adapter, structured Permission Guard, and dynamic CSS/Theme Engine integration.
 - Created Decision Log [DEC-007](file:///d:/Agent/Project/OMNIX-Development%20Tools/logs/decisions/DEC-007.json) detailing comprehensive specifications for multi-agent Hub diagnostics/repair, Cron background/remote access, magnetic Status Dock, and Rust idle reapers.
 - Created Decision Log [DEC-008](file:///d:/Agent/Project/OMNIX-Development%20Tools/logs/decisions/DEC-008.json) detailing sandboxed Agent installation directories, target CLI prioritization matrix, and headless bootstrap bypass strategies for Claude Code.
+- Completed research on reference library **multica**.
+- Created Decision Log [DEC-009](file:///d:/Agent/Project/OMNIX-Development%20Tools/logs/decisions/DEC-009.json) detailing local Kanban board pipeline, strict workspace directories isolation, and multiplexed Squads multi-agent routing.
 
 ### Changed
 - Translated the [implementation_plan.md](file:///C:/Users/87953/.gemini/antigravity/brain/3f914f04-1d71-4ba6-8ae2-d68b38776171/implementation_plan.md) to Chinese.
