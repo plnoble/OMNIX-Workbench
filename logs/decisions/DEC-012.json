@@ -1,0 +1,29 @@
+{
+  "decision_id": "DEC-012",
+  "topic": "OMNIX DevFlow Value-added Optimizations: Hybrid Retrieval, Incremental Linting, Lazy Topological Scanning, and Spotlight Overlays",
+  "context": "With no more reference repositories left, we finalized the implementation plan and designed four high-value optimizations to elevate the user experience of OMNIX DevFlow.",
+  "options_considered": [
+    "Proceed with the basic feature set mapped directly from reference libraries without further enhancements.",
+    "Propose and specify 4 key optimization mechanisms: 1. Hybrid Code Search (LibSQL FTS5 BM25 + Vector RRF); 2. Incremental AI Code Review Linting on Diff; 3. Incremental Tree-sitter hash fingerprinting + Lazy LLM Semantic summaries; 4. Tauri Spotlight clipboard overlay to prevent development context switching."
+  ],
+  "chosen_option": "Implement all 4 value-added optimizations (Hybrid Search, AI Diff review, Lazy summaries, and Spotlight overlay).",
+  "reasoning": [
+    "Search accuracy: Code search requires exact matches for API calls but semantic understanding for logic. Hybrid LibSQL (BM25 + Vector) with RRF is state-of-the-art for this.",
+    "Bypassing context switches: Using global keyboard shortcuts and cursor-positioned overlays (Spotlight style) prevents breaking developer focus compared to traditional modal dialogs.",
+    "Resource and Cost Efficiency: Big codebases exhaust API tokens and CPU power. Incremental hash fingerprinting with Tree-sitter edge compilation first, followed by lazy semantic summaries, offers a lightning-fast UI response.",
+    "Double Guardrails: In-line review of generated diffs by a secondary model detects logic traps that dependencies graph mapping alone might miss."
+  ],
+  "tradeoffs": [
+    "Implementing D3.js topologies, Rust bindings, and multiple model routines increases initial UI/Backend complexity: resolved by scheduling modular development milestones."
+  ],
+  "impact_scope": [
+    "Tauri main framework (Spotlight overlays, global hotkey registrar)",
+    "LibSQL database driver (FTS5 + Vector configurations, RRF merger)",
+    "Tauri codebase scanner (file hash watchers)",
+    "Frontend Code Diff View"
+  ],
+  "future_risks": [
+    "Heavy FTS5 index updates during massive git branch checkouts: mitigated by pausing file-system watchers during active git transactions."
+  ],
+  "timestamp": "2026-06-03T20:43:58+08:00"
+}
