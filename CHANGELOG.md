@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Created Decision Log [DEC-001](file:///d:/Agent/Project/OMNIX-Development%20Tools/logs/decisions/DEC-001.json) outlining architectural alignment and adaptations for OMNIX DevFlow.
 - Completed research on reference library **Cherry Studio**.
 - Created/Updated Decision Log [DEC-002](file:///d:/Agent/Project/OMNIX-Development%20Tools/logs/decisions/DEC-002.json) detailing integration designs for Cherry Studio's features: RAG Embeddings, Translation, Model Services, and Floating Lookup Helper.
+- Created Decision Log [DEC-003](file:///d:/Agent/Project/OMNIX-Development%20Tools/logs/decisions/DEC-003.json) detailing native system-wide shortcut hooks, active model retrieval, and local hardware auto-detection recommendation engine.
 
 ### Changed
 - Translated the [implementation_plan.md](file:///C:/Users/87953/.gemini/antigravity/brain/3f914f04-1d71-4ba6-8ae2-d68b38776171/implementation_plan.md) to Chinese.
@@ -21,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Planned (Under Discussion)
 - Name definition for the OMNIX personal development tool (Resolved: **OMNIX DevFlow**).
-- Scope definition of the floating lookup/select-text helper (App-only vs. Global OS).
+- Scope and interaction method of the floating lookup/select-text helper (Resolved: **System-wide global** shortcut/clipboard hook).
 - User review of Tauri vs Electron framework for OMNIX DevFlow.
 - Online sharing architecture mechanism.
 - Proceeding to the next reference library supplied by the user.

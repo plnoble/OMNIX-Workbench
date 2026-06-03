@@ -1,0 +1,11 @@
+{
+  "event_id": "EVENT-004",
+  "event_type": "ARCHITECTURE_UPDATED",
+  "agent": "Antigravity",
+  "summary": "Logged architectural decision DEC-003 regarding global shortcut hooks and hardware-aware recommendation engine.",
+  "related_entities": [
+    "DEC-003",
+    "TASK-001"
+  ],
+  "timestamp": "2026-06-03T16:59:57+08:00"
+}
