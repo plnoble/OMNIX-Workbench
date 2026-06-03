@@ -1,0 +1,27 @@
+{
+  "decision_id": "DEC-014",
+  "topic": "OMNIX DevFlow Contextual Onboarding, Micro-help Tooltips, and Interactive Tips Deck",
+  "context": "We agreed on designing a comprehensive system of interactive help guides, micro-tooltips, and randomized tip widgets to ensure all hidden features and advanced engineering tricks (like memory distillation or idle reaping) are easily discoverable by the user.",
+  "options_considered": [
+    "Rely solely on external documentation (README/Wiki) for explanation of features.",
+    "Implement an in-app Contextual Tips System consisting of: 1. Progressive onboarding overlays for first-time features; 2. Inline hover markdown tooltips for settings (with detailed technical notes); 3. Collapsible 'OMNIX Tips' dashboard widgets with hotkeys and tricks."
+  ],
+  "chosen_option": "Implement the in-app Contextual Tips System with progressive overlays, settings tooltips, and dashboard tips widgets.",
+  "reasoning": [
+    "Discoverability of Deep Features: Complex operations like 'Fusion Furnace split-diff preview' or 'Anti-failure memory injection via CLAUDE.md' are highly custom and risk being underutilized if hidden behind standard menus.",
+    "Zero Friction: Hover tooltips with markdown rendering provide instant, inline explanations without forcing the developer to leave the configuration view.",
+    "Workflow Integration: Progressive tours guide the user step-by-step through a complete dev loop (Interactive Prompt -> Code Generation -> AST Link Verification -> Review Diff -> Experience Distillation) during their first session."
+  ],
+  "tradeoffs": [
+    "First-time overlay guides can sometimes feel intrusive if they block usage. Resolved by allowing immediate 'Skip and Never Show Again' options, and storing onboarding states in the local SQLite database."
+  ],
+  "impact_scope": [
+    "Frontend UI Components (InfoTooltip, WelcomeTourOverlay, TipsWidget)",
+    "SQLite Database Schema (onboarding status table, visited states)",
+    "Settings Panel Layout (inline helper icons)"
+  ],
+  "future_risks": [
+    "Keeping UI guides in sync with feature updates: mitigated by writing guide content as structured JSON strings fetched from local asset bundles rather than hardcoding them into UI component markup."
+  ],
+  "timestamp": "2026-06-03T20:55:00+08:00"
+}
