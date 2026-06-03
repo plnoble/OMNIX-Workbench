@@ -1,0 +1,29 @@
+{
+  "decision_id": "DEC-010",
+  "topic": "OMNIX Evolutionary Skill Engine, Interactive Prompt Bootstrap, and Anti-Failure Persistent Memory",
+  "context": "We researched the sixth reference library, the local 'Skill Library' project, to detail the self-evolving agent workflow, memory distillation, and skills fusion sandbox for OMNIX DevFlow.",
+  "options_considered": [
+    "Run external CLI agents with basic system prompts, allowing automatic execution without confirmation, and no mechanism to learn from past errors.",
+    "Implement: 1. Strict Interactive Prompt Bootstrap (never run automatically, prompt preview always requires manual confirm); 2. Enforced Agent Guidelines & Guardrails; 3. Self-evolving Skill Engine with D3.js topological view, Split Diff comparison, and a Public Skill Market; 4. Anti-Failure Persistent Memory Bank (ai-memory.json) which injects history lessons into CLIs (via CLAUDE.md/instructions) and offers post-task Experience Distillation."
+  ],
+  "chosen_option": "Implement Interactive Bootstrap, Enforced Guidelines, Self-evolving Skill Engine, and Anti-Failure Memory with Distillation.",
+  "reasoning": [
+    "Operator Control: Developers must have the final say on the initial instructions fed to an AI. Visualizing and editing the generated prompt before execution avoids wasted API tokens and unintended file changes.",
+    "Guidelines Enforcement: Infusing agents with developer standards (e.g. documentation integrity, lint checks before commit) guarantees high-quality, standardized outputs.",
+    "Anti-Failure Memory: Humans learn from mistakes; agents must too. Saving project-specific traps (e.g. 'Never use API version X in this repo') in `ai-memory.json` and injecting them into the agent's startup instructions prevents repeating costly coding errors.",
+    "Skill Evolution & Market: Allowing users to refine, merge (using Visual Diff), and dynamically combine skills for specialized tasks—coupled with a public directory for sharing—creates a powerful compound value system for developers."
+  ],
+  "tradeoffs": [
+    "Pre-seeding memory files (like CLAUDE.md) might clash with manual user edits: resolved by using structured comment blocks (`# OMNIX MEMORY - DO NOT EDIT`) inside the file to isolate and update memory dynamically."
+  ],
+  "impact_scope": [
+    "Tauri CLI bridge (pre-flight instructions injector, CLAUDE.md/system instructions writer)",
+    "Memory manager (experience distillation parser, ai-memory.json database)",
+    "Frontend workspace (topological graph, Split Diff view, skill market panel)",
+    "Issue board"
+  ],
+  "future_risks": [
+    "Over-distillation generating redundant or contradictory memory entries: mitigated by providing a manual management board to delete, edit, or merge memory items."
+  ],
+  "timestamp": "2026-06-03T20:20:32+08:00"
+}
