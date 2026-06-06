@@ -69,6 +69,7 @@ export function MemoryHub() {
       setConversations(list);
       if (list.length > 0 && !selectedConvId) {
         setSelectedConvId(list[0].id);
+        handleSelectConversation(list[0].id);
       }
     } catch (e) {
       console.error("Failed to load conversations:", e);
@@ -122,7 +123,6 @@ export function MemoryHub() {
   };
 
   const handleSelectConversation = async (id: string) => {
-    setSelectedConvId(id);
     setDistilledSuggestion(null);
     
     // Preview mock conversation logs
@@ -147,11 +147,8 @@ export function MemoryHub() {
     }
   };
 
-  useEffect(() => {
-    if (selectedConvId) {
-      handleSelectConversation(selectedConvId);
-    }
-  }, [selectedConvId]);
+  // Note: Removed redundant useEffect([selectedConvId]) that called handleSelectConversation
+  // which itself calls setSelectedConvId — creating a cycle risk. Selection is handled by onClick.
 
   const handleDistillExperience = async () => {
     if (!selectedConvId) return;
@@ -363,7 +360,11 @@ export function MemoryHub() {
               <select 
                 className="form-input" 
                 value={selectedConvId} 
-                onChange={(e) => setSelectedConvId(e.target.value)}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setSelectedConvId(val);
+                  handleSelectConversation(val);
+                }}
               >
                 {conversations.map(c => (
                   <option key={c.id} value={c.id}>

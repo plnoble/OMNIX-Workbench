@@ -30,4 +30,8 @@ tower-http = { version = "0.5", features = ["cors"] }
 dirs = "5"
 which = "6"
 futures = "0.3"
+chrono = "0.4"
+portable-pty = "0.8"
+strip-ansi-escapes = "0.2"
+
 

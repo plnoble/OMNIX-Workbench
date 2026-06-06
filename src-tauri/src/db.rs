@@ -9,7 +9,7 @@ pub struct DbManager {
 impl DbManager {
     pub fn new() -> Self {
         // Resolve home directory path on Windows / Linux
-        let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("C:\\Users\\87953"));
+        let home_dir = dirs::home_dir().expect("Failed to determine home directory. Cannot initialize database.");
         let mut omnix_dir = home_dir.clone();
         omnix_dir.push(".omnix");
         
@@ -33,7 +33,9 @@ impl DbManager {
     }
 
     pub fn get_connection(&self) -> Result<Connection> {
-        Connection::open(&self.db_path)
+        let conn = Connection::open(&self.db_path)?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        Ok(conn)
     }
 
     pub fn init_schema(&self) -> Result<()> {
@@ -122,7 +124,75 @@ impl DbManager {
                 api_host TEXT NOT NULL,
                 target_model TEXT NOT NULL,
                 is_active INTEGER NOT NULL DEFAULT 0,
+                agent_name TEXT DEFAULT '',
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )?;
+
+        // Check if agent_name column exists in agent_accounts, if not add it
+        let has_agent_name = {
+            let mut stmt = conn.prepare("PRAGMA table_info(agent_accounts)")?;
+            let mut rows = stmt.query([])?;
+            let mut found = false;
+            while let Some(row) = rows.next()? {
+                let name: String = row.get(1)?;
+                if name == "agent_name" {
+                    found = true;
+                    break;
+                }
+            }
+            found
+        };
+        if !has_agent_name {
+            let _ = conn.execute("ALTER TABLE agent_accounts ADD COLUMN agent_name TEXT DEFAULT ''", []);
+        }
+
+        // 6c. Custom Models Table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS custom_models (
+                name TEXT PRIMARY KEY,
+                source TEXT NOT NULL DEFAULT 'API',
+                has_vision INTEGER NOT NULL DEFAULT 0,
+                has_audio INTEGER NOT NULL DEFAULT 0,
+                has_reasoning INTEGER NOT NULL DEFAULT 0,
+                has_coding INTEGER NOT NULL DEFAULT 0,
+                has_long_context INTEGER NOT NULL DEFAULT 0,
+                has_tool_use INTEGER NOT NULL DEFAULT 0,
+                has_embedding INTEGER NOT NULL DEFAULT 0,
+                has_speedy INTEGER NOT NULL DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )?;
+
+        // 6d. Model Platforms Table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS model_platforms (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                api_type TEXT NOT NULL, -- 'openai', 'anthropic', 'ollama'
+                api_key TEXT NOT NULL,
+                api_address TEXT NOT NULL,
+                is_enabled INTEGER NOT NULL DEFAULT 1,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )?;
+
+        // 6e. Platform Models Table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS platform_models (
+                id TEXT PRIMARY KEY, -- platform_id + \":\" + model_name
+                platform_id TEXT NOT NULL,
+                model_name TEXT NOT NULL,
+                has_vision INTEGER NOT NULL DEFAULT 0,
+                has_audio INTEGER NOT NULL DEFAULT 0,
+                has_reasoning INTEGER NOT NULL DEFAULT 0,
+                has_coding INTEGER NOT NULL DEFAULT 1,
+                is_enabled INTEGER NOT NULL DEFAULT 1,
+                status TEXT NOT NULL DEFAULT 'unknown',
+                FOREIGN KEY(platform_id) REFERENCES model_platforms(id) ON DELETE CASCADE
             )",
             [],
         )?;
@@ -137,6 +207,35 @@ impl DbManager {
                 order_num INTEGER NOT NULL,
                 dependencies TEXT NOT NULL DEFAULT '[]',
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )?;
+
+        // 8. Cron Tasks Table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS cron_tasks (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                schedule TEXT NOT NULL,
+                agent_name TEXT NOT NULL,
+                args TEXT NOT NULL,
+                workspace_dir TEXT NOT NULL,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                last_run DATETIME,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )?;
+
+        // 9. Cron Runs Table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS cron_runs (
+                id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                log_path TEXT NOT NULL,
+                started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                finished_at DATETIME
             )",
             [],
         )?;
@@ -156,6 +255,12 @@ impl DbManager {
         // Seed default conversations if empty
         self.seed_default_conversations(&conn)?;
 
+        // Seed default cron tasks if empty
+        self.seed_default_cron_tasks(&conn)?;
+
+        // Seed default platforms if empty
+        self.seed_default_platforms(&conn)?;
+
         Ok(())
     }
 
@@ -166,77 +271,97 @@ impl DbManager {
             return Ok(());
         }
 
-        // Insert a mock conversation
-        conn.execute(
-            "INSERT INTO conversations (id, title, workspace_path, active_agent)
-             VALUES (?1, ?2, ?3, ?4)",
-            params!["mock_sess_cors", "会话 #1: Web 前端 CORS 调试", "d:/Agent/Project/MyWebDemo", "Claude Code"],
-        )?;
+        conn.execute("BEGIN TRANSACTION", [])?;
 
-        // Insert messages showing a CORS issue being discussed and fixed
-        let messages = vec![
-            ("msg_1", "user", "我遇到了预检请求(Preflight)拦截错误，CORS 报错，说 Origin 不能是通配符 *，因为 credentials 设为了 include。"),
-            ("msg_2", "assistant", "对的，当在 fetch 中设置 `credentials: 'include'` 时，浏览器的安全策略要求后端响应的 CORS 头 `Access-Control-Allow-Origin` 必须指定明确的域名（比如 `http://localhost:3000`），而不能是通配符 `*`。此外，`Access-Control-Allow-Credentials` 必须设为 `true`。"),
-            ("msg_3", "user", "明白了，修改了后端的 Access-Control-Allow-Origin 为具体的请求源后成功了。"),
-            ("msg_4", "assistant", "太棒了！这是一个非常经典的 Web 踩坑点。在处理跨域凭证传递时，切记不要使用 *。"),
-        ];
-
-        for (msg_id, role, content) in messages {
+        let res = (|| -> Result<()> {
+            // Insert a mock conversation
             conn.execute(
-                "INSERT INTO messages (id, conversation_id, role, content)
+                "INSERT INTO conversations (id, title, workspace_path, active_agent)
                  VALUES (?1, ?2, ?3, ?4)",
-                params![msg_id, "mock_sess_cors", role, content],
+                params!["mock_sess_cors", "会话 #1: Web 前端 CORS 调试", "d:/Agent/Project/MyWebDemo", "Claude Code"],
             )?;
-        }
 
-        // Insert another mock conversation for a Tokio lock deadlock
-        conn.execute(
-            "INSERT INTO conversations (id, title, workspace_path, active_agent)
-             VALUES (?1, ?2, ?3, ?4)",
-            params!["mock_sess_lock", "会话 #2: Rust Tokio 异步死锁排查", "d:/Agent/Project/MyRustService", "Google Antigravity"],
-        )?;
+            // Insert messages showing a CORS issue being discussed and fixed
+            let messages = vec![
+                ("msg_1", "user", "我遇到了预检请求(Preflight)拦截错误，CORS 报错，说 Origin 不能是通配符 *，因为 credentials 设为了 include。"),
+                ("msg_2", "assistant", "对的，当在 fetch 中设置 `credentials: 'include'` 时，浏览器的安全策略要求后端响应的 CORS 头 `Access-Control-Allow-Origin` 必须指定明确的域名（比如 `http://localhost:3000`），而不能是通配符 `*`。此外，`Access-Control-Allow-Credentials` 必须设为 `true`。"),
+                ("msg_3", "user", "明白了，修改了后端的 Access-Control-Allow-Origin 为具体的请求源后成功了。"),
+                ("msg_4", "assistant", "太棒了！这是一个非常经典的 Web 踩坑点。在处理跨域凭证传递时，切记不要使用 *。"),
+            ];
 
-        let messages_lock = vec![
-            ("msg_l1", "user", "我的 Rust 异步服务卡住了，日志停在一个 await 处。我用了 std::sync::Mutex。"),
-            ("msg_l2", "assistant", "在异步任务中跨越 `.await` 点持有 `std::sync::MutexGuard` 会导致线程被阻塞或者出现 Send 校验失败、死锁。你应该使用 `tokio::sync::Mutex`，或者用一个花括号作用域，在 `.await` 之前显式 drop 掉 `MutexGuard`。"),
-            ("msg_l3", "user", "我用 tokio::sync::Mutex 替换了 std::sync::Mutex，并把持有锁的代码段包在了作用域内。重新测试，程序不再卡死了。"),
-            ("msg_l4", "assistant", "完美！在异步上下文中，一定要防范同步锁跨 await 点的情况，否则很容易造成死锁崩溃。"),
-        ];
+            for (msg_id, role, content) in messages {
+                conn.execute(
+                    "INSERT INTO messages (id, conversation_id, role, content)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![msg_id, "mock_sess_cors", role, content],
+                )?;
+            }
 
-        for (msg_id, role, content) in messages_lock {
+            // Insert another mock conversation for a Tokio lock deadlock
             conn.execute(
-                "INSERT INTO messages (id, conversation_id, role, content)
+                "INSERT INTO conversations (id, title, workspace_path, active_agent)
                  VALUES (?1, ?2, ?3, ?4)",
-                params![msg_id, "mock_sess_lock", role, content],
+                params!["mock_sess_lock", "会话 #2: Rust Tokio 异步死锁排查", "d:/Agent/Project/MyRustService", "Google Antigravity"],
             )?;
-        }
 
-        Ok(())
+            let messages_lock = vec![
+                ("msg_l1", "user", "我的 Rust 异步服务卡住了，日志停在一个 await 处。我用了 std::sync::Mutex。"),
+                ("msg_l2", "assistant", "在异步任务中跨越 `.await` 点持有 `std::sync::MutexGuard` 会导致线程被阻塞或者出现 Send 校验失败、死锁。你应该使用 `tokio::sync::Mutex`，或者用一个花括号作用域，在 `.await` 之前显式 drop 掉 `MutexGuard`。"),
+                ("msg_l3", "user", "我用 tokio::sync::Mutex 替换了 std::sync::Mutex，并把持有锁的代码段包在了作用域内。重新测试，程序不再卡死了。"),
+                ("msg_l4", "assistant", "完美！在异步上下文中，一定要防范同步锁跨 await 点的情况，否则很容易造成死锁崩溃。"),
+            ];
+
+            for (msg_id, role, content) in messages_lock {
+                conn.execute(
+                    "INSERT INTO messages (id, conversation_id, role, content)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![msg_id, "mock_sess_lock", role, content],
+                )?;
+            }
+            Ok(())
+        })();
+
+        match res {
+            Ok(_) => {
+                conn.execute("COMMIT", [])?;
+                Ok(())
+            }
+            Err(e) => {
+                let _ = conn.execute("ROLLBACK", []);
+                Err(e)
+            }
+        }
     }
 
     fn seed_default_accounts(&self, conn: &Connection) -> Result<()> {
-        let mut stmt = conn.prepare("SELECT COUNT(*) FROM agent_accounts")?;
-        let count: i64 = stmt.query_row([], |r| r.get(0))?;
-        if count > 0 {
-            return Ok(());
-        }
-
         // Fetch current setting configurations to establish default profile
         let api_key = self.get_setting("api_key")?.unwrap_or_default();
         let api_host = self.get_setting("api_host")?.unwrap_or_else(|| "https://api.openai.com/v1".to_string());
         
-        conn.execute(
-            "INSERT INTO agent_accounts (id, account_name, api_key, api_host, target_model, is_active)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params!["default_profile", "默认账户 (Default Profile)", api_key, api_host, "deepseek-chat", 1],
-        )?;
+        let agents_to_seed = vec![
+            ("claude_code_default", "Claude Code 默认账户", "", "https://api.anthropic.com/v1", "claude-3-5-sonnet", "Claude Code"),
+            ("gemini_cli_default", "Gemini CLI 默认账户", "", "https://generativelanguage.googleapis.com", "gemini-2.0-flash", "Gemini CLI"),
+            ("codex_default", "Codex 默认账户", &api_key, &api_host, "gpt-4o", "Codex"),
+            ("qwen_code_default", "Qwen Code 默认账户", "", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus", "Qwen Code"),
+            ("github_copilot_cli_default", "GitHub Copilot CLI 默认账户", "", "https://api.github.com", "gpt-4o", "GitHub Copilot CLI"),
+            ("google_antigravity_default", "Google Antigravity 默认账户", "", "https://api.openai.com/v1", "gpt-4o", "Google Antigravity"),
+            ("opencode_default", "OpenCode 默认账户", "", "https://api.openai.com/v1", "gpt-4o", "OpenCode"),
+        ];
 
-        // Seed a corporate/alternative mock account for switcher demonstration
-        conn.execute(
-            "INSERT INTO agent_accounts (id, account_name, api_key, api_host, target_model, is_active)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params!["company_pro", "企业专线 (High-Capacity Pro)", "sk-corp-unlimited-token-key-profile", "https://api.openai.com/v1", "gpt-4o", 0],
-        )?;
+        for (id, name, key, host, model, agent_name) in agents_to_seed {
+            let exists: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM agent_accounts WHERE agent_name = ?1",
+                params![agent_name],
+                |r| r.get(0)
+            )?;
+            if exists == 0 {
+                conn.execute(
+                    "INSERT INTO agent_accounts (id, account_name, api_key, api_host, target_model, agent_name, is_active)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1)",
+                    params![id, name, key, host, model, agent_name],
+                )?;
+            }
+        }
 
         Ok(())
     }
@@ -284,15 +409,12 @@ impl DbManager {
     }
 
     fn seed_default_skills(&self, conn: &Connection) -> Result<()> {
-        // Check if skills table is empty
-        let mut stmt = conn.prepare("SELECT COUNT(*) FROM skills")?;
-        let count: i64 = stmt.query_row([], |r| r.get(0))?;
-        if count > 0 {
-            return Ok(());
-        }
 
         // Get or create the local ~/.omnix/skills directory
-        let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("C:\\Users\\87953"));
+        let home_dir = match dirs::home_dir() {
+            Some(h) => h,
+            None => return Ok(()), // Skip seeding if no home dir
+        };
         let mut skills_dir = home_dir.clone();
         skills_dir.push(".omnix");
         skills_dir.push("skills");
@@ -355,6 +477,11 @@ impl DbManager {
         ];
 
         for (name, desc, deps, core, min, comp) in default_skills {
+            let mut check_stmt = conn.prepare("SELECT COUNT(*) FROM skills WHERE name = ?1")?;
+            let exists_count: i64 = check_stmt.query_row(params![name], |r| r.get(0))?;
+            if exists_count > 0 {
+                continue;
+            }
             // Base path is ~/.omnix/skills/<name>
             let mut base_path = skills_dir.clone();
             base_path.push(name);
@@ -403,6 +530,27 @@ impl DbManager {
             )?;
         }
 
+        // Generate a random remote_token if not set
+        let mut stmt = conn.prepare("SELECT value FROM settings WHERE key = 'remote_token'")?;
+        let exists = stmt.exists([]).unwrap_or(false);
+        if !exists {
+            let token = {
+                use std::collections::hash_map::DefaultHasher;
+                use std::hash::{Hash, Hasher};
+                let mut hasher = DefaultHasher::new();
+                std::time::SystemTime::now().hash(&mut hasher);
+                std::thread::current().id().hash(&mut hasher);
+                let h1 = hasher.finish();
+                std::time::SystemTime::now().hash(&mut hasher);
+                let h2 = hasher.finish();
+                format!("tok_{:016x}{:016x}", h1, h2)
+            };
+            let _ = conn.execute(
+                "INSERT INTO settings (key, value) VALUES ('remote_token', ?1)",
+                params![token],
+            );
+        }
+
         Ok(())
     }
 
@@ -445,6 +593,127 @@ impl DbManager {
             Ok(None)
         }
     }
+
+    pub fn get_active_account_for_agent(&self, agent_name: &str) -> Result<Option<ActiveAccountInfo>> {
+        let conn = self.get_connection()?;
+        let mut stmt = conn.prepare("SELECT id, account_name, api_key, api_host, target_model FROM agent_accounts WHERE agent_name = ?1 AND is_active = 1 LIMIT 1")?;
+        let mut rows = stmt.query(params![agent_name])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(ActiveAccountInfo {
+                id: row.get(0)?,
+                account_name: row.get(1)?,
+                api_key: row.get(2)?,
+                api_host: row.get(3)?,
+                target_model: row.get(4)?,
+            }))
+        } else {
+            // Fallback to any active account
+            self.get_active_account()
+        }
+    }
+
+    pub fn get_account_by_id(&self, id: &str) -> Result<Option<ActiveAccountInfo>> {
+        let conn = self.get_connection()?;
+        let mut stmt = conn.prepare("SELECT id, account_name, api_key, api_host, target_model FROM agent_accounts WHERE id = ?1 LIMIT 1")?;
+        let mut rows = stmt.query(params![id])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(ActiveAccountInfo {
+                id: row.get(0)?,
+                account_name: row.get(1)?,
+                api_key: row.get(2)?,
+                api_host: row.get(3)?,
+                target_model: row.get(4)?,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn seed_default_cron_tasks(&self, conn: &Connection) -> Result<()> {
+        let mut stmt = conn.prepare("SELECT COUNT(*) FROM cron_tasks")?;
+        let count: i64 = stmt.query_row([], |r| r.get(0))?;
+        if count > 0 {
+            return Ok(());
+        }
+
+        conn.execute(
+            "INSERT INTO cron_tasks (id, title, schedule, agent_name, args, workspace_dir, is_active)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1)",
+            params![
+                "task_backup_git",
+                "代码库每 15 分钟自动 Git 增量备份",
+                "*/15 * * * *",
+                "git_manager",
+                "[\"status\"]",
+                "d:/Agent/Project/OMNIX-Development Tools"
+            ],
+        )?;
+
+        conn.execute(
+            "INSERT INTO cron_tasks (id, title, schedule, agent_name, args, workspace_dir, is_active)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1)",
+            params![
+                "task_security_scan",
+                "每日凌晨安全代码审计扫描",
+                "daily at 02:00",
+                "code_reviewer",
+                "[]",
+                "d:/Agent/Project/OMNIX-Development Tools"
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    fn seed_default_platforms(&self, conn: &Connection) -> Result<()> {
+        let mut stmt = conn.prepare("SELECT COUNT(*) FROM model_platforms")?;
+        let count: i64 = stmt.query_row([], |r| r.get(0))?;
+        if count > 0 {
+            return Ok(());
+        }
+
+        // Seed default platforms
+        let default_platforms = vec![
+            ("ollama", "Ollama", "ollama", "", "http://localhost:11434"),
+            ("deepseek", "DeepSeek", "openai", "", "https://api.deepseek.com/v1"),
+            ("siliconflow", "硅基流动 (SiliconFlow)", "openai", "", "https://api.siliconflow.cn/v1"),
+            ("openai", "OpenAI", "openai", "", "https://api.openai.com/v1"),
+            ("anthropic", "Anthropic", "anthropic", "", "https://api.anthropic.com"),
+        ];
+
+        for (id, name, api_type, api_key, api_address) in default_platforms {
+            conn.execute(
+                "INSERT INTO model_platforms (id, name, api_type, api_key, api_address, is_enabled)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 1)",
+                params![id, name, api_type, api_key, api_address],
+            )?;
+        }
+
+        // Migrate old settings if present
+        let old_key: Option<String> = conn.query_row(
+            "SELECT value FROM settings WHERE key = 'api_key'",
+            [],
+            |r| r.get(0)
+        ).ok();
+        let old_host: Option<String> = conn.query_row(
+            "SELECT value FROM settings WHERE key = 'api_host'",
+            [],
+            |r| r.get(0)
+        ).ok();
+
+        if let (Some(k), Some(h)) = (old_key, old_host) {
+            if !k.trim().is_empty() && !h.trim().is_empty() {
+                let api_type = if h.contains("anthropic") { "anthropic" } else { "openai" };
+                let _ = conn.execute(
+                    "INSERT INTO model_platforms (id, name, api_type, api_key, api_address, is_enabled)
+                     VALUES (?1, ?2, ?3, ?4, ?5, 1)",
+                    params!["imported-default", "中转网关默认配置", api_type, k, h],
+                );
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -474,8 +743,8 @@ mod tests {
         let active_acc = db.get_active_account().unwrap();
         assert!(active_acc.is_some());
         let acc = active_acc.unwrap();
-        assert_eq!(acc.id, "default_profile");
-        assert_eq!(acc.account_name, "默认账户 (Default Profile)");
+        assert_eq!(acc.id, "claude_code_default");
+        assert_eq!(acc.account_name, "Claude Code 默认账户");
 
         // Set a setting and retrieve it
         db.set_setting("test_key", "test_value").unwrap();

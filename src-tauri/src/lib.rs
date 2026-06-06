@@ -3,6 +3,9 @@ mod proxy;
 mod agent;
 mod commands;
 
+#[cfg(test)]
+mod tests;
+
 use std::sync::Arc;
 use tauri::Manager;
 
@@ -18,15 +21,40 @@ pub fn run() {
     let port_str = db.get_setting("proxy_port").unwrap_or(None).unwrap_or_else(|| "1421".to_string());
     let port = port_str.parse::<u16>().unwrap_or(1421);
     
-    let mut proxy_server = proxy::ProxyServer::new();
-    proxy_server.start(Arc::clone(&db), port);
+    let proxy_server = proxy::ProxyServer::new();
+    let proxy_state = std::sync::Mutex::new(proxy_server);
     
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(move |app| {
+            // Start the proxy server inside the Tokio runtime context
+            if let Ok(mut server) = proxy_state.lock() {
+                server.start(Arc::clone(&db), Arc::clone(&agent_manager), port);
+            }
+            
             // Share references globally as Tauri App State
-            app.manage(db);
-            app.manage(agent_manager);
+            app.manage(Arc::clone(&db));
+            app.manage(Arc::clone(&agent_manager));
+            app.manage(proxy_state);
+
+            // Start background tasks once the Tokio runtime is fully initialized by Tauri
+            agent_manager.start_services();
+
+            // Initialize OMNIX Status Dock floating window
+            let _status_dock = tauri::WebviewWindowBuilder::new(
+                app,
+                "status-dock",
+                tauri::WebviewUrl::App("/?window=status-dock".into())
+            )
+            .title("OMNIX Status Dock")
+            .inner_size(200.0, 48.0)
+            .decorations(false)
+            .transparent(true)
+            .always_on_top(true)
+            .resizable(false)
+            .skip_taskbar(true)
+            .build();
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -37,6 +65,7 @@ pub fn run() {
             commands::send_agent_stdin,
             commands::stop_agent_session,
             commands::install_agent_cli,
+            commands::uninstall_agent_cli,
             commands::repair_installed_agent,
             commands::sync_external_agent_configs,
             commands::get_all_skills,
@@ -46,6 +75,8 @@ pub fn run() {
             commands::update_skill_profile,
             commands::fuse_skills_api,
             commands::create_skill,
+            commands::get_active_agent_model,
+            commands::update_active_agent_model,
             commands::get_agent_accounts,
             commands::create_agent_account,
             commands::switch_agent_account,
@@ -54,8 +85,68 @@ pub fn run() {
             commands::create_memory,
             commands::delete_memory,
             commands::distill_session_memory,
-            commands::get_all_conversations
+            commands::get_all_conversations,
+            commands::get_conversation_tasks,
+            commands::simulate_team_task_dispatch,
+            commands::get_mailbox_messages,
+            commands::get_remote_access_info,
+            commands::get_all_models_metadata,
+            commands::get_cron_tasks,
+            commands::save_cron_task,
+            commands::toggle_cron_task_active,
+            commands::delete_cron_task,
+            commands::get_cron_runs,
+            commands::clear_cron_runs,
+            commands::get_active_sessions,
+            commands::trigger_cron_task,
+            commands::set_compare_windows_layout,
+            commands::hide_compare_windows,
+            commands::close_compare_windows,
+            commands::eval_compare_window,
+            commands::focus_main_window,
+            commands::toggle_status_dock,
+            commands::get_model_platforms,
+            commands::save_model_platform,
+            commands::delete_model_platform,
+            commands::get_platform_models,
+            commands::save_platform_model,
+            commands::delete_platform_model,
+            commands::get_active_models,
+            commands::fetch_remote_models,
+            commands::check_model_status,
+            commands::get_conversation_messages,
+            commands::create_conversation,
+            commands::add_conversation_message,
+            commands::delete_conversation,
+            commands::get_previewable_files,
+            commands::read_file_content_utf8,
+            commands::read_file_as_base64,
+            commands::get_workspace_git_diff,
+            commands::run_env_diagnostics,
+            commands::repair_env_tool
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(move |app_handle, event| {
+        match event {
+            tauri::RunEvent::WindowEvent { label, event: win_event, .. } => {
+                // When the main window is closed, also close the status-dock and exit
+                if label == "main" {
+                    if let tauri::WindowEvent::CloseRequested { .. } = win_event {
+                        // Close the status-dock window if it exists
+                        if let Some(dock) = app_handle.get_webview_window("status-dock") {
+                            let _ = dock.close();
+                        }
+                    }
+                }
+            },
+            tauri::RunEvent::Exit => {
+                let state: tauri::State<'_, std::sync::Mutex<proxy::ProxyServer>> = app_handle.state();
+                let mut server = state.lock().expect("Failed to lock proxy server mutex");
+                server.stop();
+            },
+            _ => {}
+        }
+    });
 }

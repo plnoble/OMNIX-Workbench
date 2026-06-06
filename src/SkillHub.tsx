@@ -390,10 +390,10 @@ export const SkillHub: React.FC = () => {
       </div>
 
       {/* Right workspace: split visual editor & topology graph */}
-      <div style={{ display: "flex", flexDirection: "column", height: "100%", minWidth: 0, gap: "16px" }}>
+      <div style={{ display: "flex", flexDirection: "column", height: "100%", minWidth: 0, gap: "16px", overflowY: "auto", paddingRight: "6px" }}>
         
         {selectedSkill ? (
-          <div className="card" style={{ display: "flex", flexDirection: "column", flexGrow: 1, padding: "16px", minHeight: 0 }}>
+          <div className="card" style={{ display: "flex", flexDirection: "column", flexGrow: 1, padding: "16px", minHeight: "550px" }}>
             {/* Header section */}
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", borderBottom: "1px solid var(--border-color)", paddingBottom: "12px", marginBottom: "16px" }}>
               <div>
@@ -648,7 +648,7 @@ export const SkillHub: React.FC = () => {
             由 OMNIX 官方和社区维护的成熟技能包，点击即可一键下载并自动导入至您当前的本地开发库中。
           </p>
 
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "12px" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "12px" }}>
             {MARKETPLACE_SKILLS.map((item) => (
               <div 
                 key={item.name}

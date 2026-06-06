@@ -1,7 +1,7 @@
 {
   "decision_id": "DEC-006",
   "topic": "ACP-based CLI Agent Wrapping, Permission Guard, and Custom Theme Engine",
-  "context": "We researched the fourth reference library, AionUi, to refine our CLI GUI wrapper, action permission controls, and UI customization.",
+  "context": "We researched the fourth reference library, DevAgent TUI, to refine our CLI GUI wrapper, action permission controls, and UI customization.",
   "options_considered": [
     "Run CLIs inside a raw xterm terminal and parse text stream using regex.",
     "Implement an Agent Communication Protocol (ACP) adapter using JSON-RPC over stdio to programmatically communicate with CLI agents, build a structured Permission Guard (YOLO / Confirm-once / Deny always), and provide a dynamic Custom CSS/Theme Engine for UI personalization."

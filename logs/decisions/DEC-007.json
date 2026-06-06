@@ -1,7 +1,7 @@
 {
   "decision_id": "DEC-007",
   "topic": "OMNIX DevFlow System Capabilities, Agent Hub Diagnostics, Cron Remote, and Floating Status Dock",
-  "context": "We aligned on the full features borrowed from AionUi to build a robust development agent orchestrator, detailing versioning/repairs, automation, web access, visual feedback, and resource cleanup.",
+  "context": "We aligned on the full features borrowed from DevAgent TUI to build a robust development agent orchestrator, detailing versioning/repairs, automation, web access, visual feedback, and resource cleanup.",
   "options_considered": [
     "Build a barebones CLI wrapping terminal tool without background execution, diagnostics, or visual overlays.",
     "Implement a complete orchestrator featuring: 1. Auto-detection/installation/one-click updates and self-repair for 7+ Agent CLIs; 2. Tauri background Cron engine; 3. Internal WebUI tunnel proxy; 4. Leader-Teammate Multi-agent setup; 5. Glassmorphism status indicator dock (pulses green/orange/blue/red); 6. Rust idle-reaper for zombie Agent processes, GPU switches, and Tray options."

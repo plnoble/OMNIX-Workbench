@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Completed research on reference library **cc-switch**.
 - Created/Updated Decision Log [DEC-004](file:///d:/Agent/Project/OMNIX-Development%20Tools/logs/decisions/DEC-004.json) detailing App Client update verification and global AI Agent CLI version checking and one-click cloud updates.
 - Created Decision Log [DEC-005](file:///d:/Agent/Project/OMNIX-Development%20Tools/logs/decisions/DEC-005.json) detailing unified multi-CLI provider management, 50+ presets, atomic configuration writes, and background system tray quick-switching.
-- Completed research on reference library **AionUi**.
+- Completed research on reference library **DevAgent TUI**.
 - Created Decision Log [DEC-006](file:///d:/Agent/Project/OMNIX-Development%20Tools/logs/decisions/DEC-006.json) detailing ACP JSON-RPC adapter, structured Permission Guard, and dynamic CSS/Theme Engine integration.
 - Created Decision Log [DEC-007](file:///d:/Agent/Project/OMNIX-Development%20Tools/logs/decisions/DEC-007.json) detailing comprehensive specifications for multi-agent Hub diagnostics/repair, Cron background/remote access, magnetic Status Dock, and Rust idle reapers.
 - Created Decision Log [DEC-008](file:///d:/Agent/Project/OMNIX-Development%20Tools/logs/decisions/DEC-008.json) detailing sandboxed Agent installation directories, target CLI prioritization matrix, and headless bootstrap bypass strategies for Claude Code.

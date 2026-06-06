@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OMNIX DevFlow 移动控制中心</title>
+    <style>
+        :root {
+            --bg-primary: #0a0b10;
+            --bg-secondary: rgba(18, 20, 32, 0.85);
+            --border-color: rgba(255, 255, 255, 0.08);
+            --color-primary: #00f2fe;
+            --color-secondary: #4facfe;
+            --color-success: #10b981;
+            --color-warning: #f59e0b;
+            --color-danger: #ef4444;
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            padding: 16px;
+            line-height: 1.5;
+        }
+
+        header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 16px;
+            margin-bottom: 20px;
+        }
+
+        h1 {
+            font-size: 20px;
+            font-weight: 600;
+            background: linear-gradient(135deg, var(--color-primary), var(--color-secondary));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background-color: var(--color-success);
+            box-shadow: 0 0 8px var(--color-success);
+        }
+
+        .card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 16px;
+            backdrop-filter: blur(10px);
+        }
+
+        .card-title {
+            font-size: 15px;
+            font-weight: 600;
+            margin-bottom: 12px;
+            color: var(--color-primary);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .session-info {
+            font-size: 13px;
+            color: var(--text-secondary);
+            margin-bottom: 12px;
+        }
+
+        .task-list {
+            margin-top: 10px;
+            padding-left: 14px;
+            border-left: 2px solid rgba(255, 255, 255, 0.05);
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .task-item {
+            position: relative;
+            font-size: 13px;
+        }
+
+        .task-item::before {
+            content: '';
+            position: absolute;
+            left: -19px;
+            top: 5px;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: var(--text-muted);
+        }
+
+        .task-item.done {
+            text-decoration: line-through;
+            color: var(--text-muted);
+        }
+
+        .task-item.done::before {
+            background-color: var(--color-success);
+        }
+
+        .task-item.in_progress {
+            color: var(--color-warning);
+            font-weight: 500;
+        }
+
+        .task-item.in_progress::before {
+            background-color: var(--color-warning);
+            box-shadow: 0 0 6px var(--color-warning);
+        }
+
+        .btn {
+            display: inline-block;
+            width: 100%;
+            padding: 12px;
+            background: linear-gradient(135deg, var(--color-primary), var(--color-secondary));
+            border: none;
+            border-radius: 8px;
+            color: #000;
+            font-weight: 600;
+            font-size: 14px;
+            text-align: center;
+            cursor: pointer;
+            margin-top: 10px;
+        }
+
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+        }
+
+        .input-group {
+            display: flex;
+            gap: 8px;
+            margin-top: 12px;
+        }
+
+        input {
+            flex-grow: 1;
+            padding: 10px;
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            color: #fff;
+            font-size: 13px;
+        }
+
+        .cron-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid rgba(255,255,255,0.03);
+            padding: 8px 0;
+        }
+
+        .cron-info {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .cron-title {
+            font-size: 13px;
+            font-weight: 500;
+        }
+
+        .cron-schedule {
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+
+        .cron-trigger-btn {
+            background: rgba(0, 242, 254, 0.15);
+            color: var(--color-primary);
+            border: 1px solid rgba(0, 242, 254, 0.25);
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 500;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>OMNIX 移动控制中心</h1>
+        <div id="conn-indicator" class="status-dot"></div>
+    </header>
+
+    <!-- Section 1: Active Terminal Session -->
+    <div id="session-card" class="card" style="display: none;">
+        <div class="card-title">🖥️ 活跃 Agent 控制台</div>
+        <div class="session-info" id="session-id-text">会话 ID: --</div>
+        
+        <!-- Live Task Checklist -->
+        <div class="task-list" id="remote-tasks-list">
+            <!-- Dynamic task items -->
+        </div>
+
+        <!-- Stdin approval inputs -->
+        <div class="input-group">
+            <input type="text" id="stdin-text-input" placeholder="输入审批指令（默认 y 确认）..." value="y">
+            <button class="btn" id="approve-btn" style="width: auto; margin-top: 0;">一键确认</button>
+        </div>
+    </div>
+
+    <div id="no-session-card" class="card">
+        <div class="card-title">💤 暂无活动 Agent 调试</div>
+        <p style="font-size: 12px; color: var(--text-secondary);">
+            宿主机控制台当前无运行中的 Agent 进程。
+        </p>
+    </div>
+
+    <!-- Section 2: Cron Schedules -->
+    <div class="card">
+        <div class="card-title">⏰ 后台 Cron 任务调度</div>
+        <div id="cron-tasks-container">
+            <!-- Dynamic cron items -->
+        </div>
+    </div>
+
+    <script>
+        const token = "{{TOKEN}}";
+        let activeSessionId = null;
+
+        async function fetchStatus() {
+            try {
+                const res = await fetch(`/api/remote/status?token=${token}`);
+                if (!res.ok) throw new Error("Unauthorized");
+                
+                const data = await res.json();
+                
+                // Connection indicator green
+                document.getElementById("conn-indicator").style.backgroundColor = "var(--color-success)";
+                document.getElementById("conn-indicator").style.boxShadow = "0 0 8px var(--color-success)";
+
+                // Active sessions handling
+                if (data.active_sessions && data.active_sessions.length > 0) {
+                    activeSessionId = data.active_sessions[0];
+                    document.getElementById("session-card").style.display = "block";
+                    document.getElementById("no-session-card").style.display = "none";
+                    document.getElementById("session-id-text").textContent = `会话 ID: ${activeSessionId}`;
+                    
+                    // Render tasks list
+                    const listContainer = document.getElementById("remote-tasks-list");
+                    listContainer.innerHTML = "";
+                    
+                    if (data.tasks && data.tasks.length > 0) {
+                        data.tasks.forEach(t => {
+                            const item = document.createElement("div");
+                            item.className = `task-item ${t.status}`;
+                            item.textContent = t.title;
+                            listContainer.appendChild(item);
+                        });
+                    } else {
+                        listContainer.innerHTML = "<p style='font-size: 12px; color: var(--text-muted);'>暂无进行中的子任务清单。</p>";
+                    }
+                } else {
+                    activeSessionId = null;
+                    document.getElementById("session-card").style.display = "none";
+                    document.getElementById("no-session-card").style.display = "block";
+                }
+
+                // Render cron tasks list
+                const cronContainer = document.getElementById("cron-tasks-container");
+                cronContainer.innerHTML = "";
+                if (data.cron_tasks && data.cron_tasks.length > 0) {
+                    data.cron_tasks.forEach(task => {
+                        const item = document.createElement("div");
+                        item.className = "cron-item";
+                        
+                        const info = document.createElement("div");
+                        info.className = "cron-info";
+                        
+                        const title = document.createElement("div");
+                        title.className = "cron-title";
+                        title.textContent = task.title;
+                        if (!task.is_active) {
+                            title.style.color = "var(--text-muted)";
+                            title.textContent += " (已禁用)";
+                        }
+                        
+                        const schedule = document.createElement("div");
+                        schedule.className = "cron-schedule";
+                        schedule.textContent = `计划: ${task.schedule} | 运行: ${task.agent_name}`;
+                        
+                        info.appendChild(title);
+                        info.appendChild(schedule);
+                        
+                        const btn = document.createElement("button");
+                        btn.className = "cron-trigger-btn";
+                        btn.textContent = "立即执行";
+                        btn.onclick = () => triggerCronTask(task.id);
+                        
+                        item.appendChild(info);
+                        item.appendChild(btn);
+                        cronContainer.appendChild(item);
+                    });
+                }
+            } catch (err) {
+                console.error(err);
+                document.getElementById("conn-indicator").style.backgroundColor = "var(--color-danger)";
+                document.getElementById("conn-indicator").style.boxShadow = "0 0 8px var(--color-danger)";
+            }
+        }
+
+        // Stdin Approve Trigger
+        document.getElementById("approve-btn").onclick = async () => {
+            if (!activeSessionId) return;
+            const inputVal = document.getElementById("stdin-text-input").value;
+            try {
+                const res = await fetch(`/api/remote/approve?token=${token}`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ session_id: activeSessionId, input: inputVal + "\n" })
+                });
+                if (res.ok) {
+                    alert("确认审批命令已成功发送到 Agent 进程！");
+                } else {
+                    alert("发送失败，进程可能已停止或异常。");
+                }
+            } catch (err) {
+                alert("发送发生错误: " + err);
+            }
+        };
+
+        // Cron Trigger
+        async function triggerCronTask(taskId) {
+            try {
+                const res = await fetch(`/api/remote/cron_trigger?token=${token}`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ task_id: taskId })
+                });
+                if (res.ok) {
+                    alert(`后台定时任务 ${taskId} 已被异步唤醒。`);
+                    fetchStatus();
+                } else {
+                    alert("唤醒定时任务失败。");
+                }
+            } catch (err) {
+                alert("网络请求发生错误: " + err);
+            }
+        }
+
+        // Poll every 3 seconds
+        setInterval(fetchStatus, 3000);
+        fetchStatus();
+    </script>
+</body>
+</html>
