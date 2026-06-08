@@ -31,6 +31,7 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 tower-http = { version = "0.5", features = ["cors"] }
 dirs = "5"
 which = "6"
+zip = "2"
 futures = "0.3"
 chrono = "0.4"
 portable-pty = "0.8"

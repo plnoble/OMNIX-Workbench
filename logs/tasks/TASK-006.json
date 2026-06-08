@@ -1,0 +1,26 @@
+{
+  "task_id": "TASK-006",
+  "title": "P4: 全磁盘技能扫描器",
+  "goal": "实现磁盘级扫描引擎，自动发现所有 AI 工具目录下的技能文件，与 OMNIX 数据库对比，输出差异报告，支持一键导入",
+  "owner": "claude",
+  "status": "COMPLETED",
+  "priority": "medium",
+  "dependencies": ["TASK-004", "TASK-005"],
+  "related_files": [
+    "src-tauri/src/sync_engine.rs",
+    "src-tauri/src/commands.rs",
+    "src-tauri/src/lib.rs",
+    "src/lib/tauri-api.ts"
+  ],
+  "acceptance_criteria": [
+    "✅ scan_disk_skills() 扫描所有已安装工具的技能目录",
+    "✅ ScanReport 含 managed/unmanaged/drifted/orphaned 四类",
+    "✅ import_unmanaged() 一键导入未管理技能",
+    "✅ cargo check 0 warnings 0 errors",
+    "✅ tsc 0 errors",
+    "✅ 2 个新 Tauri 命令注册"
+  ],
+  "start_time": "2026-06-08T00:00:00Z",
+  "end_time": "2026-06-08T00:00:00Z",
+  "result": "P4 完成。sync_engine.rs 新增 Scanner 逻辑(~250行), 2个新命令, 前端 ScanReport/ScanItem 类型。0 warnings/errors。"
+}

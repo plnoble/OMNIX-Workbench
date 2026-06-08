@@ -1,0 +1,29 @@
+{
+  "task_id": "TASK-009",
+  "title": "P5: Git 技能源 — 从 Git 仓库发现、导入、更新技能",
+  "goal": "实现 Git 技能源：clone 仓库到缓存、扫描 skills/ 目录、选择导入、追踪 revision 检测更新",
+  "owner": "claude",
+  "status": "COMPLETED",
+  "priority": "low",
+  "dependencies": ["TASK-004", "TASK-005"],
+  "related_files": [
+    "src-tauri/src/sync_engine.rs",
+    "src-tauri/src/commands.rs",
+    "src-tauri/src/lib.rs",
+    "src/SkillHub.tsx",
+    "src/lib/tauri-api.ts"
+  ],
+  "acceptance_criteria": [
+    "✅ clone_skill_repo 克隆 Git 仓库到 ~/.omnix/skill_cache/",
+    "✅ list_repo_skills 扫描仓库 skills/ 目录返回候选列表",
+    "✅ import_git_skill 导入选中的 Git 技能到 OMNIX（含 source_type=git + source_ref + source_revision）",
+    "✅ check_git_updates 检测已导入 Git 技能是否有更新",
+    "✅ pull_and_update_skill 拉取更新并重新导入",
+    "✅ cleanup_skill_cache 清理 30 天过期的缓存",
+    "✅ 前端 Git 源面板（URL 输入 + 克隆 + 候选列表 + 一键导入 + 检查更新）",
+    "✅ cargo check + tsc 通过"
+  ],
+  "start_time": "2026-06-09T00:00:00Z",
+  "end_time": "2026-06-09T00:00:00Z",
+  "result": "P5 完成。sync_engine.rs 新增 Git 模块(~300行), 6个新命令, 前端 Git 源面板。0 warnings/errors。"
+}

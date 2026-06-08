@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { SkillTopology } from "./SkillTopology";
-import { Layers, Sparkles, BookOpen, Download } from "lucide-react";
+import { Layers, Sparkles, BookOpen, Download, RefreshCw, Search, Star, Upload, ArrowRightLeft, HardDrive, CheckCircle2, XCircle, AlertCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/sonner";
+import { skillSyncApi } from "@/lib/tauri-api";
+import type { ToolStatus as SyncToolStatus, ScanReport, ScanItem, ConflictInfo, GitCloneResult, GitSkillCandidate } from "@/lib/tauri-api";
 
 interface Skill {
   name: string;
@@ -13,6 +15,42 @@ interface Skill {
   is_active: boolean;
   dependencies: string[];
   updated_at: string;
+  // Skill Sync fields (P1 — DEC-018)
+  source_type: string;
+  source_ref: string | null;
+  source_revision: string | null;
+  central_path: string;
+  content_hash: string | null;
+  starred: boolean;
+  category: string | null;
+}
+
+/** Tool adapter status for skill sync */
+export interface ToolStatus {
+  tool_id: string;
+  display_name: string;
+  is_installed: boolean;
+  skill_base_path: string;
+}
+
+/** Skill sync target record */
+export interface SkillTargetRecord {
+  id: string;
+  skill_id: string;
+  tool: string;
+  target_path: string;
+  mode: string;
+  status: string;
+  last_error: string | null;
+  synced_at: number | null;
+}
+
+/** Skill discovered in a tool's directory */
+export interface DiscoveredSkill {
+  name: string;
+  path: string;
+  tool: string;
+  content_hash: string;
 }
 
 // Mock marketplace skills
@@ -51,6 +89,7 @@ export const SkillHub: React.FC = () => {
   // Filter states
   const [searchKeyword, setSearchKeyword] = useState<string>("");
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
+  const [showStarredOnly, setShowStarredOnly] = useState(false);
 
   // Fusion Furnace states
   const [furnacePot, setFurnacePot] = useState<string[]>([]);
@@ -64,8 +103,27 @@ export const SkillHub: React.FC = () => {
   const [showDiff, setShowDiff] = useState<boolean>(false);
   const [fusedSaveName, setFusedSaveName] = useState<string>("");
 
+  // ── P3: Sync & Scanner states ──
+  const [toolStatuses, setToolStatuses] = useState<SyncToolStatus[]>([]);
+  const [scanReport, setScanReport] = useState<ScanReport | null>(null);
+  const [isScanning, setIsScanning] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncTargets, setSyncTargets] = useState<Record<string, string[]>>({}); // skillName -> toolIds
+  const [showScanPanel, setShowScanPanel] = useState(false);
+
+  // ── P5: Git Skill Source states ──
+  const [gitRepoUrl, setGitRepoUrl] = useState("");
+  const [gitBranch, setGitBranch] = useState("");
+  const [isCloning, setIsCloning] = useState(false);
+  const [gitCandidates, setGitCandidates] = useState<GitSkillCandidate[]>([]);
+  const [gitCloneResult, setGitCloneResult] = useState<GitCloneResult | null>(null);
+  const [showGitPanel, setShowGitPanel] = useState(false);
+  const [conflicts, setConflicts] = useState<ConflictInfo[]>([]);
+  const [conflictStrategy, setConflictStrategy] = useState<"skip" | "overwrite" | "rename">("overwrite");
+
   useEffect(() => {
     loadSkills();
+    loadToolStatuses();
   }, []);
 
   useEffect(() => {
@@ -86,6 +144,159 @@ export const SkillHub: React.FC = () => {
       }
     } catch (e) {
       console.error("Failed to load skills:", e);
+    }
+  };
+
+  // ── P3: Sync helpers ──
+
+  const loadToolStatuses = async () => {
+    try {
+      const statuses = await skillSyncApi.getToolStatus();
+      setToolStatuses(statuses);
+    } catch (e) {
+      console.error("Failed to load tool statuses:", e);
+    }
+  };
+
+  const handleScanDisk = async () => {
+    setIsScanning(true);
+    try {
+      const report = await skillSyncApi.scanDiskSkills();
+      setScanReport(report);
+      setShowScanPanel(true);
+      toast.success(`扫描完成：发现 ${report.total_found} 个技能`);
+    } catch (e) {
+      toast.error("扫描失败：" + e);
+    } finally {
+      setIsScanning(false);
+    }
+  };
+
+  const handleImportUnmanaged = async (items: ScanItem[]) => {
+    try {
+      const count = await skillSyncApi.importUnmanaged(items);
+      toast.success(`成功导入 ${count} 个技能`);
+      await loadSkills();
+      // Re-scan after import
+      const report = await skillSyncApi.scanDiskSkills();
+      setScanReport(report);
+    } catch (e) {
+      toast.error("导入失败：" + e);
+    }
+  };
+
+  const handleToggleStarred = async (name: string) => {
+    try {
+      await skillSyncApi.toggleStarred(name);
+      await loadSkills();
+    } catch (e) {
+      toast.error("切换收藏失败：" + e);
+    }
+  };
+
+  const handleSyncSkill = async (skillName: string) => {
+    const toolIds = syncTargets[skillName];
+    if (!toolIds || toolIds.length === 0) {
+      toast.warning("请先勾选要同步的工具");
+      return;
+    }
+
+    // Check conflicts first
+    setIsSyncing(true);
+    try {
+      const conflictsFound = await skillSyncApi.checkConflicts(skillName, toolIds);
+      const realConflicts = conflictsFound.filter(c => c.exists && !c.is_identical);
+      setConflicts(realConflicts);
+
+      if (realConflicts.length > 0) {
+        // Show conflict dialog — conflicts are already set in state, the panel renders automatically
+        setIsSyncing(false);
+        return;
+      }
+
+      // No conflicts — proceed
+      await doSync(skillName, toolIds);
+    } catch (e) {
+      toast.error("同步失败：" + e);
+      setIsSyncing(false);
+    }
+  };
+
+  const doSync = async (skillName: string, toolIds: string[]) => {
+    setIsSyncing(true);
+    try {
+      const result = await skillSyncApi.syncToMany(skillName, toolIds, "copy", conflictStrategy);
+      if (result.failed > 0) {
+        toast.warning(`同步完成：${result.succeeded} 成功, ${result.failed} 失败`);
+      } else {
+        toast.success(`已同步到 ${result.succeeded} 个工具`);
+      }
+      await loadToolStatuses();
+    } catch (e) {
+      toast.error("同步失败：" + e);
+    } finally {
+      setIsSyncing(false);
+      setConflicts([]);
+    }
+  };
+
+  const toggleSyncTarget = (skillName: string, toolId: string) => {
+    setSyncTargets(prev => {
+      const current = prev[skillName] || [];
+      const next = current.includes(toolId)
+        ? current.filter(id => id !== toolId)
+        : [...current, toolId];
+      return { ...prev, [skillName]: next };
+    });
+  };
+
+  // ── P5: Git skill source helpers ──
+
+  const handleCloneRepo = async () => {
+    if (!gitRepoUrl.trim()) { toast.warning("请输入 Git 仓库地址"); return; }
+    setIsCloning(true);
+    setGitCandidates([]);
+    setGitCloneResult(null);
+    try {
+      const result = await skillSyncApi.cloneRepo(gitRepoUrl, gitBranch || undefined);
+      setGitCloneResult(result);
+      // Auto-list candidates
+      const candidates = await skillSyncApi.listRepoSkills(gitRepoUrl);
+      setGitCandidates(candidates);
+      setShowGitPanel(true);
+      toast.success(`克隆成功！发现 ${candidates.length} 个技能`);
+    } catch (e) {
+      toast.error("克隆失败：" + e);
+    } finally {
+      setIsCloning(false);
+    }
+  };
+
+  const handleImportGitSkill = async (candidate: GitSkillCandidate) => {
+    if (!gitCloneResult) return;
+    try {
+      await skillSyncApi.importGitSkill(gitCloneResult.repo_url, candidate.name, gitCloneResult.revision);
+      toast.success(`已导入 ${candidate.name}`);
+      await loadSkills();
+      // Refresh candidate list
+      const candidates = await skillSyncApi.listRepoSkills(gitCloneResult.repo_url);
+      setGitCandidates(candidates);
+    } catch (e) {
+      toast.error("导入失败：" + e);
+    }
+  };
+
+  const handleCheckGitUpdates = async () => {
+    try {
+      const updates = await skillSyncApi.checkGitUpdates();
+      const hasUpdates = updates.filter(u => u.has_update);
+      if (hasUpdates.length === 0) {
+        toast.success("所有 Git 技能均为最新版本");
+      } else {
+        toast.warning(`${hasUpdates.length} 个技能有更新`);
+      }
+    } catch (e) {
+      toast.error("检查更新失败：" + e);
     }
   };
 
@@ -251,10 +462,11 @@ export const SkillHub: React.FC = () => {
     const matchesSearch = s.name.toLowerCase().includes(searchKeyword.toLowerCase()) ||
                           s.description.toLowerCase().includes(searchKeyword.toLowerCase());
 
-    const cat = getCategory(s.name);
+    const cat = s.category || getCategory(s.name);
     const matchesCategory = categoryFilter === "all" || cat === categoryFilter;
+    const matchesStarred = !showStarredOnly || s.starred;
 
-    return matchesSearch && matchesCategory;
+    return matchesSearch && matchesCategory && matchesStarred;
   });
 
   const selectedSkill = skills.find((s) => s.name === selectedSkillName);
@@ -310,12 +522,98 @@ export const SkillHub: React.FC = () => {
   return (
     <div className="skill-hub-layout grid grid-cols-[260px_1fr] gap-5 h-[calc(100vh-120px)]">
 
-      {/* Left panel: list of skills */}
+      {/* Left panel: list of skills + tool status */}
       <div className="card flex flex-col h-full p-4 min-w-0">
         <h3 className="card-title flex items-center gap-1.5 text-sm">
           <BookOpen size={16} color="var(--color-secondary)" />
           技能列表 ({filteredSkills.length})
         </h3>
+
+        {/* Quick sync + scan + git buttons */}
+        <div className="flex gap-1.5 mb-3 mt-2">
+          <button
+            className="btn btn-secondary py-1 px-2 text-[10px] flex items-center gap-1 flex-1"
+            onClick={handleScanDisk}
+            disabled={isScanning}
+          >
+            <HardDrive size={11} />
+            {isScanning ? "扫描中..." : "扫描磁盘"}
+          </button>
+          <button
+            className="btn btn-secondary py-1 px-2 text-[10px] flex items-center gap-1 flex-1"
+            onClick={() => setShowGitPanel(!showGitPanel)}
+          >
+            <Upload size={11} />
+            Git 源
+          </button>
+          <button
+            className="btn btn-secondary py-1 px-2 text-[10px] flex items-center gap-1"
+            onClick={loadToolStatuses}
+          >
+            <RefreshCw size={11} />
+          </button>
+        </div>
+
+        {/* P5: Git Source Panel (collapsible) */}
+        {showGitPanel && (
+          <div className="mb-3 p-3 bg-purple-500/5 border border-purple-500/15 rounded-lg">
+            <h4 className="text-xs font-medium text-purple-400 mb-2">🌐 Git 技能源</h4>
+            <input
+              type="text"
+              className="form-input text-xs py-1 px-2 mb-2 w-full"
+              placeholder="https://github.com/user/skill-repo"
+              value={gitRepoUrl}
+              onChange={(e) => setGitRepoUrl(e.target.value)}
+            />
+            <div className="flex gap-2 mb-2">
+              <input
+                type="text"
+                className="form-input text-xs py-1 px-2 flex-1"
+                placeholder="分支 (默认 main)"
+                value={gitBranch}
+                onChange={(e) => setGitBranch(e.target.value)}
+              />
+              <button
+                className="btn py-1 px-3 text-[10px]"
+                onClick={handleCloneRepo}
+                disabled={isCloning}
+              >
+                {isCloning ? "克隆中..." : "克隆"}
+              </button>
+            </div>
+
+            {/* Candidates list */}
+            {gitCandidates.length > 0 && (
+              <div className="flex flex-col gap-1.5">
+                <span className="text-[10px] text-secondary-foreground">发现 {gitCandidates.length} 个技能：</span>
+                {gitCandidates.map(c => (
+                  <div key={c.name} className="flex items-center justify-between bg-white/2 border border-border rounded py-1 px-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-medium">{c.name}</span>
+                      {c.already_imported && <span className="text-[9px] text-[var(--color-success)]">已导入</span>}
+                    </div>
+                    {!c.already_imported && (
+                      <button
+                        className="btn btn-secondary py-0.5 px-2 text-[9px]"
+                        onClick={() => handleImportGitSkill(c)}
+                      >
+                        导入
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Check updates button for existing git skills */}
+            <button
+              className="btn btn-secondary py-0.5 px-2 text-[10px] mt-2 w-full"
+              onClick={handleCheckGitUpdates}
+            >
+              <RefreshCw size={10} /> 检查 Git 技能更新
+            </button>
+          </div>
+        )}
 
         {/* Search */}
         <input
@@ -326,11 +624,25 @@ export const SkillHub: React.FC = () => {
           onChange={(e) => setSearchKeyword(e.target.value)}
         />
 
-        {/* Category selector */}
+        {/* Category selector + Starred filter */}
         <div className="mb-3">
-          <label className="text-xs text-secondary-foreground block mb-1">分类过滤</label>
+          <div className="flex items-center gap-2 mb-1">
+            <label className="text-xs text-secondary-foreground">分类过滤</label>
+            <button
+              className={cn(
+                "flex items-center gap-1 text-[10px] py-0.5 px-1.5 rounded-full border ml-auto",
+                showStarredOnly
+                  ? "bg-amber-500/12 border-amber-500/40 text-amber-400"
+                  : "bg-white/2 border-border text-muted-foreground"
+              )}
+              onClick={() => setShowStarredOnly(!showStarredOnly)}
+            >
+              <Star size={10} fill={showStarredOnly ? "currentColor" : "none"} />
+              收藏
+            </button>
+          </div>
           <select
-            className="form-input text-xs py-1 px-2 bg-black/30"
+            className="form-input text-xs py-1 px-2 bg-black/30 w-full"
             value={categoryFilter}
             onChange={(e) => setCategoryFilter(e.target.value)}
           >
@@ -345,7 +657,8 @@ export const SkillHub: React.FC = () => {
 
         {/* Scrollable list */}
         <div className="flex-1 overflow-y-auto flex flex-col gap-2 pr-1">
-          {filteredSkills.map((sk) => (
+          {filteredSkills.map((sk) => {
+            return (
             <div
               key={sk.name}
               className={cn(
@@ -358,19 +671,34 @@ export const SkillHub: React.FC = () => {
               }}
             >
               <div className="flex justify-between w-full items-center mb-1">
-                <span className="font-medium text-sm">{sk.name}</span>
-                <span
-                  className={cn(
-                    "inline-block w-1.5 h-1.5 rounded-full",
-                    sk.is_active ? "bg-[var(--color-success)]" : "bg-white/15"
+                <div className="flex items-center gap-1.5">
+                  <span
+                    className={cn("cursor-pointer text-xs", sk.starred ? "text-amber-400" : "text-white/20")}
+                    onClick={(e) => { e.stopPropagation(); handleToggleStarred(sk.name); }}
+                  >
+                    <Star size={12} fill={sk.starred ? "currentColor" : "none"} />
+                  </span>
+                  <span className="font-medium text-sm">{sk.name}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  {/* Source type badge */}
+                  {sk.source_type === "git" && (
+                    <span className="text-[9px] bg-purple-500/15 text-purple-400 py-px px-1.5 rounded-full">Git</span>
                   )}
-                />
+                  <span
+                    className={cn(
+                      "inline-block w-1.5 h-1.5 rounded-full",
+                      sk.is_active ? "bg-[var(--color-success)]" : "bg-white/15"
+                    )}
+                  />
+                </div>
               </div>
               <span className="text-xs text-secondary-foreground overflow-hidden text-ellipsis line-clamp-1">
                 {sk.description}
               </span>
             </div>
-          ))}
+            );
+          })}
           {filteredSkills.length === 0 && (
             <div className="text-center py-5 text-muted-foreground text-xs">
               未找到匹配的技能
@@ -427,7 +755,112 @@ export const SkillHub: React.FC = () => {
                 <button className="btn btn-secondary py-1.5 px-3 text-xs" onClick={addToFurnace}>
                   🔥 放入融合炉
                 </button>
+
+                {/* P6: Export package */}
+                <button
+                  className="btn btn-secondary py-1.5 px-3 text-xs flex items-center gap-1"
+                  onClick={async () => {
+                    try {
+                      const path = await skillSyncApi.exportPackage(selectedSkill.name);
+                      toast.success(`已导出到 ${path}`);
+                    } catch (e) {
+                      toast.error("导出失败：" + e);
+                    }
+                  }}
+                >
+                  <Download size={12} />
+                  导出包
+                </button>
               </div>
+            </div>
+
+            {/* ── P3: Tool Sync Panel ── */}
+            <div className="border-b border-border pb-3 mb-4">
+              <div className="flex justify-between items-center mb-2">
+                <span className="text-xs font-medium text-secondary-foreground flex items-center gap-1">
+                  <ArrowRightLeft size={13} />
+                  同步到工具
+                </span>
+                <button
+                  className="btn py-0.5 px-2.5 text-[11px]"
+                  onClick={() => handleSyncSkill(selectedSkill.name)}
+                  disabled={isSyncing}
+                >
+                  {isSyncing ? "同步中..." : "↗ 同步选中"}
+                </button>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {toolStatuses.map(ts => {
+                  const checked = (syncTargets[selectedSkill.name] || []).includes(ts.tool_id);
+                  return (
+                    <label
+                      key={ts.tool_id}
+                      className={cn(
+                        "flex items-center gap-1.5 py-1 px-2.5 rounded-full border text-[11px] cursor-pointer transition-all",
+                        ts.is_installed
+                          ? checked
+                            ? "bg-cyan-500/12 border-cyan-500/40 text-cyan-400"
+                            : "bg-white/2 border-border text-secondary-foreground"
+                          : "bg-white/1 border-border/50 text-muted-foreground opacity-50 cursor-not-allowed"
+                      )}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        disabled={!ts.is_installed}
+                        onChange={() => toggleSyncTarget(selectedSkill.name, ts.tool_id)}
+                        className="w-3 h-3"
+                      />
+                      {ts.is_installed ? (
+                        <CheckCircle2 size={11} className="text-[var(--color-success)]" />
+                      ) : (
+                        <XCircle size={11} className="text-white/20" />
+                      )}
+                      {ts.display_name}
+                    </label>
+                  );
+                })}
+              </div>
+
+              {/* Conflict resolution */}
+              {conflicts.length > 0 && (
+                <div className="mt-3 p-3 bg-amber-500/5 border border-amber-500/20 rounded-lg">
+                  <p className="text-xs text-amber-400 font-medium mb-2 flex items-center gap-1">
+                    <AlertCircle size={13} />
+                    检测到 {conflicts.length} 个冲突
+                  </p>
+                  <div className="flex gap-2 mb-2">
+                    {(["skip", "overwrite", "rename"] as const).map(s => (
+                      <button
+                        key={s}
+                        className={cn(
+                          "py-0.5 px-2 text-[10px] rounded-full border",
+                          conflictStrategy === s
+                            ? "bg-amber-500/15 border-amber-500/40 text-amber-400"
+                            : "bg-white/2 border-border text-secondary-foreground"
+                        )}
+                        onClick={() => setConflictStrategy(s)}
+                      >
+                        {s === "skip" ? "跳过" : s === "overwrite" ? "覆盖" : "重命名旧文件"}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      className="btn py-0.5 px-2.5 text-[11px]"
+                      onClick={() => doSync(selectedSkill.name, syncTargets[selectedSkill.name] || [])}
+                    >
+                      确认同步
+                    </button>
+                    <button
+                      className="btn btn-secondary py-0.5 px-2.5 text-[11px]"
+                      onClick={() => setConflicts([])}
+                    >
+                      取消
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Split workspace: Editor & Graph */}
@@ -623,6 +1056,136 @@ export const SkillHub: React.FC = () => {
             ))}
           </div>
         </div>
+
+        {/* ── P3: Disk Scanner Results ── */}
+        {showScanPanel && scanReport && (
+          <div className="card p-4">
+            <div className="flex justify-between items-center mb-3">
+              <h3 className="card-title flex items-center gap-1.5 text-sm m-0">
+                <Search size={16} color="var(--color-secondary)" />
+                磁盘扫描结果 ({scanReport.total_found})
+              </h3>
+              <button className="btn btn-secondary py-0.5 px-2 text-[11px]" onClick={() => setShowScanPanel(false)}>
+                关闭
+              </button>
+            </div>
+
+            {/* Tools scanned */}
+            <div className="flex flex-wrap gap-2 mb-4">
+              {scanReport.tools_scanned.map(t => (
+                <div
+                  key={t.tool_id}
+                  className={cn(
+                    "flex items-center gap-1.5 py-0.5 px-2 rounded-full text-[10px] border",
+                    t.is_installed
+                      ? "bg-[var(--color-success)]/8 border-[var(--color-success)]/20 text-[var(--color-success)]"
+                      : "bg-white/1 border-border/50 text-muted-foreground"
+                  )}
+                >
+                  {t.is_installed ? <CheckCircle2 size={10} /> : <XCircle size={10} />}
+                  {t.display_name} ({t.skill_count})
+                </div>
+              ))}
+            </div>
+
+            {/* Unmanaged skills — candidates for import */}
+            {scanReport.unmanaged.length > 0 && (
+              <div className="mb-4">
+                <h4 className="text-xs font-medium text-amber-400 mb-2 flex items-center gap-1">
+                  <AlertCircle size={12} />
+                  未管理技能 ({scanReport.unmanaged.length}) — 建议导入
+                </h4>
+                <div className="flex flex-col gap-1.5">
+                  {scanReport.unmanaged.map(item => (
+                    <div key={`${item.tool_id}-${item.name}`} className="flex items-center justify-between bg-amber-500/5 border border-amber-500/15 rounded-lg py-1.5 px-3">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-medium">{item.name}</span>
+                        <span className="text-[10px] text-muted-foreground">← {item.tool_display_name}</span>
+                        {item.preview && <span className="text-[10px] text-secondary-foreground truncate max-w-[200px]">{item.preview}</span>}
+                      </div>
+                      <button
+                        className="btn btn-secondary py-0.5 px-2 text-[10px]"
+                        onClick={() => handleImportUnmanaged([item])}
+                      >
+                        <Upload size={10} /> 导入
+                      </button>
+                    </div>
+                  ))}
+                  {scanReport.unmanaged.length > 1 && (
+                    <button
+                      className="btn py-1 px-3 text-[11px] mt-1"
+                      onClick={() => handleImportUnmanaged(scanReport.unmanaged)}
+                    >
+                      一键导入全部 ({scanReport.unmanaged.length})
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Drifted skills */}
+            {scanReport.drifted.length > 0 && (
+              <div className="mb-4">
+                <h4 className="text-xs font-medium text-blue-400 mb-2 flex items-center gap-1">
+                  <RefreshCw size={12} />
+                  漂移技能 ({scanReport.drifted.length}) — 需要更新
+                </h4>
+                <div className="flex flex-col gap-1.5">
+                  {scanReport.drifted.map(item => (
+                    <div key={`${item.tool_id}-${item.name}`} className="flex items-center justify-between bg-blue-500/5 border border-blue-500/15 rounded-lg py-1.5 px-3">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-medium">{item.name}</span>
+                        <span className="text-[10px] text-muted-foreground">→ {item.tool_display_name}</span>
+                      </div>
+                      <span className="text-[10px] text-blue-400">版本不一致</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Orphaned skills */}
+            {scanReport.orphaned.length > 0 && (
+              <div className="mb-4">
+                <h4 className="text-xs font-medium text-red-400 mb-2">孤儿技能 ({scanReport.orphaned.length}) — 文件丢失</h4>
+                <div className="flex flex-col gap-1.5">
+                  {scanReport.orphaned.map(item => (
+                    <div key={`${item.tool_id}-${item.name}`} className="flex items-center justify-between bg-red-500/5 border border-red-500/15 rounded-lg py-1.5 px-3">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-medium">{item.name}</span>
+                        <span className="text-[10px] text-muted-foreground">→ {item.tool_display_name}</span>
+                      </div>
+                      <span className="text-[10px] text-red-400">目标文件丢失</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Managed — all good */}
+            {scanReport.managed.length > 0 && (
+              <div>
+                <h4 className="text-xs font-medium text-[var(--color-success)] mb-2 flex items-center gap-1">
+                  <CheckCircle2 size={12} />
+                  已管理技能 ({scanReport.managed.length}) — 同步正常
+                </h4>
+                <div className="flex flex-wrap gap-1.5">
+                  {scanReport.managed.map(item => (
+                    <span key={`${item.tool_id}-${item.name}`} className="text-[10px] bg-[var(--color-success)]/5 text-[var(--color-success)] py-0.5 px-2 rounded-full border border-[var(--color-success)]/15">
+                      {item.name} ({item.tool_display_name})
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {scanReport.total_found === 0 && (
+              <div className="text-center py-6 text-muted-foreground text-xs">
+                未发现任何技能文件。请确保已安装 AI 工具并添加技能。
+              </div>
+            )}
+          </div>
+        )}
 
       </div>
 

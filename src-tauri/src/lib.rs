@@ -3,6 +3,8 @@ mod proxy;
 mod agent;
 mod knowledge;
 mod selection;
+mod tool_adapters;
+mod sync_engine;
 mod commands;
 
 #[cfg(test)]
@@ -192,7 +194,38 @@ pub fn run() {
             commands::delete_prompt_entry,
             // Activity Log
             commands::log_activity,
-            commands::get_activity_log
+            commands::get_activity_log,
+            // Skill Sync commands (P1 — DEC-018)
+            commands::get_skill_tool_status,
+            commands::sync_skill_to_tools,
+            commands::unsync_skill_from_tool,
+            commands::scan_all_tool_skills,
+            commands::toggle_skill_starred,
+            commands::get_skill_targets,
+            // Skill Sync Engine commands (P2 — DEC-018)
+            commands::check_sync_conflicts,
+            commands::sync_skill_detailed,
+            commands::sync_skill_to_many,
+            commands::sync_skills_batch,
+            commands::check_skill_drift,
+            commands::check_all_drift,
+            commands::resync_all_drifted,
+            // Disk Scanner commands (P4 — DEC-018)
+            commands::scan_disk_skills,
+            commands::import_unmanaged_skills,
+            // Skill Package & Category commands (P6 — DEC-018)
+            commands::export_skill_package,
+            commands::import_skill_package,
+            commands::export_all_skills,
+            commands::update_skill_category,
+            commands::list_skill_packages,
+            // Git Skill Source commands (P5 — DEC-018)
+            commands::clone_skill_repo,
+            commands::list_repo_skills,
+            commands::import_git_skill,
+            commands::check_git_updates,
+            commands::pull_and_update_skill,
+            commands::cleanup_skill_cache,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

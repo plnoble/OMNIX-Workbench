@@ -1,0 +1,8 @@
+{
+  "event_id": "EVENT-014",
+  "event_type": "FEATURE_IMPLEMENTED",
+  "agent": "claude",
+  "summary": "P1 Skill Sync 基础设施完成：db schema 扩展(7新字段+skill_targets表), tool_adapters.rs(ToolAdapter trait+5适配器+Registry), 6个新Tauri命令, 前端 skillSyncApi 封装。cargo check + tsc 均通过。",
+  "related_entities": ["TASK-004", "DEC-018", "tool_adapters.rs", "commands.rs", "db.rs", "tauri-api.ts"],
+  "timestamp": "2026-06-08T00:00:00Z"
+}

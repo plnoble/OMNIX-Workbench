@@ -251,3 +251,249 @@ export const activityApi = {
   getRecent: (limit?: number) =>
     invoke<ActivityLogEntry[]>("get_activity_log", { limit: limit ?? 50 }),
 };
+
+// ── Skill Sync (P1 — DEC-018) ─────────────────────────
+
+export interface ToolStatus {
+  tool_id: string;
+  display_name: string;
+  is_installed: boolean;
+  skill_base_path: string;
+}
+
+export interface SkillTargetRecord {
+  id: string;
+  skill_id: string;
+  tool: string;
+  target_path: string;
+  mode: string;
+  status: string;
+  last_error: string | null;
+  synced_at: number | null;
+}
+
+export interface DiscoveredSkill {
+  name: string;
+  path: string;
+  tool: string;
+  content_hash: string;
+}
+
+export interface SyncResult {
+  tool: string;
+  target_path: string;
+  success: boolean;
+  error: string | null;
+}
+
+export const skillSyncApi = {
+  /** Get all tool adapters and their installation status */
+  getToolStatus: () =>
+    invoke<ToolStatus[]>("get_skill_tool_status"),
+
+  /** Sync a skill to one or more tools */
+  syncToTools: (skillName: string, toolIds: string[], mode?: "copy" | "symlink") =>
+    invoke<SyncResult[]>("sync_skill_to_tools", { skillName, toolIds, mode: mode ?? "copy" }),
+
+  /** Unsync (remove) a skill from a tool's directory */
+  unsyncFromTool: (skillName: string, toolId: string) =>
+    invoke<SyncResult>("unsync_skill_from_tool", { skillName, toolId }),
+
+  /** Scan all tool directories for existing skills */
+  scanAllToolSkills: () =>
+    invoke<DiscoveredSkill[]>("scan_all_tool_skills"),
+
+  /** Toggle skill starred status */
+  toggleStarred: (skillName: string) =>
+    invoke("toggle_skill_starred", { skillName }),
+
+  /** Get sync targets for a specific skill */
+  getSkillTargets: (skillName: string) =>
+    invoke<SkillTargetRecord[]>("get_skill_targets", { skillName }),
+
+  // ── P2: Sync Engine ──────────────────────────────────
+
+  /** Check for conflicts before syncing */
+  checkConflicts: (skillName: string, toolIds: string[]) =>
+    invoke<ConflictInfo[]>("check_sync_conflicts", { skillName, toolIds }),
+
+  /** Sync one skill to one tool with conflict strategy */
+  syncDetailed: (skillName: string, toolId: string, mode?: "copy" | "symlink", strategy?: "skip" | "overwrite" | "rename") =>
+    invoke<DetailedSyncResult>("sync_skill_detailed", { skillName, toolId, mode: mode ?? "copy", strategy: strategy ?? "overwrite" }),
+
+  /** Sync one skill to multiple tools */
+  syncToMany: (skillName: string, toolIds: string[], mode?: "copy" | "symlink", strategy?: "skip" | "overwrite" | "rename") =>
+    invoke<BatchSyncResult>("sync_skill_to_many", { skillName, toolIds, mode: mode ?? "copy", strategy: strategy ?? "overwrite" }),
+
+  /** Batch sync: sync multiple skills to all installed tools */
+  syncBatch: (skillNames: string[], mode?: "copy" | "symlink", strategy?: "skip" | "overwrite" | "rename") =>
+    invoke<BatchSyncResult[]>("sync_skills_batch", { skillNames, mode: mode ?? "copy", strategy: strategy ?? "overwrite" }),
+
+  /** Check drift for a specific skill+tool */
+  checkDrift: (skillName: string, toolId: string) =>
+    invoke<DriftReport>("check_skill_drift", { skillName, toolId }),
+
+  /** Check drift for all synced skills */
+  checkAllDrift: () =>
+    invoke<DriftReport[]>("check_all_drift"),
+
+  /** Re-sync all skills that have drifted */
+  resyncAllDrifted: (mode?: "copy" | "symlink") =>
+    invoke<DetailedSyncResult[]>("resync_all_drifted", { mode: mode ?? "copy" }),
+
+  // ── P4: Disk Scanner ─────────────────────────────────
+
+  /** Scan all tool directories and classify every discovered skill */
+  scanDiskSkills: () =>
+    invoke<ScanReport>("scan_disk_skills"),
+
+  /** Import unmanaged skills into the OMNIX database */
+  importUnmanaged: (items: ScanItem[]) =>
+    invoke<number>("import_unmanaged_skills", { items }),
+
+  // ── P6: Package & Category ──────────────────────────
+
+  /** Export a single skill as a .skill package */
+  exportPackage: (skillName: string) =>
+    invoke<string>("export_skill_package", { skillName }),
+
+  /** Import a skill from a .zip/.skill package */
+  importPackage: (zipPath: string) =>
+    invoke<string>("import_skill_package", { zipPath }),
+
+  /** Export all skills as individual .skill packages */
+  exportAll: () =>
+    invoke<string[]>("export_all_skills"),
+
+  /** Update skill category */
+  updateCategory: (skillName: string, category: string) =>
+    invoke("update_skill_category", { skillName, category }),
+
+  /** List available .skill packages in exports dir */
+  listPackages: () =>
+    invoke<string[]>("list_skill_packages"),
+
+  // ── P5: Git Skill Source ────────────────────────────
+
+  /** Clone a Git repository and discover skill candidates */
+  cloneRepo: (repoUrl: string, branch?: string) =>
+    invoke<GitCloneResult>("clone_skill_repo", { repoUrl, branch }),
+
+  /** List skill candidates from a cached Git repo */
+  listRepoSkills: (repoUrl: string) =>
+    invoke<GitSkillCandidate[]>("list_repo_skills", { repoUrl }),
+
+  /** Import a skill from a Git repo */
+  importGitSkill: (repoUrl: string, skillName: string, revision: string) =>
+    invoke<string>("import_git_skill", { repoUrl, skillName, revision }),
+
+  /** Check for updates on Git-sourced skills */
+  checkGitUpdates: () =>
+    invoke<GitUpdateCheck[]>("check_git_updates"),
+
+  /** Pull updates for a specific Git-sourced skill */
+  pullAndUpdateSkill: (skillName: string) =>
+    invoke<string>("pull_and_update_skill", { skillName }),
+
+  /** Clean up expired Git skill cache */
+  cleanupCache: () =>
+    invoke<number>("cleanup_skill_cache"),
+};
+
+// ── P2 Sync Engine Types ──────────────────────────────
+
+export interface ConflictInfo {
+  tool_id: string;
+  target_path: string;
+  exists: boolean;
+  existing_hash: string | null;
+  source_hash: string;
+  is_identical: boolean;
+}
+
+export interface DetailedSyncResult {
+  skill_name: string;
+  tool_id: string;
+  target_path: string;
+  success: boolean;
+  conflict: ConflictInfo | null;
+  strategy_used: "skip" | "overwrite" | "rename" | null;
+  error: string | null;
+}
+
+export interface BatchSyncResult {
+  total: number;
+  succeeded: number;
+  skipped: number;
+  failed: number;
+  details: DetailedSyncResult[];
+}
+
+export type DriftStatus = "InSync" | "Drifted" | "Missing" | "Modified" | "Unknown";
+
+export interface DriftReport {
+  skill_name: string;
+  tool_id: string;
+  status: DriftStatus;
+  source_hash: string | null;
+  target_hash: string | null;
+  last_synced_hash: string | null;
+}
+
+// ── P4 Scanner Types ──────────────────────────────────
+
+export type ScanClass = "Managed" | "Unmanaged" | "Drifted" | "Orphaned";
+
+export interface ScanItem {
+  name: string;
+  tool_id: string;
+  tool_display_name: string;
+  path: string;
+  content_hash: string;
+  class: ScanClass;
+  size_bytes: number;
+  preview: string;
+}
+
+export interface ScannedTool {
+  tool_id: string;
+  display_name: string;
+  is_installed: boolean;
+  skill_count: number;
+  skill_base_path: string;
+}
+
+export interface ScanReport {
+  total_found: number;
+  managed: ScanItem[];
+  unmanaged: ScanItem[];
+  drifted: ScanItem[];
+  orphaned: ScanItem[];
+  tools_scanned: ScannedTool[];
+}
+
+// ── P5 Git Skill Source Types ────────────────────────
+
+export interface GitCloneResult {
+  repo_url: string;
+  cache_path: string;
+  skill_count: number;
+  revision: string;
+}
+
+export interface GitSkillCandidate {
+  name: string;
+  relative_path: string;
+  local_path: string;
+  preview: string;
+  content_hash: string;
+  already_imported: boolean;
+}
+
+export interface GitUpdateCheck {
+  skill_name: string;
+  source_ref: string;
+  current_revision: string;
+  latest_revision: string;
+  has_update: boolean;
+}

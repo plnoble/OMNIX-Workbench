@@ -98,10 +98,50 @@ impl DbManager {
                 profile TEXT NOT NULL DEFAULT 'Core',
                 is_active INTEGER NOT NULL DEFAULT 1,
                 dependencies TEXT NOT NULL DEFAULT '[]', -- JSON array of dependent skills
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                source_type TEXT NOT NULL DEFAULT 'local', -- 'local' | 'git' | 'builtin'
+                source_ref TEXT NULL,                      -- Git URL or local import path
+                source_revision TEXT NULL,                 -- Git commit hash
+                central_path TEXT NOT NULL DEFAULT '',     -- Central storage path (~/.omnix/skills/<name>)
+                content_hash TEXT NULL,                    -- SHA256 of SKILL.md content
+                starred INTEGER NOT NULL DEFAULT 0,        -- Favorite flag
+                category TEXT NULL                         -- Skill category tag
             )",
             [],
         )?;
+
+        // 5b. Skill Targets Table (sync tracking per tool)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS skill_targets (
+                id TEXT PRIMARY KEY,
+                skill_id TEXT NOT NULL,
+                tool TEXT NOT NULL,                    -- 'claude_code' | 'cursor' | 'copilot' | etc.
+                target_path TEXT NOT NULL,             -- Actual synced path on disk
+                mode TEXT NOT NULL DEFAULT 'copy',     -- 'copy' | 'symlink'
+                status TEXT NOT NULL DEFAULT 'pending',-- 'synced' | 'error' | 'pending'
+                last_error TEXT NULL,
+                synced_at INTEGER NULL,
+                FOREIGN KEY(skill_id) REFERENCES skills(name) ON DELETE CASCADE,
+                UNIQUE(skill_id, tool)
+            )",
+            [],
+        )?;
+
+        // Migration: add new columns to existing skills table if they don't exist
+        let migrations = [
+            "ALTER TABLE skills ADD COLUMN source_type TEXT NOT NULL DEFAULT 'local'",
+            "ALTER TABLE skills ADD COLUMN source_ref TEXT NULL",
+            "ALTER TABLE skills ADD COLUMN source_revision TEXT NULL",
+            "ALTER TABLE skills ADD COLUMN central_path TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE skills ADD COLUMN content_hash TEXT NULL",
+            "ALTER TABLE skills ADD COLUMN starred INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE skills ADD COLUMN category TEXT NULL",
+        ];
+        for sql in &migrations {
+            // ALTER TABLE ADD COLUMN silently fails if column already exists in SQLite,
+            // but we catch and ignore the error
+            let _ = conn.execute(sql, []);
+        }
 
         // 6. Memory Table (anti-failure incident dict)
         conn.execute(

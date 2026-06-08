@@ -1,0 +1,35 @@
+{
+  "decision_id": "DEC-018",
+  "topic": "借鉴 SkillsLM 的 Skill 同步管理机制，升级 OMNIX Skill 系统",
+  "context": "通过逆向分析 SkillsLM.exe (Go+Wails v2+SQLite)，发现其 Skill 同步引擎、工具适配器、Git技能源等机制值得借鉴到 OMNIX DevFlow",
+  "options_considered": [
+    "A. 仅借鉴同步引擎概念，自行重新设计",
+    "B. 深度借鉴 SkillsLM 的完整数据模型+同步机制+工具适配器架构，适配到 Tauri/Rust 技术栈",
+    "C. 将 SkillsLM 作为外部工具集成调用"
+  ],
+  "chosen_option": "B",
+  "reasoning": [
+    "SkillsLM 的数据模型设计成熟（source_type/source_ref/source_revision/central_path/content_hash）",
+    "工具适配器模式（每个Agent一个adapter）与 OMNIX 现有 AgentManager 架构一致",
+    "Git技能源（GitSkillCandidateDTO）是 OMNIX 当前缺失的重要能力",
+    "SkillsLM 的同步模式（copy/symlink）和覆盖检测逻辑完整可用",
+    "适配到 Rust 技术栈无技术障碍，且能与现有 SQLite 数据库整合"
+  ],
+  "tradeoffs": [
+    "增加数据库 schema 复杂度（需新增 skill_targets 表和 skills 表字段扩展）",
+    "需要为每个支持的工具编写 Rust 适配器（约 10+ 个）",
+    "Git clone/pull 功能需要在 Rust 中实现（已有 reqwest + git CLI 可用）"
+  ],
+  "impact_scope": [
+    "src-tauri/src/db.rs — 新增 skill_targets 表，扩展 skills 表",
+    "src-tauri/src/commands.rs — 新增 Skill 同步相关命令",
+    "src-tauri/src/agent.rs — 工具适配器检测逻辑",
+    "src/components/tabs/SkillTab.tsx — Skill 管理界面重构",
+    "src/hooks/ — 新增 useSkillSync hook"
+  ],
+  "future_risks": [
+    "SkillsLM 如果更新了工具路径约定，OMNIX 需要同步更新适配器",
+    "Git 技能源的认证问题（私有仓库需要 token）"
+  ],
+  "timestamp": "2026-06-08T00:00:00Z"
+}

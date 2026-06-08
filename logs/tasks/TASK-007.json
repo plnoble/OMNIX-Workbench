@@ -1,0 +1,27 @@
+{
+  "task_id": "TASK-007",
+  "title": "P3: SkillTab v2 GUI 重构",
+  "goal": "重构 SkillHub，集成 P1-P4 所有后端能力到可视化界面",
+  "owner": "claude",
+  "status": "COMPLETED",
+  "priority": "medium",
+  "dependencies": ["TASK-004", "TASK-005", "TASK-006"],
+  "related_files": [
+    "src/SkillHub.tsx",
+    "src/lib/tauri-api.ts"
+  ],
+  "acceptance_criteria": [
+    "✅ 工具状态面板（已安装/未安装 + 勾选同步）",
+    "✅ 技能卡片显示星标 + source_type badge",
+    "✅ 同步到工具面板（勾选工具 → 一键同步）",
+    "✅ 覆盖确认对话框（skip/overwrite/rename）",
+    "✅ 扫描磁盘按钮 → 扫描结果面板",
+    "✅ 未管理/漂移/孤儿/已管理四类展示",
+    "✅ 一键导入未管理技能",
+    "✅ 收藏星标切换",
+    "✅ cargo check + tsc 通过"
+  ],
+  "start_time": "2026-06-08T00:00:00Z",
+  "end_time": "2026-06-08T00:00:00Z",
+  "result": "P3 完成。SkillHub.tsx 新增 ~300行 GUI 代码。0 warnings/errors。"
+}
