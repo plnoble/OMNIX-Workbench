@@ -3,6 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, emit } from "@tauri-apps/api/event";
 import { LogicalSize } from "@tauri-apps/api/dpi";
+import { cn } from "@/lib/utils";
 
 type DevStatus = "idle" | "busy" | "pending" | "error";
 
@@ -138,10 +139,8 @@ export default function StatusDock() {
 
   return (
     <div
+      className="relative w-full h-full"
       style={{
-        position: "relative",
-        width: "100vw",
-        height: "100vh",
         overflow: "visible",
         background: "transparent",
         opacity: OPACITY_LEVELS[opacityIdx],
@@ -154,6 +153,7 @@ export default function StatusDock() {
         onClick={handleCardClick}
         onContextMenu={handleContextMenu}
         title="左键拖动 | 单击唤起主窗口 | 右键打开菜单"
+        className="flex items-center cursor-grab select-none box-border"
         style={{
           width: `${DOCK_W}px`,
           height: `${DOCK_H}px`,
@@ -163,23 +163,17 @@ export default function StatusDock() {
           WebkitBackdropFilter: "blur(24px)",
           border: `1px solid ${cfg.borderGlow}`,
           boxShadow: `0 4px 20px rgba(0, 0, 0, 0.5), 0 0 15px ${cfg.bgGlow}`,
-          display: "flex",
-          alignItems: "center",
           padding: "0 14px",
-          cursor: "grab",
-          userSelect: "none",
-          boxSizing: "border-box",
           transition: "border-color 0.4s ease, box-shadow 0.4s ease",
         }}
       >
         {/* Status Dot */}
-        <div style={{ position: "relative", width: "12px", height: "12px", flexShrink: 0, marginRight: "10px" }}>
+        <div className="relative shrink-0 mr-2.5" style={{ width: "12px", height: "12px" }}>
           {cfg.shouldPulse && (
             <div
+              className="absolute rounded-full"
               style={{
-                position: "absolute",
                 inset: "-3px",
-                borderRadius: "50%",
                 border: `1.5px solid ${cfg.color}`,
                 opacity: 0.5,
                 animation: `sd-pulse-ring ${cfg.pulseSpeed} infinite ease-in-out`,
@@ -187,23 +181,21 @@ export default function StatusDock() {
             />
           )}
           <div
+            className="absolute rounded-full"
             style={{
-              position: "absolute",
               inset: 0,
-              borderRadius: "50%",
               backgroundColor: cfg.color,
               boxShadow: `0 0 8px ${cfg.color}`,
               animation: cfg.shouldPulse ? `sd-pulse-dot ${cfg.pulseSpeed} infinite ease-in-out` : "none",
             }}
           />
           <div
+            className="absolute rounded-full"
             style={{
-              position: "absolute",
               width: "5px",
               height: "5px",
               top: "3.5px",
               left: "3.5px",
-              borderRadius: "50%",
               background: "rgba(255,255,255,0.65)",
               zIndex: 2,
             }}
@@ -211,31 +203,27 @@ export default function StatusDock() {
         </div>
 
         {/* Text Area */}
-        <div style={{ display: "flex", flexDirection: "column", minWidth: 0, flexGrow: 1 }}>
-          <span style={{ fontSize: "11px", fontWeight: 700, color: "#fff", lineHeight: "1.2", letterSpacing: "0.3px" }}>
+        <div className="flex flex-col grow min-w-0">
+          <span className="text-xs font-bold text-white leading-tight" style={{ letterSpacing: "0.3px" }}>
             OMNIX DevFlow
           </span>
-          <span style={{
-            fontSize: "9px",
-            color: cfg.color,
-            fontWeight: 500,
-            lineHeight: "1.3",
-            whiteSpace: "nowrap",
-            textOverflow: "ellipsis",
-            overflow: "hidden",
-            opacity: 0.85,
-            transition: "color 0.3s ease",
-          }}>
+          <span
+            className="text-[9px] font-medium leading-snug whitespace-nowrap truncate opacity-85"
+            style={{
+              color: cfg.color,
+              transition: "color 0.3s ease",
+            }}
+          >
             {activeAgentText}
           </span>
         </div>
 
         {/* Grip dots */}
-        <div style={{ display: "flex", flexDirection: "column", gap: "2px", opacity: 0.35, marginLeft: "6px", flexShrink: 0 }}>
+        <div className="flex flex-col opacity-35 ml-1.5 shrink-0" style={{ gap: "2px" }}>
           {[0, 1, 2].map(row => (
-            <div key={row} style={{ display: "flex", gap: "2px" }}>
-              <div style={{ width: "2px", height: "2px", borderRadius: "50%", background: "#fff" }} />
-              <div style={{ width: "2px", height: "2px", borderRadius: "50%", background: "#fff" }} />
+            <div key={row} className="flex" style={{ gap: "2px" }}>
+              <div className="rounded-full bg-white" style={{ width: "2px", height: "2px" }} />
+              <div className="rounded-full bg-white" style={{ width: "2px", height: "2px" }} />
             </div>
           ))}
         </div>
@@ -244,8 +232,8 @@ export default function StatusDock() {
       {/* Context Menu */}
       {menuVisible && (
         <div
+          className="absolute rounded-xl box-border"
           style={{
-            position: "absolute",
             left: "10px",
             top: `${DOCK_H + 4}px`,
             width: `${DOCK_W - 20}px`,
@@ -253,12 +241,10 @@ export default function StatusDock() {
             backdropFilter: "blur(24px)",
             WebkitBackdropFilter: "blur(24px)",
             border: "1px solid rgba(255, 255, 255, 0.08)",
-            borderRadius: "12px",
             boxShadow: "0 10px 30px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.05)",
             padding: "5px 0",
             zIndex: 1000,
             animation: "sd-fadeIn 0.12s ease-out",
-            boxSizing: "border-box",
           }}
           onClick={(e) => e.stopPropagation()}
           onMouseDown={(e) => e.stopPropagation()}
@@ -279,7 +265,7 @@ export default function StatusDock() {
             📊 打开设置面板
           </MenuItem>
 
-          <div style={{ height: "1px", background: "rgba(255,255,255,0.06)", margin: "4px 0" }} />
+          <div className="h-px my-1" style={{ background: "rgba(255,255,255,0.06)" }} />
 
           <MenuItem onClick={handleHideDock} muted>
             ❌ 隐藏悬浮栏
@@ -339,15 +325,14 @@ function MenuItem({ children, onClick, disabled, muted }: {
       onClick={disabled ? undefined : onClick}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
+      className={cn(
+        "py-2 px-3 text-[10px] font-medium select-none",
+        disabled ? "cursor-not-allowed" : "cursor-pointer"
+      )}
       style={{
-        padding: "8px 12px",
-        fontSize: "10px",
-        fontWeight: 500,
         color,
-        cursor: disabled ? "not-allowed" : "pointer",
         background: hovered && !disabled ? "rgba(255, 255, 255, 0.06)" : "transparent",
         transition: "background 0.15s, color 0.15s",
-        userSelect: "none",
       }}
     >
       {children}

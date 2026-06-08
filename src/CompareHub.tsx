@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { cn } from "@/lib/utils";
+import { toast } from "@/components/ui/sonner";
 
 interface AgentAccount {
   id: string;
@@ -67,17 +69,17 @@ export const CompareHub: React.FC<CompareHubProps> = ({ proxyPort }) => {
   const [mode, setMode] = useState<"api" | "web">("api");
   const [prompt, setPrompt] = useState("");
   const [accounts, setAccounts] = useState<AgentAccount[]>([]);
-  
+
   // API Mode States
   const [selectedApiAccs, setSelectedApiAccs] = useState<string[]>([]);
   const [apiResults, setApiResults] = useState<{ [accId: string]: ApiResult }>({});
-  
+
   // Web Mode States
   const [selectedWebExps, setSelectedWebExps] = useState<string[]>(["deepseek", "chatgpt"]);
   const [webActive, setWebActive] = useState(false);
   const [extractedTexts, setExtractedTexts] = useState<{ [expId: string]: string }>({});
   const [selectorError, setSelectorError] = useState<string | null>(null);
-  
+
   // Fusion Summary States
   const [fusionContent, setFusionContent] = useState("");
   const [fusionLoading, setFusionLoading] = useState(false);
@@ -210,7 +212,7 @@ export const CompareHub: React.FC<CompareHubProps> = ({ proxyPort }) => {
           if (value) {
             const chunk = decoder.decode(value, { stream: true });
             const lines = chunk.split("\n").filter(l => l.trim() !== "");
-            
+
             for (const line of lines) {
               if (line.startsWith("data: [DONE]")) {
                 done = true;
@@ -221,7 +223,7 @@ export const CompareHub: React.FC<CompareHubProps> = ({ proxyPort }) => {
                   const dataObj = JSON.parse(line.substring(6));
                   const delta = dataObj.choices?.[0]?.delta?.content || "";
                   accumText += delta;
-                  
+
                   setApiResults(prev => ({
                     ...prev,
                     [accId]: {
@@ -296,7 +298,7 @@ export const CompareHub: React.FC<CompareHubProps> = ({ proxyPort }) => {
 
   const handleLaunchWebCompare = () => {
     if (selectedWebExps.length === 0) {
-      alert("请至少选择一个网页版 AI 进行比对！");
+      toast.warning("请至少选择一个网页版 AI 进行比对！");
       return;
     }
     setWebActive(true);
@@ -326,7 +328,7 @@ export const CompareHub: React.FC<CompareHubProps> = ({ proxyPort }) => {
 
       // Select specific DOM interaction scripts depending on the host
       let jsScript = "";
-      
+
       if (expId === "chatgpt") {
         jsScript = `
           (function() {
@@ -482,7 +484,7 @@ export const CompareHub: React.FC<CompareHubProps> = ({ proxyPort }) => {
       triggerWebtextExtraction();
       // Wait briefly for emit events to settle
       await new Promise(resolve => setTimeout(resolve, 800));
-      
+
       selectedWebExps.forEach(expId => {
         const text = extractedTexts[expId];
         const exp = WEB_EXPERTS.find(e => e.id === expId);
@@ -493,7 +495,7 @@ export const CompareHub: React.FC<CompareHubProps> = ({ proxyPort }) => {
     }
 
     if (Object.keys(textDict).length === 0) {
-      alert("无可熔炼的专家回答内容！请确保 AI 回答完全生成后再试。");
+      toast.warning("无可熔炼的专家回答内容！请确保 AI 回答完全生成后再试。");
       return;
     }
 
@@ -550,7 +552,7 @@ ${sources}
         if (value) {
           const chunk = decoder.decode(value, { stream: true });
           const lines = chunk.split("\n").filter(l => l.trim() !== "");
-          
+
           for (const line of lines) {
             if (line.startsWith("data: [DONE]")) {
               done = true;
@@ -582,35 +584,33 @@ ${sources}
 
   const handleCopyText = (text: string) => {
     navigator.clipboard.writeText(text);
-    alert("文本已复制到剪贴板！");
+    toast.success("文本已复制到剪贴板！");
   };
 
   return (
-    <div className="compare-hub-container" ref={containerRef} style={{ display: "flex", flexDirection: "column", height: "100%", padding: "20px", overflowY: "auto", gap: "20px" }}>
-      
+    <div className="compare-hub-container flex flex-col h-full p-5 overflow-y-auto gap-5" ref={containerRef}>
+
       {/* Title & Engine Mode Switcher */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      <div className="flex justify-between items-center">
         <div>
-          <h2 style={{ margin: 0, fontSize: "20px", display: "flex", alignItems: "center", gap: "8px" }}>
+          <h2 className="m-0 text-lg flex items-center gap-2">
             ⚖️ AI 专家比对与最佳结论熔炼炉
           </h2>
-          <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
+          <span className="text-xs text-muted-foreground">
             一问多答模式，免除重复发问，多维度并排参考得出系统开发最佳解决方案
           </span>
         </div>
 
-        <div className="tab-switcher" style={{ display: "flex", background: "rgba(255,255,255,0.03)", padding: "4px", borderRadius: "8px", border: "1px solid var(--border-color)" }}>
-          <button 
-            className={`btn-tab ${mode === "api" ? "active" : ""}`}
-            style={{ padding: "6px 16px", background: mode === "api" ? "var(--accent-color)" : "transparent", border: "none", color: "white", borderRadius: "6px", fontSize: "12px", cursor: "pointer" }}
+        <div className="tab-switcher flex bg-white/[0.03] p-1 rounded-lg border border-border">
+          <button
+            className={cn("btn-tab", mode === "api" && "active", "px-4 py-1.5 border-none text-white rounded-md text-xs cursor-pointer", mode === "api" ? "bg-[var(--accent-color)]" : "bg-transparent")}
             onClick={() => { setMode("api"); handleCloseWebCompare(); }}
             disabled={webActive}
           >
             🔌 API 并行极速比对
           </button>
-          <button 
-            className={`btn-tab ${mode === "web" ? "active" : ""}`}
-            style={{ padding: "6px 16px", background: mode === "web" ? "var(--accent-color)" : "transparent", border: "none", color: "white", borderRadius: "6px", fontSize: "12px", cursor: "pointer" }}
+          <button
+            className={cn("btn-tab", mode === "web" && "active", "px-4 py-1.5 border-none text-white rounded-md text-xs cursor-pointer", mode === "web" ? "bg-[var(--accent-color)]" : "bg-transparent")}
             onClick={() => setMode("web")}
             disabled={webActive}
           >
@@ -621,14 +621,13 @@ ${sources}
 
       {/* Selector Error Banner */}
       {selectorError && (
-        <div className="card" style={{ padding: "12px", display: "flex", justifyContent: "space-between", alignItems: "center", background: "rgba(239, 68, 68, 0.08)", border: "1px dashed rgba(239, 68, 68, 0.4)", borderRadius: "8px" }}>
-          <span style={{ fontSize: "13px", color: "#f87171", fontWeight: "500" }}>
+        <div className="card p-3 flex justify-between items-center bg-red-500/[0.08] border border-dashed border-red-500/40 rounded-lg">
+          <span className="text-sm text-red-300 font-medium">
             ⚠️ {selectorError}
           </span>
-          <button 
-            className="btn btn-secondary" 
-            onClick={() => setSelectorError(null)} 
-            style={{ padding: "4px 10px", fontSize: "11px", border: "1px solid rgba(239,68,68,0.2)", color: "#f87171", background: "transparent", cursor: "pointer" }}
+          <button
+            className="btn btn-secondary px-2.5 py-1 text-xs border border-red-500/20 text-red-300 bg-transparent cursor-pointer"
+            onClick={() => setSelectorError(null)}
           >
             我知道了
           </button>
@@ -637,31 +636,24 @@ ${sources}
 
       {/* API Configuration Options */}
       {mode === "api" && (
-        <div className="card" style={{ padding: "16px" }}>
-          <span style={{ fontSize: "13px", fontWeight: "600", color: "var(--text-secondary)", display: "block", marginBottom: "8px" }}>
+        <div className="card p-4">
+          <span className="text-sm font-semibold text-secondary-foreground block mb-2">
             选择连通的 API 专家（最少 1 个，最多 4 个）
           </span>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "10px" }}>
+          <div className="flex flex-wrap gap-2.5">
             {accounts.map(acc => {
               const connected = acc.api_key.trim().length > 0;
               return (
-                <label 
+                <label
                   key={acc.id}
-                  className={`checkbox-label ${selectedApiAccs.includes(acc.id) ? "checked" : ""}`}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "8px",
-                    padding: "8px 12px",
-                    borderRadius: "8px",
-                    background: selectedApiAccs.includes(acc.id) ? "rgba(168, 85, 247, 0.12)" : "rgba(255,255,255,0.02)",
-                    border: selectedApiAccs.includes(acc.id) ? "1px solid #a855f7" : "1px solid var(--border-color)",
-                    cursor: connected ? "pointer" : "not-allowed",
-                    opacity: connected ? 1 : 0.4
-                  }}
+                  className={cn(
+                    "checkbox-label flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer",
+                    selectedApiAccs.includes(acc.id) ? "checked bg-purple-500/12 border border-purple-500" : "bg-white/[0.02] border border-border",
+                    !connected && "cursor-not-allowed opacity-60"
+                  )}
                   title={connected ? `模型: ${acc.target_model}` : "未配置 API Key"}
                 >
-                  <input 
+                  <input
                     type="checkbox"
                     checked={selectedApiAccs.includes(acc.id)}
                     disabled={!connected}
@@ -672,11 +664,11 @@ ${sources}
                         setSelectedApiAccs(prev => prev.filter(id => id !== acc.id));
                       }
                     }}
-                    style={{ cursor: connected ? "pointer" : "not-allowed" }}
+                    className={cn(connected ? "cursor-pointer" : "cursor-not-allowed")}
                   />
                   <div>
-                    <span style={{ fontSize: "13px", fontWeight: "500", display: "block" }}>{acc.account_name}</span>
-                    <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>{acc.target_model}</span>
+                    <span className="text-sm font-medium block">{acc.account_name}</span>
+                    <span className="text-xs text-muted-foreground">{acc.target_model}</span>
                   </div>
                 </label>
               );
@@ -687,26 +679,20 @@ ${sources}
 
       {/* Web Configuration Options */}
       {mode === "web" && !webActive && (
-        <div className="card" style={{ padding: "16px" }}>
-          <span style={{ fontSize: "13px", fontWeight: "600", color: "var(--text-secondary)", display: "block", marginBottom: "8px" }}>
+        <div className="card p-4">
+          <span className="text-sm font-semibold text-secondary-foreground block mb-2">
             选择要开启比对的原生 AI 网页（建议 2 - 3 栏以防窗口过挤）
           </span>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "10px", marginBottom: "16px" }}>
+          <div className="flex flex-wrap gap-2.5 mb-4">
             {WEB_EXPERTS.map(exp => (
-              <label 
+              <label
                 key={exp.id}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "8px",
-                  padding: "8px 12px",
-                  borderRadius: "8px",
-                  background: selectedWebExps.includes(exp.id) ? "rgba(236, 72, 153, 0.1)" : "rgba(255,255,255,0.02)",
-                  border: selectedWebExps.includes(exp.id) ? "1px solid #ec4899" : "1px solid var(--border-color)",
-                  cursor: "pointer"
-                }}
+                className={cn(
+                  "flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer",
+                  selectedWebExps.includes(exp.id) ? "bg-pink-500/10 border border-pink-500" : "bg-white/[0.02] border border-border"
+                )}
               >
-                <input 
+                <input
                   type="checkbox"
                   checked={selectedWebExps.includes(exp.id)}
                   onChange={(e) => {
@@ -716,16 +702,15 @@ ${sources}
                       setSelectedWebExps(prev => prev.filter(id => id !== exp.id));
                     }
                   }}
-                  style={{ cursor: "pointer" }}
+                  className="cursor-pointer"
                 />
-                <span style={{ fontSize: "13px", fontWeight: "500" }}>{exp.name}</span>
+                <span className="text-sm font-medium">{exp.name}</span>
               </label>
             ))}
           </div>
-          <button 
-            className="btn btn-primary"
+          <button
+            className="btn btn-primary w-full flex items-center justify-center gap-1.5"
             onClick={handleLaunchWebCompare}
-            style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" }}
           >
             🌐 启动网页版并排比对窗 (Launch Web Compare)
           </button>
@@ -734,11 +719,11 @@ ${sources}
 
       {/* Web Active Floating Controller */}
       {mode === "web" && webActive && (
-        <div className="card" style={{ padding: "12px", display: "flex", justifyContent: "space-between", alignItems: "center", background: "rgba(236,72,153,0.06)", border: "1px dashed rgba(236,72,153,0.4)" }}>
-          <span style={{ fontSize: "13px", color: "#ec4899", fontWeight: "500" }}>
+        <div className="card p-3 flex justify-between items-center bg-pink-500/[0.06] border border-dashed border-pink-500/40">
+          <span className="text-sm text-pink-500 font-medium">
             ⚡ 网页并行比对中，您可以通过输入下方 Prompt 并点击【同步发送】进行提问。
           </span>
-          <button className="btn btn-secondary" onClick={handleCloseWebCompare} style={{ padding: "4px 12px", fontSize: "12px" }}>
+          <button className="btn btn-secondary px-3 py-1 text-xs" onClick={handleCloseWebCompare}>
             ❌ 关闭所有子网页
           </button>
         </div>
@@ -746,11 +731,11 @@ ${sources}
 
       {/* Central Input Prompt Form */}
       {(!webActive || mode === "web") && (
-        <form onSubmit={mode === "api" ? handleApiCompareSubmit : (e) => e.preventDefault()} className="card" style={{ padding: "16px", display: "flex", flexDirection: "column", gap: "12px" }}>
+        <form onSubmit={mode === "api" ? handleApiCompareSubmit : (e) => e.preventDefault()} className="card p-4 flex flex-col gap-3">
           <div className="form-group">
-            <label style={{ display: "flex", justifyContent: "space-between" }}>
+            <label className="flex justify-between">
               <span>输入开发提问/提示词 (System Prompt)</span>
-              <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
+              <span className="text-xs text-muted-foreground">
                 快捷模板：点选常用 CORS 域名跨域、异步 Tokio 死锁、线程安全缓存
               </span>
             </label>
@@ -764,61 +749,61 @@ ${sources}
             />
           </div>
 
-          <div style={{ display: "flex", gap: "10px" }}>
+          <div className="flex gap-2.5">
             {mode === "api" ? (
-              <button type="submit" className="btn btn-primary" style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" }}>
+              <button type="submit" className="btn btn-primary flex-1 flex items-center justify-center gap-1.5">
                 🎯 开始 API 并行比对
               </button>
             ) : (
-              <button 
-                type="button" 
-                className="btn btn-primary"
+              <button
+                type="button"
+                className="btn btn-primary flex-1 flex items-center justify-center gap-1.5"
                 onClick={handleWebSyncPrompt}
                 disabled={!webActive}
-                style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" }}
               >
                 🚀 全局同步发问 (Sync Web Prompt)
               </button>
             )}
           </div>
-          
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
-            <span className="cap-badge speedy" style={{ cursor: "pointer" }} onClick={() => setPrompt("如何解决 Node.js 跨域请求（CORS）中首发 OPTIONS 预检请求抛出的 403 跨域失败错误？")}>CORS OPTIONS 预检</span>
-            <span className="cap-badge reas" style={{ cursor: "pointer" }} onClick={() => setPrompt("分析以下 Rust 代码在使用 tokio::sync::Mutex 时为什么在多路 select 中造成死锁，如何用 std 或 ParkingLot 锁修复？")}>Tokio 异步死锁</span>
-            <span className="cap-badge cod" style={{ cursor: "pointer" }} onClick={() => setPrompt("编写一个用 Rust 泛型实现的高并发 Thread-Safe LruCache 缓存模块，要求附带生命周期淘汰逻辑与单元测试用例。")}>高并发线程安全缓存</span>
+
+          <div className="flex flex-wrap gap-1.5">
+            <span className="cap-badge speedy cursor-pointer" onClick={() => setPrompt("如何解决 Node.js 跨域请求（CORS）中首发 OPTIONS 预检请求抛出的 403 跨域失败错误？")}>CORS OPTIONS 预检</span>
+            <span className="cap-badge reas cursor-pointer" onClick={() => setPrompt("分析以下 Rust 代码在使用 tokio::sync::Mutex 时为什么在多路 select 中造成死锁，如何用 std 或 ParkingLot 锁修复？")}>Tokio 异步死锁</span>
+            <span className="cap-badge cod cursor-pointer" onClick={() => setPrompt("编写一个用 Rust 泛型实现的高并发 Thread-Safe LruCache 缓存模块，要求附带生命周期淘汰逻辑与单元测试用例。")}>高并发线程安全缓存</span>
           </div>
         </form>
       )}
 
       {/* Side-by-Side Display Columns */}
-      
+
       {/* API Columns */}
       {mode === "api" && Object.keys(apiResults).length > 0 && (
-        <div style={{ display: "grid", gridTemplateColumns: `repeat(${selectedApiAccs.length}, 1fr)`, gap: "15px", minHeight: "260px" }}>
+        // TODO: migrate to Tailwind - gridTemplateColumns is dynamic based on selectedApiAccs.length
+        <div style={{ display: "grid", gridTemplateColumns: `repeat(${selectedApiAccs.length}, 1fr)` }} className="gap-[15px] min-h-[260px]">
           {selectedApiAccs.map(accId => {
             const res = apiResults[accId];
             if (!res) return null;
             return (
-              <div key={accId} className="card" style={{ display: "flex", flexDirection: "column", height: "100%", padding: "16px", background: "rgba(18, 18, 24, 0.75)" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid var(--border-color)", paddingBottom: "10px", marginBottom: "12px" }}>
+              <div key={accId} className="card glass-card flex flex-col h-full p-4">
+                <div className="flex justify-between items-center border-b border-border pb-2.5 mb-3">
                   <div>
-                    <strong style={{ fontSize: "14px", display: "block" }}>{res.accountName}</strong>
-                    <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>{res.model}</span>
+                    <strong className="text-sm block">{res.accountName}</strong>
+                    <span className="text-xs text-muted-foreground">{res.model}</span>
                   </div>
                   {res.loading ? (
                     <span className="pulse-dot active" title="正在生成实时流..." />
                   ) : (
-                    <button className="btn-icon" onClick={() => handleCopyText(res.content)} title="复制代码" style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: "14px" }}>
+                    <button className="btn-icon border-none bg-transparent cursor-pointer text-sm" onClick={() => handleCopyText(res.content)} title="复制代码">
                       📋
                     </button>
                   )}
                 </div>
-                
-                <div style={{ flex: 1, minHeight: "180px", overflowY: "auto", fontSize: "13px", lineHeight: "1.6", whiteSpace: "pre-wrap", color: "#e5e7eb" }}>
+
+                <div className="flex-1 min-h-[180px] overflow-y-auto text-sm leading-relaxed whitespace-pre-wrap text-gray-200">
                   {res.error ? (
-                    <span style={{ color: "#ef4444" }}>🚫 错误: {res.error}</span>
+                    <span className="text-red-500">🚫 错误: {res.error}</span>
                   ) : (
-                    res.content || <span style={{ color: "var(--text-muted)" }}>等待回答流生成中...</span>
+                    res.content || <span className="text-muted-foreground">等待回答流生成中...</span>
                   )}
                 </div>
               </div>
@@ -829,29 +814,20 @@ ${sources}
 
       {/* Web Columns Placeholders */}
       {mode === "web" && webActive && (
-        <div style={{ display: "grid", gridTemplateColumns: `repeat(${selectedWebExps.length}, 1fr)`, gap: "12px", height: "450px", border: "1px solid var(--border-color)", borderRadius: "12px", background: "rgba(0,0,0,0.15)", padding: "8px", overflow: "hidden" }}>
+        // TODO: migrate to Tailwind - gridTemplateColumns is dynamic based on selectedWebExps.length
+        <div style={{ display: "grid", gridTemplateColumns: `repeat(${selectedWebExps.length}, 1fr)` }} className="gap-3 h-[450px] border border-border rounded-xl bg-black/15 p-2 overflow-hidden">
           {selectedWebExps.map(expId => {
             const exp = WEB_EXPERTS.find(e => e.id === expId);
             return (
-              <div 
+              <div
                 key={expId}
-                className="web-placeholder-card"
+                className="web-placeholder-card h-full rounded-lg border border-dashed border-white/[0.06] bg-black/45 flex items-center justify-center relative"
                 data-exp-id={expId}
-                style={{
-                  height: "100%",
-                  borderRadius: "8px",
-                  border: "1px dashed rgba(255,255,255,0.06)",
-                  background: "rgba(0,0,0,0.45)",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  position: "relative"
-                }}
               >
                 {/* Visual indicator for HTML placeholder bounding box */}
-                <div style={{ textAlign: "center", opacity: 0.15, pointerEvents: "none" }}>
-                  <span style={{ fontSize: "28px", display: "block", marginBottom: "8px" }}>🌐</span>
-                  <span style={{ fontSize: "12px" }}>{exp?.name} Native View</span>
+                <div className="text-center opacity-15 pointer-events-none">
+                  <span className="text-[28px] block mb-2">🌐</span>
+                  <span className="text-xs">{exp?.name} Native View</span>
                 </div>
               </div>
             );
@@ -861,61 +837,45 @@ ${sources}
 
       {/* Summary Fusion Furnace Card */}
       {((mode === "api" && Object.keys(apiResults).length > 0) || (mode === "web" && webActive)) && (
-        <div className="card" style={{
-          padding: "20px",
+        <div className="card p-5 flex flex-col gap-4" style={{
           background: "linear-gradient(135deg, rgba(168, 85, 247, 0.08) 0%, rgba(236, 72, 153, 0.08) 100%)",
           border: "1px solid rgba(168, 85, 247, 0.25)",
-          boxShadow: "0 4px 20px rgba(168,85,247,0.15)",
-          display: "flex",
-          flexDirection: "column",
-          gap: "16px"
+          boxShadow: "0 4px 20px rgba(168,85,247,0.15)"
         }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div className="flex justify-between items-center">
             <div>
-              <strong style={{ fontSize: "15px", color: "#f3e8ff", display: "block" }}>🔮 AI 专家比对总结熔炼炉 (Fusion Summary Furnace)</strong>
-              <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
-                {mode === "api" 
+              <strong className="text-base text-purple-100 block">🔮 AI 专家比对总结熔炼炉 (Fusion Summary Furnace)</strong>
+              <span className="text-xs text-muted-foreground">
+                {mode === "api"
                   ? "提取上述所有 API 专家的回答内容进行智能提炼，融合出最安全、无漏洞的最优系统级决策。"
                   : "自动抓取上述所有原生网页的内容文字（InnerText），并通过最强模型提炼最佳答案。"}
               </span>
             </div>
-            
-            <button 
-              className="btn btn-primary"
+
+            <button
+              className="btn btn-primary py-2 px-5 flex items-center gap-1.5"
               onClick={handleFusionSummary}
               disabled={fusionLoading}
-              style={{ padding: "8px 20px", display: "flex", alignItems: "center", gap: "6px" }}
             >
               {fusionLoading ? "熔炼中..." : "🔥 开始点火熔炼"}
             </button>
           </div>
 
           {(fusionLoading || fusionContent) && (
-            <div style={{
-              background: "rgba(0,0,0,0.35)",
-              border: "1px solid rgba(168,85,247,0.15)",
-              borderRadius: "8px",
-              padding: "16px",
-              minHeight: "100px",
-              fontSize: "13px",
-              lineHeight: "1.6",
-              color: "#e5e7eb",
-              whiteSpace: "pre-wrap",
-              position: "relative"
-            }}>
+            <div className="bg-black/35 border border-purple-500/15 rounded-lg p-4 min-h-[100px] text-sm leading-relaxed text-gray-200 whitespace-pre-wrap relative">
               {fusionContent ? (
                 <>
-                  <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "8px", borderBottom: "1px solid rgba(255,255,255,0.04)", paddingBottom: "6px" }}>
-                    <button className="btn-icon" onClick={() => handleCopyText(fusionContent)} title="复制熔炼方案" style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: "14px" }}>
+                  <div className="flex justify-end mb-2 border-b border-white/[0.04] pb-1.5">
+                    <button className="btn-icon border-none bg-transparent cursor-pointer text-sm" onClick={() => handleCopyText(fusionContent)} title="复制熔炼方案">
                       📋 复制方案
                     </button>
                   </div>
                   {fusionContent}
                 </>
               ) : (
-                <div style={{ textAlign: "center", padding: "20px 0" }}>
-                  <span className="pulse-dot active" style={{ display: "inline-block", marginRight: "10px" }} />
-                  <span style={{ color: "var(--text-muted)" }}>正在从各大网页与回答中深度提炼知识，生成首席架构师决策方案中...</span>
+                <div className="text-center py-5">
+                  <span className="pulse-dot active inline-block mr-2.5" />
+                  <span className="text-muted-foreground">正在从各大网页与回答中深度提炼知识，生成首席架构师决策方案中...</span>
                 </div>
               )}
             </div>

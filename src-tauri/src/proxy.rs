@@ -149,6 +149,7 @@ impl ProxyServer {
         let app = Router::new()
             .route("/v1/messages", post(handle_messages))
             .route("/v1/chat/completions", post(handle_openai_forward))
+            .route("/v1/embeddings", post(handle_embeddings))
             .route("/agent/:agent_name/v1/messages", post(handle_messages_for_agent))
             .route("/agent/:agent_name/v1/chat/completions", post(handle_openai_forward_for_agent))
             .route("/remote", axum::routing::get(serve_remote_html))
@@ -265,7 +266,7 @@ async fn handle_messages_impl(
         }) {
             let mut best_model = None;
             let mut highest_score = -1;
-            for (model_name, platform_id, vis, reas, cod, api_key, api_address, api_type) in active_models {
+            for (model_name, platform_id, vis, reas, cod, api_key, _api_address, api_type) in active_models {
                 if api_key.trim().is_empty() && api_type != "ollama" {
                     continue;
                 }
@@ -600,7 +601,7 @@ async fn handle_openai_forward_impl(
         }) {
             let mut best_model = None;
             let mut highest_score = -1;
-            for (model_name, platform_id, vis, reas, cod, api_key, api_address, api_type) in active_models {
+            for (model_name, platform_id, vis, reas, cod, api_key, _api_address, api_type) in active_models {
                 if api_key.trim().is_empty() && api_type != "ollama" {
                     continue;
                 }
@@ -1101,33 +1102,6 @@ async fn post_remote_cron_trigger(
 
 // --- Dynamic Capability Routing Helpers ---
 
-struct CandidateAccount {
-    api_key: String,
-    api_host: String,
-    target_model: String,
-}
-
-fn get_candidate_accounts(db: &DbManager) -> Result<Vec<CandidateAccount>, rusqlite::Error> {
-    let conn = db.get_connection()?;
-    let mut stmt = conn.prepare("SELECT api_key, api_host, target_model FROM agent_accounts")?;
-    let rows = stmt.query_map([], |row| {
-        Ok(CandidateAccount {
-            api_key: row.get(0)?,
-            api_host: row.get(1)?,
-            target_model: row.get(2)?,
-        })
-    })?;
-    
-    let mut list = Vec::new();
-    for r in rows {
-        if let Ok(cand) = r {
-            if !cand.api_key.trim().is_empty() {
-                list.push(cand);
-            }
-        }
-    }
-    Ok(list)
-}
 
 fn classify_request_capabilities(messages: &[OpenAIRequestMessage]) -> (bool, bool, bool, bool) {
     let mut need_vision = false;
@@ -1218,46 +1192,6 @@ fn classify_anthropic_capabilities(payload: &AnthropicRequest) -> (bool, bool, b
     (need_vision, need_reasoning, need_coding, need_speedy)
 }
 
-fn get_model_capabilities_static(model: &str) -> (bool, bool, bool, bool) {
-    let model_lower = model.to_lowercase();
-    
-    let has_vision = model_lower.contains("gpt-4o") 
-        || model_lower.contains("claude-3-5-sonnet") 
-        || model_lower.contains("claude-3-opus")
-        || model_lower.contains("gemini-1.5")
-        || model_lower.contains("gemini-2.0")
-        || model_lower.contains("vision")
-        || model_lower.contains("llava");
-        
-    let has_reasoning = model_lower.contains("o1") 
-        || model_lower.contains("o3-mini") 
-        || model_lower.contains("r1")
-        || model_lower.contains("reasoner")
-        || model_lower.contains("qwq");
-        
-    let has_coding = model_lower.contains("coder") 
-        || model_lower.contains("code") 
-        || model_lower.contains("gpt") 
-        || model_lower.contains("claude")
-        || model_lower.contains("gemini")
-        || model_lower.contains("deepseek")
-        || model_lower.contains("llama")
-        || model_lower.contains("qwen")
-        || model_lower.contains("mistral")
-        || model_lower.contains("phi")
-        || model_lower.contains("gemma");
-        
-    let has_speedy = model_lower.contains("mini") 
-        || model_lower.contains("flash") 
-        || model_lower.contains("haiku")
-        || model_lower.contains("speed")
-        || model_lower.contains("8b")
-        || model_lower.contains("3b")
-        || model_lower.contains("1.5b")
-        || model_lower.contains("deepseek-chat");
-
-    (has_vision, has_reasoning, has_coding, has_speedy)
-}
 
 fn resolve_model_upstream(
     db: &DbManager,
@@ -1333,4 +1267,88 @@ fn join_url(base: &str, path: &str) -> String {
     let base_trimmed = base.trim_end_matches('/');
     let path_trimmed = path.trim_start_matches('/');
     format!("{}/{}", base_trimmed, path_trimmed)
+}
+
+// ── Embeddings Handler ─────────────────────────────────
+//
+// Transparent proxy for /v1/embeddings requests.
+// Resolves the model to its upstream platform, then forwards
+// the request to the appropriate embedding API endpoint:
+//   - Ollama:  POST {api_address}/api/embeddings
+//   - Others:  POST {api_address}/embeddings
+
+async fn handle_embeddings(
+    State(state): State<Arc<ProxyState>>,
+    _headers: HeaderMap,
+    Json(payload): Json<Value>,
+) -> Response {
+    let model_name = match payload.get("model").and_then(|m| m.as_str()) {
+        Some(m) => m.to_string(),
+        None => {
+            return (StatusCode::BAD_REQUEST, "Missing 'model' field in request body").into_response();
+        }
+    };
+
+    // Resolve the model to an upstream platform
+    let (api_key, api_address, api_type, actual_model) =
+        match resolve_model_upstream(&state.db, &model_name) {
+            Ok(res) => res,
+            Err(e) => {
+                return (StatusCode::NOT_FOUND, format!("Model resolution failed: {}", e)).into_response();
+            }
+        };
+
+    // Build the upstream URL based on api_type
+    let upstream_url = match api_type.as_str() {
+        "ollama" => join_url(&api_address, "/api/embeddings"),
+        _ => join_url(&api_address, "/embeddings"),
+    };
+
+    // Replace the model name in the payload with the actual model name
+    let mut forwarded_payload = payload.clone();
+    if let Some(obj) = forwarded_payload.as_object_mut() {
+        obj.insert("model".to_string(), Value::String(actual_model.clone()));
+    }
+
+    // Ollama uses a different request format: {"model", "prompt"} instead of {"model", "input"}
+    // Convert OpenAI format to Ollama format if needed
+    if api_type.as_str() == "ollama" {
+        if let Some(obj) = forwarded_payload.as_object_mut() {
+            // Ollama only supports single-prompt embedding; extract first input string
+            if let Some(input) = obj.remove("input") {
+                let prompt = match input {
+                    Value::String(s) => s,
+                    Value::Array(arr) => arr.first()
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    _ => String::new(),
+                };
+                obj.insert("prompt".to_string(), Value::String(prompt));
+            }
+        }
+    }
+
+    // Forward the request
+    let mut req = state.http_client.post(&upstream_url).json(&forwarded_payload);
+    if !api_key.trim().is_empty() {
+        req = req.header("Authorization", format!("Bearer {}", api_key.trim()));
+    }
+
+    match req.send().await {
+        Ok(resp) => {
+            let status = resp.status();
+            let body = match resp.bytes().await {
+                Ok(b) => b,
+                Err(e) => {
+                    return (StatusCode::BAD_GATEWAY, format!("Failed to read upstream response: {}", e)).into_response();
+                }
+            };
+            // Return the upstream response as-is
+            (status, body.to_vec()).into_response()
+        }
+        Err(e) => {
+            (StatusCode::BAD_GATEWAY, format!("Upstream request failed: {}", e)).into_response()
+        }
+    }
 }

@@ -1,0 +1,30 @@
+{
+  "decision_id": "DEC-016",
+  "topic": "状态管理方案：自定义 Hooks（不引入 Redux/Zustand）",
+  "context": "当前 App.tsx 有 40+ useState，需要决定状态管理策略。",
+  "options_considered": [
+    "引入 Zustand 作为全局状态管理",
+    "引入 Redux Toolkit",
+    "自定义 Hooks + MainApp 编排器（Props 传递）"
+  ],
+  "chosen_option": "自定义 Hooks + MainApp 编排器",
+  "reasoning": [
+    "当前状态天然按领域分组（settings/platforms/accounts/conversations/cron/preview/diagnostics/remote/resizer），每个 Hook 封装一组相关 state + handler",
+    "Hooks 是 React 内置机制，零额外依赖",
+    "MainApp 作为编排器实例化所有 Hook 并传递 props，逻辑清晰",
+    "项目规模（9 Tab、~40 个状态变量）尚不需要全局 store 的复杂度",
+    "未来如需跨组件共享状态，可渐进式引入 Context 或 Zustand"
+  ],
+  "tradeoffs": [
+    "MainApp 仍需持有所有 Hook 实例并传递 props，存在一定 prop drilling",
+    "跨 Hook 调用（如 handleTabChange 跨多个 Hook）需在 MainApp 层编排"
+  ],
+  "impact_scope": [
+    "src/hooks/* — 9 个自定义 Hook 文件",
+    "src/App.tsx — MainApp 实例化 Hooks 并传递给子组件"
+  ],
+  "future_risks": [
+    "如果后续 Tab 间状态交互变复杂，可能需要引入 Context 或 Zustand 来减少 prop drilling"
+  ],
+  "timestamp": "2026-06-06T10:00:00+08:00"
+}

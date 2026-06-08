@@ -240,7 +240,7 @@ export const WelcomeTour: React.FC<WelcomeTourProps> = ({
 
       {/* Onboarding Popover Card */}
       <div className="tour-popover" style={getPopoverStyle()}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
+        <div className="flex items-center justify-between mb-3">
           <h4 className="tour-title">{step.title}</h4>
           <span className="tour-steps-count">
             {currentStep + 1} / {TOUR_STEPS.length}
@@ -249,7 +249,7 @@ export const WelcomeTour: React.FC<WelcomeTourProps> = ({
         
         <p className="tour-content">{step.content}</p>
         
-        <div className="tour-actions" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "16px" }}>
+        <div className="tour-actions flex items-center justify-between mt-4">
           <button 
             className="tour-btn-skip" 
             onClick={handleComplete}
@@ -258,7 +258,7 @@ export const WelcomeTour: React.FC<WelcomeTourProps> = ({
             跳过指引
           </button>
           
-          <div style={{ display: "flex", gap: "8px" }}>
+          <div className="flex gap-2">
             {currentStep > 0 && (
               <button className="tour-btn tour-btn-secondary" onClick={handleBack}>
                 上一步

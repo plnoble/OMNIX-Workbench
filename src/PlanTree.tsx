@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { cn } from "@/lib/utils";
+import { toast } from "@/components/ui/sonner";
 
 interface TaskNode {
   id: string;
@@ -72,7 +74,7 @@ export const PlanTree: React.FC<PlanTreeProps> = ({ conversationId, containerWid
             dependencies: [],
           }));
           setTasks(formattedTasks);
-          
+
           // Re-fetch mailbox messages as they might have updated
           invoke<MailboxMessage[]>("get_mailbox_messages")
             .then(setMailboxMsgs)
@@ -101,7 +103,7 @@ export const PlanTree: React.FC<PlanTreeProps> = ({ conversationId, containerWid
         fetchData();
       }, 500);
     } catch (err) {
-      alert(`Simulation failed: ${err}`);
+      toast.error(`Simulation failed: ${err}`);
       setLoading(false);
     }
   };
@@ -111,21 +113,20 @@ export const PlanTree: React.FC<PlanTreeProps> = ({ conversationId, containerWid
   const progressPercent = tasks.length > 0 ? Math.round((completedCount / tasks.length) * 100) : 0;
 
   return (
-    <div className="card animate-fade-in" style={{ height: "100%", display: "flex", flexDirection: "column", gap: "20px", overflow: "hidden" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid var(--border-color)", paddingBottom: "12px" }}>
+    <div className="card animate-fade-in h-full flex flex-col gap-5 overflow-hidden">
+      <div className="flex justify-between items-center border-b border-border pb-3">
         <div>
-          <h3 style={{ margin: 0, fontSize: "16px", display: "flex", alignItems: "center", gap: "8px" }}>
+          <h3 className="m-0 text-base flex items-center gap-2">
             👥 Team Mode 协同任务树与计划看板
           </h3>
-          <p style={{ margin: "4px 0 0 0", color: "var(--text-secondary)", fontSize: "12px" }}>
+          <p className="mt-1 text-secondary-foreground text-xs">
             可视化的 Agent 协作计划树，追踪 Leader 分发至辅 Agent 的子任务。
           </p>
         </div>
-        <button 
-          className="btn btn-secondary" 
-          onClick={fetchData} 
+        <button
+          className={cn("btn btn-secondary", "px-2 py-1 text-xs")}
+          onClick={fetchData}
           disabled={loading}
-          style={{ padding: "4px 8px", fontSize: "11px" }}
         >
           {loading ? "更新中..." : "🔄 刷新"}
         </button>
@@ -133,16 +134,17 @@ export const PlanTree: React.FC<PlanTreeProps> = ({ conversationId, containerWid
 
       {/* Progress Section */}
       {tasks.length > 0 && (
-        <div style={{ background: "rgba(255,255,255,0.02)", padding: "12px", borderRadius: "8px", border: "1px solid var(--border-color)" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", marginBottom: "6px" }}>
-            <span style={{ color: "var(--text-secondary)" }}>任务完成度: {completedCount}/{tasks.length}</span>
-            <span style={{ color: "var(--color-primary)", fontWeight: 600 }}>{progressPercent}%</span>
+        <div className="bg-white/[0.02] p-3 rounded-lg border border-border">
+          <div className="flex justify-between text-xs mb-1.5">
+            <span className="text-secondary-foreground">任务完成度: {completedCount}/{tasks.length}</span>
+            <span className="text-[var(--color-primary)] font-semibold">{progressPercent}%</span>
           </div>
-          <div style={{ width: "100%", height: "6px", background: "rgba(255,255,255,0.05)", borderRadius: "3px", overflow: "hidden" }}>
-            <div 
-              style={{ 
-                width: `${progressPercent}%`, 
-                height: "100%", 
+          <div className="w-full h-1.5 bg-white/[0.05] rounded-sm overflow-hidden">
+            {/* TODO: migrate to Tailwind — dynamic width and CSS-variable gradient */}
+            <div
+              style={{
+                width: `${progressPercent}%`,
+                height: "100%",
                 background: "linear-gradient(90deg, var(--color-primary), var(--color-secondary))",
                 transition: "width 0.4s ease"
               }}
@@ -152,104 +154,83 @@ export const PlanTree: React.FC<PlanTreeProps> = ({ conversationId, containerWid
       )}
 
       {/* Layout Grid: Tasks Tree on Left, Simulation/Mailbox on Right */}
-      <div style={{ 
-        display: containerWidth < 520 ? "flex" : "grid", 
-        flexDirection: containerWidth < 520 ? "column" : undefined,
-        gridTemplateColumns: containerWidth < 520 ? undefined : "1.2fr 1fr", 
-        gap: "20px", 
-        flexGrow: 1, 
-        overflowY: containerWidth < 520 ? "auto" : "hidden",
-        overflowX: "hidden"
-      }}>
-        
+      <div className={cn(
+        containerWidth < 520 ? "flex flex-col overflow-y-auto" : "grid grid-cols-[1.2fr_1fr] overflow-y-hidden",
+        "gap-5 grow overflow-x-hidden"
+      )}>
+
         {/* Left Side: Visual Plan Tree */}
-        <div style={{ 
-          display: "flex", 
-          flexDirection: "column", 
-          gap: "12px", 
-          overflowY: containerWidth < 520 ? "visible" : "auto", 
-          paddingRight: "8px" 
-        }}>
-          <h4 style={{ fontSize: "13px", color: "var(--text-primary)", display: "flex", alignItems: "center", gap: "6px" }}>
+        <div className={cn(
+          "flex flex-col gap-3 pr-2",
+          containerWidth < 520 ? "overflow-y-visible" : "overflow-y-auto"
+        )}>
+          <h4 className="text-sm text-foreground flex items-center gap-1.5">
             📋 计划树结构 (To-Do List)
           </h4>
 
           {tasks.length === 0 ? (
-            <div style={{ 
-              display: "flex", 
-              flexDirection: "column", 
-              alignItems: "center", 
-              justifyContent: "center", 
-              height: "200px", 
-              borderRadius: "8px", 
-              border: "1px dashed var(--border-color)",
-              color: "var(--text-muted)",
-              textAlign: "center",
-              padding: "16px"
-            }}>
-              <span style={{ fontSize: "24px", marginBottom: "8px" }}>🌳</span>
-              <p style={{ fontSize: "12px", margin: 0 }}>暂无协作任务。</p>
-              <p style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px" }}>
+            <div className="flex flex-col items-center justify-center h-[200px] rounded-lg border border-dashed border-border text-muted-foreground text-center p-4">
+              <span className="text-2xl mb-2">🌳</span>
+              <p className="text-xs m-0">暂无协作任务。</p>
+              <p className="text-xs text-muted-foreground mt-1">
                 运行 Agent 时，OMNIX 将自动捕获 ACP 协议数据生成计划树，或者使用右侧仿真引擎进行点火调试。
               </p>
             </div>
           ) : (
-            <div style={{ display: "flex", flexDirection: "column", position: "relative", paddingLeft: "20px", borderLeft: "2px solid rgba(255,255,255,0.05)" }}>
+            <div className="flex flex-col relative pl-5 border-l-2 border-white/[0.05]">
               {tasks.map((task) => {
                 const isActive = task.status === "in_progress";
                 const isDone = task.status === "done";
-                
+
                 return (
-                  <div 
-                    key={task.id} 
-                    style={{ 
-                      position: "relative", 
-                      marginBottom: "16px",
-                      background: isActive ? "rgba(79, 172, 254, 0.04)" : "transparent",
-                      border: isActive ? "1px solid rgba(79, 172, 254, 0.2)" : "1px solid transparent",
-                      borderRadius: "8px",
-                      padding: isActive ? "10px" : "4px 0",
-                      transition: "all 0.3s"
-                    }}
+                  <div
+                    key={task.id}
+                    className={cn(
+                      "relative mb-4 rounded-lg transition-all duration-300",
+                      isActive
+                        ? "bg-[rgba(79,172,254,0.04)] border border-[rgba(79,172,254,0.2)] p-2.5"
+                        : "border border-transparent py-1"
+                    )}
                   >
                     {/* Stepper connector bullet */}
-                    <div 
-                      style={{ 
-                        position: "absolute", 
-                        left: isActive ? "-27px" : "-26px", 
-                        top: isActive ? "14px" : "8px", 
-                        width: isActive ? "12px" : "10px", 
-                        height: isActive ? "12px" : "10px", 
-                        borderRadius: "50%", 
-                        background: isDone ? "var(--color-success)" : isActive ? "var(--color-warning)" : "var(--text-muted)",
-                        boxShadow: isActive ? "0 0 10px var(--color-warning)" : isDone ? "0 0 8px var(--color-success)" : "none",
-                        transition: "all 0.3s",
-                        zIndex: 2
-                      }}
+                    <div
+                      className={cn(
+                        "absolute rounded-full transition-all duration-300 z-[2]",
+                        isActive
+                          ? "-left-[27px] top-[14px] w-3 h-3"
+                          : "-left-[26px] top-2 w-2.5 h-2.5",
+                        isDone
+                          ? "bg-emerald-500"
+                          : isActive
+                            ? "bg-amber-500"
+                            : "bg-muted-foreground",
+                        isActive
+                          ? "shadow-[0_0_10px_var(--color-warning)]"
+                          : isDone
+                            ? "shadow-[0_0_8px_var(--color-success)]"
+                            : "shadow-none"
+                      )}
                     />
 
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "10px" }}>
-                      <span 
-                        style={{ 
-                          fontSize: "13px", 
-                          color: isDone ? "var(--text-muted)" : "var(--text-primary)",
-                          textDecoration: isDone ? "line-through" : "none",
-                          fontWeight: isActive ? 600 : 400,
-                          lineHeight: "1.4"
-                        }}
+                    <div className="flex justify-between items-start gap-2.5">
+                      <span
+                        className={cn(
+                          "text-sm leading-[1.4]",
+                          isDone ? "text-muted-foreground line-through" : "text-foreground",
+                          isActive ? "font-semibold" : "font-normal"
+                        )}
                       >
                         {task.title}
                       </span>
-                      <span 
-                        style={{ 
-                          fontSize: "10px", 
-                          padding: "2px 6px", 
-                          borderRadius: "4px",
-                          fontWeight: 500,
-                          background: isDone ? "rgba(16, 185, 129, 0.1)" : isActive ? "rgba(245, 158, 11, 0.1)" : "rgba(255,255,255,0.03)",
-                          color: isDone ? "var(--color-success)" : isActive ? "var(--color-warning)" : "var(--text-muted)",
-                          border: isDone ? "1px solid rgba(16, 185, 129, 0.2)" : isActive ? "1px solid rgba(245, 158, 11, 0.2)" : "1px solid transparent"
-                        }}
+                      <span
+                        className={cn(
+                          "text-[10px] px-1.5 py-0.5 rounded font-medium",
+                          isDone
+                            ? "bg-emerald-500/10 text-emerald-500 border border-emerald-500/20"
+                            : isActive
+                              ? "bg-amber-500/10 text-amber-500 border border-amber-500/20"
+                              : "bg-white/[0.03] text-muted-foreground border border-transparent"
+                        )}
                       >
                         {isDone ? "已完成" : isActive ? "运行中" : "未开始"}
                       </span>
@@ -262,30 +243,25 @@ export const PlanTree: React.FC<PlanTreeProps> = ({ conversationId, containerWid
         </div>
 
         {/* Right Side: Simulation Panel & Mailbox Message log */}
-        <div style={{ 
-          display: "flex", 
-          flexDirection: "column", 
-          gap: "16px", 
-          overflowY: containerWidth < 520 ? "visible" : "auto", 
-          paddingRight: "8px", 
-          borderLeft: containerWidth < 520 ? "none" : "1px solid var(--border-color)", 
-          paddingLeft: containerWidth < 520 ? "0" : "16px",
-          borderTop: containerWidth < 520 ? "1px solid var(--border-color)" : "none",
-          paddingTop: containerWidth < 520 ? "16px" : "0"
-        }}>
-          
+        <div className={cn(
+          "flex flex-col gap-4 pr-2",
+          containerWidth < 520
+            ? "overflow-y-visible pl-0 pt-4 border-t border-border"
+            : "overflow-y-auto pl-4 pt-0 border-l border-border"
+        )}>
+
           {/* Simulator Form */}
-          <div style={{ background: "rgba(255,255,255,0.01)", border: "1px solid var(--border-color)", borderRadius: "10px", padding: "14px" }}>
-            <h4 style={{ fontSize: "12px", margin: "0 0 10px 0", color: "var(--color-secondary)" }}>🧪 Team Mode 协议调试仿真器</h4>
-            
-            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
+          <div className="bg-white/[0.01] border border-border rounded-[10px] p-3.5">
+            <h4 className="text-xs mb-2.5 text-[var(--color-secondary)]">🧪 Team Mode 协议调试仿真器</h4>
+
+            <div className="flex flex-col gap-2.5">
+              <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label style={{ fontSize: "10px", color: "var(--text-secondary)", display: "block", marginBottom: "4px" }}>Leader Agent</label>
-                  <select 
-                    value={leader} 
+                  <label className="text-[10px] text-secondary-foreground block mb-1">Leader Agent</label>
+                  <select
+                    value={leader}
                     onChange={(e) => setLeader(e.target.value)}
-                    style={{ width: "100%", background: "var(--bg-primary)", border: "1px solid var(--border-color)", borderRadius: "4px", color: "#fff", fontSize: "11px", padding: "4px" }}
+                    className="w-full bg-background border border-border rounded text-white text-xs p-1"
                   >
                     <option value="Claude Code">Claude Code</option>
                     <option value="Google Antigravity">Google Antigravity</option>
@@ -293,11 +269,11 @@ export const PlanTree: React.FC<PlanTreeProps> = ({ conversationId, containerWid
                   </select>
                 </div>
                 <div>
-                  <label style={{ fontSize: "10px", color: "var(--text-secondary)", display: "block", marginBottom: "4px" }}>Teammate Agent</label>
-                  <select 
-                    value={teammate} 
+                  <label className="text-[10px] text-secondary-foreground block mb-1">Teammate Agent</label>
+                  <select
+                    value={teammate}
                     onChange={(e) => setTeammate(e.target.value)}
-                    style={{ width: "100%", background: "var(--bg-primary)", border: "1px solid var(--border-color)", borderRadius: "4px", color: "#fff", fontSize: "11px", padding: "4px" }}
+                    className="w-full bg-background border border-border rounded text-white text-xs p-1"
                   >
                     <option value="Google Antigravity">Google Antigravity</option>
                     <option value="OpenCode">OpenCode</option>
@@ -306,11 +282,10 @@ export const PlanTree: React.FC<PlanTreeProps> = ({ conversationId, containerWid
                 </div>
               </div>
 
-              <button 
-                className="btn btn-primary" 
+              <button
+                className={cn("btn btn-primary", "w-full py-1.5 text-xs mt-1")}
                 onClick={handleIgniteSimulation}
                 disabled={loading}
-                style={{ width: "100%", padding: "6px", fontSize: "12px", marginTop: "4px" }}
               >
                 {loading ? "仿真点火中..." : "🔥 点火团队协同仿真"}
               </button>
@@ -318,59 +293,46 @@ export const PlanTree: React.FC<PlanTreeProps> = ({ conversationId, containerWid
           </div>
 
           {/* Mailbox Envelope Logs */}
-          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-            <h4 style={{ fontSize: "12px", color: "var(--text-primary)", display: "flex", alignItems: "center", gap: "6px" }}>
+          <div className="flex flex-col gap-2">
+            <h4 className="text-xs text-foreground flex items-center gap-1.5">
               📪 协作信箱数据 (Mailbox Log)
             </h4>
 
             {mailboxMsgs.length === 0 ? (
-              <p style={{ fontSize: "11px", color: "var(--text-muted)", margin: "8px 0", textAlign: "center" }}>
+              <p className="text-xs text-muted-foreground my-2 text-center">
                 信箱空空如也。仿真运行或 Agent 协作时产生的子任务指令信包将落盘在此处。
               </p>
             ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+              <div className="flex flex-col gap-2">
                 {mailboxMsgs.map((msg) => {
                   const isExpanded = expandedMsg === msg.filename;
-                  
+
                   return (
-                    <div 
+                    <div
                       key={msg.filename}
-                      style={{ 
-                        background: "rgba(255,255,255,0.02)", 
-                        border: "1px solid var(--border-color)", 
-                        borderRadius: "8px", 
-                        padding: "8px 12px",
-                        cursor: "pointer"
-                      }}
+                      className="bg-white/[0.02] border border-border rounded-lg px-3 py-2 cursor-pointer"
                       onClick={() => setExpandedMsg(isExpanded ? null : msg.filename)}
                     >
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                        <span style={{ fontSize: "11px", fontFamily: "var(--font-mono)", color: "var(--color-primary)" }}>
+                      <div className="flex justify-between items-center">
+                        <span className="text-xs font-mono text-[var(--color-primary)]">
                           ✉️ {msg.filename.slice(0, 18)}...
                         </span>
-                        <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>
+                        <span className="text-[10px] text-muted-foreground">
                           {msg.timestamp.split("T")[1]?.slice(0, 5) || "Active"}
                         </span>
                       </div>
-                      
-                      <div style={{ fontSize: "11px", margin: "6px 0 2px 0", color: "var(--text-secondary)" }}>
+
+                      <div className="text-xs mt-1.5 mb-0.5 text-secondary-foreground">
                         <strong>{msg.sender}</strong> ➔ <strong>{msg.receiver}</strong>
                       </div>
-                      
-                      <div style={{ fontSize: "11px", color: "var(--text-primary)" }}>
-                        指令: <code style={{ color: "var(--color-warning)", fontFamily: "var(--font-mono)" }}>{msg.command}</code>
+
+                      <div className="text-xs text-foreground">
+                        指令: <code className="text-[var(--color-warning)] font-mono">{msg.command}</code>
                       </div>
 
                       {isExpanded && (
-                        <div style={{ 
-                          marginTop: "8px", 
-                          background: "var(--bg-primary)", 
-                          padding: "8px", 
-                          borderRadius: "4px", 
-                          border: "1px solid rgba(255,255,255,0.03)",
-                          overflowX: "auto"
-                        }}>
-                          <pre style={{ margin: 0, fontSize: "10px", fontFamily: "var(--font-mono)", color: "var(--text-secondary)" }}>
+                        <div className="mt-2 bg-background p-2 rounded border border-white/[0.03] overflow-x-auto">
+                          <pre className="m-0 text-[10px] font-mono text-secondary-foreground">
                             {JSON.stringify(msg.params, null, 2)}
                           </pre>
                         </div>

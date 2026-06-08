@@ -26,6 +26,7 @@ impl DbManager {
         db
     }
 
+    #[allow(dead_code)]
     pub fn new_with_path(db_path: PathBuf) -> Self {
         let db = Self { db_path };
         db.init_schema().expect("Failed to initialize database schema");
@@ -197,6 +198,28 @@ impl DbManager {
             [],
         )?;
 
+        // 6e-migration. Add extended capability columns to platform_models if missing
+        {
+            let cols: Vec<String> = conn
+                .prepare("PRAGMA table_info(platform_models)")?
+                .query_map([], |row| row.get::<_, String>(1))?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            if !cols.iter().any(|c| c == "has_long_context") {
+                let _ = conn.execute("ALTER TABLE platform_models ADD COLUMN has_long_context INTEGER NOT NULL DEFAULT 0", []);
+            }
+            if !cols.iter().any(|c| c == "has_tool_use") {
+                let _ = conn.execute("ALTER TABLE platform_models ADD COLUMN has_tool_use INTEGER NOT NULL DEFAULT 1", []);
+            }
+            if !cols.iter().any(|c| c == "has_embedding") {
+                let _ = conn.execute("ALTER TABLE platform_models ADD COLUMN has_embedding INTEGER NOT NULL DEFAULT 0", []);
+            }
+            if !cols.iter().any(|c| c == "has_speedy") {
+                let _ = conn.execute("ALTER TABLE platform_models ADD COLUMN has_speedy INTEGER NOT NULL DEFAULT 0", []);
+            }
+        }
+
         // 7. Tasks Table (pipeline/todo plans)
         conn.execute(
             "CREATE TABLE IF NOT EXISTS tasks (
@@ -240,6 +263,180 @@ impl DbManager {
             [],
         )?;
 
+        // 10. Knowledge Base Documents Table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS kb_documents (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                source_path TEXT NOT NULL,
+                file_type TEXT NOT NULL DEFAULT 'text',
+                file_hash TEXT NOT NULL DEFAULT '',
+                chunk_count INTEGER NOT NULL DEFAULT 0,
+                total_chars INTEGER NOT NULL DEFAULT 0,
+                embedding_model TEXT NOT NULL DEFAULT '',
+                embedding_status TEXT NOT NULL DEFAULT 'pending',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )?;
+
+        // 11. Knowledge Base Chunks Table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS kb_chunks (
+                id TEXT PRIMARY KEY,
+                document_id TEXT NOT NULL,
+                chunk_index INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                char_start INTEGER NOT NULL DEFAULT 0,
+                char_end INTEGER NOT NULL DEFAULT 0,
+                metadata TEXT NOT NULL DEFAULT '{}',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(document_id) REFERENCES kb_documents(id) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+
+        // 12. Knowledge Base Embeddings Table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS kb_embeddings (
+                chunk_id TEXT PRIMARY KEY,
+                embedding BLOB NOT NULL,
+                model TEXT NOT NULL,
+                dimensions INTEGER NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(chunk_id) REFERENCES kb_chunks(id) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+
+        // 14. Selection History Table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS selection_history (
+                id TEXT PRIMARY KEY,
+                captured_text TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT '',
+                window_title TEXT NOT NULL DEFAULT '',
+                process_name TEXT NOT NULL DEFAULT '',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )?;
+
+        // 15. Translation History Table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS translation_history (
+                id TEXT PRIMARY KEY,
+                source_text TEXT NOT NULL,
+                target_text TEXT NOT NULL,
+                source_lang TEXT NOT NULL DEFAULT '',
+                target_lang TEXT NOT NULL DEFAULT '',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )?;
+
+        // 16. MCP Servers Table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS mcp_servers (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                command TEXT NOT NULL DEFAULT '',
+                args TEXT NOT NULL DEFAULT '[]',
+                env TEXT NOT NULL DEFAULT '{}',
+                url TEXT NOT NULL DEFAULT '',
+                server_type TEXT NOT NULL DEFAULT 'stdio',
+                is_enabled INTEGER NOT NULL DEFAULT 1,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )?;
+
+        // 17. Prompt Library Table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS prompt_library (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                category TEXT NOT NULL DEFAULT 'general',
+                order_key INTEGER NOT NULL DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )?;
+
+        // 18. Search Providers Table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS search_providers (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                api_type TEXT NOT NULL,
+                api_key TEXT NOT NULL DEFAULT '',
+                api_address TEXT NOT NULL DEFAULT '',
+                is_enabled INTEGER NOT NULL DEFAULT 1,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )?;
+
+        // 19. Search History Table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS search_history (
+                id TEXT PRIMARY KEY,
+                query TEXT NOT NULL,
+                provider_id TEXT,
+                result_count INTEGER NOT NULL DEFAULT 0,
+                results_json TEXT NOT NULL DEFAULT '[]',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )?;
+
+        // 20. Activity Log Table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS activity_log (
+                id TEXT PRIMARY KEY,
+                action TEXT NOT NULL,
+                target TEXT NOT NULL DEFAULT '',
+                details TEXT NOT NULL DEFAULT '',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )?;
+
+        // 13. FTS5 Full-Text Index on chunks (external content mode)
+        conn.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS kb_chunks_fts USING fts5(
+                chunk_id,
+                content,
+                content='kb_chunks',
+                content_rowid=rowid,
+                tokenize='porter unicode61'
+            )",
+            [],
+        )?;
+
+        // FTS5 sync triggers
+        conn.execute(
+            "CREATE TRIGGER IF NOT EXISTS kb_chunks_ai AFTER INSERT ON kb_chunks BEGIN
+                INSERT INTO kb_chunks_fts(rowid, chunk_id, content) VALUES (new.rowid, new.id, new.content);
+            END",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TRIGGER IF NOT EXISTS kb_chunks_ad AFTER DELETE ON kb_chunks BEGIN
+                INSERT INTO kb_chunks_fts(kb_chunks_fts, rowid, chunk_id, content) VALUES('delete', old.rowid, old.id, old.content);
+            END",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TRIGGER IF NOT EXISTS kb_chunks_au AFTER UPDATE ON kb_chunks BEGIN
+                INSERT INTO kb_chunks_fts(kb_chunks_fts, rowid, chunk_id, content) VALUES('delete', old.rowid, old.id, old.content);
+                INSERT INTO kb_chunks_fts(rowid, chunk_id, content) VALUES (new.rowid, new.id, new.content);
+            END",
+            [],
+        )?;
+
         // Seed default settings if empty
         self.seed_default_settings(&conn)?;
 
@@ -260,6 +457,10 @@ impl DbManager {
 
         // Seed default platforms if empty
         self.seed_default_platforms(&conn)?;
+        self.seed_default_models(&conn)?;
+
+        // Seed default search providers if empty
+        self.seed_default_search_providers(&conn)?;
 
         Ok(())
     }
@@ -521,6 +722,23 @@ impl DbManager {
             ("auto_start", "false"),
             ("start_to_tray", "true"),
             ("sandbox_dir", "~/.omnix/agents"),
+            ("quick_assistant_shortcut", "Alt+Space"),
+            ("quick_assistant_model", "deepseek-chat"),
+            ("quick_assistant_enabled", "true"),
+            ("quick_assistant_use_kb", "true"),
+            ("selection_assistant_shortcut", "Ctrl+Alt+C"),
+            ("selection_assistant_capture_mode", "hybrid"),
+            ("selection_assistant_show_on_capture", "true"),
+            ("selection_assistant_preserve_clipboard", "false"),
+            ("translate_preferred_lang", "zh-cn"),
+            ("translate_alter_lang", "en-us"),
+            ("translate_model", ""),
+            ("translate_auto_detect", "true"),
+            ("translate_prompt", ""),
+            ("web_search_provider", "tavily"),
+            ("web_search_api_key", ""),
+            ("web_search_enabled", "false"),
+            ("theme_mode", "dark"),
         ];
 
         for (k, v) in defaults.iter() {
@@ -713,6 +931,442 @@ impl DbManager {
         }
 
         Ok(())
+    }
+
+    fn seed_default_models(&self, conn: &Connection) -> Result<()> {
+        let mut stmt = conn.prepare("SELECT COUNT(*) FROM platform_models")?;
+        let count: i64 = stmt.query_row([], |r| r.get(0))?;
+        if count > 0 {
+            return Ok(());
+        }
+
+        // Seed default models for each platform.
+        // These provide "out of the box" model entries so that:
+        // - QA / Translation / Chat can find a chat model
+        // - Knowledge Base can find an embedding model
+        // All are seeded as disabled; users enable them after adding API keys.
+        // Ollama models are auto-enabled (local, no API key needed).
+        let default_models: Vec<(&str, &str, &str, i32, i32, i32, i32, i32, i32, i32, i32)> = vec![
+            // DeepSeek models
+            ("deepseek:deepseek-chat",        "deepseek", "deepseek-chat",       1, 0, 1, 1, 0, 1, 0, 1),
+            ("deepseek:deepseek-reasoner",     "deepseek", "deepseek-reasoner",   0, 0, 1, 0, 0, 1, 0, 0),
+            // OpenAI models
+            ("openai:gpt-4o",                  "openai",   "gpt-4o",              1, 1, 1, 1, 1, 1, 0, 0),
+            ("openai:gpt-4o-mini",             "openai",   "gpt-4o-mini",         1, 0, 0, 1, 0, 1, 0, 1),
+            ("openai:text-embedding-3-small",  "openai",   "text-embedding-3-small", 0, 0, 0, 0, 0, 0, 1, 1),
+            ("openai:text-embedding-3-large",  "openai",   "text-embedding-3-large", 0, 0, 0, 0, 0, 0, 1, 0),
+            // Anthropic models
+            ("anthropic:claude-sonnet-4-6",    "anthropic", "claude-sonnet-4-6",  1, 0, 1, 1, 1, 1, 0, 0),
+            ("anthropic:claude-haiku-4-5",     "anthropic", "claude-haiku-4-5-20251001", 0, 0, 0, 1, 0, 1, 0, 1),
+            // SiliconFlow models (popular Chinese provider with free tier)
+            ("siliconflow:deepseek-ai/DeepSeek-V3", "siliconflow", "deepseek-ai/DeepSeek-V3", 1, 0, 1, 1, 0, 1, 0, 1),
+            ("siliconflow:BAAI/bge-m3",        "siliconflow", "BAAI/bge-m3",       0, 0, 0, 0, 0, 0, 1, 1),
+            ("siliconflow:Qwen/Qwen3-Embedding-0.6B", "siliconflow", "Qwen/Qwen3-Embedding-0.6B", 0, 0, 0, 0, 0, 0, 1, 1),
+            // Ollama models (local, free, no API key needed)
+            ("ollama:qwen2.5:7b",              "ollama",   "qwen2.5:7b",          0, 0, 0, 1, 0, 1, 0, 1),
+            ("ollama:nomic-embed-text",        "ollama",   "nomic-embed-text",    0, 0, 0, 0, 0, 0, 1, 1),
+            ("ollama:bge-m3",                  "ollama",   "bge-m3",              0, 0, 0, 0, 0, 0, 1, 0),
+        ];
+
+        // columns: id, platform_id, model_name, has_vision, has_audio, has_reasoning,
+        //          has_coding, has_long_context, has_tool_use, has_embedding, has_speedy
+        for (id, platform_id, model_name, vision, audio, reasoning, coding, long_ctx, tool_use, embedding, speedy) in default_models.iter() {
+            let _ = conn.execute(
+                "INSERT OR IGNORE INTO platform_models
+                 (id, platform_id, model_name, has_vision, has_audio, has_reasoning,
+                  has_coding, has_long_context, has_tool_use, is_enabled, status, has_embedding, has_speedy)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, 'unknown', ?10, ?11)",
+                params![id, platform_id, model_name, vision, audio, reasoning, coding, long_ctx, tool_use, embedding, speedy],
+            );
+        }
+
+        // Auto-enable Ollama models (local, no API key needed)
+        let _ = conn.execute(
+            "UPDATE platform_models SET is_enabled = 1 WHERE platform_id = 'ollama'",
+            [],
+        );
+
+        Ok(())
+    }
+
+    // ── Selection History Methods ───────────────────────
+
+    pub fn add_selection_history(
+        &self,
+        text: &str,
+        source: &str,
+        window_title: &str,
+        process_name: &str,
+    ) -> Result<String> {
+        let conn = self.get_connection()?;
+        let id = format!("sel_{}", chrono::Utc::now().timestamp_millis());
+
+        // Truncate text to 100KB to prevent DB bloat
+        let truncated = if text.len() > 100_000 {
+            format!("{}…", &text[..100_000])
+        } else {
+            text.to_string()
+        };
+
+        conn.execute(
+            "INSERT INTO selection_history (id, captured_text, source, window_title, process_name)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, truncated, source, window_title, process_name],
+        )?;
+        Ok(id)
+    }
+
+    pub fn get_selection_history(&self, limit: u32) -> Result<Vec<crate::selection::SelectionHistoryEntry>> {
+        let conn = self.get_connection()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, captured_text, source, window_title, process_name, created_at
+             FROM selection_history ORDER BY created_at DESC LIMIT ?1"
+        )?;
+        let entries = stmt.query_map(params![limit], |row| {
+            Ok(crate::selection::SelectionHistoryEntry {
+                id: row.get(0)?,
+                captured_text: row.get(1)?,
+                source: row.get(2)?,
+                window_title: row.get(3)?,
+                process_name: row.get(4)?,
+                created_at: row.get(5)?,
+            })
+        })?.filter_map(|e| e.ok()).collect();
+        Ok(entries)
+    }
+
+    pub fn delete_selection_history_item(&self, id: &str) -> Result<()> {
+        let conn = self.get_connection()?;
+        conn.execute("DELETE FROM selection_history WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn clear_selection_history(&self) -> Result<()> {
+        let conn = self.get_connection()?;
+        conn.execute("DELETE FROM selection_history", [])?;
+        Ok(())
+    }
+
+    // ── Translation History Methods ──────────────────────
+
+    pub fn add_translation_history(
+        &self,
+        source_text: &str,
+        target_text: &str,
+        source_lang: &str,
+        target_lang: &str,
+    ) -> Result<String> {
+        let conn = self.get_connection()?;
+        let id = format!("tr_{}", chrono::Utc::now().timestamp_millis());
+
+        let truncated_source = if source_text.len() > 100_000 {
+            format!("{}…", &source_text[..100_000])
+        } else {
+            source_text.to_string()
+        };
+        let truncated_target = if target_text.len() > 100_000 {
+            format!("{}…", &target_text[..100_000])
+        } else {
+            target_text.to_string()
+        };
+
+        conn.execute(
+            "INSERT INTO translation_history (id, source_text, target_text, source_lang, target_lang)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, truncated_source, truncated_target, source_lang, target_lang],
+        )?;
+        Ok(id)
+    }
+
+    pub fn get_translation_history(&self, limit: u32) -> Result<Vec<crate::selection::SelectionHistoryEntry>> {
+        let conn = self.get_connection()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, source_text, target_text, source_lang, target_lang, created_at
+             FROM translation_history ORDER BY created_at DESC LIMIT ?1"
+        )?;
+        let entries = stmt.query_map(params![limit], |row| {
+            Ok(crate::selection::SelectionHistoryEntry {
+                id: row.get(0)?,
+                captured_text: row.get(1)?,
+                source: row.get(3)?,   // source_lang
+                window_title: row.get(2)?,  // target_text (repurposed field)
+                process_name: row.get(4)?,   // target_lang
+                created_at: row.get(5)?,
+            })
+        })?.filter_map(|e| e.ok()).collect();
+        Ok(entries)
+    }
+
+    pub fn delete_translation_history_item(&self, id: &str) -> Result<()> {
+        let conn = self.get_connection()?;
+        conn.execute("DELETE FROM translation_history WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn clear_translation_history(&self) -> Result<()> {
+        let conn = self.get_connection()?;
+        conn.execute("DELETE FROM translation_history", [])?;
+        Ok(())
+    }
+
+    // ── Search Providers CRUD ────────────────────────────
+
+    fn seed_default_search_providers(&self, conn: &Connection) -> Result<()> {
+        let mut stmt = conn.prepare("SELECT COUNT(*) FROM search_providers")?;
+        let count: i64 = stmt.query_row([], |r| r.get(0))?;
+        if count > 0 {
+            return Ok(());
+        }
+        let defaults = [
+            ("sp_searxng", "SearXNG (自建)", "searxng", "", "http://localhost:8080"),
+            ("sp_brave", "Brave Search", "brave", "", ""),
+            ("sp_duckduckgo", "DuckDuckGo", "duckduckgo", "", ""),
+        ];
+        for (id, name, api_type, api_key, api_address) in &defaults {
+            conn.execute(
+                "INSERT INTO search_providers (id, name, api_type, api_key, api_address, is_enabled) VALUES (?1, ?2, ?3, ?4, ?5, 1)",
+                params![id, name, api_type, api_key, api_address],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn get_search_providers(&self) -> Result<Vec<(String, String, String, String, String, bool)>> {
+        let conn = self.get_connection()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, name, api_type, api_key, api_address, is_enabled FROM search_providers ORDER BY created_at"
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, i32>(5)? != 0,
+            ))
+        })?;
+        let mut result = Vec::new();
+        for r in rows {
+            if let Ok(item) = r { result.push(item); }
+        }
+        Ok(result)
+    }
+
+    pub fn save_search_provider(&self, id: &str, name: &str, api_type: &str, api_key: &str, api_address: &str, is_enabled: bool) -> Result<()> {
+        let conn = self.get_connection()?;
+        conn.execute(
+            "INSERT INTO search_providers (id, name, api_type, api_key, api_address, is_enabled) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(id) DO UPDATE SET name=?2, api_type=?3, api_key=?4, api_address=?5, is_enabled=?6",
+            params![id, name, api_type, api_key, api_address, is_enabled as i32],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_search_provider(&self, id: &str) -> Result<()> {
+        let conn = self.get_connection()?;
+        conn.execute("DELETE FROM search_providers WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    // ── Search History CRUD ──────────────────────────────
+
+    pub fn save_search_history(&self, id: &str, query: &str, provider_id: &str, result_count: i32, results_json: &str) -> Result<()> {
+        let conn = self.get_connection()?;
+        conn.execute(
+            "INSERT INTO search_history (id, query, provider_id, result_count, results_json) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, query, provider_id, result_count, results_json],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_search_history(&self, limit: i32) -> Result<Vec<(String, String, String, i32, String)>> {
+        let conn = self.get_connection()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, query, provider_id, result_count, created_at FROM search_history ORDER BY created_at DESC LIMIT ?1"
+        )?;
+        let rows = stmt.query_map(params![limit], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i32>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })?;
+        let mut result = Vec::new();
+        for r in rows {
+            if let Ok(item) = r { result.push(item); }
+        }
+        Ok(result)
+    }
+
+    pub fn delete_search_history_item(&self, id: &str) -> Result<()> {
+        let conn = self.get_connection()?;
+        conn.execute("DELETE FROM search_history WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn clear_search_history(&self) -> Result<()> {
+        let conn = self.get_connection()?;
+        conn.execute("DELETE FROM search_history", [])?;
+        Ok(())
+    }
+
+    // ── MCP Servers CRUD ─────────────────────────────────
+
+    pub fn get_mcp_servers(&self) -> Result<Vec<(String, String, String, String, String, String, String, bool)>> {
+        let conn = self.get_connection()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, name, command, args, env, url, server_type, is_enabled FROM mcp_servers ORDER BY created_at"
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, i32>(7)? != 0,
+            ))
+        })?;
+        let mut result = Vec::new();
+        for r in rows {
+            if let Ok(item) = r { result.push(item); }
+        }
+        Ok(result)
+    }
+
+    pub fn save_mcp_server(&self, id: &str, name: &str, command: &str, args: &str, env: &str, url: &str, server_type: &str, is_enabled: bool) -> Result<()> {
+        let conn = self.get_connection()?;
+        conn.execute(
+            "INSERT INTO mcp_servers (id, name, command, args, env, url, server_type, is_enabled) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(id) DO UPDATE SET name=?2, command=?3, args=?4, env=?5, url=?6, server_type=?7, is_enabled=?8",
+            params![id, name, command, args, env, url, server_type, is_enabled as i32],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_mcp_server(&self, id: &str) -> Result<()> {
+        let conn = self.get_connection()?;
+        conn.execute("DELETE FROM mcp_servers WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    // ── Backup Helpers ───────────────────────────────────
+
+    pub fn get_table_row_counts(&self) -> Result<Vec<(String, i64)>> {
+        let conn = self.get_connection()?;
+        let tables = [
+            "settings", "agents", "conversations", "messages", "skills", "memories",
+            "agent_accounts", "custom_models", "model_platforms", "platform_models",
+            "tasks", "cron_tasks", "cron_runs", "kb_documents", "kb_chunks",
+            "kb_embeddings", "selection_history", "translation_history",
+            "mcp_servers", "prompt_library", "search_providers", "search_history",
+            "activity_log",
+        ];
+        let mut result = Vec::new();
+        for table in &tables {
+            let sql = format!("SELECT COUNT(*) FROM {}", table);
+            if let Ok(mut stmt) = conn.prepare(&sql) {
+                if let Ok(count) = stmt.query_row([], |r| r.get::<_, i64>(0)) {
+                    result.push((table.to_string(), count));
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    pub fn export_table_as_json(&self, table_name: &str) -> Result<String> {
+        let conn = self.get_connection()?;
+        let sql = format!("SELECT * FROM {}", table_name);
+        let mut stmt = conn.prepare(&sql)?;
+        let col_count = stmt.column_count();
+        let col_names: Vec<String> = (0..col_count)
+            .map(|i| stmt.column_name(i).unwrap_or("").to_string())
+            .collect();
+
+        let mut rows_json = Vec::new();
+        let rows = stmt.query_map([], |row| {
+            let mut map = serde_json::Map::new();
+            for (i, col) in col_names.iter().enumerate() {
+                // Try reading as string first, then as i64, then fall back to null
+                let val = if let Ok(s) = row.get::<_, String>(i) {
+                    // Try to parse as number or bool, otherwise keep as string
+                    if let Ok(n) = s.parse::<i64>() {
+                        serde_json::Value::Number(n.into())
+                    } else if let Ok(f) = s.parse::<f64>() {
+                        serde_json::Number::from_f64(f)
+                            .map(serde_json::Value::Number)
+                            .unwrap_or(serde_json::Value::String(s))
+                    } else if s == "true" || s == "false" {
+                        serde_json::Value::Bool(s == "true")
+                    } else {
+                        serde_json::Value::String(s)
+                    }
+                } else if let Ok(n) = row.get::<_, i64>(i) {
+                    serde_json::Value::Number(n.into())
+                } else if let Ok(f) = row.get::<_, f64>(i) {
+                    serde_json::Number::from_f64(f)
+                        .map(serde_json::Value::Number)
+                        .unwrap_or(serde_json::Value::Null)
+                } else {
+                    serde_json::Value::Null
+                };
+                map.insert(col.clone(), val);
+            }
+            Ok(serde_json::Value::Object(map))
+        })?;
+        for r in rows {
+            if let Ok(v) = r { rows_json.push(v); }
+        }
+        serde_json::to_string(&rows_json).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+    }
+
+    pub fn import_table_from_json(&self, table_name: &str, rows_json: &str) -> Result<usize> {
+        let conn = self.get_connection()?;
+        let rows: Vec<serde_json::Map<String, serde_json::Value>> = serde_json::from_str(rows_json)
+            .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e)))?;
+        if rows.is_empty() { return Ok(0); }
+
+        // Get column names from first row
+        let cols: Vec<&str> = rows[0].keys().map(|s| s.as_str()).collect();
+        let col_placeholders: Vec<&str> = cols.iter().map(|_| "?").collect();
+        let sql = format!(
+            "INSERT OR REPLACE INTO {} ({}) VALUES ({})",
+            table_name,
+            cols.join(", "),
+            col_placeholders.join(", ")
+        );
+
+        let mut count = 0usize;
+        for row_map in &rows {
+            let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+            for col in &cols {
+                if let Some(val) = row_map.get(*col) {
+                    match val {
+                        serde_json::Value::String(s) => params.push(Box::new(s.clone())),
+                        serde_json::Value::Number(n) => {
+                            if let Some(i) = n.as_i64() { params.push(Box::new(i)); }
+                            else if let Some(f) = n.as_f64() { params.push(Box::new(f)); }
+                            else { params.push(Box::new(n.to_string())); }
+                        },
+                        serde_json::Value::Bool(b) => params.push(Box::new(if *b { 1i32 } else { 0i32 })),
+                        serde_json::Value::Null => params.push(Box::new(rusqlite::types::Null)),
+                        other => params.push(Box::new(other.to_string())),
+                    }
+                } else {
+                    params.push(Box::new(rusqlite::types::Null));
+                }
+            }
+            let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+            if conn.execute(&sql, param_refs.as_slice()).is_ok() {
+                count += 1;
+            }
+        }
+        Ok(count)
     }
 }
 

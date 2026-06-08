@@ -1,6 +1,8 @@
 mod db;
 mod proxy;
 mod agent;
+mod knowledge;
+mod selection;
 mod commands;
 
 #[cfg(test)]
@@ -26,6 +28,8 @@ pub fn run() {
     
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .setup(move |app| {
             // Start the proxy server inside the Tokio runtime context
             if let Ok(mut server) = proxy_state.lock() {
@@ -53,6 +57,22 @@ pub fn run() {
             .always_on_top(true)
             .resizable(false)
             .skip_taskbar(true)
+            .build();
+
+            // Initialize OMNIX Quick Assistant floating window (hidden by default)
+            let _qa = tauri::WebviewWindowBuilder::new(
+                app,
+                "quick-assistant",
+                tauri::WebviewUrl::App("/?window=quick-assistant".into())
+            )
+            .title("OMNIX Quick Assistant")
+            .inner_size(420.0, 520.0)
+            .decorations(false)
+            .transparent(true)
+            .always_on_top(true)
+            .resizable(false)
+            .skip_taskbar(true)
+            .visible(false)
             .build();
 
             Ok(())
@@ -114,6 +134,7 @@ pub fn run() {
             commands::get_active_models,
             commands::fetch_remote_models,
             commands::check_model_status,
+            commands::batch_check_models,
             commands::get_conversation_messages,
             commands::create_conversation,
             commands::add_conversation_message,
@@ -123,7 +144,55 @@ pub fn run() {
             commands::read_file_as_base64,
             commands::get_workspace_git_diff,
             commands::run_env_diagnostics,
-            commands::repair_env_tool
+            commands::repair_env_tool,
+            commands::kb_list_documents,
+            commands::kb_import_document,
+            commands::kb_delete_document,
+            commands::kb_get_chunks,
+            commands::kb_generate_embeddings,
+            commands::kb_hybrid_search,
+            commands::kb_rag_query,
+            commands::kb_get_embedding_models,
+            commands::kb_import_file,
+            commands::kb_import_directory,
+            commands::toggle_quick_assistant,
+            commands::show_quick_assistant_with_text,
+            commands::qa_query,
+            commands::qa_query_stream,
+            commands::capture_selection_and_show,
+            commands::get_selection_text,
+            commands::get_selection_with_context,
+            commands::get_selection_history,
+            commands::delete_selection_history_item,
+            commands::clear_selection_history,
+            commands::translate_text,
+            commands::detect_language,
+            commands::get_translation_history,
+            commands::delete_translation_history_item,
+            commands::clear_translation_history,
+            // Search
+            commands::get_search_providers,
+            commands::save_search_provider,
+            commands::delete_search_provider,
+            commands::web_search,
+            commands::get_search_history,
+            commands::delete_search_history_item,
+            commands::clear_search_history,
+            // MCP Servers
+            commands::get_mcp_servers,
+            commands::save_mcp_server,
+            commands::delete_mcp_server,
+            // Backup
+            commands::get_backup_info,
+            commands::export_backup,
+            commands::import_backup,
+            // Prompt Library
+            commands::get_prompt_library,
+            commands::save_prompt_entry,
+            commands::delete_prompt_entry,
+            // Activity Log
+            commands::log_activity,
+            commands::get_activity_log
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -134,9 +203,12 @@ pub fn run() {
                 // When the main window is closed, also close the status-dock and exit
                 if label == "main" {
                     if let tauri::WindowEvent::CloseRequested { .. } = win_event {
-                        // Close the status-dock window if it exists
+                        // Close the status-dock and quick-assistant windows if they exist
                         if let Some(dock) = app_handle.get_webview_window("status-dock") {
                             let _ = dock.close();
+                        }
+                        if let Some(qa) = app_handle.get_webview_window("quick-assistant") {
+                            let _ = qa.close();
                         }
                     }
                 }

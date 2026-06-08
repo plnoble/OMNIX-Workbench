@@ -1,0 +1,8 @@
+{
+  "event_id": "EVENT-013",
+  "event_type": "CODE_CLEANUP",
+  "agent": "claude",
+  "summary": "修复 6 个 Rust 编译警告：删除 3 个未使用函数/结构体，2 个加 #[allow(dead_code)]，1 个参数加 _ 前缀。cargo check 结果：0 warnings, 0 errors",
+  "related_entities": ["TASK-003", "proxy.rs", "db.rs", "agent.rs"],
+  "timestamp": "2026-06-08T00:00:00Z"
+}

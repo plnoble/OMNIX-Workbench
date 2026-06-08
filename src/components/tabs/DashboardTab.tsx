@@ -1,0 +1,179 @@
+/**
+ * DashboardTab — 开发环境诊断控制面板
+ *
+ * Shows: tip carousel, status overview cards, env diagnostics, remote access
+ */
+
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Lightbulb, Wifi, Cpu, Bot, Wrench, Globe, RefreshCw } from "lucide-react";
+import { OMNIX_TIPS } from "@/lib/constants";
+import type { DetectedAgent, RemoteAccessInfo } from "@/types";
+
+interface DashboardTabProps {
+  proxyPort: string;
+  activeSessionsCount: number;
+  detectedAgents: DetectedAgent[];
+  tipIndex: number;
+  envDiagnostics: Record<string, string>;
+  repairLogs: string;
+  repairingTool: string;
+  remoteInfo: RemoteAccessInfo | null;
+  onRunDiagnostics: () => void;
+  onRepairTool: (name: string) => void;
+  onLoadRemoteAccess: () => void;
+}
+
+export function DashboardTab({
+  proxyPort,
+  activeSessionsCount,
+  detectedAgents,
+  tipIndex,
+  envDiagnostics,
+  repairLogs,
+  repairingTool,
+  remoteInfo,
+  onRunDiagnostics,
+  onRepairTool,
+  onLoadRemoteAccess,
+}: DashboardTabProps) {
+  const tip = OMNIX_TIPS[tipIndex];
+
+  return (
+    <div className="p-6 overflow-y-auto w-full flex flex-col gap-5">
+      {/* Tip Card */}
+      <Card className="bg-gradient-to-br from-purple-500/[0.08] to-blue-500/[0.08] border-purple-500/20">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-purple-400">
+            <Lightbulb className="h-4 w-4" />
+            智能开发贴士
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <span className="text-sm font-semibold text-foreground block mb-1">
+            {tip?.title}
+          </span>
+          <p className="text-xs text-muted-foreground leading-relaxed m-0">
+            {tip?.desc}
+          </p>
+        </CardContent>
+      </Card>
+
+      {/* Status Overview Cards */}
+      <div className="grid grid-cols-3 gap-4">
+        <Card>
+          <CardContent className="p-4">
+            <span className="text-xs text-muted-foreground flex items-center gap-1.5">
+              <Wifi className="h-3 w-3" /> 中转代理端口
+            </span>
+            <span className="text-2xl font-bold block mt-1">:{proxyPort}</span>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4">
+            <span className="text-xs text-muted-foreground flex items-center gap-1.5">
+              <Cpu className="h-3 w-3" /> 活跃进程
+            </span>
+            <span className="text-2xl font-bold block mt-1">{activeSessionsCount} 个</span>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4">
+            <span className="text-xs text-muted-foreground flex items-center gap-1.5">
+              <Bot className="h-3 w-3" /> 可用智能体
+            </span>
+            <span className="text-2xl font-bold block mt-1">
+              {detectedAgents.filter((a) => a.status === "installed").length} / {detectedAgents.length}
+            </span>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Env Diagnostics */}
+      <Card>
+        <CardHeader className="flex-row justify-between items-center mb-4">
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <Wrench className="h-4 w-4" /> 开发环境一键诊断
+          </CardTitle>
+          <Button size="sm" onClick={onRunDiagnostics}>
+            <RefreshCw className="h-3 w-3" /> 运行诊断
+          </Button>
+        </CardHeader>
+        <CardContent>
+          {Object.keys(envDiagnostics).length === 0 ? (
+            <p className="text-xs text-muted-foreground m-0">
+              点击诊断按钮以获取本机的 Node.js、Git、Ripgrep 以及各个 CLI 智能体的安装信息。
+            </p>
+          ) : (
+            <div className="grid grid-cols-2 gap-3">
+              {Object.entries(envDiagnostics).map(([tool, version]) => {
+                const isInstalled = version && !version.toLowerCase().includes("not found");
+                return (
+                  <div
+                    key={tool}
+                    className="flex justify-between items-center p-3 rounded-lg bg-white/[0.01] border border-border"
+                  >
+                    <div>
+                      <span className="text-sm font-semibold block">{tool}</span>
+                      <Badge variant={isInstalled ? "success" : "destructive"}>
+                        {isInstalled ? version : "未检测到安装"}
+                      </Badge>
+                    </div>
+                    {!isInstalled && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => onRepairTool(tool)}
+                        disabled={repairingTool === tool}
+                      >
+                        {repairingTool === tool ? "修复中..." : "🔧 一键修复"}
+                      </Button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {repairLogs && (
+            <pre className="mt-4 p-3 bg-black text-lime-400 text-xs rounded-lg max-h-[150px] overflow-y-auto font-mono">
+              {repairLogs}
+            </pre>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Remote Access */}
+      <Card>
+        <CardHeader className="flex-row justify-between items-center mb-4">
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <Globe className="h-4 w-4" /> 远程跨设备调试
+          </CardTitle>
+          <Button size="sm" variant="outline" onClick={onLoadRemoteAccess}>
+            <RefreshCw className="h-3 w-3" /> 获取远程链接
+          </Button>
+        </CardHeader>
+        <CardContent>
+          {remoteInfo ? (
+            <div className="flex flex-col gap-2 text-sm">
+              <div>
+                <span className="text-muted-foreground">局域网地址:</span>{" "}
+                <code className="text-foreground">{remoteInfo.ip}</code>
+              </div>
+              <div>
+                <span className="text-muted-foreground">身份凭证 Token:</span>{" "}
+                <code className="text-foreground">{remoteInfo.token}</code>
+              </div>
+              <div>
+                <span className="text-muted-foreground">完整网页控制端 URL:</span>{" "}
+                <code className="text-foreground break-all">{remoteInfo.url}</code>
+              </div>
+            </div>
+          ) : (
+            <p className="text-xs text-muted-foreground m-0">点击上方按钮获取远程调试链接</p>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}

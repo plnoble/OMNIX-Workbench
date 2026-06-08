@@ -1,0 +1,46 @@
+{
+  "reflection_id": "REF-001",
+  "related_task": "TASK-002",
+  "what_worked": [
+    "渐进式迁移策略：先提取 hooks，再提取组件，最后重写 MainApp，每步都可验证",
+    "TypeScript strict 模式 + tsc --noEmit 持续验证，避免运行时才发现类型错误",
+    "Workflow 并行迁移内联样式，7 个文件同时处理节省时间",
+    "shadcn/ui 组件自带 a11y（Radix primitives），减少手动 ARIA 工作",
+    "Tailwind utility-first 天然替代 inline style={{}}，映射规则清晰",
+    "tauri-api.ts 统一封装所有 invoke 调用，消除魔法字符串"
+  ],
+  "what_failed": [
+    "usePlatforms 中 loadActiveModels 声明顺序问题导致循环依赖，需前置声明",
+    "useState 泛型推断为字面量类型（'Claude Code'）导致 string 赋值报错，需显式 <string>",
+    "Workflow 迁移内联样式后，部分文件引入了未使用的 cn() import",
+    "AgentHubTab 的 onSwitchAgent prop 解构遗漏导致编译错误"
+  ],
+  "root_lessons": [
+    "Hook 依赖分析必须在提取前完成：画出调用关系图，先提取无依赖的 hook",
+    "React useState 类型推断陷阱：初始值为字符串字面量时，需 useState<string>() 显式声明",
+    "组件 props 接口中的字段类型必须与 hook 返回类型精确匹配，不可用更宽松的 string 替代字面量联合类型"
+  ],
+  "token_waste_analysis": [
+    "Workflow 迁移时每个 agent 都重新读取了 globals.css 中的 Tailwind 映射规则，可考虑在 prompt 中内联映射表",
+    "早期探索阶段读了完整的 2445 行 App.tsx，实际只需读 state 声明和 handler 签名部分"
+  ],
+  "process_inefficiencies": [
+    "类型错误修复了 3 轮才通过（unused imports、prop type mismatch、function declaration order），应首次就完整检查"
+  ],
+  "future_optimizations": [
+    "可引入 code splitting（React.lazy + Suspense）减小首屏 JS bundle",
+    "CompareHub.tsx (928行) 可进一步拆分为 API 模式和 Web 模式子组件",
+    "SkillHub.tsx (699行) 可拆分为 SkillEditor + FusionFurnace + Marketplace",
+    "全局 alert() 应替换为 toast 通知系统（shadcn/sonner）"
+  ],
+  "potential_skill_candidates": [
+    {
+      "id": "SKILL-001",
+      "name": "react-monolith-refactor",
+      "domain": "Frontend refactoring",
+      "pattern": "2445行单组件 → hooks + tabs + layout + modals 编排器",
+      "confidence": "0.85"
+    }
+  ],
+  "timestamp": "2026-06-07T00:30:00+08:00"
+}

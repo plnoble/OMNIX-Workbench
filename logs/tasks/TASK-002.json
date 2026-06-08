@@ -1,0 +1,53 @@
+{
+  "task_id": "TASK-002",
+  "title": "OMNIX DevFlow 前端架构重构 & UI 重设计",
+  "goal": "将 2445 行 App.tsx 单组件拆解为 ~25 个模块化文件，引入 Tailwind CSS + shadcn/ui 替代内联样式和手写 CSS，提升代码可维护性和界面专业度",
+  "owner": "Claude",
+  "status": "IN_PROGRESS",
+  "priority": "HIGH",
+  "dependencies": [],
+  "related_files": [
+    "src/App.tsx",
+    "src/App.css",
+    "src/SkillHub.tsx",
+    "src/MemoryHub.tsx",
+    "src/CompareHub.tsx",
+    "src/WelcomeTour.tsx",
+    "src/PlanTree.tsx",
+    "src/StatusDock.tsx",
+    "src/SkillTopology.tsx",
+    "vite.config.ts",
+    "tsconfig.json",
+    "package.json"
+  ],
+  "acceptance_criteria": [
+    "App.tsx < 300 行，纯编排器角色",
+    "9 个自定义 Hook 提取完成，每个封装独立 state + handler",
+    "9 个 Tab 组件提取完成，通过 props 接收数据",
+    "5 个 Modal 使用 shadcn Dialog 重写",
+    "3 个 Layout 组件提取完成",
+    "零内联 style={{}} 残留，全部迁移到 Tailwind",
+    "所有 emoji 图标替换为 lucide-react",
+    "App.css 删除，样式全部迁移到 Tailwind + globals.css",
+    "tsc && vite build 零错误",
+    "所有现有功能保持不变（9 Tab、5 Modal、PTY、SSE、CRUD）"
+  ],
+  "risk_analysis": [
+    "P2 Hook 提取：useConversations 最复杂，PTY 生命周期 + 事件监听 + 状态交叉依赖，提取错误会导致聊天功能崩溃",
+    "P6 样式迁移：584 处内联样式逐一转换，动态样式（条件颜色/transform）需特殊处理",
+    "跨 Hook 依赖：handleTabChange 跨多个 Hook 调用 loadCronTasks/loadPlatforms 等，需在 MainApp 层编排",
+    "渐进式迁移：每步必须保持 App 可运行，不能大爆炸重写"
+  ],
+  "planned_actions": [
+    "P0: 安装 Tailwind + shadcn/ui 依赖，配置 vite/tsconfig，创建 globals.css，初始化 shadcn 组件",
+    "P1: 创建 src/types/index.ts, src/lib/utils.ts, src/lib/constants.ts, src/lib/tauri-api.ts",
+    "P2: 逐个提取 useSettings → usePlatforms → useAccounts → useConversations → useCron → usePreview → useDiagnostics → useRemoteAccess → useResizer",
+    "P3: 提取 9 个 Tab 组件，每个接收 props",
+    "P4: 提取 3 个 Layout + 5 个 Modal 组件",
+    "P5: 重写 MainApp 为编排器",
+    "P6: 系统性替换 584 处内联样式为 Tailwind",
+    "P7: emoji → lucide-react，统一设计规范",
+    "P8: 功能验证，删除 App.css，清理"
+  ],
+  "start_time": "2026-06-06T10:00:00+08:00"
+}

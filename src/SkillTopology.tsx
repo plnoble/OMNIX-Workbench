@@ -250,29 +250,13 @@ export const SkillTopology: React.FC<SkillTopologyProps> = ({
   }, [skills, selectedSkill]);
 
   return (
-    <div style={{ width: "100%", height: "100%", position: "relative" }}>
+    <div className="w-full h-full relative">
       <svg
         ref={svgRef}
-        style={{
-          width: "100%",
-          height: "100%",
-          background: "rgba(0, 0, 0, 0.2)",
-          borderRadius: "8px",
-          border: "1px solid var(--border-color)",
-        }}
+        className="w-full h-full bg-black/20 rounded-lg border border-border"
       />
       <div
-        style={{
-          position: "absolute",
-          bottom: "8px",
-          right: "8px",
-          fontSize: "10px",
-          color: "var(--text-secondary)",
-          background: "rgba(0, 0, 0, 0.4)",
-          padding: "2px 6px",
-          borderRadius: "4px",
-          pointerEvents: "none",
-        }}
+        className="absolute bottom-2 right-2 text-[10px] text-muted-foreground bg-black/40 px-1.5 py-0.5 rounded pointer-events-none"
       >
         滚轮缩放 / 拖拽平移 & 节点
       </div>

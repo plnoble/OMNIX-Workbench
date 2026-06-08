@@ -1,9 +1,11 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { 
-  Brain, Trash2, Plus, Search, RefreshCw, 
+import {
+  Brain, Trash2, Plus, Search, RefreshCw,
   Sparkles, AlertTriangle, Zap, Check, X, Code
 } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { toast } from "@/components/ui/sonner";
 
 interface Memory {
   id: string;
@@ -79,7 +81,7 @@ export function MemoryHub() {
   const handleSaveMemory = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formDesc.trim() || !formPattern.trim() || !formRemediation.trim()) {
-      alert("请填写完整的记忆防错卡片信息");
+      toast.warning("请填写完整的记忆防错卡片信息");
       return;
     }
 
@@ -97,7 +99,7 @@ export function MemoryHub() {
       await loadMemories();
     } catch (err) {
       console.error("Failed to save memory:", err);
-      alert("保存失败：" + err);
+      toast.error("保存失败：" + err);
     }
   };
 
@@ -109,22 +111,28 @@ export function MemoryHub() {
     setFormKeywords("");
   };
 
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+
   const handleDeleteMemory = async (id: string) => {
-    if (!confirm("确定要让 AI 遗忘这条防错记忆吗？遗忘后启动 Agent 将不再自动提示。")) {
-      return;
-    }
+    setPendingDeleteId(id);
+  };
+
+  const confirmDeleteMemory = async () => {
+    if (!pendingDeleteId) return;
     try {
-      await invoke("delete_memory", { id });
+      await invoke("delete_memory", { id: pendingDeleteId });
       await loadMemories();
     } catch (e) {
       console.error("Failed to delete memory:", e);
-      alert("删除失败：" + e);
+      toast.error("删除失败：" + e);
+    } finally {
+      setPendingDeleteId(null);
     }
   };
 
   const handleSelectConversation = async (id: string) => {
     setDistilledSuggestion(null);
-    
+
     // Preview mock conversation logs
     if (id === "mock_sess_cors") {
       setConvMessages([
@@ -161,7 +169,7 @@ export function MemoryHub() {
       setDistilledSuggestion(suggestion);
     } catch (e) {
       console.error("Distillation failed:", e);
-      alert("经验蒸馏失败 (请确保有网络连接且已配置有效的大模型账号凭证)：" + e);
+      toast.error("经验蒸馏失败 (请确保有网络连接且已配置有效的大模型账号凭证)：" + e);
     } finally {
       setIsDistilling(false);
     }
@@ -178,17 +186,17 @@ export function MemoryHub() {
         remediation: distilledSuggestion.remediation,
         keywords: distilledSuggestion.keywords
       });
-      alert("经验蒸馏成果已成功归档至长期防错记忆库！");
+      toast.success("经验蒸馏成果已成功归档至长期防错记忆库！");
       setDistilledSuggestion(null);
       await loadMemories();
       setSelectedTab("memories");
     } catch (e) {
       console.error("Failed to save distilled memory:", e);
-      alert("归档失败：" + e);
+      toast.error("归档失败：" + e);
     }
   };
 
-  const filteredMemories = memories.filter(m => 
+  const filteredMemories = memories.filter(m =>
     m.incident_desc.toLowerCase().includes(searchQuery.toLowerCase()) ||
     m.code_pattern.toLowerCase().includes(searchQuery.toLowerCase()) ||
     m.remediation.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -196,21 +204,19 @@ export function MemoryHub() {
   );
 
   return (
-    <div className="memory-hub-container" style={{ display: "flex", flexDirection: "column", gap: "20px", height: "100%" }}>
+    <div className="memory-hub-container flex flex-col gap-5 h-full">
       {/* Sub tabs */}
-      <div style={{ display: "flex", gap: "12px", borderBottom: "1px solid var(--border-color)", paddingBottom: "12px" }}>
-        <button 
-          className={`btn ${selectedTab === "memories" ? "btn-primary" : "btn-secondary"}`}
+      <div className="flex gap-3 border-b border-border pb-3">
+        <button
+          className={cn("btn flex items-center gap-2", selectedTab === "memories" ? "btn-primary" : "btn-secondary")}
           onClick={() => setSelectedTab("memories")}
-          style={{ display: "flex", alignItems: "center", gap: "8px" }}
         >
           <Brain size={16} />
           长期避坑记忆库 ({memories.length})
         </button>
-        <button 
-          className={`btn ${selectedTab === "distill" ? "btn-primary" : "btn-secondary"}`}
+        <button
+          className={cn("btn flex items-center gap-2", selectedTab === "distill" ? "btn-primary" : "btn-secondary")}
           onClick={() => setSelectedTab("distill")}
-          style={{ display: "flex", alignItems: "center", gap: "8px" }}
         >
           <Sparkles size={16} />
           开发经验蒸馏中枢 (Timeline Distiller)
@@ -219,24 +225,22 @@ export function MemoryHub() {
 
       {/* A. MEMORIES LIST TAB */}
       {selectedTab === "memories" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-          <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
-            <div style={{ position: "relative", flex: 1 }}>
-              <input 
-                type="text" 
-                className="form-input" 
-                style={{ paddingLeft: "36px" }}
+        <div className="flex flex-col gap-4">
+          <div className="flex gap-3 items-center">
+            <div className="relative flex-1">
+              <input
+                type="text"
+                className="form-input pl-9"
                 placeholder="搜索防错记忆（关键词、踩坑事故、危险模式...）"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
               />
-              <Search size={18} style={{ position: "absolute", left: "12px", top: "50%", transform: "translateY(-50%)", color: "var(--text-muted)" }} />
+              <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
             </div>
-            
-            <button 
-              className="btn btn-primary"
+
+            <button
+              className="btn btn-primary flex items-center gap-1.5"
               onClick={() => { resetForm(); setIsFormOpen(true); }}
-              style={{ display: "flex", alignItems: "center", gap: "6px" }}
             >
               <Plus size={16} />
               添加避坑记忆
@@ -244,38 +248,22 @@ export function MemoryHub() {
           </div>
 
           {/* Memories grid */}
-          <div style={{ 
-            display: "grid", 
-            gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", 
-            gap: "16px",
-            maxHeight: "60vh",
-            overflowY: "auto",
-            paddingRight: "4px"
-          }}>
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-4 max-h-[60vh] overflow-y-auto pr-1">
             {filteredMemories.map(m => (
-              <div 
-                key={m.id} 
-                className="card animate-fade-in"
-                style={{ 
-                  position: "relative",
-                  borderLeft: "4px solid var(--color-danger)",
-                  background: "rgba(255, 60, 60, 0.02)",
-                  display: "flex",
-                  flexDirection: "column",
-                  justifyContent: "space-between",
-                  gap: "12px"
-                }}
+              <div
+                key={m.id}
+                className="card animate-fade-in relative border-l-4 border-l-red-500 bg-red-500/[0.02] flex flex-col justify-between gap-3"
               >
                 <div>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "8px" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                      <AlertTriangle size={16} style={{ color: "var(--color-danger)" }} />
-                      <h4 style={{ margin: 0, fontSize: "15px", fontWeight: 600 }}>{m.incident_desc}</h4>
+                  <div className="flex justify-between items-start mb-2">
+                    <div className="flex items-center gap-2">
+                      <AlertTriangle size={16} className="text-red-500" />
+                      <h4 className="m-0 text-base font-semibold">{m.incident_desc}</h4>
                     </div>
-                    
-                    <div style={{ display: "flex", gap: "6px" }}>
-                      <button 
-                        className="btn-icon" 
+
+                    <div className="flex gap-1.5">
+                      <button
+                        className="btn-icon text-muted-foreground bg-transparent border-none cursor-pointer text-sm hover:text-foreground"
                         onClick={() => {
                           setFormId(m.id);
                           setFormDesc(m.incident_desc);
@@ -284,44 +272,35 @@ export function MemoryHub() {
                           setFormKeywords(m.keywords);
                           setIsFormOpen(true);
                         }}
-                        style={{ color: "var(--text-secondary)", background: "transparent", border: "none", cursor: "pointer", fontSize: "13px" }}
                       >
                         ✏️
                       </button>
-                      <button 
-                        className="btn-icon" 
+                      <button
+                        className="btn-icon text-red-500 bg-transparent border-none cursor-pointer"
                         onClick={() => handleDeleteMemory(m.id)}
-                        style={{ color: "var(--color-danger)", background: "transparent", border: "none", cursor: "pointer" }}
                       >
                         <Trash2 size={16} />
                       </button>
                     </div>
                   </div>
 
-                  <div style={{ fontSize: "13px", color: "var(--text-secondary)", marginBottom: "8px" }}>
-                    <div style={{ fontFamily: "var(--font-mono)", background: "rgba(0,0,0,0.2)", padding: "6px 10px", borderRadius: "6px", border: "1px solid var(--border-color)", marginBottom: "8px" }}>
-                      <span style={{ color: "var(--color-danger)", fontSize: "11px", display: "block", textTransform: "uppercase", fontWeight: 600 }}>危险模式:</span>
+                  <div className="text-sm text-secondary-foreground mb-2">
+                    <div className="font-mono bg-black/20 px-2.5 py-1.5 rounded-md border border-border mb-2">
+                      <span className="text-red-500 text-xs block uppercase font-semibold">危险模式:</span>
                       <code>{m.code_pattern}</code>
                     </div>
-                    <div style={{ background: "rgba(255,255,255,0.02)", padding: "8px", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.04)" }}>
-                      <span style={{ color: "var(--color-success)", fontSize: "11px", display: "block", textTransform: "uppercase", fontWeight: 600 }}>安全方案:</span>
+                    <div className="bg-white/[0.02] p-2 rounded-md border border-white/[0.04]">
+                      <span className="text-emerald-500 text-xs block uppercase font-semibold">安全方案:</span>
                       {m.remediation}
                     </div>
                   </div>
                 </div>
 
-                <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", borderTop: "1px solid var(--border-color)", paddingTop: "8px" }}>
+                <div className="flex flex-wrap gap-1.5 border-t border-border pt-2">
                   {m.keywords.split(",").map(kw => (
-                    <span 
-                      key={kw} 
-                      style={{ 
-                        fontSize: "11px", 
-                        background: "rgba(255, 60, 60, 0.08)", 
-                        color: "rgba(255, 100, 100, 0.9)",
-                        padding: "2px 8px", 
-                        borderRadius: "10px",
-                        border: "1px solid rgba(255, 60, 60, 0.15)"
-                      }}
+                    <span
+                      key={kw}
+                      className="text-xs bg-[rgba(255,60,60,0.08)] text-[rgba(255,100,100,0.9)] px-2 py-0.5 rounded-[10px] border border-[rgba(255,60,60,0.15)]"
                     >
                       {kw.trim()}
                     </span>
@@ -331,7 +310,7 @@ export function MemoryHub() {
             ))}
 
             {filteredMemories.length === 0 && (
-              <div style={{ gridColumn: "1/-1", textAlign: "center", padding: "40px", color: "var(--text-muted)", background: "rgba(255,255,255,0.01)", border: "1px dashed var(--border-color)", borderRadius: "8px" }}>
+              <div className="col-span-full text-center p-10 text-muted-foreground bg-white/[0.01] border border-dashed border-border rounded-lg">
                 没有找到匹配的避坑卡片，请尝试其他关键词。
               </div>
             )}
@@ -341,25 +320,25 @@ export function MemoryHub() {
 
       {/* B. EXPERIENCE DISTILLATION TAB */}
       {selectedTab === "distill" && (
-        <div className="settings-grid" style={{ gridTemplateColumns: "1fr 1fr", gap: "20px" }}>
-          
+        <div className="settings-grid grid-cols-2 gap-5">
+
           {/* Timeline & Select Session */}
-          <div className="card" style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-            <div style={{ borderBottom: "1px solid var(--border-color)", paddingBottom: "12px" }}>
-              <h3 style={{ margin: 0, fontSize: "16px", display: "flex", alignItems: "center", gap: "8px" }}>
-                <Code size={18} style={{ color: "var(--color-secondary)" }} />
+          <div className="card flex flex-col gap-4">
+            <div className="border-b border-border pb-3">
+              <h3 className="m-0 text-base flex items-center gap-2">
+                <Code size={18} className="text-blue-500" />
                 选择研发 Timeline 会话
               </h3>
-              <p style={{ color: "var(--text-secondary)", fontSize: "12px", margin: "4px 0 0 0" }}>
+              <p className="text-secondary-foreground text-xs mt-1">
                 选择一个最近完成开发任务的会话，扫描其上下文进行蒸馏分析。
               </p>
             </div>
 
             <div className="form-group">
               <label>最近研发会话历史</label>
-              <select 
-                className="form-input" 
-                value={selectedConvId} 
+              <select
+                className="form-input"
+                value={selectedConvId}
                 onChange={(e) => {
                   const val = e.target.value;
                   setSelectedConvId(val);
@@ -375,31 +354,18 @@ export function MemoryHub() {
             </div>
 
             {/* Conversation Log Preview */}
-            <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "8px" }}>
-              <label style={{ fontSize: "13px", fontWeight: 500 }}>会话对话摘要</label>
-              <div style={{ 
-                flex: 1, 
-                maxHeight: "260px", 
-                overflowY: "auto", 
-                background: "rgba(0,0,0,0.3)", 
-                border: "1px solid var(--border-color)", 
-                borderRadius: "8px", 
-                padding: "12px",
-                display: "flex",
-                flexDirection: "column",
-                gap: "10px"
-              }}>
+            <div className="flex-1 flex flex-col gap-2">
+              <label className="text-sm font-medium">会话对话摘要</label>
+              <div className="flex-1 max-h-[260px] overflow-y-auto bg-black/30 border border-border rounded-lg p-3 flex flex-col gap-2.5">
                 {convMessages.map((msg, i) => (
-                  <div key={i} style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                    <span style={{ 
-                      fontSize: "11px", 
-                      color: msg.role === "user" ? "var(--color-secondary)" : "var(--color-success)",
-                      fontWeight: 600,
-                      textTransform: "uppercase"
-                    }}>
+                  <div key={i} className="flex flex-col gap-1">
+                    <span className={cn(
+                      "text-xs font-semibold uppercase",
+                      msg.role === "user" ? "text-blue-500" : "text-emerald-500"
+                    )}>
                       {msg.role === "user" ? "👤 Developer" : "🤖 Agent"}
                     </span>
-                    <p style={{ margin: 0, fontSize: "13px", color: "var(--text-secondary)", lineHeight: "1.4" }}>
+                    <p className="m-0 text-sm text-secondary-foreground leading-snug">
                       {msg.content}
                     </p>
                   </div>
@@ -407,11 +373,10 @@ export function MemoryHub() {
               </div>
             </div>
 
-            <button 
-              className="btn btn-primary"
+            <button
+              className="btn btn-primary w-full flex justify-center items-center gap-2"
               disabled={isDistilling || !selectedConvId}
               onClick={handleDistillExperience}
-              style={{ width: "100%", display: "flex", justifyContent: "center", alignItems: "center", gap: "8px" }}
             >
               {isDistilling ? (
                 <>
@@ -428,25 +393,25 @@ export function MemoryHub() {
           </div>
 
           {/* Distilled Card Suggestion Preview */}
-          <div className="card" style={{ display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
-            <div style={{ borderBottom: "1px solid var(--border-color)", paddingBottom: "12px", marginBottom: "16px" }}>
-              <h3 style={{ margin: 0, fontSize: "16px", display: "flex", alignItems: "center", gap: "8px" }}>
-                <Zap size={18} style={{ color: "var(--color-warning)" }} />
+          <div className="card flex flex-col justify-between">
+            <div className="border-b border-border pb-3 mb-4">
+              <h3 className="m-0 text-base flex items-center gap-2">
+                <Zap size={18} className="text-amber-500" />
                 蒸馏卡片预览 (Distilled Card Preview)
               </h3>
-              <p style={{ color: "var(--text-secondary)", fontSize: "12px", margin: "4px 0 0 0" }}>
+              <p className="text-secondary-foreground text-xs mt-1">
                 大模型扫描提取的历史开发事故。您可以修改并确认存入防错库。
               </p>
             </div>
 
             {distilledSuggestion ? (
-              <div style={{ display: "flex", flexDirection: "column", gap: "16px", flex: 1 }}>
-                
+              <div className="flex flex-col gap-4 flex-1">
+
                 <div className="form-group">
                   <label>踩坑事故描述 (Incident)</label>
-                  <input 
-                    type="text" 
-                    className="form-input" 
+                  <input
+                    type="text"
+                    className="form-input"
                     value={distilledSuggestion.incident_desc}
                     onChange={(e) => setDistilledSuggestion({...distilledSuggestion, incident_desc: e.target.value})}
                   />
@@ -454,48 +419,45 @@ export function MemoryHub() {
 
                 <div className="form-group">
                   <label>危险模式/触发命令 (Risky Pattern)</label>
-                  <input 
-                    type="text" 
-                    className="form-input" 
+                  <input
+                    type="text"
+                    className="form-input font-mono"
                     value={distilledSuggestion.code_pattern}
                     onChange={(e) => setDistilledSuggestion({...distilledSuggestion, code_pattern: e.target.value})}
-                    style={{ fontFamily: "var(--font-mono)" }}
                   />
                 </div>
 
                 <div className="form-group">
                   <label>避坑安全方案 (Remediation)</label>
-                  <textarea 
-                    className="form-input" 
+                  <textarea
+                    className="form-input h-20 resize-none"
                     value={distilledSuggestion.remediation}
                     onChange={(e) => setDistilledSuggestion({...distilledSuggestion, remediation: e.target.value})}
-                    style={{ height: "80px", resize: "none" }}
                   />
                 </div>
 
                 <div className="form-group">
                   <label>标签/工程规范分类 (Keywords)</label>
-                  <input 
-                    type="text" 
-                    className="form-input" 
+                  <input
+                    type="text"
+                    className="form-input"
                     value={distilledSuggestion.keywords}
                     onChange={(e) => setDistilledSuggestion({...distilledSuggestion, keywords: e.target.value})}
                     placeholder="cors,fetch,lock,deadlock"
                   />
                 </div>
 
-                <button 
-                  className="btn"
+                <button
+                  className="btn w-full mt-2.5 bg-gradient-to-br from-emerald-500 to-[#15803d] border-emerald-500"
                   onClick={handleSaveDistilledMemory}
-                  style={{ width: "100%", marginTop: "10px", background: "linear-gradient(135deg, var(--color-success) 0%, #15803d 100%)", borderColor: "var(--color-success)" }}
                 >
-                  <Check size={16} style={{ marginRight: "6px" }} />
+                  <Check size={16} className="mr-1.5" />
                   确认存入长期记忆库，并在后续启动中生效
                 </button>
               </div>
             ) : (
-              <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "var(--text-muted)", border: "2px dashed var(--border-color)", borderRadius: "8px", padding: "40px" }}>
-                <Brain size={48} style={{ color: "var(--border-color)", marginBottom: "16px" }} />
+              <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground border-2 border-dashed border-border rounded-lg p-10">
+                <Brain size={48} className="text-[var(--border-color)] mb-4" />
                 <span>等待提取会话，点击左侧「一键扫描并提炼」按钮开始</span>
               </div>
             )}
@@ -507,46 +469,28 @@ export function MemoryHub() {
 
       {/* C. POPUP FORM FOR ADDING/EDITING MEMORY */}
       {isFormOpen && (
-        <div style={{ 
-          position: "fixed", 
-          top: 0, 
-          left: 0, 
-          width: "100vw", 
-          height: "100vh", 
-          background: "rgba(0,0,0,0.6)", 
-          backdropFilter: "blur(4px)",
-          display: "flex", 
-          alignItems: "center", 
-          justifyContent: "center",
-          zIndex: 1000 
-        }}>
-          <div 
-            className="card animate-fade-in"
-            style={{ 
-              width: "480px", 
-              background: "rgba(20, 20, 25, 0.95)",
-              border: "1px solid var(--border-color)",
-              boxShadow: "0 10px 30px rgba(0,0,0,0.5)"
-            }}
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[1000]">
+          <div
+            className="card animate-fade-in w-[480px] bg-[rgba(20,20,25,0.95)] border border-border shadow-[0_10px_30px_rgba(0,0,0,0.5)]"
           >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid var(--border-color)", paddingBottom: "12px", marginBottom: "16px" }}>
-              <h3 style={{ margin: 0, fontSize: "16px", display: "flex", alignItems: "center", gap: "8px" }}>
-                <Brain size={18} style={{ color: "var(--color-danger)" }} />
+            <div className="flex justify-between items-center border-b border-border pb-3 mb-4">
+              <h3 className="m-0 text-base flex items-center gap-2">
+                <Brain size={18} className="text-red-500" />
                 {formId ? "编辑避坑记忆卡片" : "新建避坑记忆卡片"}
               </h3>
-              <button 
+              <button
+                className="bg-transparent border-none text-muted-foreground cursor-pointer hover:text-foreground"
                 onClick={() => setIsFormOpen(false)}
-                style={{ background: "transparent", border: "none", color: "var(--text-secondary)", cursor: "pointer" }}
               >
                 <X size={18} />
               </button>
             </div>
 
-            <form onSubmit={handleSaveMemory} style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+            <form onSubmit={handleSaveMemory} className="flex flex-col gap-3.5">
               <div className="form-group">
                 <label>踩坑事故描述 (Incident Title)</label>
-                <input 
-                  type="text" 
+                <input
+                  type="text"
                   className="form-input"
                   placeholder="例如：跨域请求中 credentials 导致预检拦截"
                   value={formDesc}
@@ -557,10 +501,9 @@ export function MemoryHub() {
 
               <div className="form-group">
                 <label>危险模式/触发命令 (Risky snippet / command)</label>
-                <input 
-                  type="text" 
-                  className="form-input" 
-                  style={{ fontFamily: "var(--font-mono)" }}
+                <input
+                  type="text"
+                  className="form-input font-mono"
                   placeholder="例如：fetch(url, { credentials: 'include' })"
                   value={formPattern}
                   onChange={(e) => setFormPattern(e.target.value)}
@@ -570,9 +513,8 @@ export function MemoryHub() {
 
               <div className="form-group">
                 <label>安全修复规约 (Remediation Rule)</label>
-                <textarea 
-                  className="form-input" 
-                  style={{ height: "100px", resize: "none" }}
+                <textarea
+                  className="form-input h-[100px] resize-none"
                   placeholder="例如：当 credentials 设为 include 时，Access-Control-Allow-Origin 不能使用通配符 *，必须指定具体 Origin..."
                   value={formRemediation}
                   onChange={(e) => setFormRemediation(e.target.value)}
@@ -582,16 +524,16 @@ export function MemoryHub() {
 
               <div className="form-group">
                 <label>分类标签 (Keywords, 逗号分隔)</label>
-                <input 
-                  type="text" 
-                  className="form-input" 
+                <input
+                  type="text"
+                  className="form-input"
                   placeholder="例如：cors,fetch,credentials,web"
                   value={formKeywords}
                   onChange={(e) => setFormKeywords(e.target.value)}
                 />
               </div>
 
-              <div style={{ display: "flex", gap: "10px", marginTop: "10px", justifyContent: "flex-end" }}>
+              <div className="flex gap-2.5 mt-2.5 justify-end">
                 <button type="button" className="btn btn-secondary" onClick={() => setIsFormOpen(false)}>
                   取消
                 </button>
@@ -600,6 +542,29 @@ export function MemoryHub() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* D. CONFIRM DELETE DIALOG */}
+      {pendingDeleteId && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[1000]">
+          <div className="card animate-fade-in w-[400px] bg-[rgba(20,20,25,0.95)] border border-border shadow-[0_10px_30px_rgba(0,0,0,0.5)]">
+            <div className="flex items-center gap-2 mb-4">
+              <AlertTriangle size={18} className="text-amber-500" />
+              <h3 className="m-0 text-base">确认删除防错记忆</h3>
+            </div>
+            <p className="text-sm text-secondary-foreground mb-5">
+              确定要让 AI 遗忘这条防错记忆吗？遗忘后启动 Agent 将不再自动提示。
+            </p>
+            <div className="flex gap-2.5 justify-end">
+              <button className="btn btn-secondary" onClick={() => setPendingDeleteId(null)}>
+                取消
+              </button>
+              <button className="btn bg-red-600 border-red-600 hover:bg-red-700" onClick={confirmDeleteMemory}>
+                确认删除
+              </button>
+            </div>
           </div>
         </div>
       )}

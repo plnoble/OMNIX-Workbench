@@ -1,0 +1,8 @@
+{
+  "event_id": "EVENT-010",
+  "event_type": "PHASE_COMPLETED",
+  "agent": "Claude",
+  "summary": "P1 完成：提取 types/index.ts (12个类型/接口), lib/constants.ts (6个常量), lib/terminal.ts (3个纯函数: stripAnsi/processTerminalStream/detectInteractivePrompts), lib/tauri-api.ts (8个命名空间、38个API函数), lib/utils.ts (cn工具)。tsc 零错误。",
+  "related_entities": ["TASK-002"],
+  "timestamp": "2026-06-06T10:45:00+08:00"
+}

@@ -1,0 +1,37 @@
+{
+  "decision_id": "DEC-015",
+  "topic": "UI 样式方案选型：Tailwind CSS + shadcn/ui",
+  "context": "当前项目有 584 处内联 style={{}}，1 个 2472 行 App.css，无 UI 组件库，无设计系统。需要选择一个样式方案来替代。",
+  "options_considered": [
+    "保持现有手写 CSS + 内联样式模式，仅做结构拆分",
+    "styled-components / Emotion (CSS-in-JS)",
+    "Tailwind CSS + shadcn/ui (utility-first + 组件库)"
+  ],
+  "chosen_option": "Tailwind CSS + shadcn/ui",
+  "reasoning": [
+    "Utility-first 天然替代内联 style={{}}，迁移路径清晰（每个 style 属性→对应 utility class）",
+    "shadcn/ui 提供 Button/Card/Dialog/Input/Select/Switch/Badge 等专业基础组件，替代手写 .btn/.card/.form-input",
+    "基于 Radix UI 原语，无障碍性（a11y）内置",
+    "轻量：只复制使用的组件代码，不增加运行时依赖",
+    "Tailwind @theme 可直接映射现有 CSS variables，保留玻璃拟态风格",
+    "社区生态成熟，Vite 7 兼容 @tailwindcss/vite 插件"
+  ],
+  "tradeoffs": [
+    "className 字符串可能变长，但 cn() + tailwind-merge 可管理",
+    "需要学习 Tailwind 语法，但映射规则清晰（p-4=16px, text-xs=12px 等）",
+    "shadcn/ui 组件文件直接复制到项目中，后续升级需手动同步"
+  ],
+  "impact_scope": [
+    "package.json — 新增 tailwindcss, @tailwindcss/vite, class-variance-authority, clsx, tailwind-merge, @radix-ui/*",
+    "vite.config.ts — 添加 tailwindcss() plugin",
+    "tsconfig.json — 添加 baseUrl + paths (@/ → src/)",
+    "src/styles/globals.css — 新的 Tailwind 入口 + theme token",
+    "src/components/ui/* — shadcn/ui 组件目录",
+    "src/App.css — 最终删除"
+  ],
+  "future_risks": [
+    "Tailwind v4 语法变化（当前用 @tailwindcss/vite 而非 PostCSS）",
+    "shadcn/ui 版本更新时需手动同步组件文件"
+  ],
+  "timestamp": "2026-06-06T10:00:00+08:00"
+}

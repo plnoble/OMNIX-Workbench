@@ -70,6 +70,7 @@ pub enum AgentChild {
     Standard(tokio::process::Child),
     Pty {
         child: Box<dyn portable_pty::Child + Send + Sync>,
+        #[allow(dead_code)]
         pty_pair: portable_pty::PtyPair,
     },
 }
