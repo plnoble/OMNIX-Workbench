@@ -1,0 +1,21 @@
+{
+  "task_id": "TASK-018",
+  "title": "借鉴 New API: 上游模型自动同步",
+  "goal": "自动拉取已配置平台的可用模型列表，与本地对比发现新增/移除的模型",
+  "owner": "claude",
+  "status": "IN_PROGRESS",
+  "priority": "medium",
+  "dependencies": ["TASK-017"],
+  "related_files": [
+    "src-tauri/src/commands.rs",
+    "src-tauri/src/lib.rs",
+    "src/lib/tauri-api.ts"
+  ],
+  "acceptance_criteria": [
+    "sync_upstream_models 命令：对每个平台调用 /v1/models",
+    "返回新增/移除/未变的模型列表",
+    "支持一键同步到 platform_models 表",
+    "cargo check + tsc 通过"
+  ],
+  "start_time": "2026-06-09T00:00:00Z"
+}

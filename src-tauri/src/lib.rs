@@ -253,6 +253,10 @@ pub fn run() {
             commands::get_platform_health,
             commands::reset_platform_health,
             commands::update_platform_routing,
+            // Upstream Model Auto-Sync (New API inspired)
+            commands::sync_upstream_models,
+            commands::apply_model_sync,
+            commands::sync_all_upstream_models,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

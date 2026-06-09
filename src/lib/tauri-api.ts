@@ -607,6 +607,33 @@ export const platformHealthApi = {
     invoke("update_platform_routing", { platformId, weight, priority }),
 };
 
+// ── Upstream Model Auto-Sync (New API inspired) ──────
+
+export interface ModelSyncResult {
+  platform_id: string;
+  platform_name: string;
+  upstream_models: string[];
+  local_models: string[];
+  new_models: string[];
+  removed_models: string[];
+  unchanged_models: string[];
+  error: string | null;
+}
+
+export const modelSyncApi = {
+  /** Sync upstream models for a single platform */
+  syncPlatform: (platformId: string) =>
+    invoke<ModelSyncResult>("sync_upstream_models", { platformId }),
+
+  /** Apply model sync: add/remove models */
+  apply: (platformId: string, modelsToAdd: string[], modelsToRemove: string[]) =>
+    invoke<[number, number]>("apply_model_sync", { platformId, modelsToAdd, modelsToRemove }),
+
+  /** Sync all enabled platforms */
+  syncAll: () =>
+    invoke<ModelSyncResult[]>("sync_all_upstream_models"),
+};
+
 // ── P2 Sync Engine Types ──────────────────────────────
 
 export interface ConflictInfo {

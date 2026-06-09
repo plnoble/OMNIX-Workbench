@@ -5544,3 +5544,225 @@ pub fn update_platform_routing(
     ).map_err(|e: rusqlite::Error| e.to_string())?;
     Ok(())
 }
+
+// ══════════════════════════════════════════════════
+// Upstream Model Auto-Sync (New API inspired)
+// ══════════════════════════════════════════════════
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpstreamModel {
+    pub id: String,
+    pub owned_by: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelSyncResult {
+    pub platform_id: String,
+    pub platform_name: String,
+    pub upstream_models: Vec<String>,
+    pub local_models: Vec<String>,
+    pub new_models: Vec<String>,
+    pub removed_models: Vec<String>,
+    pub unchanged_models: Vec<String>,
+    pub error: Option<String>,
+}
+
+/// Fetch models from a single upstream platform
+async fn fetch_upstream_models(api_address: &str, api_key: &str, api_type: &str) -> Result<Vec<String>, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let models_url = if api_type == "ollama" {
+        format!("{}/api/tags", api_address.trim_end_matches('/'))
+    } else {
+        format!("{}/v1/models", api_address.trim_end_matches('/'))
+    };
+
+    let mut req = client.get(&models_url);
+    if !api_key.is_empty() && api_type != "ollama" {
+        req = req.header("Authorization", format!("Bearer {}", api_key));
+    }
+
+    let res = req.send().await.map_err(|e| format!("Request failed: {}", e))?;
+    if !res.status().is_success() {
+        return Err(format!("HTTP {}", res.status()));
+    }
+
+    let body: serde_json::Value = res.json().await.map_err(|e| format!("Parse failed: {}", e))?;
+
+    let mut models = Vec::new();
+
+    if api_type == "ollama" {
+        // Ollama: { "models": [{ "name": "llama3" }, ...] }
+        if let Some(arr) = body["models"].as_array() {
+            for m in arr {
+                if let Some(name) = m["name"].as_str() {
+                    models.push(name.to_string());
+                }
+            }
+        }
+    } else {
+        // OpenAI-compatible: { "data": [{ "id": "gpt-4o", "owned_by": "openai" }, ...] }
+        if let Some(arr) = body["data"].as_array() {
+            for m in arr {
+                if let Some(id) = m["id"].as_str() {
+                    models.push(id.to_string());
+                }
+            }
+        }
+    }
+
+    Ok(models)
+}
+
+/// Internal: sync upstream models for a single platform (shared logic)
+async fn sync_upstream_models_internal(
+    platform_id: &str,
+    db: &std::sync::Arc<DbManager>,
+) -> Result<ModelSyncResult, String> {
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+
+    // Get platform config
+    let (name, api_type, api_key, api_address): (String, String, String, String) = conn.query_row(
+        "SELECT name, api_type, api_key, api_address FROM model_platforms WHERE id = ?1",
+        params![platform_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+    ).map_err(|e| format!("Platform not found: {}", e))?;
+
+    // Fetch upstream models
+    let upstream_models = match fetch_upstream_models(&api_address, &api_key, &api_type).await {
+        Ok(models) => models,
+        Err(e) => {
+            return Ok(ModelSyncResult {
+                platform_id: platform_id.to_string(),
+                platform_name: name,
+                upstream_models: vec![],
+                local_models: vec![],
+                new_models: vec![],
+                removed_models: vec![],
+                unchanged_models: vec![],
+                error: Some(e),
+            });
+        }
+    };
+
+    // Get local models for this platform
+    let mut stmt = conn.prepare("SELECT model_name FROM platform_models WHERE platform_id = ?1")
+        .map_err(|e: rusqlite::Error| e.to_string())?;
+    let local_models: Vec<String> = stmt.query_map(params![platform_id], |r| r.get(0))
+        .map_err(|e: rusqlite::Error| e.to_string())?
+        .flatten()
+        .collect();
+
+    // Compare
+    let upstream_set: std::collections::HashSet<&String> = upstream_models.iter().collect();
+    let local_set: std::collections::HashSet<&String> = local_models.iter().collect();
+
+    let new_models: Vec<String> = upstream_models.iter()
+        .filter(|m| !local_set.contains(m))
+        .cloned()
+        .collect();
+
+    let removed_models: Vec<String> = local_models.iter()
+        .filter(|m| !upstream_set.contains(m))
+        .cloned()
+        .collect();
+
+    let unchanged_models: Vec<String> = upstream_models.iter()
+        .filter(|m| local_set.contains(m))
+        .cloned()
+        .collect();
+
+    Ok(ModelSyncResult {
+        platform_id: platform_id.to_string(),
+        platform_name: name,
+        upstream_models,
+        local_models,
+        new_models,
+        removed_models,
+        unchanged_models,
+        error: None,
+    })
+}
+
+/// Apply model sync: add new models, optionally remove missing ones
+#[tauri::command]
+pub fn apply_model_sync(
+    platform_id: String,
+    models_to_add: Vec<String>,
+    models_to_remove: Vec<String>,
+    db: State<'_, std::sync::Arc<DbManager>>,
+) -> Result<(usize, usize), String> {
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+
+    let mut added = 0;
+    for model_name in &models_to_add {
+        let id = format!("{}:{}", platform_id, model_name);
+        let result = conn.execute(
+            "INSERT OR IGNORE INTO platform_models (id, platform_id, model_name, is_enabled) VALUES (?1, ?2, ?3, 1)",
+            params![id, platform_id, model_name],
+        );
+        if result.unwrap_or(0) > 0 { added += 1; }
+    }
+
+    let mut removed = 0;
+    for model_name in &models_to_remove {
+        let id = format!("{}:{}", platform_id, model_name);
+        let result = conn.execute(
+            "DELETE FROM platform_models WHERE id = ?1",
+            params![id],
+        );
+        if result.unwrap_or(0) > 0 { removed += 1; }
+    }
+
+    Ok((added, removed))
+}
+
+/// Sync upstream models for a single platform (tauri command wrapper)
+#[tauri::command]
+pub async fn sync_upstream_models(
+    platform_id: String,
+    db: State<'_, std::sync::Arc<DbManager>>,
+) -> Result<ModelSyncResult, String> {
+    sync_upstream_models_internal(&platform_id, &db).await
+}
+
+/// Sync all enabled platforms at once
+#[tauri::command]
+pub async fn sync_all_upstream_models(
+    db: State<'_, std::sync::Arc<DbManager>>,
+) -> Result<Vec<ModelSyncResult>, String> {
+    // Collect platform IDs first, then drop the statement (avoids Send issue with rusqlite Statement)
+    let platform_ids: Vec<String> = {
+        let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+        let mut stmt = conn.prepare("SELECT id FROM model_platforms WHERE is_enabled = 1")
+            .map_err(|e: rusqlite::Error| e.to_string())?;
+        let ids: Vec<String> = stmt.query_map([], |r| r.get(0))
+            .map_err(|e: rusqlite::Error| e.to_string())?
+            .flatten()
+            .collect();
+        ids
+    };
+
+    let mut results = Vec::new();
+    for pid in platform_ids {
+        match sync_upstream_models_internal(&pid, &db).await {
+            Ok(r) => results.push(r),
+            Err(e) => results.push(ModelSyncResult {
+                platform_id: pid,
+                platform_name: "unknown".into(),
+                upstream_models: vec![],
+                local_models: vec![],
+                new_models: vec![],
+                removed_models: vec![],
+                unchanged_models: vec![],
+                error: Some(e),
+            }),
+        }
+    }
+
+    Ok(results)
+}
