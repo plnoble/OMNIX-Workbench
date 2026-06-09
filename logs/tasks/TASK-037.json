@@ -1,0 +1,1 @@
+{"task_id":"TASK-037","title":"Odysseus 借鉴 8: Cookbook 模型推荐","goal":"硬件检测 + 内置模型知识库 + 一键安装","owner":"claude","status":"PENDING","priority":"medium","related_files":["src-tauri/src/commands.rs","src-tauri/src/model_knowledge.rs","src/lib/tauri-api.ts"],"start_time":"2026-06-09T00:00:00Z"}

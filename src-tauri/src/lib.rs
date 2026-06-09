@@ -9,6 +9,9 @@ mod agent_templates;
 mod skill_frontmatter;
 mod proxy_middleware;
 mod model_provider;
+mod prompt_guard;
+mod event_bus;
+mod crypto;
 mod commands;
 
 #[cfg(test)]
@@ -273,6 +276,21 @@ pub fn run() {
             commands::get_top_skills_by_usage,
             // Autopilot Enhancement (Multica inspired)
             commands::save_autopilot_result_to_kb,
+            // Odysseus-Inspired Features
+            commands::wrap_untrusted_content,
+            commands::checklist_add,
+            commands::checklist_update,
+            commands::checklist_get,
+            commands::checklist_summary,
+            commands::estimate_tokens,
+            commands::get_context_budget,
+            commands::run_skill_audit,
+            commands::register_event_trigger,
+            commands::get_event_triggers,
+            commands::encrypt_value,
+            commands::decrypt_value,
+            commands::send_desktop_notification,
+            commands::send_ntfy_notification,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

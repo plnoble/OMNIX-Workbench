@@ -1,0 +1,1 @@
+{"task_id":"TASK-036","title":"Odysseus 借鉴 7: Fernet 静态加密","goal":"敏感字段透明加密/解密","owner":"claude","status":"PENDING","priority":"high","related_files":["src-tauri/src/crypto.rs","src-tauri/src/db.rs"],"start_time":"2026-06-09T00:00:00Z"}

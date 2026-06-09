@@ -1,0 +1,1 @@
+{"task_id":"TASK-039","title":"Odysseus 借鉴 10: ntfy 推送通知","goal":"跨设备推送通知","owner":"claude","status":"PENDING","priority":"medium","related_files":["src-tauri/src/commands.rs"],"start_time":"2026-06-09T00:00:00Z"}

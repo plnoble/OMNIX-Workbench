@@ -1,0 +1,1 @@
+{"task_id":"TASK-032","title":"Odysseus 借鉴 3: 桌面通知","goal":"Agent 任务完成/失败时发送系统通知","owner":"claude","status":"PENDING","priority":"high","related_files":["src-tauri/src/commands.rs","src-tauri/src/lib.rs"],"start_time":"2026-06-09T00:00:00Z"}

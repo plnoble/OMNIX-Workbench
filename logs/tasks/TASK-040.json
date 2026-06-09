@@ -1,0 +1,1 @@
+{"task_id":"TASK-040","title":"Odysseus 借鉴 11: 工具 RAG 索引","goal":"语义工具选择","owner":"claude","status":"PENDING","priority":"low","related_files":["src-tauri/src/tool_index.rs"],"start_time":"2026-06-09T00:00:00Z"}

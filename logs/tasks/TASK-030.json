@@ -1,0 +1,1 @@
+{"task_id":"TASK-030","title":"Odysseus 借鉴 1: Prompt 注入防护","goal":"不可信内容包裹安全标签，防止注入攻击","owner":"claude","status":"IN_PROGRESS","priority":"high","related_files":["src-tauri/src/proxy.rs","src-tauri/src/commands.rs"],"start_time":"2026-06-09T00:00:00Z"}

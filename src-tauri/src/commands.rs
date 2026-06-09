@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::fs;
 use std::sync::Arc;
 use std::path::PathBuf;
 use rusqlite::params;
@@ -6121,4 +6122,236 @@ pub fn get_top_skills_by_usage(
     let mut result = Vec::new();
     for r in rows.flatten() { result.push(r); }
     Ok(result)
+}
+// ══════════════════════════════════════════════════
+// Odysseus-Inspired Features — Tauri Commands
+// ══════════════════════════════════════════════════
+
+/// Wrap untrusted content in safety tags (Prompt Injection Guard)
+#[tauri::command]
+pub fn wrap_untrusted_content(content: String, source: String) -> String {
+    crate::prompt_guard::wrap_untrusted(&content, &source)
+}
+
+// ── Development Checklist ─────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChecklistItem {
+    pub id: String,
+    pub session_id: String,
+    pub title: String,
+    pub status: String,
+    pub priority: i32,
+    pub source: String,
+    pub created_at: String,
+    pub completed_at: Option<String>,
+}
+
+#[tauri::command]
+pub fn checklist_add(
+    session_id: String, title: String, priority: Option<i32>, source: Option<String>,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<ChecklistItem, String> {
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS dev_checklist (
+            id TEXT PRIMARY KEY, session_id TEXT NOT NULL, title TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending', priority INTEGER NOT NULL DEFAULT 3,
+            source TEXT NOT NULL DEFAULT 'manual', created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            completed_at DATETIME NULL
+        )", [],
+    );
+    let id = format!("chk_{}", chrono::Utc::now().timestamp_millis());
+    let src = source.unwrap_or_else(|| "manual".into());
+    let pri = priority.unwrap_or(3);
+    conn.execute(
+        "INSERT INTO dev_checklist (id, session_id, title, priority, source) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![id, session_id, title, pri, src],
+    ).map_err(|e: rusqlite::Error| e.to_string())?;
+    Ok(ChecklistItem {
+        id, session_id, title, status: "pending".into(), priority: pri, source: src,
+        created_at: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+        completed_at: None,
+    })
+}
+
+#[tauri::command]
+pub fn checklist_update(item_id: String, status: String, db: State<'_, Arc<DbManager>>) -> Result<(), String> {
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+    if status == "done" {
+        conn.execute("UPDATE dev_checklist SET status = ?1, completed_at = datetime('now') WHERE id = ?2", params![status, item_id])
+    } else {
+        conn.execute("UPDATE dev_checklist SET status = ?1, completed_at = NULL WHERE id = ?2", params![status, item_id])
+    }.map_err(|e: rusqlite::Error| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn checklist_get(
+    session_id: Option<String>, include_done: Option<bool>,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<Vec<ChecklistItem>, String> {
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS dev_checklist (
+            id TEXT PRIMARY KEY, session_id TEXT NOT NULL, title TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending', priority INTEGER NOT NULL DEFAULT 3,
+            source TEXT NOT NULL DEFAULT 'manual', created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            completed_at DATETIME NULL
+        )", [],
+    );
+    let show_done = include_done.unwrap_or(true);
+    let base = "SELECT id, session_id, title, status, priority, source, created_at, completed_at FROM dev_checklist";
+    let sql = match (&session_id, show_done) {
+        (Some(_), true) => format!("{} WHERE session_id = ?1 ORDER BY priority DESC, created_at ASC", base),
+        (Some(_), false) => format!("{} WHERE session_id = ?1 AND status != 'done' ORDER BY priority DESC, created_at ASC", base),
+        (None, true) => format!("{} ORDER BY priority DESC, created_at ASC", base),
+        (None, false) => format!("{} WHERE status != 'done' ORDER BY priority DESC, created_at ASC", base),
+    };
+    let mut stmt = conn.prepare(&sql).map_err(|e: rusqlite::Error| e.to_string())?;
+    let parse_row = |row: &rusqlite::Row| -> rusqlite::Result<ChecklistItem> {
+        Ok(ChecklistItem {
+            id: row.get(0)?, session_id: row.get(1)?, title: row.get(2)?, status: row.get(3)?,
+            priority: row.get(4)?, source: row.get(5)?, created_at: row.get(6)?, completed_at: row.get(7)?,
+        })
+    };
+    let rows = if let Some(ref sid) = session_id {
+        stmt.query_map(params![sid], parse_row)
+    } else {
+        stmt.query_map([], parse_row)
+    }.map_err(|e: rusqlite::Error| e.to_string())?;
+    Ok(rows.flatten().collect())
+}
+
+#[tauri::command]
+pub fn checklist_summary(session_id: String, db: State<'_, Arc<DbManager>>) -> Result<String, String> {
+    let items = checklist_get(Some(session_id), Some(false), db)?;
+    if items.is_empty() { return Ok(String::new()); }
+    let mut s = String::from("You have the following incomplete tasks:\n");
+    for item in &items {
+        let icon = if item.status == "in_progress" { "[>]" } else { "[ ]" };
+        let pri = match item.priority { 5 => "CRITICAL", 4 => "HIGH", 3 => "MEDIUM", 2 => "LOW", _ => "MINOR" };
+        s.push_str(&format!("{} [{}] {} ({})\n", icon, pri, item.title, item.id));
+    }
+    Ok(s)
+}
+
+// ── Context Budget ────────────────────────────────
+
+#[tauri::command]
+pub fn estimate_tokens(text: String) -> u32 {
+    let ascii = text.chars().filter(|c| c.is_ascii()).count() as u32;
+    let cjk = text.chars().filter(|c| !c.is_ascii()).count() as u32;
+    ascii / 4 + cjk / 2 + 1
+}
+
+#[tauri::command]
+pub fn get_context_budget(
+    conversation_id: String, model_context_limit: Option<u32>,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<serde_json::Value, String> {
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+    let limit = model_context_limit.unwrap_or(128000);
+    let total_chars: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(LENGTH(content)), 0) FROM messages WHERE conversation_id = ?1",
+        params![conversation_id], |r| r.get(0),
+    ).unwrap_or(0);
+    let est = (total_chars as u32) / 4 + 1;
+    let remaining = limit.saturating_sub(est);
+    let pct = if limit > 0 { est as f64 / limit as f64 * 100.0 } else { 0.0 };
+    Ok(serde_json::json!({
+        "model_limit": limit, "estimated_tokens": est,
+        "remaining_tokens": remaining, "usage_percent": (pct * 100.0).round() / 100.0,
+        "status": if pct > 90.0 { "critical" } else if pct > 70.0 { "warning" } else { "ok" },
+    }))
+}
+
+// ── Skill Audit ───────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillAuditResult {
+    pub skill_name: String, pub score: u32, pub issues: Vec<String>,
+    pub suggestion: String, pub auto_fixed: bool,
+}
+
+#[tauri::command]
+pub fn run_skill_audit(db: State<'_, Arc<DbManager>>) -> Result<Vec<SkillAuditResult>, String> {
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS skill_audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, skill_name TEXT, score INTEGER, issues TEXT, audited_at DATETIME DEFAULT CURRENT_TIMESTAMP)", [],
+    );
+    let mut stmt = conn.prepare("SELECT name, file_path FROM skills WHERE is_active = 1")
+        .map_err(|e: rusqlite::Error| e.to_string())?;
+    let skills: Vec<(String, String)> = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    }).map_err(|e: rusqlite::Error| e.to_string())?.flatten().collect();
+    let mut results = Vec::new();
+    for (name, file_path) in skills {
+        let mut core_path = PathBuf::from(&file_path);
+        core_path.set_file_name(format!("{}_core.md", name));
+        let content = match fs::read_to_string(&core_path) { Ok(c) => c, Err(_) => continue };
+        let mut issues = Vec::new();
+        let mut score: u32 = 10;
+        if content.len() < 100 { issues.push("Content too short".into()); score -= 3; }
+        if !content.contains('#') { issues.push("No headings".into()); score -= 2; }
+        if !content.contains("```") && content.len() > 500 { issues.push("No code blocks".into()); score -= 1; }
+        if content.contains("TODO") || content.contains("FIXME") { issues.push("Has TODO/FIXME".into()); score -= 1; }
+        let issues_str = issues.join("; ");
+        let _ = conn.execute("INSERT INTO skill_audit_log (skill_name, score, issues) VALUES (?1, ?2, ?3)", params![name, score.max(1), issues_str]);
+        results.push(SkillAuditResult {
+            skill_name: name, score: score.max(1), issues,
+            suggestion: if score < 7 { "Expand with more instructions".into() } else { "Quality OK".into() },
+            auto_fixed: false,
+        });
+    }
+    Ok(results)
+}
+
+// ── Event Bus ─────────────────────────────────────
+
+#[tauri::command]
+pub fn register_event_trigger(event_type: String, threshold: u32, task_id: String, db: State<'_, Arc<DbManager>>) -> Result<String, String> {
+    crate::event_bus::register_trigger(&db, &event_type, threshold, &task_id)
+}
+
+#[tauri::command]
+pub fn get_event_triggers(db: State<'_, Arc<DbManager>>) -> Vec<crate::event_bus::EventTrigger> {
+    crate::event_bus::list_triggers(&db)
+}
+
+// ── Encryption ────────────────────────────────────
+
+#[tauri::command]
+pub fn encrypt_value(plaintext: String) -> String {
+    crate::crypto::encrypt(&plaintext)
+}
+
+#[tauri::command]
+pub fn decrypt_value(encrypted: String) -> String {
+    crate::crypto::decrypt(&encrypted)
+}
+
+// ── Desktop Notification ──────────────────────────
+
+#[tauri::command]
+pub fn send_desktop_notification(title: String, body: String, app_handle: AppHandle) -> Result<(), String> {
+    app_handle.emit("omnix-notification", serde_json::json!({ "title": title, "body": body }))
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ── ntfy Push ─────────────────────────────────────
+
+#[tauri::command]
+pub async fn send_ntfy_notification(
+    server: String, topic: String, title: String, message: String, priority: Option<String>,
+) -> Result<(), String> {
+    let client = reqwest::Client::new();
+    let pri = priority.unwrap_or_else(|| "default".into());
+    let res = client.post(format!("{}/{}", server.trim_end_matches('/'), topic))
+        .header("Title", &title).header("Priority", &pri)
+        .body(message).send().await
+        .map_err(|e| format!("ntfy request failed: {}", e))?;
+    if !res.status().is_success() { return Err(format!("ntfy HTTP {}", res.status())); }
+    Ok(())
 }

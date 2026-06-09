@@ -1,0 +1,1 @@
+{"task_id":"TASK-035","title":"Odysseus 借鉴 6: 事件驱动任务触发","goal":"事件总线 + 计数器阈值触发任务","owner":"claude","status":"PENDING","priority":"high","related_files":["src-tauri/src/event_bus.rs","src-tauri/src/commands.rs","src-tauri/src/lib.rs"],"start_time":"2026-06-09T00:00:00Z"}

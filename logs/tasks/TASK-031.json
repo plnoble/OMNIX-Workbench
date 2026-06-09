@@ -1,0 +1,1 @@
+{"task_id":"TASK-031","title":"Odysseus 借鉴 2: 开发任务清单（防失忆）","goal":"持久化任务清单，自动注入到 Agent 上下文","owner":"claude","status":"PENDING","priority":"high","related_files":["src-tauri/src/commands.rs","src-tauri/src/db.rs","src/lib/tauri-api.ts","src/components/tabs/ChatTab.tsx"],"start_time":"2026-06-09T00:00:00Z"}

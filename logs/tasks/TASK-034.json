@@ -1,0 +1,1 @@
+{"task_id":"TASK-034","title":"Odysseus 借鉴 5: 夜间技能审计","goal":"自动测试技能质量，弱技能自动修复","owner":"claude","status":"PENDING","priority":"high","related_files":["src-tauri/src/commands.rs","src-tauri/src/lib.rs","src/lib/tauri-api.ts"],"start_time":"2026-06-09T00:00:00Z"}

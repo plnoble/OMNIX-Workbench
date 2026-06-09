@@ -1,0 +1,1 @@
+{"task_id":"TASK-033","title":"Odysseus 借鉴 4: 上下文预算管理","goal":"Token 使用量监控 + 自动摘要","owner":"claude","status":"PENDING","priority":"high","related_files":["src-tauri/src/commands.rs","src/lib/tauri-api.ts","src/components/tabs/ChatTab.tsx"],"start_time":"2026-06-09T00:00:00Z"}

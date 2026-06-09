@@ -1,0 +1,1 @@
+{"task_id":"TASK-041","title":"Odysseus 借鉴 12: 后台任务自动续行","goal":"后台进程完成后自动继续 Agent 回合","owner":"claude","status":"PENDING","priority":"low","related_files":["src-tauri/src/agent.rs","src-tauri/src/commands.rs"],"start_time":"2026-06-09T00:00:00Z"}

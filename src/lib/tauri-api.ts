@@ -727,6 +727,90 @@ export const skillCompoundApi = {
     }>>("get_top_skills_by_usage", { limit }),
 };
 
+// ── Odysseus-Inspired APIs ────────────────────────────
+
+// Prompt Injection Guard
+export const promptGuardApi = {
+  wrap: (content: string, source: string) =>
+    invoke<string>("wrap_untrusted_content", { content, source }),
+};
+
+// Development Checklist
+export interface ChecklistItem {
+  id: string;
+  session_id: string;
+  title: string;
+  status: "pending" | "in_progress" | "done";
+  priority: number;
+  source: string;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export const checklistApi = {
+  add: (sessionId: string, title: string, priority?: number, source?: string) =>
+    invoke<ChecklistItem>("checklist_add", { sessionId, title, priority, source }),
+  update: (itemId: string, status: string) =>
+    invoke("checklist_update", { itemId, status }),
+  get: (sessionId?: string, includeDone?: boolean) =>
+    invoke<ChecklistItem[]>("checklist_get", { sessionId, includeDone }),
+  summary: (sessionId: string) =>
+    invoke<string>("checklist_summary", { sessionId }),
+};
+
+// Context Budget
+export interface ContextBudget {
+  model_limit: number;
+  estimated_tokens: number;
+  remaining_tokens: number;
+  usage_percent: number;
+  status: "ok" | "warning" | "critical";
+}
+
+export const contextBudgetApi = {
+  estimateTokens: (text: string) =>
+    invoke<number>("estimate_tokens", { text }),
+  getBudget: (conversationId: string, modelLimit?: number) =>
+    invoke<ContextBudget>("get_context_budget", { conversationId, modelContextLimit: modelLimit }),
+};
+
+// Skill Audit
+export interface SkillAuditResult {
+  skill_name: string;
+  score: number;
+  issues: string[];
+  suggestion: string;
+  auto_fixed: boolean;
+}
+
+export const skillAuditApi = {
+  run: () => invoke<SkillAuditResult[]>("run_skill_audit"),
+};
+
+// Event Bus
+export const eventBusApi = {
+  register: (eventType: string, threshold: number, taskId: string) =>
+    invoke<string>("register_event_trigger", { eventType, threshold, taskId }),
+  list: () => invoke<Array<{
+    id: string; event_type: string; threshold: number;
+    task_id: string; current_count: number; enabled: boolean;
+  }>>("get_event_triggers"),
+};
+
+// Encryption
+export const encryptionApi = {
+  encrypt: (plaintext: string) => invoke<string>("encrypt_value", { plaintext }),
+  decrypt: (encrypted: string) => invoke<string>("decrypt_value", { encrypted }),
+};
+
+// Desktop Notifications
+export const notificationApi = {
+  send: (title: string, body: string) =>
+    invoke("send_desktop_notification", { title, body }),
+  sendNtfy: (server: string, topic: string, title: string, message: string, priority?: string) =>
+    invoke("send_ntfy_notification", { server, topic, title, message, priority }),
+};
+
 // ── P2 Sync Engine Types ──────────────────────────────
 
 export interface ConflictInfo {
