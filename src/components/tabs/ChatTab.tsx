@@ -4,13 +4,95 @@
  * Agent switcher, message list, interactive prompt cards, send bar
  */
 
+import { useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Send, Square, Shield, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Check } from "lucide-react";
+import { Send, Square, Shield, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Check, ChevronDown, ChevronRight, Brain } from "lucide-react";
 import { AGENT_NAMES, DEFAULT_MODEL_NAMES } from "@/lib/constants";
 import { cn } from "@/lib/utils";
 import type { ConversationMessage, DetectedAgent, PlatformModel, PromptType } from "@/types";
+
+/**
+ * ThinkBlock — Collapsible <think> tag renderer (AingDesk inspired)
+ * Renders reasoning model output as a collapsible panel
+ */
+function ThinkBlock({ content }: { content: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const trimmed = content.trim();
+  if (!trimmed) return null;
+
+  return (
+    <div className="my-2 rounded-lg border border-purple-500/20 bg-purple-500/5">
+      <button
+        className="flex items-center gap-1.5 w-full px-3 py-1.5 text-left text-xs text-purple-400 hover:bg-purple-500/10 transition-colors rounded-lg"
+        onClick={() => setExpanded(!expanded)}
+      >
+        {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        <Brain size={12} />
+        <span className="font-medium">推理过程</span>
+        <span className="text-purple-400/60 ml-1">
+          ({trimmed.length} 字符)
+        </span>
+      </button>
+      {expanded && (
+        <div className="px-3 pb-3 pt-1">
+          <pre className="text-xs text-purple-300/80 whitespace-pre-wrap font-mono leading-relaxed">
+            {trimmed}
+          </pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Render message content with <think> tag support
+ * Splits content into text segments and think blocks
+ */
+function MessageContent({ content }: { content: string }) {
+  // Split by <think>...</think> tags
+  const parts: Array<{ type: "text" | "think"; content: string }> = [];
+  let remaining = content;
+
+  while (remaining.length > 0) {
+    const thinkStart = remaining.indexOf("<think>");
+    if (thinkStart === -1) {
+      parts.push({ type: "text", content: remaining });
+      break;
+    }
+
+    // Text before <think>
+    if (thinkStart > 0) {
+      parts.push({ type: "text", content: remaining.slice(0, thinkStart) });
+    }
+
+    const thinkEnd = remaining.indexOf("</think>", thinkStart);
+    if (thinkEnd === -1) {
+      // Unclosed <think> — treat rest as think
+      parts.push({ type: "think", content: remaining.slice(thinkStart + 7) });
+      break;
+    }
+
+    parts.push({
+      type: "think",
+      content: remaining.slice(thinkStart + 7, thinkEnd),
+    });
+    remaining = remaining.slice(thinkEnd + 8);
+  }
+
+  return (
+    <>
+      {parts.map((part, i) =>
+        part.type === "think" ? (
+          <ThinkBlock key={i} content={part.content} />
+        ) : (
+          <span key={i}>{part.content}</span>
+        )
+      )}
+    </>
+  );
+}
 
 interface ChatTabProps {
   activeAgent: string;
@@ -110,7 +192,7 @@ export function ChatTab({
                   {msg.role === "user" ? "用户" : activeAgent}
                 </div>
                 <div className="text-sm leading-relaxed whitespace-pre-wrap">
-                  {msg.content}
+                  <MessageContent content={msg.content} />
                 </div>
               </div>
             </div>

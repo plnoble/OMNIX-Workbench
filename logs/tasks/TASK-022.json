@@ -1,0 +1,24 @@
+{
+  "task_id": "TASK-022",
+  "title": "借鉴 AingDesk: <think> 推理标签渲染 + 模型使用 TOP 5",
+  "goal": "ChatTab 支持 <think> 标签折叠展示，DashboardTab 展示最常用模型",
+  "owner": "claude",
+  "status": "IN_PROGRESS",
+  "priority": "high",
+  "dependencies": [],
+  "related_files": [
+    "src/components/tabs/ChatTab.tsx",
+    "src/components/tabs/DashboardTab.tsx",
+    "src-tauri/src/commands.rs",
+    "src-tauri/src/lib.rs",
+    "src/lib/tauri-api.ts"
+  ],
+  "acceptance_criteria": [
+    "ChatTab 检测 <think> 标签并渲染为可折叠面板",
+    "默认折叠，点击展开显示推理过程",
+    "DashboardTab 展示 TOP 5 最常用模型",
+    "get_top_models 命令返回模型使用排行",
+    "cargo check + tsc 通过"
+  ],
+  "start_time": "2026-06-09T00:00:00Z"
+}

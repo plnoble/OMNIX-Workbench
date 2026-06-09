@@ -1,15 +1,18 @@
 /**
  * DashboardTab — 开发环境诊断控制面板
  *
- * Shows: tip carousel, status overview cards, env diagnostics, remote access
+ * Shows: tip carousel, status overview cards, top models, env diagnostics, remote access
  */
 
+import { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Lightbulb, Wifi, Cpu, Bot, Wrench, Globe, RefreshCw } from "lucide-react";
+import { Lightbulb, Wifi, Cpu, Bot, Wrench, Globe, RefreshCw, BarChart3 } from "lucide-react";
 import { OMNIX_TIPS } from "@/lib/constants";
+import { requestLogApi } from "@/lib/tauri-api";
 import type { DetectedAgent, RemoteAccessInfo } from "@/types";
+import type { ModelUsage } from "@/lib/tauri-api";
 
 interface DashboardTabProps {
   proxyPort: string;
@@ -39,6 +42,16 @@ export function DashboardTab({
   onLoadRemoteAccess,
 }: DashboardTabProps) {
   const tip = OMNIX_TIPS[tipIndex];
+
+  // Model usage TOP 5 (AingDesk inspired)
+  const [topModels, setTopModels] = useState<ModelUsage[]>([]);
+  useEffect(() => {
+    requestLogApi.getStats()
+      .then(stats => setTopModels(stats.top_models.slice(0, 5)))
+      .catch(() => {});
+  }, []);
+
+  const maxCount = topModels.length > 0 ? Math.max(...topModels.map(m => m.request_count)) : 1;
 
   return (
     <div className="p-6 overflow-y-auto w-full flex flex-col gap-5">
@@ -89,6 +102,40 @@ export function DashboardTab({
           </CardContent>
         </Card>
       </div>
+
+      {/* Model Usage TOP 5 (AingDesk inspired) */}
+      {topModels.length > 0 && (
+        <Card>
+          <CardHeader className="flex-row justify-between items-center mb-2">
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <BarChart3 className="h-4 w-4" /> 常用模型 TOP 5
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex flex-col gap-2">
+              {topModels.map((m, i) => (
+                <div key={m.model} className="flex items-center gap-3">
+                  <span className="text-xs text-muted-foreground w-4 text-right">{i + 1}</span>
+                  <div className="flex-1">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs font-medium truncate max-w-[200px]">{m.model}</span>
+                      <span className="text-[10px] text-muted-foreground">
+                        {m.request_count} 次 · {m.total_tokens.toLocaleString()} tokens
+                      </span>
+                    </div>
+                    <div className="h-1.5 bg-white/5 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-cyan-500 to-blue-500 rounded-full transition-all"
+                        style={{ width: `${(m.request_count / maxCount) * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Env Diagnostics */}
       <Card>
