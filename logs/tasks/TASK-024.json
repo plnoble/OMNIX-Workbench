@@ -1,0 +1,19 @@
+{
+  "task_id": "TASK-024",
+  "title": "借鉴 AingDesk 第 3 轮: Agent 模板扩展到 50+",
+  "goal": "从 AingDesk 的 60+ 预设 Agent 中精选有价值的，适配到 OMNIX 模板格式",
+  "owner": "claude",
+  "status": "IN_PROGRESS",
+  "priority": "medium",
+  "dependencies": ["TASK-010"],
+  "related_files": [
+    "src-tauri/src/agent_templates.rs"
+  ],
+  "acceptance_criteria": [
+    "模板数量从 25 扩展到 50+",
+    "覆盖新分类：DevOps / Data / Security / Education / Life",
+    "每个模板含完整的 instructions + skills",
+    "cargo check 0 warnings 0 errors"
+  ],
+  "start_time": "2026-06-09T00:00:00Z"
+}
