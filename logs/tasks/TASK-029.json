@@ -1,0 +1,11 @@
+{
+  "task_id": "TASK-029",
+  "title": "Autopilot 增强 — Agent 关联 + 结果写入知识库",
+  "goal": "增强现有 Autopilot：关联特定 Agent、执行结果自动写入知识库",
+  "owner": "claude",
+  "status": "PENDING",
+  "priority": "low",
+  "dependencies": ["TASK-025"],
+  "related_files": ["src-tauri/src/commands.rs", "src-tauri/src/agent.rs"],
+  "start_time": "2026-06-09T00:00:00Z"
+}

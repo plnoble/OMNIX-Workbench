@@ -495,6 +495,10 @@ export const autopilotApi = {
   /** Save autopilot config */
   saveConfig: (config: AutopilotConfig) =>
     invoke("save_autopilot_config", { config }),
+
+  /** Save autopilot execution result to knowledge base */
+  saveResultToKb: (taskId: string, resultContent: string) =>
+    invoke<string>("save_autopilot_result_to_kb", { taskId, resultContent }),
 };
 
 // ── Workspace GC (Multica-inspired) ──────────────────
@@ -649,6 +653,78 @@ export const healthCheckApi = {
   /** Check health of all enabled platforms */
   checkAll: () =>
     invoke<HealthCheckResult[]>("check_all_platform_health"),
+};
+
+// ── Agent Task Lifecycle (Multica inspired) ──────────
+
+export interface TaskInfo {
+  id: string;
+  title: string;
+  active_agent: string;
+  workspace_path: string;
+  task_status: "pending" | "running" | "completed" | "failed";
+  task_started_at: string | null;
+  task_completed_at: string | null;
+  task_duration_ms: number | null;
+  task_summary: string | null;
+  task_files_changed: number;
+  task_exit_code: number | null;
+  is_archived: boolean;
+  created_at: string;
+}
+
+export interface TaskStats {
+  total: number;
+  running: number;
+  completed: number;
+  failed: number;
+  avg_duration_ms: number;
+}
+
+export const taskLifecycleApi = {
+  /** Get all tasks with lifecycle info */
+  getList: (includeArchived?: boolean) =>
+    invoke<TaskInfo[]>("get_task_list", { includeArchived: includeArchived ?? false }),
+
+  /** Transition task to running */
+  start: (conversationId: string) =>
+    invoke("task_start", { conversationId }),
+
+  /** Transition task to completed */
+  complete: (conversationId: string, summary?: string, filesChanged?: number) =>
+    invoke("task_complete", { conversationId, summary, filesChanged }),
+
+  /** Transition task to failed */
+  fail: (conversationId: string, exitCode?: number, errorSummary?: string) =>
+    invoke("task_fail", { conversationId, exitCode, errorSummary }),
+
+  /** Archive a task */
+  archive: (conversationId: string) =>
+    invoke("task_archive", { conversationId }),
+
+  /** Get task statistics */
+  getStats: () =>
+    invoke<TaskStats>("get_task_stats"),
+};
+
+// ── Skill Compound Interest (Multica inspired) ───────
+
+export const skillCompoundApi = {
+  /** Record a skill usage (boosts priority on success) */
+  recordUsage: (skillName: string, success: boolean) =>
+    invoke("record_skill_usage", { skillName, success }),
+
+  /** Get top skills ranked by compound interest */
+  getTopByUsage: (limit?: number) =>
+    invoke<Array<{
+      name: string;
+      description: string;
+      category: string | null;
+      usage_count: number;
+      success_count: number;
+      priority_score: number;
+      starred: boolean;
+    }>>("get_top_skills_by_usage", { limit }),
 };
 
 // ── P2 Sync Engine Types ──────────────────────────────

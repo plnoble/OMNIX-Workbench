@@ -7,6 +7,8 @@ mod tool_adapters;
 mod sync_engine;
 mod agent_templates;
 mod skill_frontmatter;
+mod proxy_middleware;
+mod model_provider;
 mod commands;
 
 #[cfg(test)]
@@ -259,6 +261,18 @@ pub fn run() {
             commands::sync_all_upstream_models,
             // Platform Health Check (New API/Sub2API inspired)
             commands::check_all_platform_health,
+            // Agent Task Lifecycle (Multica inspired)
+            commands::get_task_list,
+            commands::task_start,
+            commands::task_complete,
+            commands::task_fail,
+            commands::task_archive,
+            commands::get_task_stats,
+            // Skill Compound Interest (Multica inspired)
+            commands::record_skill_usage,
+            commands::get_top_skills_by_usage,
+            // Autopilot Enhancement (Multica inspired)
+            commands::save_autopilot_result_to_kb,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

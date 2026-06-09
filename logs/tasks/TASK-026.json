@@ -1,0 +1,11 @@
+{
+  "task_id": "TASK-026",
+  "title": "AI 中间件管线 — proxy.rs 拆分为可扩展中间件链",
+  "goal": "将 proxy.rs 大函数拆分为中间件链：请求解析→格式转换→路由→上游调用→响应处理→日志",
+  "owner": "claude",
+  "status": "PENDING",
+  "priority": "high",
+  "dependencies": ["TASK-025"],
+  "related_files": ["src-tauri/src/proxy.rs", "src-tauri/src/proxy_middleware.rs"],
+  "start_time": "2026-06-09T00:00:00Z"
+}

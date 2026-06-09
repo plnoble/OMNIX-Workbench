@@ -1,0 +1,11 @@
+{
+  "task_id": "TASK-028",
+  "title": "统一模型中间层 — ModelProvider trait 抽象",
+  "goal": "定义 ModelProvider trait，每个平台实现一个，统一请求/响应格式",
+  "owner": "claude",
+  "status": "PENDING",
+  "priority": "medium",
+  "dependencies": ["TASK-026"],
+  "related_files": ["src-tauri/src/model_provider.rs", "src-tauri/src/proxy.rs"],
+  "start_time": "2026-06-09T00:00:00Z"
+}

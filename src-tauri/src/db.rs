@@ -100,7 +100,15 @@ impl DbManager {
                 title TEXT NOT NULL,
                 workspace_path TEXT NOT NULL,
                 active_agent TEXT NOT NULL,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                task_status TEXT NOT NULL DEFAULT 'pending',    -- 'pending' | 'running' | 'completed' | 'failed'
+                task_started_at DATETIME NULL,
+                task_completed_at DATETIME NULL,
+                task_duration_ms INTEGER NULL,
+                task_summary TEXT NULL,                          -- auto-generated completion summary
+                task_files_changed INTEGER NOT NULL DEFAULT 0,
+                task_exit_code INTEGER NULL,
+                is_archived INTEGER NOT NULL DEFAULT 0
             )",
             [],
         )?;
@@ -134,7 +142,11 @@ impl DbManager {
                 central_path TEXT NOT NULL DEFAULT '',     -- Central storage path (~/.omnix/skills/<name>)
                 content_hash TEXT NULL,                    -- SHA256 of SKILL.md content
                 starred INTEGER NOT NULL DEFAULT 0,        -- Favorite flag
-                category TEXT NULL                         -- Skill category tag
+                category TEXT NULL,                        -- Skill category tag
+                usage_count INTEGER NOT NULL DEFAULT 0,    -- Times used by agents (compound interest)
+                last_used_at DATETIME NULL,                -- Last usage timestamp
+                success_count INTEGER NOT NULL DEFAULT 0,  -- Successful usages
+                priority_score REAL NOT NULL DEFAULT 1.0   -- Dynamic priority (increases with usage)
             )",
             [],
         )?;
@@ -165,6 +177,20 @@ impl DbManager {
             "ALTER TABLE skills ADD COLUMN content_hash TEXT NULL",
             "ALTER TABLE skills ADD COLUMN starred INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE skills ADD COLUMN category TEXT NULL",
+            // Skill compound interest fields (Multica inspired)
+            "ALTER TABLE skills ADD COLUMN usage_count INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE skills ADD COLUMN last_used_at DATETIME NULL",
+            "ALTER TABLE skills ADD COLUMN success_count INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE skills ADD COLUMN priority_score REAL NOT NULL DEFAULT 1.0",
+            // Agent task lifecycle fields (Multica inspired)
+            "ALTER TABLE conversations ADD COLUMN task_status TEXT NOT NULL DEFAULT 'pending'",
+            "ALTER TABLE conversations ADD COLUMN task_started_at DATETIME NULL",
+            "ALTER TABLE conversations ADD COLUMN task_completed_at DATETIME NULL",
+            "ALTER TABLE conversations ADD COLUMN task_duration_ms INTEGER NULL",
+            "ALTER TABLE conversations ADD COLUMN task_summary TEXT NULL",
+            "ALTER TABLE conversations ADD COLUMN task_files_changed INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE conversations ADD COLUMN task_exit_code INTEGER NULL",
+            "ALTER TABLE conversations ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0",
             // model_platforms weighted routing fields (New API/Sub2API inspired)
             "ALTER TABLE model_platforms ADD COLUMN weight INTEGER NOT NULL DEFAULT 1",
             "ALTER TABLE model_platforms ADD COLUMN priority INTEGER NOT NULL DEFAULT 0",

@@ -1,0 +1,11 @@
+{
+  "task_id": "TASK-025",
+  "title": "Agent 任务生命周期 — 状态机 + 任务追踪 + 完成记录",
+  "goal": "给 Agent 会话添加完整任务生命周期：pending→running→completed/failed",
+  "owner": "claude",
+  "status": "IN_PROGRESS",
+  "priority": "high",
+  "dependencies": [],
+  "related_files": ["src-tauri/src/commands.rs", "src-tauri/src/lib.rs", "src/lib/tauri-api.ts", "src/components/tabs/DashboardTab.tsx"],
+  "start_time": "2026-06-09T00:00:00Z"
+}

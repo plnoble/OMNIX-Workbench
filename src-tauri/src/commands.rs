@@ -5185,6 +5185,42 @@ pub fn expand_prompt_template(template: &str, workspace: Option<&str>) -> String
 }
 
 // ══════════════════════════════════════════════════
+// Autopilot Enhancement — Result to Knowledge Base
+// ══════════════════════════════════════════════════
+
+/// Save autopilot execution result to knowledge base
+#[tauri::command]
+pub fn save_autopilot_result_to_kb(
+    task_id: String,
+    result_content: String,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<String, String> {
+    let home = dirs::home_dir().ok_or("Cannot determine home directory")?;
+    let kb_dir = home.join(".omnix").join("knowledge").join("autopilot_results");
+    std::fs::create_dir_all(&kb_dir).map_err(|e| e.to_string())?;
+
+    let filename = format!("{}_{}.md", task_id, chrono::Utc::now().format("%Y%m%d_%H%M%S"));
+    let file_path = kb_dir.join(&filename);
+
+    let content_with_frontmatter = format!(
+        "---\nname: autopilot-{}\ncategory: autopilot\nsource: {}\n---\n\n# Autopilot Result: {}\n\n{}\n",
+        task_id, task_id, task_id, result_content
+    );
+
+    std::fs::write(&file_path, &content_with_frontmatter).map_err(|e| e.to_string())?;
+
+    // Record in knowledge_documents if the table exists
+    if let Ok(conn) = db.get_connection() {
+        let _ = conn.execute(
+            "INSERT OR IGNORE INTO knowledge_documents (id, name, file_path, status, created_at) VALUES (?1, ?2, ?3, 'completed', datetime('now'))",
+            params![format!("autopilot-{}-{}", task_id, chrono::Utc::now().timestamp()), filename, file_path.to_string_lossy()],
+        );
+    }
+
+    Ok(file_path.to_string_lossy().to_string())
+}
+
+// ══════════════════════════════════════════════════
 // Workspace GC (Multica-inspired)
 // ══════════════════════════════════════════════════
 
@@ -5881,4 +5917,208 @@ pub async fn check_all_platform_health(
     }
 
     Ok(results)
+}
+
+// ══════════════════════════════════════════════════
+// Agent Task Lifecycle (Multica inspired)
+// ══════════════════════════════════════════════════
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskInfo {
+    pub id: String,
+    pub title: String,
+    pub active_agent: String,
+    pub workspace_path: String,
+    pub task_status: String,
+    pub task_started_at: Option<String>,
+    pub task_completed_at: Option<String>,
+    pub task_duration_ms: Option<i64>,
+    pub task_summary: Option<String>,
+    pub task_files_changed: i32,
+    pub task_exit_code: Option<i32>,
+    pub is_archived: bool,
+    pub created_at: String,
+}
+
+/// Get all tasks with lifecycle info
+#[tauri::command]
+pub fn get_task_list(
+    include_archived: bool,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<Vec<TaskInfo>, String> {
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+    let sql = if include_archived {
+        "SELECT id, title, active_agent, workspace_path, task_status, task_started_at, task_completed_at, task_duration_ms, task_summary, task_files_changed, task_exit_code, is_archived, created_at FROM conversations ORDER BY created_at DESC"
+    } else {
+        "SELECT id, title, active_agent, workspace_path, task_status, task_started_at, task_completed_at, task_duration_ms, task_summary, task_files_changed, task_exit_code, is_archived, created_at FROM conversations WHERE is_archived = 0 ORDER BY created_at DESC"
+    };
+
+    let mut stmt = conn.prepare(sql).map_err(|e: rusqlite::Error| e.to_string())?;
+    let rows = stmt.query_map([], |row| {
+        Ok(TaskInfo {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            active_agent: row.get(2)?,
+            workspace_path: row.get(3)?,
+            task_status: row.get(4)?,
+            task_started_at: row.get(5)?,
+            task_completed_at: row.get(6)?,
+            task_duration_ms: row.get(7)?,
+            task_summary: row.get(8)?,
+            task_files_changed: row.get(9)?,
+            task_exit_code: row.get(10)?,
+            is_archived: row.get::<_, i32>(11)? != 0,
+            created_at: row.get(12)?,
+        })
+    }).map_err(|e: rusqlite::Error| e.to_string())?;
+
+    let mut result = Vec::new();
+    for r in rows.flatten() { result.push(r); }
+    Ok(result)
+}
+
+/// Transition task status: pending → running
+#[tauri::command]
+pub fn task_start(
+    conversation_id: String,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<(), String> {
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+    conn.execute(
+        "UPDATE conversations SET task_status = 'running', task_started_at = datetime('now') WHERE id = ?1 AND task_status IN ('pending', 'failed')",
+        params![conversation_id],
+    ).map_err(|e: rusqlite::Error| e.to_string())?;
+    Ok(())
+}
+
+/// Transition task status: running → completed
+#[tauri::command]
+pub fn task_complete(
+    conversation_id: String,
+    summary: Option<String>,
+    files_changed: Option<i32>,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<(), String> {
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+    // Calculate duration from task_started_at
+    conn.execute(
+        "UPDATE conversations SET task_status = 'completed', task_completed_at = datetime('now'), task_duration_ms = CAST((julianday('now') - julianday(task_started_at)) * 86400000 AS INTEGER), task_summary = ?2, task_files_changed = ?3 WHERE id = ?1 AND task_status = 'running'",
+        params![conversation_id, summary, files_changed.unwrap_or(0)],
+    ).map_err(|e: rusqlite::Error| e.to_string())?;
+    Ok(())
+}
+
+/// Transition task status: running → failed
+#[tauri::command]
+pub fn task_fail(
+    conversation_id: String,
+    exit_code: Option<i32>,
+    error_summary: Option<String>,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<(), String> {
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+    conn.execute(
+        "UPDATE conversations SET task_status = 'failed', task_completed_at = datetime('now'), task_duration_ms = CAST((julianday('now') - julianday(task_started_at)) * 86400000 AS INTEGER), task_exit_code = ?2, task_summary = ?3 WHERE id = ?1 AND task_status = 'running'",
+        params![conversation_id, exit_code, error_summary],
+    ).map_err(|e: rusqlite::Error| e.to_string())?;
+    Ok(())
+}
+
+/// Archive a completed/failed task
+#[tauri::command]
+pub fn task_archive(
+    conversation_id: String,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<(), String> {
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+    conn.execute(
+        "UPDATE conversations SET is_archived = 1 WHERE id = ?1",
+        params![conversation_id],
+    ).map_err(|e: rusqlite::Error| e.to_string())?;
+    Ok(())
+}
+
+/// Get task statistics summary
+#[tauri::command]
+pub fn get_task_stats(db: State<'_, Arc<DbManager>>) -> Result<serde_json::Value, String> {
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+
+    let total: i64 = conn.query_row("SELECT COUNT(*) FROM conversations WHERE is_archived = 0", [], |r| r.get(0)).unwrap_or(0);
+    let running: i64 = conn.query_row("SELECT COUNT(*) FROM conversations WHERE task_status = 'running' AND is_archived = 0", [], |r| r.get(0)).unwrap_or(0);
+    let completed: i64 = conn.query_row("SELECT COUNT(*) FROM conversations WHERE task_status = 'completed' AND is_archived = 0", [], |r| r.get(0)).unwrap_or(0);
+    let failed: i64 = conn.query_row("SELECT COUNT(*) FROM conversations WHERE task_status = 'failed' AND is_archived = 0", [], |r| r.get(0)).unwrap_or(0);
+    let avg_duration: f64 = conn.query_row("SELECT COALESCE(AVG(task_duration_ms), 0) FROM conversations WHERE task_status = 'completed' AND task_duration_ms IS NOT NULL", [], |r| r.get(0)).unwrap_or(0.0);
+
+    Ok(serde_json::json!({
+        "total": total,
+        "running": running,
+        "completed": completed,
+        "failed": failed,
+        "avg_duration_ms": avg_duration,
+    }))
+}
+
+// ══════════════════════════════════════════════════
+// Skill Compound Interest System (Multica inspired)
+// ══════════════════════════════════════════════════
+
+/// Record a skill usage (compound interest: usage_count++, priority_score increases)
+#[tauri::command]
+pub fn record_skill_usage(
+    skill_name: String,
+    success: bool,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<(), String> {
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+
+    conn.execute(
+        "UPDATE skills SET usage_count = usage_count + 1, last_used_at = datetime('now') WHERE name = ?1",
+        params![skill_name],
+    ).map_err(|e: rusqlite::Error| e.to_string())?;
+
+    if success {
+        conn.execute(
+            "UPDATE skills SET success_count = success_count + 1, priority_score = priority_score + 0.1 WHERE name = ?1",
+            params![skill_name],
+        ).map_err(|e: rusqlite::Error| e.to_string())?;
+    } else {
+        conn.execute(
+            "UPDATE skills SET priority_score = MAX(0.1, priority_score - 0.05) WHERE name = ?1",
+            params![skill_name],
+        ).map_err(|e: rusqlite::Error| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+/// Get top skills by usage (compound interest ranking)
+#[tauri::command]
+pub fn get_top_skills_by_usage(
+    limit: Option<u32>,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let limit = limit.unwrap_or(10);
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT name, description, category, usage_count, success_count, priority_score, starred
+         FROM skills WHERE usage_count > 0
+         ORDER BY priority_score DESC, usage_count DESC
+         LIMIT ?1"
+    ).map_err(|e: rusqlite::Error| e.to_string())?;
+
+    let rows = stmt.query_map(params![limit], |row| {
+        Ok(serde_json::json!({
+            "name": row.get::<_, String>(0)?,
+            "description": row.get::<_, String>(1)?,
+            "category": row.get::<_, Option<String>>(2)?,
+            "usage_count": row.get::<_, i32>(3)?,
+            "success_count": row.get::<_, i32>(4)?,
+            "priority_score": row.get::<_, f64>(5)?,
+            "starred": row.get::<_, i32>(6)? != 0,
+        }))
+    }).map_err(|e: rusqlite::Error| e.to_string())?;
+
+    let mut result = Vec::new();
+    for r in rows.flatten() { result.push(r); }
+    Ok(result)
 }

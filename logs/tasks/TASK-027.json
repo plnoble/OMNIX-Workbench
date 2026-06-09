@@ -1,0 +1,11 @@
+{
+  "task_id": "TASK-027",
+  "title": "Skill 复利系统 — 使用追踪 + 优先级提升 + 来源管理",
+  "goal": "每次 Agent 使用 Skill 后记录使用次数和效果，高频 Skill 自动提升优先级",
+  "owner": "claude",
+  "status": "PENDING",
+  "priority": "medium",
+  "dependencies": ["TASK-025"],
+  "related_files": ["src-tauri/src/commands.rs", "src-tauri/src/db.rs", "src/lib/tauri-api.ts"],
+  "start_time": "2026-06-09T00:00:00Z"
+}
