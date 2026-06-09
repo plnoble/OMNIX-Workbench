@@ -578,6 +578,35 @@ export const requestLogApi = {
     invoke<number>("cleanup_request_logs", { keepDays }),
 };
 
+// ── Platform Health (New API/Sub2API inspired) ───────
+
+export interface PlatformHealth {
+  id: string;
+  name: string;
+  api_type: string;
+  is_enabled: boolean;
+  is_healthy: boolean;
+  weight: number;
+  priority: number;
+  consecutive_failures: number;
+  last_error: string | null;
+  last_used_at: string | null;
+  model_count: number;
+}
+
+export const platformHealthApi = {
+  /** Get health status of all platforms */
+  getAll: () => invoke<PlatformHealth[]>("get_platform_health"),
+
+  /** Reset a platform's health status */
+  reset: (platformId: string) =>
+    invoke("reset_platform_health", { platformId }),
+
+  /** Update platform weight and priority */
+  updateRouting: (platformId: string, weight: number, priority: number) =>
+    invoke("update_platform_routing", { platformId, weight, priority }),
+};
+
 // ── P2 Sync Engine Types ──────────────────────────────
 
 export interface ConflictInfo {

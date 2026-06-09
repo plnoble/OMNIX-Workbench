@@ -249,6 +249,10 @@ pub fn run() {
             commands::get_request_logs,
             commands::get_usage_stats,
             commands::cleanup_request_logs,
+            // Platform Health Management (New API/Sub2API inspired)
+            commands::get_platform_health,
+            commands::reset_platform_health,
+            commands::update_platform_routing,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

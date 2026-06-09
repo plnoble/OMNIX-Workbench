@@ -1,0 +1,24 @@
+{
+  "task_id": "TASK-017",
+  "title": "借鉴 New API/Sub2API: 多 Channel 加权路由 + 故障转移",
+  "goal": "支持同一模型配多个平台，按权重路由，故障自动切换",
+  "owner": "claude",
+  "status": "IN_PROGRESS",
+  "priority": "high",
+  "dependencies": ["TASK-016"],
+  "related_files": [
+    "src-tauri/src/proxy.rs",
+    "src-tauri/src/db.rs",
+    "src-tauri/src/commands.rs",
+    "src-tauri/src/lib.rs",
+    "src/lib/tauri-api.ts"
+  ],
+  "acceptance_criteria": [
+    "model_platforms 表新增 weight/priority/max_retries/is_healthy/last_error 字段",
+    "resolve_model_upstream 实现加权选择 + 故障重试",
+    "健康状态自动更新（成功=healthy, 连续失败=unhealthy）",
+    "前端显示平台健康状态",
+    "cargo check + tsc 通过"
+  ],
+  "start_time": "2026-06-09T00:00:00Z"
+}

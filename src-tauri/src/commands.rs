@@ -5463,3 +5463,84 @@ pub fn cleanup_request_logs(
     ).map_err(|e: rusqlite::Error| e.to_string())?;
     Ok(deleted)
 }
+
+// ══════════════════════════════════════════════════
+// Platform Health Management (New API/Sub2API inspired)
+// ══════════════════════════════════════════════════
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlatformHealth {
+    pub id: String,
+    pub name: String,
+    pub api_type: String,
+    pub is_enabled: bool,
+    pub is_healthy: bool,
+    pub weight: i32,
+    pub priority: i32,
+    pub consecutive_failures: i32,
+    pub last_error: Option<String>,
+    pub last_used_at: Option<String>,
+    pub model_count: i64,
+}
+
+/// Get health status of all platforms
+#[tauri::command]
+pub fn get_platform_health(db: State<'_, Arc<DbManager>>) -> Result<Vec<PlatformHealth>, String> {
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT mp.id, mp.name, mp.api_type, mp.is_enabled, mp.is_healthy,
+                mp.weight, mp.priority, mp.consecutive_failures, mp.last_error, mp.last_used_at,
+                (SELECT COUNT(*) FROM platform_models pm WHERE pm.platform_id = mp.id) as model_count
+         FROM model_platforms mp ORDER BY mp.priority DESC, mp.weight DESC"
+    ).map_err(|e: rusqlite::Error| e.to_string())?;
+
+    let rows = stmt.query_map([], |row| {
+        Ok(PlatformHealth {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            api_type: row.get(2)?,
+            is_enabled: row.get::<_, i32>(3)? != 0,
+            is_healthy: row.get::<_, i32>(4)? != 0,
+            weight: row.get(5)?,
+            priority: row.get(6)?,
+            consecutive_failures: row.get(7)?,
+            last_error: row.get(8)?,
+            last_used_at: row.get(9)?,
+            model_count: row.get(10)?,
+        })
+    }).map_err(|e: rusqlite::Error| e.to_string())?;
+
+    let mut result = Vec::new();
+    for r in rows.flatten() { result.push(r); }
+    Ok(result)
+}
+
+/// Reset a platform's health status (mark as healthy)
+#[tauri::command]
+pub fn reset_platform_health(
+    platform_id: String,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<(), String> {
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+    conn.execute(
+        "UPDATE model_platforms SET is_healthy = 1, consecutive_failures = 0, last_error = NULL WHERE id = ?1",
+        params![platform_id],
+    ).map_err(|e: rusqlite::Error| e.to_string())?;
+    Ok(())
+}
+
+/// Update platform weight and priority
+#[tauri::command]
+pub fn update_platform_routing(
+    platform_id: String,
+    weight: i32,
+    priority: i32,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<(), String> {
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+    conn.execute(
+        "UPDATE model_platforms SET weight = ?1, priority = ?2 WHERE id = ?3",
+        params![weight.max(1).min(100), priority.max(0).min(100), platform_id],
+    ).map_err(|e: rusqlite::Error| e.to_string())?;
+    Ok(())
+}

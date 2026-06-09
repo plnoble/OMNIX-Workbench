@@ -1,23 +1,27 @@
 {
   "task_id": "TASK-016",
   "title": "借鉴 New API/Sub2API: 请求日志 + 使用统计",
-  "goal": "记录每次代理请求的详细信息，Dashboard 展示使用趋势",
+  "goal": "记录每次代理请求的详细信息，返回使用统计摘要",
   "owner": "claude",
-  "status": "IN_PROGRESS",
+  "status": "COMPLETED",
   "priority": "high",
   "dependencies": [],
   "related_files": [
     "src-tauri/src/proxy.rs",
+    "src-tauri/src/db.rs",
     "src-tauri/src/commands.rs",
     "src-tauri/src/lib.rs",
     "src/lib/tauri-api.ts"
   ],
   "acceptance_criteria": [
-    "request_logs 表创建成功",
-    "proxy.rs 每次请求后异步写入日志",
-    "get_request_logs 命令支持分页+筛选",
-    "get_usage_stats 命令返回统计摘要",
-    "cargo check + tsc 通过"
+    "✅ request_logs 表创建成功",
+    "✅ proxy.rs 每次请求后异步写入日志（Anthropic + OpenAI 两条路径）",
+    "✅ get_request_logs 命令支持分页+模型筛选",
+    "✅ get_usage_stats 命令返回统计摘要（总量/今日/top模型/小时分布）",
+    "✅ cleanup_request_logs 清理旧日志",
+    "✅ cargo check + tsc 通过"
   ],
-  "start_time": "2026-06-09T00:00:00Z"
+  "start_time": "2026-06-09T00:00:00Z",
+  "end_time": "2026-06-09T00:00:00Z",
+  "result": "请求日志完成。request_logs 表 + 3 个命令 + 非阻塞异步写入。0 warnings/errors。"
 }

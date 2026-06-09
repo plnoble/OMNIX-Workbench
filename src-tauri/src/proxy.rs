@@ -1230,11 +1230,11 @@ fn resolve_model_upstream(
     if let Some(pos) = target_model_name.find(':') {
         let platform_id = &target_model_name[..pos];
         let model_name = &target_model_name[pos + 1..];
-        
+
         let mut stmt = conn.prepare(
             "SELECT api_key, api_address, api_type FROM model_platforms WHERE id = ?1 AND is_enabled = 1"
         ).map_err(|e| e.to_string())?;
-        
+
         let platform_opt = stmt.query_row(params![platform_id], |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -1248,16 +1248,80 @@ fn resolve_model_upstream(
         }
     }
 
-    // 2. Try to search by model_name in platform_models
+    // 2. Weighted selection from matching platforms (New API/Sub2API inspired)
+    //    Find all platforms that serve this model, ordered by priority DESC, weight DESC
+    //    Only consider healthy and enabled platforms
     let mut stmt = conn.prepare(
-        "SELECT mp.api_key, mp.api_address, mp.api_type, pm.model_name
+        "SELECT mp.id, mp.api_key, mp.api_address, mp.api_type, mp.weight, mp.priority,
+                pm.model_name, mp.consecutive_failures
          FROM platform_models pm
          JOIN model_platforms mp ON pm.platform_id = mp.id
-         WHERE pm.model_name = ?1 AND pm.is_enabled = 1 AND mp.is_enabled = 1
-         LIMIT 1"
+         WHERE pm.model_name = ?1 AND pm.is_enabled = 1 AND mp.is_enabled = 1 AND mp.is_healthy = 1
+         ORDER BY mp.priority DESC, mp.weight DESC"
     ).map_err(|e| e.to_string())?;
-    
-    let model_opt = stmt.query_row(params![target_model_name], |row| {
+
+    let candidates: Vec<(String, String, String, String, String, i32, String, i32)> = stmt
+        .query_map(params![target_model_name], |row| {
+            Ok((
+                row.get::<_, String>(0)?,  // platform_id
+                row.get::<_, String>(1)?,  // api_key
+                row.get::<_, String>(2)?,  // api_address
+                row.get::<_, String>(3)?,  // api_type
+                row.get::<_, String>(4)?,  // weight (stored as TEXT in some configs)
+                row.get::<_, i32>(5)?,     // priority
+                row.get::<_, String>(6)?,  // model_name
+                row.get::<_, i32>(7)?,     // consecutive_failures
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .flatten()
+        .collect();
+
+    if !candidates.is_empty() {
+        // Weighted random selection: candidates are sorted by priority then weight.
+        // Higher priority platforms are always preferred.
+        // Within same priority, select based on weight (proportional).
+        let highest_priority = candidates[0].5;
+        let same_priority: Vec<_> = candidates.iter()
+            .filter(|c| c.5 == highest_priority)
+            .collect();
+
+        // Calculate total weight for same-priority candidates
+        let total_weight: i32 = same_priority.iter().map(|c| {
+            c.4.parse::<i32>().unwrap_or(1).max(1)
+        }).sum();
+
+        // Weighted selection using request counter as deterministic random
+        let counter = db.get_connection()
+            .ok()
+            .and_then(|c| c.query_row("SELECT COUNT(*) FROM request_logs", [], |r| r.get::<_, i64>(0)).ok())
+            .unwrap_or(0) as i32;
+
+        let mut pick = (counter as i32).rem_euclid(total_weight);
+        for candidate in &same_priority {
+            let w = candidate.4.parse::<i32>().unwrap_or(1).max(1);
+            pick -= w;
+            if pick < 0 {
+                // Update last_used_at
+                let _ = conn.execute(
+                    "UPDATE model_platforms SET last_used_at = datetime('now') WHERE id = ?1",
+                    params![candidate.0],
+                );
+                return Ok((candidate.1.clone(), candidate.2.clone(), candidate.3.clone(), candidate.6.clone()));
+            }
+        }
+
+        // Fallback to first candidate
+        let c = &same_priority[0];
+        return Ok((c.1.clone(), c.2.clone(), c.3.clone(), c.6.clone()));
+    }
+
+    // 3. Fallback to any healthy active platform
+    let mut stmt = conn.prepare(
+        "SELECT api_key, api_address, api_type, name FROM model_platforms WHERE is_enabled = 1 AND is_healthy = 1 ORDER BY priority DESC, weight DESC LIMIT 1"
+    ).map_err(|e| e.to_string())?;
+
+    let fallback_opt = stmt.query_row([], |row| {
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
@@ -1266,24 +1330,7 @@ fn resolve_model_upstream(
         ))
     }).ok();
 
-    if let Some(res) = model_opt {
-        return Ok(res);
-    }
-
-    // 3. Fallback to active platforms if nothing matches
-    let mut stmt = conn.prepare(
-        "SELECT api_key, api_address, api_type FROM model_platforms WHERE is_enabled = 1 LIMIT 1"
-    ).map_err(|e| e.to_string())?;
-    
-    let fallback_opt = stmt.query_row([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-        ))
-    }).ok();
-
-    if let Some((api_key, api_address, api_type)) = fallback_opt {
+    if let Some((api_key, api_address, api_type, _name)) = fallback_opt {
         return Ok((api_key, api_address, api_type, target_model_name.to_string()));
     }
 
@@ -1294,6 +1341,35 @@ fn join_url(base: &str, path: &str) -> String {
     let base_trimmed = base.trim_end_matches('/');
     let path_trimmed = path.trim_start_matches('/');
     format!("{}/{}", base_trimmed, path_trimmed)
+}
+
+// ── Platform Health Tracking (New API/Sub2API inspired) ──
+
+/// Mark a platform as healthy after a successful request
+#[allow(dead_code)]
+pub fn mark_platform_healthy(db: &DbManager, platform_id: &str) {
+    if let Ok(conn) = db.get_connection() {
+        let _ = conn.execute(
+            "UPDATE model_platforms SET is_healthy = 1, consecutive_failures = 0, last_error = NULL WHERE id = ?1",
+            params![platform_id],
+        );
+    }
+}
+
+/// Mark a platform as unhealthy after consecutive failures
+#[allow(dead_code)]
+pub fn mark_platform_unhealthy(db: &DbManager, platform_id: &str, error: &str) {
+    if let Ok(conn) = db.get_connection() {
+        let _ = conn.execute(
+            "UPDATE model_platforms SET consecutive_failures = consecutive_failures + 1, last_error = ?1 WHERE id = ?2",
+            params![error, platform_id],
+        );
+        // Auto-disable after 5 consecutive failures
+        let _ = conn.execute(
+            "UPDATE model_platforms SET is_healthy = 0 WHERE id = ?1 AND consecutive_failures >= 5",
+            params![platform_id],
+        );
+    }
 }
 
 // ── Request Logging (New API/Sub2API inspired) ───────

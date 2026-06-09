@@ -136,6 +136,14 @@ impl DbManager {
             "ALTER TABLE skills ADD COLUMN content_hash TEXT NULL",
             "ALTER TABLE skills ADD COLUMN starred INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE skills ADD COLUMN category TEXT NULL",
+            // model_platforms weighted routing fields (New API/Sub2API inspired)
+            "ALTER TABLE model_platforms ADD COLUMN weight INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE model_platforms ADD COLUMN priority INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE model_platforms ADD COLUMN max_retries INTEGER NOT NULL DEFAULT 2",
+            "ALTER TABLE model_platforms ADD COLUMN is_healthy INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE model_platforms ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE model_platforms ADD COLUMN last_error TEXT NULL",
+            "ALTER TABLE model_platforms ADD COLUMN last_used_at DATETIME NULL",
         ];
         for sql in &migrations {
             // ALTER TABLE ADD COLUMN silently fails if column already exists in SQLite,
@@ -237,6 +245,13 @@ impl DbManager {
                 api_key TEXT NOT NULL,
                 api_address TEXT NOT NULL,
                 is_enabled INTEGER NOT NULL DEFAULT 1,
+                weight INTEGER NOT NULL DEFAULT 1,       -- 加权路由权重 (1-100)
+                priority INTEGER NOT NULL DEFAULT 0,     -- 优先级 (越高越优先)
+                max_retries INTEGER NOT NULL DEFAULT 2,  -- 最大重试次数
+                is_healthy INTEGER NOT NULL DEFAULT 1,   -- 健康状态 (1=healthy, 0=unhealthy)
+                consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT NULL,
+                last_used_at DATETIME NULL,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )",
             [],
