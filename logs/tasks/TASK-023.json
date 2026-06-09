@@ -1,0 +1,25 @@
+{
+  "task_id": "TASK-023",
+  "title": "借鉴 AingDesk 第 2 轮: 搜索结果注入对话 + 多模型对比增强",
+  "goal": "ChatTab 发送消息时可选联网搜索，CompareHub 并发对比+延迟统计",
+  "owner": "claude",
+  "status": "IN_PROGRESS",
+  "priority": "high",
+  "dependencies": ["TASK-022"],
+  "related_files": [
+    "src/components/tabs/ChatTab.tsx",
+    "src/CompareHub.tsx",
+    "src/hooks/useSearch.ts",
+    "src-tauri/src/commands.rs",
+    "src-tauri/src/lib.rs",
+    "src/lib/tauri-api.ts"
+  ],
+  "acceptance_criteria": [
+    "ChatTab 发送栏添加联网搜索开关",
+    "开启后自动搜索并将结果注入 prompt",
+    "CompareHub 支持并发发送到多模型",
+    "结果并排展示 + 延迟/token 统计",
+    "cargo check + tsc 通过"
+  ],
+  "start_time": "2026-06-09T00:00:00Z"
+}

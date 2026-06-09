@@ -19,6 +19,10 @@ interface ApiResult {
   content: string;
   loading: boolean;
   error?: string;
+  startTime?: number;
+  endTime?: number;
+  latencyMs?: number;
+  tokenCount?: number;
 }
 
 interface WebExpert {
@@ -168,7 +172,8 @@ export const CompareHub: React.FC<CompareHubProps> = ({ proxyPort }) => {
           accountName: acc.account_name,
           model: acc.target_model,
           content: "",
-          loading: true
+          loading: true,
+          startTime: Date.now(),
         };
       }
     });
@@ -240,11 +245,15 @@ export const CompareHub: React.FC<CompareHubProps> = ({ proxyPort }) => {
           }
         }
 
+        const endTime = Date.now();
         setApiResults(prev => ({
           ...prev,
           [accId]: {
             ...prev[accId],
-            loading: false
+            loading: false,
+            endTime,
+            latencyMs: endTime - (prev[accId]?.startTime || endTime),
+            tokenCount: prev[accId]?.content?.length || 0,
           }
         }));
 
@@ -789,6 +798,11 @@ ${sources}
                   <div>
                     <strong className="text-sm block">{res.accountName}</strong>
                     <span className="text-xs text-muted-foreground">{res.model}</span>
+                    {res.latencyMs && !res.loading && (
+                      <span className="text-[10px] text-cyan-400 ml-2">
+                        ⏱ {(res.latencyMs / 1000).toFixed(1)}s · ~{Math.ceil(res.tokenCount! / 4)} tokens
+                      </span>
+                    )}
                   </div>
                   {res.loading ? (
                     <span className="pulse-dot active" title="正在生成实时流..." />

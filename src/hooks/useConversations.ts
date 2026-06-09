@@ -61,7 +61,7 @@ export interface UseConversationsReturn {
   newConversation: () => void;
   saveWorkspaceChat: () => Promise<void>;
   deleteConversation: (id: string, event: React.MouseEvent) => Promise<void>;
-  sendMessage: (e: React.FormEvent) => Promise<void>;
+  sendMessage: (e: React.FormEvent, searchContext?: string) => Promise<void>;
   sendStdinDirect: (input: string) => Promise<void>;
   stopAgentSession: (sessionId: string) => Promise<void>;
   startAgentSession: (sessionId: string) => Promise<void>;
@@ -299,7 +299,7 @@ export function useConversations(
     }
   }, [detectedAgents, activeAgent, chatWorkspace]);
 
-  const sendMessage = useCallback(async (e: React.FormEvent) => {
+  const sendMessage = useCallback(async (e: React.FormEvent, searchContext?: string) => {
     e.preventDefault();
     if (!chatInput.trim()) return;
 
@@ -308,12 +308,18 @@ export function useConversations(
       convId = await createConversationFromPrompt(chatInput);
     }
 
-    // Append user message immediately
+    // Build message content — inject search context if provided (AingDesk inspired)
+    const displayContent = chatInput;
+    const agentContent = searchContext
+      ? `${chatInput}\n\n---\n[联网搜索结果]\n${searchContext}`
+      : chatInput;
+
+    // Append user message immediately (display original question)
     const userMsg: ConversationMessage = {
       id: `msg_u_${Date.now()}`,
       conversation_id: convId,
       role: "user",
-      content: chatInput,
+      content: displayContent,
       timestamp: new Date().toISOString(),
     };
     setMessages((prev) => [...prev, userMsg]);
@@ -324,13 +330,13 @@ export function useConversations(
         id: userMsg.id,
         conversationId: convId,
         role: "user",
-        content: userMsg.content,
+        content: displayContent,
       });
     } catch (err) {
       console.error("[useConversations] Failed to save user message:", err);
     }
 
-    const inputMsg = chatInput;
+    const inputMsg = agentContent;
     setChatInput("");
 
     // Start session if not active

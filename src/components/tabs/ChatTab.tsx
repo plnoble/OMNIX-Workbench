@@ -8,9 +8,10 @@ import { useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Send, Square, Shield, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Check, ChevronDown, ChevronRight, Brain } from "lucide-react";
+import { Send, Square, Shield, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Check, ChevronDown, ChevronRight, Brain, Globe } from "lucide-react";
 import { AGENT_NAMES, DEFAULT_MODEL_NAMES } from "@/lib/constants";
 import { cn } from "@/lib/utils";
+import { searchApi } from "@/lib/tauri-api";
 import type { ConversationMessage, DetectedAgent, PlatformModel, PromptType } from "@/types";
 
 /**
@@ -109,7 +110,7 @@ interface ChatTabProps {
   setChatInput: (val: string) => void;
   setChatWorkspace: (val: string) => void;
   setTargetModel: (val: string) => void;
-  onSendMessage: (e: React.FormEvent) => void;
+  onSendMessage: (e: React.FormEvent, searchContext?: string) => void;
   onSendStdinDirect: (input: string) => void;
   onStopSession: (id: string) => void;
 }
@@ -134,6 +135,37 @@ export function ChatTab({
   onStopSession,
 }: ChatTabProps) {
   const modelOptions = buildModelOptions(activeModels, targetModel);
+
+  // Web search toggle (AingDesk inspired)
+  const [webSearchEnabled, setWebSearchEnabled] = useState(false);
+  const [isSearching, setIsSearching] = useState(false);
+
+  const handleSendMessageWithSearch = async (e: React.FormEvent) => {
+    if (!webSearchEnabled) {
+      onSendMessage(e);
+      return;
+    }
+
+    e.preventDefault();
+    if (!chatInput.trim()) return;
+
+    setIsSearching(true);
+    try {
+      const results = await searchApi.search(chatInput, undefined, 5);
+      if (results.length > 0) {
+        const searchContext = results
+          .map((r, i) => `[${i + 1}] ${r.title}\n${r.snippet}\n${r.url}`)
+          .join("\n\n");
+        onSendMessage(e, searchContext);
+      } else {
+        onSendMessage(e);
+      }
+    } catch {
+      onSendMessage(e);
+    } finally {
+      setIsSearching(false);
+    }
+  };
 
   return (
     <div className="flex flex-col h-full flex-1">
@@ -206,23 +238,27 @@ export function ChatTab({
       </div>
 
       {/* Send Bar */}
-      <form onSubmit={onSendMessage} className="p-4 border-t border-border glass-panel">
+      <form onSubmit={handleSendMessageWithSearch} className="p-4 border-t border-border glass-panel">
         <div className="flex flex-col gap-2.5">
           <div className="flex gap-2.5">
             <Textarea
-              placeholder="发送命令或提问给智能体..."
+              placeholder={webSearchEnabled ? "联网搜索模式：输入问题将自动搜索最新信息..." : "发送命令或提问给智能体..."}
               value={chatInput}
               onChange={(e) => setChatInput(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
-                  onSendMessage(e);
+                  handleSendMessageWithSearch(e);
                 }
               }}
               className="flex-1 resize-none h-[45px] min-h-0"
             />
-            <Button type="submit" className="px-5 font-semibold self-end">
-              <Send className="h-4 w-4" /> 发送
+            <Button type="submit" className="px-5 font-semibold self-end" disabled={isSearching}>
+              {isSearching ? (
+                <><Globe className="h-4 w-4 animate-spin" /> 搜索中</>
+              ) : (
+                <><Send className="h-4 w-4" /> 发送</>
+              )}
             </Button>
           </div>
 
@@ -255,6 +291,20 @@ export function ChatTab({
                   ))}
                 </select>
               </div>
+              {/* Web Search Toggle (AingDesk inspired) */}
+              <button
+                type="button"
+                className={cn(
+                  "flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] border transition-all cursor-pointer",
+                  webSearchEnabled
+                    ? "bg-emerald-500/12 border-emerald-500/40 text-emerald-400"
+                    : "bg-white/2 border-border text-muted-foreground"
+                )}
+                onClick={() => setWebSearchEnabled(!webSearchEnabled)}
+              >
+                <Globe size={11} />
+                联网搜索
+              </button>
             </div>
 
             {currentConvId && activeSessions.includes(currentConvId) && (
