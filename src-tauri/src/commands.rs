@@ -6266,6 +6266,78 @@ pub fn get_context_budget(
     }))
 }
 
+/// Compact conversation context — summarize old messages and keep recent ones.
+/// Returns the number of messages compacted.
+#[tauri::command]
+pub fn compact_conversation_context(
+    conversation_id: String,
+    keep_recent: Option<usize>,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<serde_json::Value, String> {
+    let keep = keep_recent.unwrap_or(20);
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+
+    // Get total message count
+    let total: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1",
+        params![conversation_id], |r| r.get(0),
+    ).unwrap_or(0);
+
+    if total <= keep as i64 {
+        return Ok(serde_json::json!({
+            "compacted": 0,
+            "total": total,
+            "summary": null,
+            "message": "Not enough messages to compact"
+        }));
+    }
+
+    // Get old messages (to be summarized)
+    let mut stmt = conn.prepare(
+        "SELECT role, content FROM messages WHERE conversation_id = ?1
+         ORDER BY timestamp ASC LIMIT ?2"
+    ).map_err(|e: rusqlite::Error| e.to_string())?;
+    let cutoff = total - keep as i64;
+    let old_messages: Vec<(String, String)> = stmt.query_map(
+        params![conversation_id, cutoff as i32],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+    ).map_err(|e: rusqlite::Error| e.to_string())?.flatten().collect();
+
+    // Build summary from old messages
+    let mut summary_parts = Vec::new();
+    for (role, content) in &old_messages {
+        let truncated: String = content.chars().take(200).collect();
+        summary_parts.push(format!("[{}]: {}", role, truncated));
+    }
+    let summary = format!(
+        "=== CONVERSATION SUMMARY ({} older messages compacted) ===\n{}\n=== END SUMMARY ===",
+        old_messages.len(),
+        summary_parts.join("\n")
+    );
+
+    // Delete old messages
+    conn.execute(
+        "DELETE FROM messages WHERE conversation_id = ?1 AND id NOT IN (
+            SELECT id FROM messages WHERE conversation_id = ?1 ORDER BY timestamp DESC LIMIT ?2
+        )",
+        params![conversation_id, keep as i32],
+    ).map_err(|e: rusqlite::Error| e.to_string())?;
+
+    // Insert summary as first message
+    let summary_id = format!("summary_{}", chrono::Utc::now().timestamp_millis());
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, role, content, timestamp) VALUES (?1, ?2, 'system', ?3, datetime('now'))",
+        params![summary_id, conversation_id, summary],
+    ).map_err(|e: rusqlite::Error| e.to_string())?;
+
+    Ok(serde_json::json!({
+        "compacted": old_messages.len(),
+        "total": keep as i64 + 1,
+        "summary": summary,
+        "message": format!("Compacted {} messages into summary", old_messages.len())
+    }))
+}
+
 // ── Skill Audit ───────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -6354,4 +6426,123 @@ pub async fn send_ntfy_notification(
         .map_err(|e| format!("ntfy request failed: {}", e))?;
     if !res.status().is_success() { return Err(format!("ntfy HTTP {}", res.status())); }
     Ok(())
+}
+
+// ══════════════════════════════════════════════════
+// Cookbook Model Recommendation (Odysseus + AingDesk)
+// ══════════════════════════════════════════════════
+
+/// Detect hardware and recommend models that fit
+#[tauri::command]
+pub fn get_model_recommendations() -> serde_json::Value {
+    let hw = crate::model_knowledge::detect_hardware();
+    let recommendations = crate::model_knowledge::recommend_models(&hw);
+    serde_json::json!({
+        "hardware": hw,
+        "recommendations": recommendations,
+    })
+}
+
+/// Get the full model knowledge base
+#[tauri::command]
+pub fn get_model_database() -> Vec<crate::model_knowledge::ModelEntry> {
+    crate::model_knowledge::get_model_database()
+}
+
+// ══════════════════════════════════════════════════
+// Code Deep Analysis (Odysseus Deep Research inspired)
+// ══════════════════════════════════════════════════
+
+/// Analyze a codebase directory — returns file statistics and structure
+#[tauri::command]
+pub fn analyze_codebase(path: String) -> Result<serde_json::Value, String> {
+    let dir = PathBuf::from(&path);
+    if !dir.exists() || !dir.is_dir() {
+        return Err(format!("Path does not exist or is not a directory: {}", path));
+    }
+
+    let mut file_count = 0u32;
+    let mut total_lines = 0u32;
+    let mut languages: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    let mut largest_files: Vec<(String, u64)> = Vec::new();
+
+    fn walk_dir(
+        dir: &PathBuf,
+        file_count: &mut u32,
+        total_lines: &mut u32,
+        languages: &mut std::collections::HashMap<String, u32>,
+        largest_files: &mut Vec<(String, u64)>,
+    ) {
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    let name = path.file_name().unwrap_or_default().to_string_lossy();
+                    // Skip common non-source directories
+                    if name == "node_modules" || name == ".git" || name == "target" || name == "dist" || name == ".next" {
+                        continue;
+                    }
+                    walk_dir(&path, file_count, total_lines, languages, largest_files);
+                } else {
+                    *file_count += 1;
+                    let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                    let name = path.to_string_lossy().to_string();
+
+                    // Track largest files
+                    largest_files.push((name.clone(), size));
+                    if largest_files.len() > 100 {
+                        largest_files.sort_by(|a, b| b.1.cmp(&a.1));
+                        largest_files.truncate(50);
+                    }
+
+                    // Count lines for text files
+                    if let Ok(content) = fs::read_to_string(&path) {
+                        *total_lines += content.lines().count() as u32;
+                    }
+
+                    // Detect language by extension
+                    if let Some(ext) = path.extension() {
+                        let ext_str = ext.to_string_lossy().to_lowercase();
+                        let lang = match ext_str.as_str() {
+                            "rs" => "Rust",
+                            "ts" | "tsx" => "TypeScript",
+                            "js" | "jsx" => "JavaScript",
+                            "py" => "Python",
+                            "go" => "Go",
+                            "java" => "Java",
+                            "cpp" | "cc" | "cxx" => "C++",
+                            "c" => "C",
+                            "cs" => "C#",
+                            "rb" => "Ruby",
+                            "swift" => "Swift",
+                            "kt" => "Kotlin",
+                            "html" | "htm" => "HTML",
+                            "css" | "scss" | "sass" => "CSS",
+                            "json" => "JSON",
+                            "md" => "Markdown",
+                            "yaml" | "yml" => "YAML",
+                            "toml" => "TOML",
+                            "sql" => "SQL",
+                            _ => "Other",
+                        };
+                        *languages.entry(lang.to_string()).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    walk_dir(&dir, &mut file_count, &mut total_lines, &mut languages, &mut largest_files);
+    largest_files.sort_by(|a, b| b.1.cmp(&a.1));
+    largest_files.truncate(20);
+
+    Ok(serde_json::json!({
+        "path": path,
+        "total_files": file_count,
+        "total_lines": total_lines,
+        "languages": languages,
+        "largest_files": largest_files.iter().map(|(name, size)| {
+            serde_json::json!({ "name": name, "size_bytes": size })
+        }).collect::<Vec<_>>(),
+    }))
 }

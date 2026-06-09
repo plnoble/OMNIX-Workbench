@@ -811,6 +811,42 @@ export const notificationApi = {
     invoke("send_ntfy_notification", { server, topic, title, message, priority }),
 };
 
+// Context Compaction
+export interface CompactResult {
+  compacted: number; total: number; summary: string | null; message: string;
+}
+export const contextCompactApi = {
+  compact: (conversationId: string, keepRecent?: number) =>
+    invoke<CompactResult>("compact_conversation_context", { conversationId, keepRecent }),
+};
+
+// Cookbook Model Recommendations
+export interface ModelEntry {
+  name: string; display_name: string; size_gb: number; min_vram_gb: number;
+  categories: string[]; quality: number; description: string; ollama_cmd: string; speed_rating: string;
+}
+export interface ModelRecommendation {
+  model: ModelEntry; fits_vram: boolean; fits_ram: boolean;
+  overall_fit: "perfect" | "tight" | "impossible"; install_cmd: string;
+}
+export interface HardwareInfo {
+  gpu: { name: string; vram_mb: number; vendor: string } | null;
+  ram_mb: number; cpu_cores: number; os: string;
+}
+export const cookbookApi = {
+  getRecommendations: () => invoke<{ hardware: HardwareInfo; recommendations: ModelRecommendation[] }>("get_model_recommendations"),
+  getDatabase: () => invoke<ModelEntry[]>("get_model_database"),
+};
+
+// Code Deep Analysis
+export interface CodebaseAnalysis {
+  path: string; total_files: number; total_lines: number;
+  languages: Record<string, number>; largest_files: Array<{ name: string; size_bytes: number }>;
+}
+export const codeAnalysisApi = {
+  analyze: (path: string) => invoke<CodebaseAnalysis>("analyze_codebase", { path }),
+};
+
 // ── P2 Sync Engine Types ──────────────────────────────
 
 export interface ConflictInfo {

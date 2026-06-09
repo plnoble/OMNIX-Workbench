@@ -379,8 +379,11 @@ async fn handle_messages_impl(
         let log_latency = start_time.elapsed().as_millis() as i64;
         let log_status = status.as_u16() as i32;
         let log_is_err = !status.is_success();
+        let evt_db = state.db.clone();
         tokio::task::spawn_blocking(move || {
             log_request(&log_db, &log_model, Some("anthropic"), 0, 0, log_latency, log_status, is_stream, log_is_err, None, None, "proxy");
+            // Emit message_sent event for event bus
+            crate::event_bus::emit_event(&evt_db, crate::event_bus::EventType::MessageSent);
         });
 
         if is_stream {
@@ -1293,6 +1296,9 @@ fn resolve_model_upstream(
                 row.get::<_, String>(2)?,
             ))
         }).ok();
+
+        // Decrypt API key if encrypted
+        let platform_opt = platform_opt.map(|(k, a, t)| (crate::crypto::decrypt(&k), a, t));
 
         if let Some((api_key, api_address, api_type)) = platform_opt {
             return Ok((api_key, api_address, api_type, model_name.to_string()));

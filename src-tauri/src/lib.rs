@@ -12,6 +12,7 @@ mod model_provider;
 mod prompt_guard;
 mod event_bus;
 mod crypto;
+mod model_knowledge;
 mod commands;
 
 #[cfg(test)]
@@ -291,6 +292,10 @@ pub fn run() {
             commands::decrypt_value,
             commands::send_desktop_notification,
             commands::send_ntfy_notification,
+            commands::compact_conversation_context,
+            commands::get_model_recommendations,
+            commands::get_model_database,
+            commands::analyze_codebase,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
