@@ -25,6 +25,7 @@ pub struct ProxyState {
     pub agent_manager: Arc<crate::agent::AgentManager>,
     pub http_client: Client,
     pub request_counter: AtomicUsize,
+    pub concurrency_semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,6 +76,10 @@ pub struct AnthropicRequest {
     pub system: Option<AnthropicMessageContent>,
     pub temperature: Option<f32>,
     pub stream: Option<bool>,
+    /// Reasoning effort control (New API inspired): "low" | "medium" | "high"
+    /// Maps to budget_tokens for Anthropic extended thinking
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
 }
 
 // OpenAI Request format
@@ -144,6 +149,7 @@ impl ProxyServer {
             agent_manager,
             http_client: client,
             request_counter: AtomicUsize::new(0),
+            concurrency_semaphore: Arc::new(tokio::sync::Semaphore::new(20)), // max 20 concurrent proxy requests
         });
 
         let app = Router::new()
@@ -158,6 +164,7 @@ impl ProxyServer {
             .route("/api/remote/cron_trigger", axum::routing::post(post_remote_cron_trigger))
             .route("/health", axum::routing::get(handle_health))
             .layer(CorsLayer::permissive())
+            .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024)) // 10MB request body limit
             .with_state(state);
 
         println!("Starting OMNIX DevFlow HTTP Proxy on {}", addr);
@@ -214,6 +221,14 @@ async fn handle_messages_impl(
     headers: axum::http::HeaderMap,
     payload: AnthropicRequest,
 ) -> impl IntoResponse {
+    // Concurrency limiting (New API/Sub2API inspired)
+    let _permit = match state.concurrency_semaphore.try_acquire() {
+        Ok(p) => p,
+        Err(_) => {
+            return (StatusCode::TOO_MANY_REQUESTS, "Too many concurrent requests. Please retry later.").into_response();
+        }
+    };
+
     let start_time = std::time::Instant::now();
 
     let target_account_id = headers.get("x-omnix-account-id")
@@ -549,6 +564,14 @@ async fn handle_openai_forward_impl(
     headers: HeaderMap,
     payload: Value,
 ) -> impl IntoResponse {
+    // Concurrency limiting (New API/Sub2API inspired)
+    let _permit = match state.concurrency_semaphore.try_acquire() {
+        Ok(p) => p,
+        Err(_) => {
+            return (StatusCode::TOO_MANY_REQUESTS, "Too many concurrent requests. Please retry later.").into_response();
+        }
+    };
+
     let start_time = std::time::Instant::now();
     let mut payload = payload;
     let target_account_id = headers.get("x-omnix-account-id")
@@ -777,6 +800,7 @@ async fn handle_openai_forward_impl(
             system: system_prompt,
             temperature: openai_req.temperature,
             stream: openai_req.stream,
+            reasoning_effort: None,
         };
 
         let upstream_url = join_url(&api_host, "/v1/messages");

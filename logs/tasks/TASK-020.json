@@ -1,0 +1,19 @@
+{
+  "task_id": "TASK-020",
+  "title": "借鉴 New API/Sub2API: Reasoning Effort + 请求体限制 + 并发控制",
+  "goal": "三个低优先级功能一次性完成",
+  "owner": "claude",
+  "status": "IN_PROGRESS",
+  "priority": "low",
+  "dependencies": ["TASK-019"],
+  "related_files": [
+    "src-tauri/src/proxy.rs"
+  ],
+  "acceptance_criteria": [
+    "Reasoning Effort 参数透传 (low/medium/high)",
+    "请求体大小限制 (默认 10MB)",
+    "全局并发限制 (Semaphore)",
+    "cargo check 0 warnings 0 errors"
+  ],
+  "start_time": "2026-06-09T00:00:00Z"
+}
