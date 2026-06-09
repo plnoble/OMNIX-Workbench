@@ -524,6 +524,60 @@ export const workspaceGcApi = {
   run: () => invoke<GcResult>("run_workspace_gc"),
 };
 
+// ── Request Logs & Usage Stats (New API/Sub2API inspired)
+
+export interface RequestLogEntry {
+  id: number;
+  timestamp: string;
+  model: string;
+  platform: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  latency_ms: number;
+  status_code: number;
+  is_stream: boolean;
+  is_error: boolean;
+  error_message: string;
+  request_id: string;
+  source: string;
+}
+
+export interface ModelUsage {
+  model: string;
+  request_count: number;
+  total_tokens: number;
+}
+
+export interface HourlyCount {
+  hour: string;
+  count: number;
+}
+
+export interface UsageStats {
+  total_requests: number;
+  total_tokens: number;
+  total_errors: number;
+  avg_latency_ms: number;
+  requests_today: number;
+  tokens_today: number;
+  top_models: ModelUsage[];
+  hourly_distribution: HourlyCount[];
+}
+
+export const requestLogApi = {
+  /** Get request logs with pagination */
+  getLogs: (page?: number, limit?: number, modelFilter?: string) =>
+    invoke<RequestLogEntry[]>("get_request_logs", { page, limit, modelFilter }),
+
+  /** Get usage statistics summary */
+  getStats: () => invoke<UsageStats>("get_usage_stats"),
+
+  /** Delete old logs */
+  cleanup: (keepDays?: number) =>
+    invoke<number>("cleanup_request_logs", { keepDays }),
+};
+
 // ── P2 Sync Engine Types ──────────────────────────────
 
 export interface ConflictInfo {

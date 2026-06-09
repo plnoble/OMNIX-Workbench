@@ -5304,3 +5304,162 @@ pub fn run_workspace_gc(db: State<'_, Arc<DbManager>>) -> Result<GcResult, Strin
 
     Ok(result)
 }
+
+// ══════════════════════════════════════════════════
+// Request Logs & Usage Stats (New API/Sub2API inspired)
+// ══════════════════════════════════════════════════
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RequestLogEntry {
+    pub id: i64,
+    pub timestamp: String,
+    pub model: String,
+    pub platform: String,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub total_tokens: i64,
+    pub latency_ms: i64,
+    pub status_code: i32,
+    pub is_stream: bool,
+    pub is_error: bool,
+    pub error_message: String,
+    pub request_id: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UsageStats {
+    pub total_requests: i64,
+    pub total_tokens: i64,
+    pub total_errors: i64,
+    pub avg_latency_ms: f64,
+    pub requests_today: i64,
+    pub tokens_today: i64,
+    pub top_models: Vec<ModelUsage>,
+    pub hourly_distribution: Vec<HourlyCount>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelUsage {
+    pub model: String,
+    pub request_count: i64,
+    pub total_tokens: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HourlyCount {
+    pub hour: String,
+    pub count: i64,
+}
+
+/// Get request logs with pagination and optional model filter
+#[tauri::command]
+pub fn get_request_logs(
+    page: Option<u32>,
+    limit: Option<u32>,
+    model_filter: Option<String>,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<Vec<RequestLogEntry>, String> {
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+    let page = page.unwrap_or(1).max(1);
+    let limit = limit.unwrap_or(50).min(200);
+    let offset = (page - 1) * limit;
+
+    let (sql, query_params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(ref model) = model_filter {
+        (
+            format!("SELECT id, timestamp, model, platform, prompt_tokens, completion_tokens, total_tokens, latency_ms, status_code, is_stream, is_error, error_message, request_id, source FROM request_logs WHERE model LIKE ?1 ORDER BY id DESC LIMIT ?2 OFFSET ?3"),
+            vec![Box::new(format!("%{}%", model)), Box::new(limit), Box::new(offset)],
+        )
+    } else {
+        (
+            "SELECT id, timestamp, model, platform, prompt_tokens, completion_tokens, total_tokens, latency_ms, status_code, is_stream, is_error, error_message, request_id, source FROM request_logs ORDER BY id DESC LIMIT ?1 OFFSET ?2".to_string(),
+            vec![Box::new(limit), Box::new(offset)],
+        )
+    };
+
+    let mut stmt = conn.prepare(&sql).map_err(|e: rusqlite::Error| e.to_string())?;
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = query_params.iter().map(|p| p.as_ref()).collect();
+    let rows = stmt.query_map(param_refs.as_slice(), |row| {
+        Ok(RequestLogEntry {
+            id: row.get(0)?,
+            timestamp: row.get(1)?,
+            model: row.get(2)?,
+            platform: row.get(3)?,
+            prompt_tokens: row.get(4)?,
+            completion_tokens: row.get(5)?,
+            total_tokens: row.get(6)?,
+            latency_ms: row.get(7)?,
+            status_code: row.get(8)?,
+            is_stream: row.get::<_, i32>(9)? != 0,
+            is_error: row.get::<_, i32>(10)? != 0,
+            error_message: row.get(11)?,
+            request_id: row.get(12)?,
+            source: row.get(13)?,
+        })
+    }).map_err(|e: rusqlite::Error| e.to_string())?;
+
+    let mut result = Vec::new();
+    for r in rows.flatten() { result.push(r); }
+    Ok(result)
+}
+
+/// Get usage statistics summary
+#[tauri::command]
+pub fn get_usage_stats(db: State<'_, Arc<DbManager>>) -> Result<UsageStats, String> {
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+
+    // Total stats
+    let total_requests: i64 = conn.query_row("SELECT COUNT(*) FROM request_logs", [], |r| r.get(0)).unwrap_or(0);
+    let total_tokens: i64 = conn.query_row("SELECT COALESCE(SUM(total_tokens), 0) FROM request_logs", [], |r| r.get(0)).unwrap_or(0);
+    let total_errors: i64 = conn.query_row("SELECT COUNT(*) FROM request_logs WHERE is_error = 1", [], |r| r.get(0)).unwrap_or(0);
+    let avg_latency: f64 = conn.query_row("SELECT COALESCE(AVG(latency_ms), 0) FROM request_logs", [], |r| r.get(0)).unwrap_or(0.0);
+
+    // Today's stats
+    let requests_today: i64 = conn.query_row("SELECT COUNT(*) FROM request_logs WHERE date(timestamp) = date('now')", [], |r| r.get(0)).unwrap_or(0);
+    let tokens_today: i64 = conn.query_row("SELECT COALESCE(SUM(total_tokens), 0) FROM request_logs WHERE date(timestamp) = date('now')", [], |r| r.get(0)).unwrap_or(0);
+
+    // Top models
+    let mut stmt = conn.prepare("SELECT model, COUNT(*) as cnt, SUM(total_tokens) as tokens FROM request_logs GROUP BY model ORDER BY cnt DESC LIMIT 10").map_err(|e| e.to_string())?;
+    let top_models: Vec<ModelUsage> = stmt.query_map([], |row| {
+        Ok(ModelUsage {
+            model: row.get(0)?,
+            request_count: row.get(1)?,
+            total_tokens: row.get(2)?,
+        })
+    }).map_err(|e| e.to_string())?.flatten().collect();
+
+    // Hourly distribution (last 24h)
+    let mut stmt = conn.prepare("SELECT strftime('%H:00', timestamp) as hour, COUNT(*) FROM request_logs WHERE timestamp >= datetime('now', '-24 hours') GROUP BY hour ORDER BY hour").map_err(|e| e.to_string())?;
+    let hourly_distribution: Vec<HourlyCount> = stmt.query_map([], |row| {
+        Ok(HourlyCount {
+            hour: row.get(0)?,
+            count: row.get(1)?,
+        })
+    }).map_err(|e| e.to_string())?.flatten().collect();
+
+    Ok(UsageStats {
+        total_requests,
+        total_tokens,
+        total_errors,
+        avg_latency_ms: avg_latency,
+        requests_today,
+        tokens_today,
+        top_models,
+        hourly_distribution,
+    })
+}
+
+/// Delete old request logs (cleanup)
+#[tauri::command]
+pub fn cleanup_request_logs(
+    keep_days: Option<u32>,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<usize, String> {
+    let days = keep_days.unwrap_or(30);
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+    let deleted = conn.execute(
+        "DELETE FROM request_logs WHERE timestamp < datetime('now', ?1)",
+        params![format!("-{} days", days)],
+    ).map_err(|e: rusqlite::Error| e.to_string())?;
+    Ok(deleted)
+}

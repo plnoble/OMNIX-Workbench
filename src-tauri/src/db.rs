@@ -156,6 +156,27 @@ impl DbManager {
             [],
         )?;
 
+        // 6a. Request Logs (API proxy usage tracking — New API/Sub2API inspired)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS request_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                model TEXT NOT NULL,
+                platform TEXT NULL,
+                prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                completion_tokens INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                latency_ms INTEGER NOT NULL DEFAULT 0,
+                status_code INTEGER NOT NULL DEFAULT 200,
+                is_stream INTEGER NOT NULL DEFAULT 0,
+                is_error INTEGER NOT NULL DEFAULT 0,
+                error_message TEXT NULL,
+                request_id TEXT NULL,
+                source TEXT NOT NULL DEFAULT 'proxy'
+            )",
+            [],
+        )?;
+
         // 6b. Agent Accounts Table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS agent_accounts (

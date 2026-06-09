@@ -245,6 +245,10 @@ pub fn run() {
             commands::get_gc_config,
             commands::save_gc_config,
             commands::run_workspace_gc,
+            // Request Logs & Usage Stats (New API/Sub2API inspired)
+            commands::get_request_logs,
+            commands::get_usage_stats,
+            commands::cleanup_request_logs,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

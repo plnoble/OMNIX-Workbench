@@ -213,6 +213,8 @@ async fn handle_messages_impl(
     headers: axum::http::HeaderMap,
     payload: AnthropicRequest,
 ) -> impl IntoResponse {
+    let start_time = std::time::Instant::now();
+
     let target_account_id = headers.get("x-omnix-account-id")
         .and_then(|v| v.to_str().ok().map(|s| s.to_string()));
 
@@ -337,6 +339,14 @@ async fn handle_messages_impl(
             return (status, err_body).into_response();
         }
         
+        // Log request (non-blocking)
+        let log_db = state.db.clone();
+        let log_model = resolved_model.clone();
+        let log_latency = start_time.elapsed().as_millis() as i64;
+        tokio::spawn(async move {
+            log_request(&log_db, &log_model, Some("anthropic"), 0, 0, log_latency, status.as_u16() as i32, is_stream, !status.is_success(), None, None, "proxy");
+        });
+
         if is_stream {
             let stream = upstream_res.bytes_stream().map(|r| r.map_err(|e| axum::Error::new(e)));
             Response::builder()
@@ -476,6 +486,14 @@ async fn handle_messages_impl(
                 Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
             };
 
+            // Log request (non-blocking)
+            let log_db = state.db.clone();
+            let log_model = resolved_model.clone();
+            let log_latency = start_time.elapsed().as_millis() as i64;
+            tokio::spawn(async move {
+                log_request(&log_db, &log_model, Some("openai"), 0, 0, log_latency, 200, false, false, None, None, "proxy");
+            });
+
             if let Ok(openai_res) = serde_json::from_slice::<OpenAIResponse>(&res_bytes) {
                 if let Some(choice) = openai_res.choices.first() {
                     let text_content = &choice.message.content;
@@ -530,6 +548,7 @@ async fn handle_openai_forward_impl(
     headers: HeaderMap,
     payload: Value,
 ) -> impl IntoResponse {
+    let start_time = std::time::Instant::now();
     let mut payload = payload;
     let target_account_id = headers.get("x-omnix-account-id")
         .and_then(|v| v.to_str().ok().map(|s| s.to_string()));
@@ -686,6 +705,14 @@ async fn handle_openai_forward_impl(
             eprintln!("OMNIX Proxy (OpenAI Route): Upstream non-success payload (status {}): {}", status, err_body);
             return (status, err_body).into_response();
         }
+
+        // Log request (non-blocking)
+        let log_db = state.db.clone();
+        let log_model = resolved_model.clone();
+        let log_latency = start_time.elapsed().as_millis() as i64;
+        tokio::spawn(async move {
+            log_request(&log_db, &log_model, Some("openai"), 0, 0, log_latency, status.as_u16() as i32, is_stream, !status.is_success(), None, None, "proxy");
+        });
 
         if is_stream {
             let stream = upstream_res.bytes_stream().map(|r| r.map_err(|e| axum::Error::new(e)));
@@ -1267,6 +1294,48 @@ fn join_url(base: &str, path: &str) -> String {
     let base_trimmed = base.trim_end_matches('/');
     let path_trimmed = path.trim_start_matches('/');
     format!("{}/{}", base_trimmed, path_trimmed)
+}
+
+// ── Request Logging (New API/Sub2API inspired) ───────
+
+/// Write a request log entry to the database (async, non-blocking)
+pub fn log_request(
+    db: &DbManager,
+    model: &str,
+    platform: Option<&str>,
+    prompt_tokens: i64,
+    completion_tokens: i64,
+    latency_ms: i64,
+    status_code: i32,
+    is_stream: bool,
+    is_error: bool,
+    error_message: Option<&str>,
+    request_id: Option<&str>,
+    source: &str,
+) {
+    let conn = match db.get_connection() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let total_tokens = prompt_tokens + completion_tokens;
+    let _ = conn.execute(
+        "INSERT INTO request_logs (model, platform, prompt_tokens, completion_tokens, total_tokens, latency_ms, status_code, is_stream, is_error, error_message, request_id, source)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        params![
+            model,
+            platform.unwrap_or(""),
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            latency_ms,
+            status_code,
+            is_stream as i32,
+            is_error as i32,
+            error_message.unwrap_or(""),
+            request_id.unwrap_or(""),
+            source,
+        ],
+    );
 }
 
 // ── Embeddings Handler ─────────────────────────────────
