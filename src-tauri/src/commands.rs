@@ -451,7 +451,7 @@ pub fn create_skill(
 ) -> Result<(), String> {
     let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
 
-    let home_dir = dirs::home_dir().expect("Failed to determine home directory");
+    let home_dir = dirs::home_dir().ok_or("Cannot determine home directory")?;
     let mut skills_dir = home_dir.clone();
     skills_dir.push(".omnix");
     skills_dir.push("skills");
@@ -2750,7 +2750,7 @@ pub async fn kb_import_document(
     let doc_id = format!("doc_{}", uuid_simple());
 
     // Compute SHA-256 hash
-    let hash = sha256_hex(&content);
+    let hash = content_hash_hex(&content);
 
     // Dedup: check if same file_hash already exists for same source_path
     {
@@ -3139,11 +3139,9 @@ fn uuid_simple() -> String {
     format!("{:016x}", ts)
 }
 
-/// Compute SHA-256 hex digest of a string.
-fn sha256_hex(input: &str) -> String {
+/// Compute FNV-1a hex digest of a string (non-cryptographic, for change detection only).
+fn content_hash_hex(input: &str) -> String {
     use std::fmt::Write;
-    // Simple hash using a basic FNV-1a approach for now (can upgrade to real SHA-256 later)
-    // This is sufficient for change detection; not cryptographic
     let mut hash: u64 = 0xcbf29ce484222325;
     for byte in input.bytes() {
         hash ^= byte as u64;

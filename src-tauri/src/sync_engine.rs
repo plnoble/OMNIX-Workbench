@@ -522,22 +522,15 @@ impl SyncEngine {
 // Helpers
 // ─────────────────────────────────────────────
 
-/// Compute a content fingerprint hash (size + head + tail)
+/// Compute FNV-1a hash over full content (non-cryptographic, for change detection)
 pub fn compute_content_hash(content: &str) -> String {
     let data = content.as_bytes();
-    let len = data.len();
-    let head = data.get(..8.min(len)).unwrap_or(&[]);
-    let tail = if len > 8 {
-        data.get((len - 8)..).unwrap_or(&[])
-    } else {
-        &[]
-    };
-    format!(
-        "fp-{:08x}-{}-{}",
-        len as u32,
-        head.iter().map(|b| format!("{:02x}", b)).collect::<String>(),
-        tail.iter().map(|b| format!("{:02x}", b)).collect::<String>(),
-    )
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in data {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("fnv-{:016x}", hash)
 }
 
 // ══════════════════════════════════════════════════

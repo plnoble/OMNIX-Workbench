@@ -152,17 +152,36 @@ impl ToolAdapter for ClaudeCodeAdapter {
                 }
             }
             SyncMode::Symlink => {
-                // For symlink mode, we create a symlink from the tool's skill dir
-                // to the central storage path. The caller must ensure the source exists.
+                // For symlink mode, we write the content to a central path first,
+                // then create a symlink from the tool's skill dir to that central path.
+                let central_path = dirs::home_dir()
+                    .map(|h| h.join(".omnix").join("skills").join(skill_name).join("SKILL.md"))
+                    .unwrap_or_else(|| target_file.clone());
+
+                // Ensure central path exists with the content
+                if let Some(parent) = central_path.parent() {
+                    let _ = fs::create_dir_all(parent);
+                }
+                if let Err(e) = atomic_write(&central_path, content) {
+                    return SyncResult {
+                        tool: self.tool_id().to_string(),
+                        target_path: target_file.to_string_lossy().to_string(),
+                        success: false,
+                        error: Some(format!("Failed to write central file: {}", e)),
+                    };
+                }
+
+                // Remove existing target
                 if target_file.exists() || target_file.is_symlink() {
                     let _ = fs::remove_file(&target_file);
                 }
+
+                // Create symlink: target_file -> central_path
                 #[cfg(windows)]
                 {
-                    // Windows requires elevated privileges for symlinks,
-                    // fall back to copy if symlink fails
-                    if std::os::windows::fs::symlink_file(&target_file, &target_file).is_err() {
-                        if let Err(e) = atomic_write(&target_file, content) {
+                    if std::os::windows::fs::symlink_file(&central_path, &target_file).is_err() {
+                        // Windows requires elevated privileges for symlinks, fall back to copy
+                        if let Err(e) = fs::copy(&central_path, &target_file) {
                             return SyncResult {
                                 tool: self.tool_id().to_string(),
                                 target_path: target_file.to_string_lossy().to_string(),
@@ -174,8 +193,8 @@ impl ToolAdapter for ClaudeCodeAdapter {
                 }
                 #[cfg(not(windows))]
                 {
-                    if let Err(e) = std::os::unix::fs::symlink(&target_file, &target_file) {
-                        if let Err(e2) = atomic_write(&target_file, content) {
+                    if let Err(e) = std::os::unix::fs::symlink(&central_path, &target_file) {
+                        if let Err(e2) = fs::copy(&central_path, &target_file) {
                             return SyncResult {
                                 tool: self.tool_id().to_string(),
                                 target_path: target_file.to_string_lossy().to_string(),
@@ -579,21 +598,17 @@ fn atomic_write(path: &PathBuf, content: &str) -> std::io::Result<()> {
     fs::rename(&temp_path, path)
 }
 
-/// Compute content hash — uses file size + first/last bytes as fingerprint
-/// TODO: Replace with proper SHA256 when sha2 crate is added
+/// Compute content hash — FNV-1a over full file content (non-cryptographic, for change detection)
 fn compute_file_hash(path: &PathBuf) -> String {
     match fs::read(path) {
         Ok(data) => {
-            // Fingerprint: size + first 8 bytes + last 8 bytes as hex
-            let len = data.len();
-            let head = data.get(..8).unwrap_or(&[]);
-            let tail = if len > 8 { data.get(len - 8..).unwrap_or(&[]) } else { &[] };
-            format!(
-                "fp-{:08x}-{}-{}",
-                len as u32,
-                head.iter().map(|b| format!("{:02x}", b)).collect::<String>(),
-                tail.iter().map(|b| format!("{:02x}", b)).collect::<String>(),
-            )
+            // FNV-1a 64-bit hash over the entire file content
+            let mut hash: u64 = 0xcbf29ce484222325;
+            for byte in &data {
+                hash ^= *byte as u64;
+                hash = hash.wrapping_mul(0x100000001b3);
+            }
+            format!("fnv-{:016x}", hash)
         }
         Err(_) => String::new(),
     }

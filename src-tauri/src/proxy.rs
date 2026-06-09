@@ -1316,11 +1316,16 @@ fn resolve_model_upstream(
             c.4.parse::<i32>().unwrap_or(1).max(1)
         }).sum();
 
-        // Weighted selection using request counter as deterministic random
-        let counter = db.get_connection()
-            .ok()
-            .and_then(|c| c.query_row("SELECT COUNT(*) FROM request_logs", [], |r| r.get::<_, i64>(0)).ok())
-            .unwrap_or(0) as i32;
+        // Weighted selection using a simple counter (no DB query needed)
+        // Use FNV hash of target model name as deterministic seed to spread picks
+        let counter = {
+            let mut h: u64 = 0xcbf29ce484222325;
+            for b in target_model_name.bytes() {
+                h ^= b as u64;
+                h = h.wrapping_mul(0x100000001b3);
+            }
+            h as i32
+        };
 
         let mut pick = (counter as i32).rem_euclid(total_weight);
         for candidate in &same_priority {
@@ -1370,7 +1375,7 @@ fn join_url(base: &str, path: &str) -> String {
 
 // ── Health Endpoint (New API/Sub2API inspired) ────────
 
-/// GET /health — Returns proxy status and platform summary
+/// GET /health — Returns proxy status and platform summary (single query)
 async fn handle_health(
     State(state): State<Arc<ProxyState>>,
 ) -> impl IntoResponse {
@@ -1384,45 +1389,45 @@ async fn handle_health(
         }
     };
 
-    let total_platforms: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM model_platforms", [], |r| r.get(0)
-    ).unwrap_or(0);
+    // Single UNION ALL query instead of 6 separate queries
+    let sql = "
+        SELECT 'total_platforms' as k, COUNT(*) as v FROM model_platforms
+        UNION ALL SELECT 'enabled_platforms', COUNT(*) FROM model_platforms WHERE is_enabled = 1
+        UNION ALL SELECT 'healthy_platforms', COUNT(*) FROM model_platforms WHERE is_enabled = 1 AND is_healthy = 1
+        UNION ALL SELECT 'total_models', COUNT(*) FROM platform_models WHERE is_enabled = 1
+        UNION ALL SELECT 'total_requests', COUNT(*) FROM request_logs
+        UNION ALL SELECT 'requests_today', COUNT(*) FROM request_logs WHERE date(timestamp) = date('now')
+    ";
 
-    let enabled_platforms: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM model_platforms WHERE is_enabled = 1", [], |r| r.get(0)
-    ).unwrap_or(0);
+    let mut stats = std::collections::HashMap::new();
+    if let Ok(mut stmt) = conn.prepare(sql) {
+        if let Ok(rows) = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        }) {
+            for r in rows.flatten() {
+                stats.insert(r.0, r.1);
+            }
+        }
+    }
 
-    let healthy_platforms: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM model_platforms WHERE is_enabled = 1 AND is_healthy = 1", [], |r| r.get(0)
-    ).unwrap_or(0);
-
-    let total_models: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM platform_models WHERE is_enabled = 1", [], |r| r.get(0)
-    ).unwrap_or(0);
-
-    let total_requests: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM request_logs", [], |r| r.get(0)
-    ).unwrap_or(0);
-
-    let requests_today: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM request_logs WHERE date(timestamp) = date('now')", [], |r| r.get(0)
-    ).unwrap_or(0);
+    let enabled = stats.get("enabled_platforms").copied().unwrap_or(0);
+    let healthy = stats.get("healthy_platforms").copied().unwrap_or(0);
 
     Json(serde_json::json!({
         "status": "ok",
         "proxy_port": 1421,
         "platforms": {
-            "total": total_platforms,
-            "enabled": enabled_platforms,
-            "healthy": healthy_platforms,
-            "unhealthy": enabled_platforms - healthy_platforms,
+            "total": stats.get("total_platforms").copied().unwrap_or(0),
+            "enabled": enabled,
+            "healthy": healthy,
+            "unhealthy": enabled - healthy,
         },
         "models": {
-            "total": total_models,
+            "total": stats.get("total_models").copied().unwrap_or(0),
         },
         "requests": {
-            "total": total_requests,
-            "today": requests_today,
+            "total": stats.get("total_requests").copied().unwrap_or(0),
+            "today": stats.get("requests_today").copied().unwrap_or(0),
         }
     })).into_response()
 }

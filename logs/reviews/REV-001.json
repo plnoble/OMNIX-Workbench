@@ -1,0 +1,19 @@
+{
+  "review_id": "REV-001",
+  "review_target": "近期新增 Rust 代码全量审核",
+  "review_result": "REJECT",
+  "issues_found": [
+    {"severity": "blocker", "file": "tool_adapters.rs:164", "issue": "Symlink 自引用"},
+    {"severity": "blocker", "file": "db.rs:1360", "issue": "SQL 注入 via table_name"},
+    {"severity": "blocker", "file": "commands.rs:3143", "issue": "sha256_hex 实际是 FNV-1a"},
+    {"severity": "blocker", "file": "db.rs:831", "issue": "Remote token 可预测"},
+    {"severity": "blocker", "file": "tool_adapters.rs:584", "issue": "文件哈希碰撞率极高"},
+    {"severity": "important", "file": "proxy.rs:362", "issue": "tokio::spawn 中同步 I/O"},
+    {"severity": "important", "file": "proxy.rs:1320", "issue": "每请求查 COUNT(*)"},
+    {"severity": "important", "file": "proxy.rs:166", "issue": "CorsLayer::permissive 绑 0.0.0.0"}
+  ],
+  "security_risks": ["SQL injection", "predictable auth token", "CORS wildcard on 0.0.0.0"],
+  "technical_debt": ["no connection pooling", "duplicated join_url", "dead code enums"],
+  "refactor_suggestions": ["连接池 r2d2", "常量时间 token 比较", "合并 health 查询"],
+  "timestamp": "2026-06-09T00:00:00Z"
+}

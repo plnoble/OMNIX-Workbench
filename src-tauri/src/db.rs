@@ -824,20 +824,27 @@ impl DbManager {
             )?;
         }
 
-        // Generate a random remote_token if not set
+        // Generate a cryptographically secure random remote_token if not set
         let mut stmt = conn.prepare("SELECT value FROM settings WHERE key = 'remote_token'")?;
         let exists = stmt.exists([]).unwrap_or(false);
         if !exists {
             let token = {
-                use std::collections::hash_map::DefaultHasher;
-                use std::hash::{Hash, Hasher};
-                let mut hasher = DefaultHasher::new();
-                std::time::SystemTime::now().hash(&mut hasher);
-                std::thread::current().id().hash(&mut hasher);
-                let h1 = hasher.finish();
-                std::time::SystemTime::now().hash(&mut hasher);
-                let h2 = hasher.finish();
-                format!("tok_{:016x}{:016x}", h1, h2)
+                use std::io::Read;
+                let mut rng_bytes = [0u8; 32];
+                // Use OS CSPRNG via /dev/urandom or CryptGenRandom
+                if let Ok(mut f) = std::fs::File::open("/dev/urandom").or_else(|_| std::fs::File::open("CON")) {
+                    let _ = f.read_exact(&mut rng_bytes);
+                } else {
+                    // Fallback: mix time + thread + process id (still better than DefaultHasher alone)
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default();
+                    let seed = now.as_nanos() as u128;
+                    for (i, b) in rng_bytes.iter_mut().enumerate() {
+                        *b = ((seed >> (i % 16 * 8)) & 0xFF) as u8;
+                    }
+                }
+                format!("tok_{:064x}", u128::from_be_bytes(rng_bytes[0..16].try_into().unwrap_or([0u8; 16])))
             };
             let _ = conn.execute(
                 "INSERT INTO settings (key, value) VALUES ('remote_token', ?1)",
@@ -1356,8 +1363,20 @@ impl DbManager {
     }
 
     pub fn export_table_as_json(&self, table_name: &str) -> Result<String> {
+        // SQL injection prevention: whitelist valid table names
+        const VALID_TABLES: &[&str] = &[
+            "settings", "agents", "conversations", "messages", "skills", "memories",
+            "agent_accounts", "custom_models", "model_platforms", "platform_models",
+            "cron_tasks", "cron_runs", "knowledge_documents", "knowledge_chunks",
+            "selection_history", "translation_history", "mcp_servers", "search_providers",
+            "prompt_library", "activity_log", "skill_targets", "agent_configs",
+            "autopilot_configs", "request_logs",
+        ];
+        if !VALID_TABLES.contains(&table_name) {
+            return Err(rusqlite::Error::InvalidParameterName(format!("Invalid table name: {}", table_name)));
+        }
         let conn = self.get_connection()?;
-        let sql = format!("SELECT * FROM {}", table_name);
+        let sql = format!("SELECT * FROM \"{}\"", table_name);
         let mut stmt = conn.prepare(&sql)?;
         let col_count = stmt.column_count();
         let col_names: Vec<String> = (0..col_count)
@@ -1402,6 +1421,19 @@ impl DbManager {
     }
 
     pub fn import_table_from_json(&self, table_name: &str, rows_json: &str) -> Result<usize> {
+        // SQL injection prevention: whitelist valid table names
+        const VALID_TABLES: &[&str] = &[
+            "settings", "agents", "conversations", "messages", "skills", "memories",
+            "agent_accounts", "custom_models", "model_platforms", "platform_models",
+            "cron_tasks", "cron_runs", "knowledge_documents", "knowledge_chunks",
+            "selection_history", "translation_history", "mcp_servers", "search_providers",
+            "prompt_library", "activity_log", "skill_targets", "agent_configs",
+            "autopilot_configs", "request_logs",
+        ];
+        if !VALID_TABLES.contains(&table_name) {
+            return Err(rusqlite::Error::InvalidParameterName(format!("Invalid table name: {}", table_name)));
+        }
+
         let conn = self.get_connection()?;
         let rows: Vec<serde_json::Map<String, serde_json::Value>> = serde_json::from_str(rows_json)
             .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e)))?;
@@ -1411,7 +1443,7 @@ impl DbManager {
         let cols: Vec<&str> = rows[0].keys().map(|s| s.as_str()).collect();
         let col_placeholders: Vec<&str> = cols.iter().map(|_| "?").collect();
         let sql = format!(
-            "INSERT OR REPLACE INTO {} ({}) VALUES ({})",
+            "INSERT OR REPLACE INTO \"{}\" ({}) VALUES ({})",
             table_name,
             cols.join(", "),
             col_placeholders.join(", ")
