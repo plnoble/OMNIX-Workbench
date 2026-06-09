@@ -257,6 +257,8 @@ pub fn run() {
             commands::sync_upstream_models,
             commands::apply_model_sync,
             commands::sync_all_upstream_models,
+            // Platform Health Check (New API/Sub2API inspired)
+            commands::check_all_platform_health,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

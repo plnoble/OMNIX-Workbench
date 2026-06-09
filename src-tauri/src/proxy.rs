@@ -156,6 +156,7 @@ impl ProxyServer {
             .route("/api/remote/status", axum::routing::get(get_remote_status))
             .route("/api/remote/approve", axum::routing::post(post_remote_approve))
             .route("/api/remote/cron_trigger", axum::routing::post(post_remote_cron_trigger))
+            .route("/health", axum::routing::get(handle_health))
             .layer(CorsLayer::permissive())
             .with_state(state);
 
@@ -1341,6 +1342,65 @@ fn join_url(base: &str, path: &str) -> String {
     let base_trimmed = base.trim_end_matches('/');
     let path_trimmed = path.trim_start_matches('/');
     format!("{}/{}", base_trimmed, path_trimmed)
+}
+
+// ── Health Endpoint (New API/Sub2API inspired) ────────
+
+/// GET /health — Returns proxy status and platform summary
+async fn handle_health(
+    State(state): State<Arc<ProxyState>>,
+) -> impl IntoResponse {
+    let conn = match state.db.get_connection() {
+        Ok(c) => c,
+        Err(_) => {
+            return Json(serde_json::json!({
+                "status": "error",
+                "message": "Database connection failed"
+            })).into_response();
+        }
+    };
+
+    let total_platforms: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM model_platforms", [], |r| r.get(0)
+    ).unwrap_or(0);
+
+    let enabled_platforms: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM model_platforms WHERE is_enabled = 1", [], |r| r.get(0)
+    ).unwrap_or(0);
+
+    let healthy_platforms: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM model_platforms WHERE is_enabled = 1 AND is_healthy = 1", [], |r| r.get(0)
+    ).unwrap_or(0);
+
+    let total_models: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM platform_models WHERE is_enabled = 1", [], |r| r.get(0)
+    ).unwrap_or(0);
+
+    let total_requests: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM request_logs", [], |r| r.get(0)
+    ).unwrap_or(0);
+
+    let requests_today: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM request_logs WHERE date(timestamp) = date('now')", [], |r| r.get(0)
+    ).unwrap_or(0);
+
+    Json(serde_json::json!({
+        "status": "ok",
+        "proxy_port": 1421,
+        "platforms": {
+            "total": total_platforms,
+            "enabled": enabled_platforms,
+            "healthy": healthy_platforms,
+            "unhealthy": enabled_platforms - healthy_platforms,
+        },
+        "models": {
+            "total": total_models,
+        },
+        "requests": {
+            "total": total_requests,
+            "today": requests_today,
+        }
+    })).into_response()
 }
 
 // ── Platform Health Tracking (New API/Sub2API inspired) ──

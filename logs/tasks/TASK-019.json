@@ -1,0 +1,22 @@
+{
+  "task_id": "TASK-019",
+  "title": "借鉴 New API/Sub2API: 代理健康检查端点 + 平台健康监控",
+  "goal": "新增 /health 端点和平台健康检查命令",
+  "owner": "claude",
+  "status": "IN_PROGRESS",
+  "priority": "medium",
+  "dependencies": ["TASK-017"],
+  "related_files": [
+    "src-tauri/src/proxy.rs",
+    "src-tauri/src/commands.rs",
+    "src-tauri/src/lib.rs",
+    "src/lib/tauri-api.ts"
+  ],
+  "acceptance_criteria": [
+    "GET /health 端点返回代理状态+平台统计",
+    "check_all_platform_health 命令对每个平台发轻量请求",
+    "前端显示平台健康状态",
+    "cargo check + tsc 通过"
+  ],
+  "start_time": "2026-06-09T00:00:00Z"
+}

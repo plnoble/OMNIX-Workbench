@@ -634,6 +634,23 @@ export const modelSyncApi = {
     invoke<ModelSyncResult[]>("sync_all_upstream_models"),
 };
 
+// ── Platform Health Check (New API/Sub2API inspired) ──
+
+export interface HealthCheckResult {
+  platform_id: string;
+  platform_name: string;
+  is_reachable: boolean;
+  latency_ms: number;
+  model_count: number;
+  error: string | null;
+}
+
+export const healthCheckApi = {
+  /** Check health of all enabled platforms */
+  checkAll: () =>
+    invoke<HealthCheckResult[]>("check_all_platform_health"),
+};
+
 // ── P2 Sync Engine Types ──────────────────────────────
 
 export interface ConflictInfo {

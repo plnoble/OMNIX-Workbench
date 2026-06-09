@@ -5766,3 +5766,121 @@ pub async fn sync_all_upstream_models(
 
     Ok(results)
 }
+
+// ══════════════════════════════════════════════════
+// Platform Health Check (New API/Sub2API inspired)
+// ══════════════════════════════════════════════════
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HealthCheckResult {
+    pub platform_id: String,
+    pub platform_name: String,
+    pub is_reachable: bool,
+    pub latency_ms: i64,
+    pub model_count: i64,
+    pub error: Option<String>,
+}
+
+/// Check health of all enabled platforms
+#[tauri::command]
+pub async fn check_all_platform_health(
+    db: State<'_, std::sync::Arc<DbManager>>,
+) -> Result<Vec<HealthCheckResult>, String> {
+    let platforms: Vec<(String, String, String, String, String)> = {
+        let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+        let mut stmt = conn.prepare(
+            "SELECT id, name, api_address, api_key, api_type FROM model_platforms WHERE is_enabled = 1"
+        ).map_err(|e: rusqlite::Error| e.to_string())?;
+        let rows: Vec<(String, String, String, String, String)> = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        }).map_err(|e: rusqlite::Error| e.to_string())?
+            .flatten()
+            .collect();
+        rows
+    };
+
+    let mut results = Vec::new();
+    for (id, name, address, key, api_type) in platforms {
+        let start = std::time::Instant::now();
+        let url = if api_type == "ollama" {
+            format!("{}/api/tags", address.trim_end_matches('/'))
+        } else {
+            format!("{}/v1/models", address.trim_end_matches('/'))
+        };
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build();
+        let (is_reachable, model_count, error) = match client {
+            Ok(c) => {
+                let mut req = c.get(&url);
+                if !key.is_empty() && api_type != "ollama" {
+                    req = req.header("Authorization", format!("Bearer {}", key));
+                }
+                match req.send().await {
+                    Ok(res) => {
+                        let status = res.status();
+                        let ok = status.is_success();
+                        let count = if ok {
+                            match res.json::<serde_json::Value>().await {
+                                Ok(body) => {
+                                    if api_type == "ollama" {
+                                        body["models"].as_array().map(|a| a.len() as i64).unwrap_or(0)
+                                    } else {
+                                        body["data"].as_array().map(|a| a.len() as i64).unwrap_or(0)
+                                    }
+                                }
+                                Err(_) => 0,
+                            }
+                        } else { 0 };
+                        (ok, count, if ok { None } else { Some(format!("HTTP {}", status)) })
+                    }
+                    Err(e) => (false, 0, Some(e.to_string())),
+                }
+            }
+            Err(e) => (false, 0, Some(e.to_string())),
+        };
+
+        let latency_ms = start.elapsed().as_millis() as i64;
+
+        // Update health status in DB (synchronous, within the same connection)
+        {
+            let conn = db.get_connection();
+            if let Ok(conn) = conn {
+                if is_reachable {
+                    let _ = conn.execute(
+                        "UPDATE model_platforms SET is_healthy = 1, consecutive_failures = 0, last_error = NULL WHERE id = ?1",
+                        params![id],
+                    );
+                } else {
+                    let err_msg = error.clone().unwrap_or_default();
+                    let _ = conn.execute(
+                        "UPDATE model_platforms SET consecutive_failures = consecutive_failures + 1, last_error = ?1 WHERE id = ?2",
+                        params![err_msg, id],
+                    );
+                    let _ = conn.execute(
+                        "UPDATE model_platforms SET is_healthy = 0 WHERE id = ?1 AND consecutive_failures >= 5",
+                        params![id],
+                    );
+                }
+            }
+        }
+
+        results.push(HealthCheckResult {
+            platform_id: id,
+            platform_name: name,
+            is_reachable,
+            latency_ms,
+            model_count,
+            error,
+        });
+    }
+
+    Ok(results)
+}
