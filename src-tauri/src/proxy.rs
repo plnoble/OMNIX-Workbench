@@ -138,6 +138,20 @@ impl ProxyServer {
         };
         let addr = SocketAddr::from((bind_ip, port));
 
+        // CORS: restrict to localhost origins when binding to 0.0.0.0
+        let cors_layer = if use_wsl {
+            CorsLayer::new()
+                .allow_origin([
+                    "http://localhost:1420".parse::<axum::http::HeaderValue>().unwrap(),
+                    "http://127.0.0.1:1420".parse::<axum::http::HeaderValue>().unwrap(),
+                    "tauri://localhost".parse::<axum::http::HeaderValue>().unwrap(),
+                ])
+                .allow_methods(tower_http::cors::Any)
+                .allow_headers(tower_http::cors::Any)
+        } else {
+            CorsLayer::permissive()
+        };
+
         let client = Client::builder()
             .connect_timeout(std::time::Duration::from_secs(15))
             .timeout(std::time::Duration::from_secs(300))
@@ -163,7 +177,7 @@ impl ProxyServer {
             .route("/api/remote/approve", axum::routing::post(post_remote_approve))
             .route("/api/remote/cron_trigger", axum::routing::post(post_remote_cron_trigger))
             .route("/health", axum::routing::get(handle_health))
-            .layer(CorsLayer::permissive())
+            .layer(cors_layer)
             .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024)) // 10MB request body limit
             .with_state(state);
 
@@ -263,12 +277,15 @@ async fn handle_messages_impl(
                 let has_vis: i32 = row.get(2)?;
                 let has_reas: i32 = row.get(3)?;
                 let has_cod: i32 = row.get(4)?;
+                // has_speedy column may not exist in older DBs, default to false
+                let has_spd: bool = row.get::<_, Option<i32>>(8).ok().flatten().map(|v| v != 0).unwrap_or(false);
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     has_vis != 0,
                     has_reas != 0,
                     has_cod != 0,
+                    has_spd,
                     row.get::<_, String>(5)?,
                     row.get::<_, String>(6)?,
                     row.get::<_, String>(7)?,
@@ -284,7 +301,7 @@ async fn handle_messages_impl(
         }) {
             let mut best_model = None;
             let mut highest_score = -1;
-            for (model_name, platform_id, vis, reas, cod, api_key, _api_address, api_type) in active_models {
+            for (model_name, platform_id, vis, reas, cod, spd, api_key, _api_address, api_type) in active_models {
                 if api_key.trim().is_empty() && api_type != "ollama" {
                     continue;
                 }
@@ -292,7 +309,8 @@ async fn handle_messages_impl(
                 if need_vis && vis { score += 10; }
                 if need_reas && reas { score += 10; }
                 if need_cod && cod { score += 5; }
-                if !need_vis && !need_reas && !need_cod && vis { score -= 2; }
+                if need_spd && spd { score += 8; }
+                if !need_vis && !need_reas && !need_cod && !need_spd && vis { score -= 2; }
                 
                 if score > highest_score {
                     highest_score = score;
@@ -355,12 +373,14 @@ async fn handle_messages_impl(
             return (status, err_body).into_response();
         }
         
-        // Log request (non-blocking)
+        // Log request (non-blocking, uses spawn_blocking for sync DB I/O)
         let log_db = state.db.clone();
         let log_model = resolved_model.clone();
         let log_latency = start_time.elapsed().as_millis() as i64;
-        tokio::spawn(async move {
-            log_request(&log_db, &log_model, Some("anthropic"), 0, 0, log_latency, status.as_u16() as i32, is_stream, !status.is_success(), None, None, "proxy");
+        let log_status = status.as_u16() as i32;
+        let log_is_err = !status.is_success();
+        tokio::task::spawn_blocking(move || {
+            log_request(&log_db, &log_model, Some("anthropic"), 0, 0, log_latency, log_status, is_stream, log_is_err, None, None, "proxy");
         });
 
         if is_stream {
@@ -502,11 +522,11 @@ async fn handle_messages_impl(
                 Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
             };
 
-            // Log request (non-blocking)
+            // Log request (non-blocking, uses spawn_blocking for sync DB I/O)
             let log_db = state.db.clone();
             let log_model = resolved_model.clone();
             let log_latency = start_time.elapsed().as_millis() as i64;
-            tokio::spawn(async move {
+            tokio::task::spawn_blocking(move || {
                 log_request(&log_db, &log_model, Some("openai"), 0, 0, log_latency, 200, false, false, None, None, "proxy");
             });
 
@@ -623,12 +643,15 @@ async fn handle_openai_forward_impl(
                 let has_vis: i32 = row.get(2)?;
                 let has_reas: i32 = row.get(3)?;
                 let has_cod: i32 = row.get(4)?;
+                // has_speedy column may not exist in older DBs, default to false
+                let has_spd: bool = row.get::<_, Option<i32>>(8).ok().flatten().map(|v| v != 0).unwrap_or(false);
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     has_vis != 0,
                     has_reas != 0,
                     has_cod != 0,
+                    has_spd,
                     row.get::<_, String>(5)?,
                     row.get::<_, String>(6)?,
                     row.get::<_, String>(7)?,
@@ -644,7 +667,7 @@ async fn handle_openai_forward_impl(
         }) {
             let mut best_model = None;
             let mut highest_score = -1;
-            for (model_name, platform_id, vis, reas, cod, api_key, _api_address, api_type) in active_models {
+            for (model_name, platform_id, vis, reas, cod, spd, api_key, _api_address, api_type) in active_models {
                 if api_key.trim().is_empty() && api_type != "ollama" {
                     continue;
                 }
@@ -652,7 +675,8 @@ async fn handle_openai_forward_impl(
                 if need_vis && vis { score += 10; }
                 if need_reas && reas { score += 10; }
                 if need_cod && cod { score += 5; }
-                if !need_vis && !need_reas && !need_cod && vis { score -= 2; }
+                if need_spd && spd { score += 8; }
+                if !need_vis && !need_reas && !need_cod && !need_spd && vis { score -= 2; }
                 
                 if score > highest_score {
                     highest_score = score;
@@ -730,12 +754,14 @@ async fn handle_openai_forward_impl(
             return (status, err_body).into_response();
         }
 
-        // Log request (non-blocking)
+        // Log request (non-blocking, uses spawn_blocking for sync DB I/O)
         let log_db = state.db.clone();
         let log_model = resolved_model.clone();
         let log_latency = start_time.elapsed().as_millis() as i64;
-        tokio::spawn(async move {
-            log_request(&log_db, &log_model, Some("openai"), 0, 0, log_latency, status.as_u16() as i32, is_stream, !status.is_success(), None, None, "proxy");
+        let log_status = status.as_u16() as i32;
+        let log_is_err = !status.is_success();
+        tokio::task::spawn_blocking(move || {
+            log_request(&log_db, &log_model, Some("openai"), 0, 0, log_latency, log_status, is_stream, log_is_err, None, None, "proxy");
         });
 
         if is_stream {

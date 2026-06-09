@@ -1084,9 +1084,10 @@ impl DbManager {
         let conn = self.get_connection()?;
         let id = format!("sel_{}", chrono::Utc::now().timestamp_millis());
 
-        // Truncate text to 100KB to prevent DB bloat
+        // Truncate text to 100KB to prevent DB bloat (safe UTF-8 boundary)
         let truncated = if text.len() > 100_000 {
-            format!("{}…", &text[..100_000])
+            let end = text.char_indices().nth(100_000).map(|(i, _)| i).unwrap_or(text.len());
+            format!("{}…", &text[..end])
         } else {
             text.to_string()
         };
@@ -1143,12 +1144,14 @@ impl DbManager {
         let id = format!("tr_{}", chrono::Utc::now().timestamp_millis());
 
         let truncated_source = if source_text.len() > 100_000 {
-            format!("{}…", &source_text[..100_000])
+            let end = source_text.char_indices().nth(100_000).map(|(i, _)| i).unwrap_or(source_text.len());
+            format!("{}…", &source_text[..end])
         } else {
             source_text.to_string()
         };
         let truncated_target = if target_text.len() > 100_000 {
-            format!("{}…", &target_text[..100_000])
+            let end = target_text.char_indices().nth(100_000).map(|(i, _)| i).unwrap_or(target_text.len());
+            format!("{}…", &target_text[..end])
         } else {
             target_text.to_string()
         };
