@@ -1,0 +1,23 @@
+{
+  "task_id": "TASK-021",
+  "title": "r2d2 连接池改造 — 消除每次 get_connection() 新建连接的开销",
+  "goal": "用 r2d2 + r2d2_sqlite 替换每次 Connection::open，实现连接复用",
+  "owner": "claude",
+  "status": "IN_PROGRESS",
+  "priority": "medium",
+  "dependencies": [],
+  "related_files": [
+    "src-tauri/Cargo.toml",
+    "src-tauri/src/db.rs",
+    "src-tauri/src/commands.rs",
+    "src-tauri/src/proxy.rs"
+  ],
+  "acceptance_criteria": [
+    "Cargo.toml 新增 r2d2 + r2d2_sqlite",
+    "DbManager 使用 r2d2::Pool 替代手动 Connection::open",
+    "get_connection() 返回 PooledConnection，Deref 解引用保证零调用点改动",
+    "busy_timeout 和 WAL 模式在连接初始化时设置",
+    "cargo check + tsc 通过"
+  ],
+  "start_time": "2026-06-09T00:00:00Z"
+}

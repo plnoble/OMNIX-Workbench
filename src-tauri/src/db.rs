@@ -1,9 +1,14 @@
 use rusqlite::{params, Connection, Result};
+use r2d2::Pool;
+use r2d2_sqlite::SqliteConnectionManager;
 use std::fs;
 use std::path::PathBuf;
 
+/// Type alias for a pooled SQLite connection
+pub type PooledConn = r2d2::PooledConnection<SqliteConnectionManager>;
+
 pub struct DbManager {
-    db_path: PathBuf,
+    pool: Pool<SqliteConnectionManager>,
 }
 
 impl DbManager {
@@ -12,31 +17,55 @@ impl DbManager {
         let home_dir = dirs::home_dir().expect("Failed to determine home directory. Cannot initialize database.");
         let mut omnix_dir = home_dir.clone();
         omnix_dir.push(".omnix");
-        
+
         // Ensure directory exists
         if !omnix_dir.exists() {
             fs::create_dir_all(&omnix_dir).expect("Failed to create .omnix data directory");
         }
-        
+
         let mut db_path = omnix_dir;
         db_path.push("omnix.db");
-        
-        let db = Self { db_path };
+
+        let db = Self::from_path(db_path);
         db.init_schema().expect("Failed to initialize database schema");
         db
     }
 
     #[allow(dead_code)]
     pub fn new_with_path(db_path: PathBuf) -> Self {
-        let db = Self { db_path };
+        let db = Self::from_path(db_path);
         db.init_schema().expect("Failed to initialize database schema");
         db
     }
 
-    pub fn get_connection(&self) -> Result<Connection> {
-        let conn = Connection::open(&self.db_path)?;
-        conn.busy_timeout(std::time::Duration::from_secs(5))?;
-        Ok(conn)
+    /// Internal: create DbManager with r2d2 connection pool
+    fn from_path(db_path: PathBuf) -> Self {
+        let manager = SqliteConnectionManager::file(&db_path)
+            .with_init(|conn| {
+                // Set busy timeout (5 seconds)
+                conn.busy_timeout(std::time::Duration::from_secs(5))?;
+                // Enable WAL mode for better concurrent read performance
+                conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
+                Ok(())
+            });
+
+        let pool = Pool::builder()
+            .max_size(8)           // max 8 concurrent connections
+            .min_idle(Some(1))     // keep at least 1 idle connection
+            .build(manager)
+            .expect("Failed to create SQLite connection pool");
+
+        Self { pool }
+    }
+
+    /// Get a pooled connection (reuses existing connection from pool)
+    pub fn get_connection(&self) -> Result<PooledConn> {
+        self.pool.get().map_err(|e| {
+            rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+                Some(format!("Connection pool error: {}", e)),
+            )
+        })
     }
 
     pub fn init_schema(&self) -> Result<()> {

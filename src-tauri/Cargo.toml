@@ -27,7 +27,9 @@ serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 axum = "0.7"
 reqwest = { version = "0.12", features = ["json", "stream"] }
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.33", features = ["bundled"] }
+r2d2 = "0.8"
+r2d2_sqlite = "0.26"
 tower-http = { version = "0.5", features = ["cors"] }
 dirs = "5"
 which = "6"
