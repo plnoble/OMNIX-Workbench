@@ -1,0 +1,8 @@
+{
+  "event_id": "EVENT-017",
+  "event_type": "FEATURE_IMPLEMENTED",
+  "agent": "claude",
+  "summary": "借鉴 Multica 的 Skill Frontmatter 标准化：skill_frontmatter.rs 实现 YAML frontmatter 解析/生成，支持 name/description/category/version/author/source/argument-hint/skills 字段。create_skill 自动写入 frontmatter，get_skill_content 解析返回 body。3 个单元测试通过。",
+  "related_entities": ["TASK-011", "skill_frontmatter.rs"],
+  "timestamp": "2026-06-09T00:00:00Z"
+}

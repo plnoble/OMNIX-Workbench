@@ -1,0 +1,27 @@
+{
+  "task_id": "TASK-010",
+  "title": "借鉴 Multica: Agent 模板库",
+  "goal": "25 个预设 Agent 角色模板，支持从模板创建会话",
+  "owner": "claude",
+  "status": "COMPLETED",
+  "priority": "high",
+  "dependencies": [],
+  "related_files": [
+    "src-tauri/src/agent_templates.rs",
+    "src-tauri/src/commands.rs",
+    "src-tauri/src/lib.rs",
+    "src/components/tabs/AgentHubTab.tsx",
+    "src/lib/tauri-api.ts"
+  ],
+  "acceptance_criteria": [
+    "✅ agent_templates.rs — 25 个内置模板 (670行)",
+    "✅ 每个模板含 slug/name/description/category/icon/accent/instructions/skills",
+    "✅ get_agent_templates / get_agent_template 命令",
+    "✅ AgentHubTab 模板库面板（分类折叠、图标、预览）",
+    "✅ cargo check 0 warnings 0 errors",
+    "✅ tsc 0 errors"
+  ],
+  "start_time": "2026-06-09T00:00:00Z",
+  "end_time": "2026-06-09T00:00:00Z",
+  "result": "Agent 模板库完成。25 个模板覆盖 Engineering/Product/Writing/Design 四类。0 warnings/errors。"
+}

@@ -1,0 +1,8 @@
+{
+  "event_id": "EVENT-016",
+  "event_type": "FEATURE_IMPLEMENTED",
+  "agent": "claude",
+  "summary": "借鉴 Multica 的 Agent 模板库系统：25 个预设角色模板(bug-fixer/code-reviewer/frontend-builder/translator 等)，覆盖 Engineering/Product/Writing/Design 四类。新增 agent_templates.rs(670行)，AgentHubTab 添加模板面板，2 个新 Tauri 命令。",
+  "related_entities": ["TASK-010", "agent_templates.rs", "AgentHubTab.tsx"],
+  "timestamp": "2026-06-09T00:00:00Z"
+}

@@ -1,0 +1,21 @@
+{
+  "task_id": "TASK-014",
+  "title": "借鉴 Multica: Autopilot 增强",
+  "goal": "增强 Cron 系统为 Autopilot 模式，支持 Webhook 触发和 Prompt 模板",
+  "owner": "claude",
+  "status": "COMPLETED",
+  "priority": "medium",
+  "dependencies": ["TASK-012"],
+  "related_files": ["src-tauri/src/commands.rs", "src-tauri/src/lib.rs", "src/lib/tauri-api.ts"],
+  "acceptance_criteria": [
+    "✅ autopilot_configs 表自动创建",
+    "✅ get_autopilot_config — 读取配置",
+    "✅ save_autopilot_config — 保存配置",
+    "✅ 支持 agent_name/prompt_template/trigger_type/webhook_secret/webhook_url",
+    "✅ expand_prompt_template — 变量替换 ({{date}}/{{git_status}}/{{workspace}})",
+    "✅ cargo check + tsc 通过"
+  ],
+  "start_time": "2026-06-09T00:00:00Z",
+  "end_time": "2026-06-09T00:00:00Z",
+  "result": "Autopilot 增强完成。2 个命令 + prompt 模板引擎 + 前端 API。0 warnings/errors。"
+}

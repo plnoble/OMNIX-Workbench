@@ -5,6 +5,8 @@ mod knowledge;
 mod selection;
 mod tool_adapters;
 mod sync_engine;
+mod agent_templates;
+mod skill_frontmatter;
 mod commands;
 
 #[cfg(test)]
@@ -226,6 +228,23 @@ pub fn run() {
             commands::check_git_updates,
             commands::pull_and_update_skill,
             commands::cleanup_skill_cache,
+            // Agent Template commands (Multica-inspired)
+            commands::get_agent_templates,
+            commands::get_agent_template,
+            // Skills Lock File commands (Multica-inspired)
+            commands::get_skill_lock,
+            commands::update_skill_lock,
+            commands::verify_skill_lock,
+            // Agent Execution Environment commands (Multica-inspired)
+            commands::get_agent_exec_config,
+            commands::save_agent_exec_config,
+            // Autopilot commands (Multica-inspired)
+            commands::get_autopilot_config,
+            commands::save_autopilot_config,
+            // Workspace GC commands (Multica-inspired)
+            commands::get_gc_config,
+            commands::save_gc_config,
+            commands::run_workspace_gc,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

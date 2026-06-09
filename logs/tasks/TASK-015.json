@@ -1,0 +1,20 @@
+{
+  "task_id": "TASK-015",
+  "title": "借鉴 Multica: Workspace GC",
+  "goal": "实现工作空间垃圾回收",
+  "owner": "claude",
+  "status": "COMPLETED",
+  "priority": "low",
+  "dependencies": ["TASK-012"],
+  "related_files": ["src-tauri/src/commands.rs", "src-tauri/src/lib.rs", "src/lib/tauri-api.ts"],
+  "acceptance_criteria": [
+    "✅ get_gc_config — 读取 GC 配置",
+    "✅ save_gc_config — 保存 GC 配置 (enabled/retention_days/mode)",
+    "✅ run_workspace_gc — 执行垃圾回收",
+    "✅ 三种模式: full/artifacts-only/orphan-only",
+    "✅ cargo check + tsc 通过"
+  ],
+  "start_time": "2026-06-09T00:00:00Z",
+  "end_time": "2026-06-09T00:00:00Z",
+  "result": "Workspace GC 完成。3 个命令 + 三种清理模式 + 前端 API。0 warnings/errors。"
+}

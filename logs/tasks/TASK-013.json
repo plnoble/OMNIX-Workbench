@@ -1,0 +1,20 @@
+{
+  "task_id": "TASK-013",
+  "title": "借鉴 Multica: Agent 执行环境配置",
+  "goal": "支持每个 Agent CLI 的精细化执行环境配置",
+  "owner": "claude",
+  "status": "COMPLETED",
+  "priority": "medium",
+  "dependencies": ["TASK-012"],
+  "related_files": ["src-tauri/src/commands.rs", "src-tauri/src/lib.rs", "src/lib/tauri-api.ts"],
+  "acceptance_criteria": [
+    "✅ agent_configs 表自动创建",
+    "✅ get_agent_exec_config — 读取配置",
+    "✅ save_agent_exec_config — 保存配置",
+    "✅ 支持 model/max_turns/system_prompt_append/extra_args/workspace_dir/timeout/sandbox_mode",
+    "✅ cargo check + tsc 通过"
+  ],
+  "start_time": "2026-06-09T00:00:00Z",
+  "end_time": "2026-06-09T00:00:00Z",
+  "result": "Agent 执行环境配置完成。2 个命令 + 7 个配置项 + 前端 API。0 warnings/errors。"
+}

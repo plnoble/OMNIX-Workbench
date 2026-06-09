@@ -144,6 +144,7 @@ mod tests {
             let stdin_tx = rt.block_on(async {
                 agent_manager.spawn_agent(
                     session_id.clone(),
+                    display_name.to_string(),
                     exe_path,
                     vec!["--help".to_string()], // Use --help to avoid waiting for API keys
                     "direct".to_string(),

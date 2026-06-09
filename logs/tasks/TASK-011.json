@@ -1,0 +1,26 @@
+{
+  "task_id": "TASK-011",
+  "title": "借鉴 Multica: Skill Frontmatter 标准化",
+  "goal": "统一 SKILL.md 的 YAML frontmatter 标准，实现技能自描述",
+  "owner": "claude",
+  "status": "COMPLETED",
+  "priority": "high",
+  "dependencies": ["TASK-010"],
+  "related_files": [
+    "src-tauri/src/skill_frontmatter.rs",
+    "src-tauri/src/commands.rs",
+    "src-tauri/src/lib.rs",
+    "src-tauri/src/tests.rs"
+  ],
+  "acceptance_criteria": [
+    "✅ skill_frontmatter.rs — frontmatter 解析和生成 (220行)",
+    "✅ create_skill 写入时自动添加 YAML frontmatter",
+    "✅ get_skill_content 解析 frontmatter 返回 body",
+    "✅ 3 个单元测试全部通过",
+    "✅ cargo check 0 warnings 0 errors",
+    "✅ tsc 0 errors"
+  ],
+  "start_time": "2026-06-09T00:00:00Z",
+  "end_time": "2026-06-09T00:00:00Z",
+  "result": "Frontmatter 标准化完成。skill_frontmatter.rs(220行), 3个测试通过。0 warnings/errors。"
+}

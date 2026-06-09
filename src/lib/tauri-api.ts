@@ -400,6 +400,130 @@ export const skillSyncApi = {
     invoke<number>("cleanup_skill_cache"),
 };
 
+// ── Agent Templates (Multica-inspired) ───────────────
+
+export interface TemplateSkill {
+  name: string;
+  description: string;
+}
+
+export interface AgentTemplate {
+  slug: string;
+  name: string;
+  description: string;
+  category: string;
+  icon: string;
+  accent: string;
+  instructions: string;
+  skills: TemplateSkill[];
+}
+
+export const agentTemplateApi = {
+  /** Get all built-in agent templates */
+  getAll: () =>
+    invoke<AgentTemplate[]>("get_agent_templates"),
+
+  /** Get a specific template by slug */
+  getBySlug: (slug: string) =>
+    invoke<AgentTemplate | null>("get_agent_template", { slug }),
+};
+
+// ── Skills Lock File (Multica-inspired) ──────────────
+
+export interface SkillLockEntry {
+  source: string;
+  source_type: string;
+  computed_hash: string;
+  skill_path?: string;
+}
+
+export interface SkillLockFile {
+  version: number;
+  skills: Record<string, SkillLockEntry>;
+}
+
+export const skillLockApi = {
+  /** Read current skills-lock.json */
+  get: () => invoke<SkillLockFile>("get_skill_lock"),
+
+  /** Update lock file from current DB state */
+  update: () => invoke<SkillLockFile>("update_skill_lock"),
+
+  /** Verify lock file against DB, returns list of issues */
+  verify: () => invoke<string[]>("verify_skill_lock"),
+};
+
+// ── Agent Execution Environment (Multica-inspired) ───
+
+export interface AgentExecConfig {
+  agent_name: string;
+  model: string | null;
+  max_turns: number | null;
+  system_prompt_append: string | null;
+  extra_args: string[];
+  workspace_dir: string | null;
+  timeout_minutes: number | null;
+  sandbox_mode: string | null;
+}
+
+export const agentExecApi = {
+  /** Get execution config for an agent */
+  getConfig: (agentName: string) =>
+    invoke<AgentExecConfig>("get_agent_exec_config", { agentName }),
+
+  /** Save execution config */
+  saveConfig: (config: AgentExecConfig) =>
+    invoke("save_agent_exec_config", { config }),
+};
+
+// ── Autopilot (Multica-inspired) ─────────────────────
+
+export interface AutopilotConfig {
+  task_id: string;
+  agent_name: string | null;
+  prompt_template: string | null;
+  trigger_type: string;     // "cron" | "webhook"
+  webhook_secret: string | null;
+  webhook_url: string | null;
+}
+
+export const autopilotApi = {
+  /** Get autopilot config for a cron task */
+  getConfig: (taskId: string) =>
+    invoke<AutopilotConfig>("get_autopilot_config", { taskId }),
+
+  /** Save autopilot config */
+  saveConfig: (config: AutopilotConfig) =>
+    invoke("save_autopilot_config", { config }),
+};
+
+// ── Workspace GC (Multica-inspired) ──────────────────
+
+export interface WorkspaceGcConfig {
+  enabled: boolean;
+  retention_days: number;
+  mode: string;  // "full" | "artifacts-only" | "orphan-only"
+}
+
+export interface GcResult {
+  scanned: number;
+  cleaned: number;
+  freed_bytes: number;
+  details: string[];
+}
+
+export const workspaceGcApi = {
+  /** Get GC config */
+  getConfig: () => invoke<WorkspaceGcConfig>("get_gc_config"),
+
+  /** Save GC config */
+  saveConfig: (config: WorkspaceGcConfig) =>
+    invoke("save_gc_config", { config }),
+
+  /** Execute garbage collection */
+  run: () => invoke<GcResult>("run_workspace_gc"),
+};
+
 // ── P2 Sync Engine Types ──────────────────────────────
 
 export interface ConflictInfo {

@@ -1,0 +1,19 @@
+{
+  "task_id": "TASK-012",
+  "title": "借鉴 Multica: Skills Lock File",
+  "goal": "实现 skills-lock.json 机制",
+  "owner": "claude",
+  "status": "COMPLETED",
+  "priority": "medium",
+  "dependencies": ["TASK-004", "TASK-011"],
+  "related_files": ["src-tauri/src/commands.rs", "src-tauri/src/lib.rs", "src/lib/tauri-api.ts"],
+  "acceptance_criteria": [
+    "✅ get_skill_lock — 读取 skills-lock.json",
+    "✅ update_skill_lock — 从 DB 重建锁文件",
+    "✅ verify_skill_lock — 对比锁文件与 DB，报告差异",
+    "✅ cargo check + tsc 通过"
+  ],
+  "start_time": "2026-06-09T00:00:00Z",
+  "end_time": "2026-06-09T00:00:00Z",
+  "result": "Skills Lock File 完成。3 个命令 + 前端 API。0 warnings/errors。"
+}
