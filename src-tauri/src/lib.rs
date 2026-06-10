@@ -298,6 +298,8 @@ pub fn run() {
             commands::compact_conversation_context,
             commands::get_model_recommendations,
             commands::get_model_database,
+            commands::recommend_for_gpu,
+            commands::get_gpu_database,
             commands::analyze_codebase,
             // Config Backup (ZCF inspired)
             commands::backup_config_file,

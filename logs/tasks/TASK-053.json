@@ -1,0 +1,1 @@
+{"task_id":"TASK-053","title":"whichllm 借鉴: 证据置信度 + 谱系管理 + GPU模拟器 + 分层缓存 + 置信度可视化","goal":"增强 Cookbook 模型推荐系统","owner":"claude","status":"IN_PROGRESS","priority":"medium","related_files":["src-tauri/src/model_knowledge.rs","src-tauri/src/commands.rs","src-tauri/src/lib.rs","src/lib/tauri-api.ts"],"start_time":"2026-06-09T00:00:00Z"}

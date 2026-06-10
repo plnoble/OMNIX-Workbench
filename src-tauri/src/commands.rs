@@ -6675,6 +6675,23 @@ pub fn get_model_database() -> Vec<crate::model_knowledge::ModelEntry> {
     crate::model_knowledge::get_model_database()
 }
 
+/// Simulate recommendations for a hypothetical GPU (whichllm --gpu pattern)
+#[tauri::command]
+pub fn recommend_for_gpu(gpu_name: String) -> Result<serde_json::Value, String> {
+    let recommendations = crate::model_knowledge::recommend_for_gpu(&gpu_name)?;
+    let gpu = crate::model_knowledge::simulate_gpu(&gpu_name);
+    Ok(serde_json::json!({
+        "gpu": gpu,
+        "recommendations": recommendations,
+    }))
+}
+
+/// Get the full GPU database
+#[tauri::command]
+pub fn get_gpu_database() -> Vec<crate::model_knowledge::GpuSpec> {
+    crate::model_knowledge::get_gpu_database()
+}
+
 // ══════════════════════════════════════════════════
 // Code Deep Analysis (Odysseus Deep Research inspired)
 // ══════════════════════════════════════════════════

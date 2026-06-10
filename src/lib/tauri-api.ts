@@ -821,21 +821,32 @@ export const contextCompactApi = {
 };
 
 // Cookbook Model Recommendations
+export type EvidenceTier = "Direct" | "Variant" | "BaseModel" | "LineInterp" | "SelfReported";
 export interface ModelEntry {
   name: string; display_name: string; size_gb: number; min_vram_gb: number;
   categories: string[]; quality: number; description: string; ollama_cmd: string; speed_rating: string;
+  family: string; generation: number; evidence_tier: EvidenceTier; confidence: number;
+  is_moe: boolean; active_params_gb: number | null;
 }
 export interface ModelRecommendation {
   model: ModelEntry; fits_vram: boolean; fits_ram: boolean;
   overall_fit: "perfect" | "tight" | "impossible"; install_cmd: string;
+  effective_quality: number; confidence_label: string;
 }
 export interface HardwareInfo {
   gpu: { name: string; vram_mb: number; vendor: string } | null;
   ram_mb: number; cpu_cores: number; os: string;
 }
+export interface GpuSpec {
+  name: string; vram_mb: number; bandwidth_gb_s: number; vendor: string; generation: string;
+}
 export const cookbookApi = {
   getRecommendations: () => invoke<{ hardware: HardwareInfo; recommendations: ModelRecommendation[] }>("get_model_recommendations"),
   getDatabase: () => invoke<ModelEntry[]>("get_model_database"),
+  /** Simulate recommendations for a hypothetical GPU */
+  recommendForGpu: (gpuName: string) => invoke<{ gpu: GpuSpec | null; recommendations: ModelRecommendation[] }>("recommend_for_gpu", { gpuName }),
+  /** Get full GPU database */
+  getGpuDatabase: () => invoke<GpuSpec[]>("get_gpu_database"),
 };
 
 // Code Deep Analysis
