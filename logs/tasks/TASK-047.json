@@ -1,0 +1,1 @@
+{"task_id":"TASK-047","title":"Understand-Anything 借鉴 1-5: 架构图谱 + 增量分析 + LLM验证 + omnitignore + 层级检测","goal":"实现代码库深度分析、增量更新、LLM输出验证、忽略文件、架构层级检测","owner":"claude","status":"IN_PROGRESS","priority":"high","related_files":["src-tauri/src/code_graph.rs","src-tauri/src/commands.rs","src-tauri/src/lib.rs","src/lib/tauri-api.ts"],"start_time":"2026-06-09T00:00:00Z"}

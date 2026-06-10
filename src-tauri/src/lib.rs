@@ -14,6 +14,7 @@ mod event_bus;
 mod crypto;
 mod model_knowledge;
 mod backup;
+mod code_graph;
 mod commands;
 
 #[cfg(test)]
@@ -303,6 +304,11 @@ pub fn run() {
             commands::restore_backup,
             // API Provider Preset (ZCF inspired)
             commands::apply_api_preset,
+            // Architecture Graph (Understand-Anything inspired)
+            commands::build_architecture_graph,
+            commands::save_architecture_graph,
+            commands::load_architecture_graph,
+            commands::get_ignore_patterns,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

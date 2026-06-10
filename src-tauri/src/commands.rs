@@ -6858,3 +6858,32 @@ pub fn apply_api_preset(
 
     Ok(format!("{}: {}", name, if exists { "已更新" } else { "已添加" }))
 }
+
+// ══════════════════════════════════════════════════
+// Architecture Knowledge Graph (Understand-Anything inspired)
+// ══════════════════════════════════════════════════
+
+/// Build architecture graph for a project directory
+#[tauri::command]
+pub fn build_architecture_graph(project_path: String) -> Result<crate::code_graph::ArchitectureGraph, String> {
+    crate::code_graph::build_graph(&project_path)
+}
+
+/// Save architecture graph to disk
+#[tauri::command]
+pub fn save_architecture_graph(graph: crate::code_graph::ArchitectureGraph) -> Result<String, String> {
+    crate::code_graph::save_graph(&graph)
+}
+
+/// Load a saved architecture graph
+#[tauri::command]
+pub fn load_architecture_graph(project_name: String) -> Result<crate::code_graph::ArchitectureGraph, String> {
+    crate::code_graph::load_graph(&project_name)
+}
+
+/// Get .omnixignore patterns for a project
+#[tauri::command]
+pub fn get_ignore_patterns(project_path: String) -> Vec<String> {
+    let path = PathBuf::from(&project_path);
+    crate::code_graph::load_omnixignore(&path)
+}
