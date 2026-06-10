@@ -847,6 +847,25 @@ export const codeAnalysisApi = {
   analyze: (path: string) => invoke<CodebaseAnalysis>("analyze_codebase", { path }),
 };
 
+// Config Backup (ZCF inspired)
+export interface BackupEntry {
+  name: string; path: string; size_bytes: number; created_at: number;
+}
+export const configBackupApi = {
+  backup: (filePath: string, category: string) =>
+    invoke<string | null>("backup_config_file", { filePath, category }),
+  list: (category: string) =>
+    invoke<BackupEntry[]>("list_backups", { category }),
+  restore: (backupPath: string, targetPath: string) =>
+    invoke("restore_backup", { backupPath, targetPath }),
+};
+
+// API Provider Preset (ZCF inspired)
+export const apiPresetApi = {
+  apply: (presetId: string, apiKey: string) =>
+    invoke<string>("apply_api_preset", { presetId, apiKey }),
+};
+
 // ── P2 Sync Engine Types ──────────────────────────────
 
 export interface ConflictInfo {

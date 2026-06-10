@@ -1,0 +1,1 @@
+{"task_id":"TASK-046","title":"ZCF 借鉴 5: 工作流模板系统","goal":"开发工作流模板（git-flow/code-review-flow/feature-flow）","owner":"claude","status":"PENDING","priority":"medium","related_files":["src-tauri/src/agent_templates.rs","src-tauri/src/commands.rs"],"start_time":"2026-06-09T00:00:00Z"}

@@ -1,0 +1,1 @@
+{"task_id":"TASK-045","title":"ZCF 借鉴 4: Agent 输出风格模板","goal":"预设 AI 行为风格（专业/简洁/教学）","owner":"claude","status":"PENDING","priority":"medium","related_files":["src-tauri/src/agent_templates.rs","src-tauri/src/commands.rs"],"start_time":"2026-06-09T00:00:00Z"}

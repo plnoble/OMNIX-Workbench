@@ -6771,3 +6771,90 @@ pub fn analyze_codebase(path: String) -> Result<serde_json::Value, String> {
         }).collect::<Vec<_>>(),
     }))
 }
+
+// ══════════════════════════════════════════════════
+// Configuration Backup (ZCF inspired)
+// ══════════════════════════════════════════════════
+
+/// Backup a file before modification
+#[tauri::command]
+pub fn backup_config_file(file_path: String, category: String) -> Result<Option<String>, String> {
+    let path = PathBuf::from(&file_path);
+    crate::backup::backup_file(&path, &category).map(|p| p.map(|p| p.to_string_lossy().to_string()))
+}
+
+/// List backups for a category
+#[tauri::command]
+pub fn list_backups(category: String) -> Vec<crate::backup::BackupEntry> {
+    crate::backup::list_backups(&category)
+}
+
+/// Restore a backup
+#[tauri::command]
+pub fn restore_backup(backup_path: String, target_path: String) -> Result<(), String> {
+    crate::backup::restore_backup(&backup_path, &target_path)
+}
+
+// ══════════════════════════════════════════════════
+// API Provider Preset Management (ZCF inspired)
+// ══════════════════════════════════════════════════
+
+/// Apply an API provider preset — creates or updates a model platform
+#[tauri::command]
+pub fn apply_api_preset(
+    preset_id: String,
+    api_key: String,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<String, String> {
+    // Preset definitions (mirrored from frontend constants)
+    let presets: Vec<(&str, &str, &str, &str, &str)> = vec![
+        ("openai",        "OpenAI",              "openai",    "https://api.openai.com/v1",                       "gpt-4o"),
+        ("anthropic",     "Anthropic",           "anthropic", "https://api.anthropic.com",                       "claude-sonnet-4-20250514"),
+        ("openrouter",    "OpenRouter",          "openai",    "https://openrouter.ai/api/v1",                    "anthropic/claude-sonnet-4-20250514"),
+        ("deepseek",      "DeepSeek",            "openai",    "https://api.deepseek.com/v1",                     "deepseek-chat"),
+        ("siliconflow",   "硅基流动 SiliconFlow", "openai",    "https://api.siliconflow.cn/v1",                   "Qwen/Qwen2.5-7B-Instruct"),
+        ("zhipu",         "智谱 GLM",            "openai",    "https://open.bigmodel.cn/api/paas/v4",            "glm-4-flash"),
+        ("moonshot",      "月之暗面 Kimi",       "openai",    "https://api.moonshot.cn/v1",                      "moonshot-v1-8k"),
+        ("minimax",       "MiniMax",             "openai",    "https://api.minimax.chat/v1",                     "MiniMax-Text-01"),
+        ("bailian",       "百炼 Bailian",        "openai",    "https://dashscope.aliyuncs.com/compatible-mode/v1","qwen-plus"),
+        ("volcengine",    "火山引擎",            "openai",    "https://ark.cn-beijing.volces.com/api/v3",        "doubao-pro-32k"),
+        ("ollama",        "Ollama (本地)",        "ollama",    "http://localhost:11434",                           "qwen2.5:7b"),
+        ("lmstudio",      "LM Studio (本地)",    "openai",    "http://localhost:1234/v1",                         "local-model"),
+    ];
+
+    let preset = presets.iter().find(|(id, _, _, _, _)| *id == preset_id)
+        .ok_or_else(|| format!("Unknown preset: {}", preset_id))?;
+
+    let (id, name, api_type, api_address, default_model) = *preset;
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+
+    // Check if platform already exists
+    let exists: bool = conn.query_row(
+        "SELECT COUNT(*) FROM model_platforms WHERE id = ?1",
+        params![id],
+        |r| r.get::<_, i64>(0),
+    ).unwrap_or(0) > 0;
+
+    if exists {
+        // Update existing
+        conn.execute(
+            "UPDATE model_platforms SET api_key = ?1, api_address = ?2, api_type = ?3, is_enabled = 1 WHERE id = ?4",
+            params![api_key, api_address, api_type, id],
+        ).map_err(|e: rusqlite::Error| e.to_string())?;
+    } else {
+        // Insert new
+        conn.execute(
+            "INSERT INTO model_platforms (id, name, api_type, api_key, api_address, is_enabled, weight, priority) VALUES (?1, ?2, ?3, ?4, ?5, 1, 1, 0)",
+            params![id, name, api_type, api_key, api_address],
+        ).map_err(|e: rusqlite::Error| e.to_string())?;
+
+        // Add default model
+        let model_id = format!("{}:{}", id, default_model);
+        conn.execute(
+            "INSERT OR IGNORE INTO platform_models (id, platform_id, model_name, is_enabled) VALUES (?1, ?2, ?3, 1)",
+            params![model_id, id, default_model],
+        ).map_err(|e: rusqlite::Error| e.to_string())?;
+    }
+
+    Ok(format!("{}: {}", name, if exists { "已更新" } else { "已添加" }))
+}

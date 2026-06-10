@@ -1,0 +1,1 @@
+{"task_id":"TASK-043","title":"ZCF 借鉴 2: MCP 服务预设注册表","goal":"预配置的 MCP 服务器列表，一键添加","owner":"claude","status":"PENDING","priority":"high","related_files":["src/lib/constants.ts","src-tauri/src/commands.rs","src/lib/tauri-api.ts"],"start_time":"2026-06-09T00:00:00Z"}

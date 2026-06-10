@@ -1,0 +1,1 @@
+{"task_id":"TASK-044","title":"ZCF 借鉴 3: 配置修改前自动备份","goal":"修改配置前自动创建时间戳备份","owner":"claude","status":"PENDING","priority":"high","related_files":["src-tauri/src/commands.rs","src-tauri/src/backup.rs"],"start_time":"2026-06-09T00:00:00Z"}

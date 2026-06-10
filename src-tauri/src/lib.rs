@@ -13,6 +13,7 @@ mod prompt_guard;
 mod event_bus;
 mod crypto;
 mod model_knowledge;
+mod backup;
 mod commands;
 
 #[cfg(test)]
@@ -296,6 +297,12 @@ pub fn run() {
             commands::get_model_recommendations,
             commands::get_model_database,
             commands::analyze_codebase,
+            // Config Backup (ZCF inspired)
+            commands::backup_config_file,
+            commands::list_backups,
+            commands::restore_backup,
+            // API Provider Preset (ZCF inspired)
+            commands::apply_api_preset,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

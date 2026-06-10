@@ -1,0 +1,1 @@
+{"task_id":"TASK-042","title":"ZCF 借鉴 1: API 供应商预设系统","goal":"预配置的 API 供应商列表，一键添加平台","owner":"claude","status":"IN_PROGRESS","priority":"high","related_files":["src/lib/constants.ts","src-tauri/src/commands.rs","src/lib/tauri-api.ts"],"start_time":"2026-06-09T00:00:00Z"}
