@@ -1,0 +1,1 @@
+{"task_id":"TASK-049","title":"Skill Library 借鉴 2: 双 Agent 沙箱测试","goal":"一个 Agent 实践技能，另一个 Agent 打分审计","owner":"claude","status":"PENDING","priority":"medium","related_files":["src-tauri/src/commands.rs"],"start_time":"2026-06-09T00:00:00Z"}

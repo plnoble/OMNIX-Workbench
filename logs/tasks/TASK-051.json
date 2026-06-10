@@ -1,0 +1,1 @@
+{"task_id":"TASK-051","title":"Skill Library 借鉴 4: 多源技能市场搜索","goal":"搜索 GitHub/Anthropic/awesome-claude-skills 的技能","owner":"claude","status":"PENDING","priority":"low","related_files":["src-tauri/src/commands.rs","src/lib/tauri-api.ts"],"start_time":"2026-06-09T00:00:00Z"}

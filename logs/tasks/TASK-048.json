@@ -1,0 +1,1 @@
+{"task_id":"TASK-048","title":"Skill Library 借鉴 1: 语义技能自动注入","goal":"代理网关拦截 LLM 请求，自动匹配并注入相关技能到 system prompt","owner":"claude","status":"IN_PROGRESS","priority":"high","related_files":["src-tauri/src/commands.rs","src-tauri/src/lib.rs","src/lib/tauri-api.ts"],"start_time":"2026-06-09T00:00:00Z"}

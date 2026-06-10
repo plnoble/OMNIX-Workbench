@@ -1,0 +1,1 @@
+{"task_id":"TASK-052","title":"Skill Library 借鉴 5: 经验蒸馏","goal":"从 Git 历史和日志中提取可复用技能","owner":"claude","status":"PENDING","priority":"low","related_files":["src-tauri/src/commands.rs","src/lib/tauri-api.ts"],"start_time":"2026-06-09T00:00:00Z"}

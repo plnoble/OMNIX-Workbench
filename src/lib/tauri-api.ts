@@ -894,6 +894,47 @@ export const architectureApi = {
   getIgnorePatterns: (projectPath: string) => invoke<string[]>("get_ignore_patterns", { projectPath }),
 };
 
+// Skill Library Features (Skill Library inspired)
+export interface SkillMatch {
+  skill_name: string; relevance_score: number;
+  matched_keywords: string[]; content_preview: string;
+}
+export interface SandboxTestCase { input: string; expected_behavior: string; }
+export interface TestCaseScore { input: string; agent_response: string; auditor_score: number; auditor_feedback: string; }
+export interface SandboxResult {
+  skill_name: string; test_cases_total: number; test_cases_passed: number;
+  average_score: number; scores: TestCaseScore[]; overall_verdict: string;
+}
+export interface ProtocolAction { action_type: string; target: string; content: string; raw_block: string; }
+export interface MarketSkill {
+  source: string; name: string; description: string; url: string;
+  author: string; stars: number | null; downloaded: boolean;
+}
+export interface DistillRecommendation {
+  suggested_name: string; suggested_category: string; reason: string;
+  source_evidence: string[]; confidence: number;
+}
+export const skillLibraryApi = {
+  /** Find skills matching a message (semantic injection) */
+  matchForInjection: (message: string) =>
+    invoke<SkillMatch[]>("match_skills_for_injection", { message }),
+  /** Test a skill in sandbox */
+  testSandbox: (skillName: string) =>
+    invoke<SandboxResult>("test_skill_sandbox", { skillName }),
+  /** Parse protocol blocks from AI output */
+  interceptProtocols: (output: string) =>
+    invoke<ProtocolAction[]>("intercept_protocols", { output }),
+  /** Execute a protocol action */
+  executeProtocol: (action: ProtocolAction) =>
+    invoke<string>("execute_protocol", { action }),
+  /** Search external skill markets */
+  searchMarket: (query: string) =>
+    invoke<MarketSkill[]>("search_skill_market", { query }),
+  /** Distill skills from project history */
+  distill: (projectPath: string) =>
+    invoke<DistillRecommendation[]>("distill_from_project", { projectPath }),
+};
+
 // ── P2 Sync Engine Types ──────────────────────────────
 
 export interface ConflictInfo {

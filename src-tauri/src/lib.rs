@@ -15,6 +15,7 @@ mod crypto;
 mod model_knowledge;
 mod backup;
 mod code_graph;
+mod skill_library;
 mod commands;
 
 #[cfg(test)]
@@ -309,6 +310,13 @@ pub fn run() {
             commands::save_architecture_graph,
             commands::load_architecture_graph,
             commands::get_ignore_patterns,
+            // Skill Library Features (Skill Library inspired)
+            commands::match_skills_for_injection,
+            commands::test_skill_sandbox,
+            commands::intercept_protocols,
+            commands::execute_protocol,
+            commands::search_skill_market,
+            commands::distill_from_project,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

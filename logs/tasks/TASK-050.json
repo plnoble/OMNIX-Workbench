@@ -1,0 +1,1 @@
+{"task_id":"TASK-050","title":"Skill Library 借鉴 3: 文本协议拦截引擎","goal":"解析 AI 输出中的 skill:/memory:/task: 代码块并自动执行","owner":"claude","status":"PENDING","priority":"medium","related_files":["src-tauri/src/commands.rs","src/lib/tauri-api.ts"],"start_time":"2026-06-09T00:00:00Z"}
