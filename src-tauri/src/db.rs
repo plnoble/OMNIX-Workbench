@@ -214,6 +214,7 @@ impl DbManager {
                 code_pattern TEXT NOT NULL,
                 remediation TEXT NOT NULL,
                 keywords TEXT NOT NULL, -- comma-separated tags
+                type TEXT NOT NULL DEFAULT 'experience', -- 'preference' | 'experience'
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )",
             [],
@@ -592,6 +593,12 @@ impl DbManager {
 
         // Seed default search providers if empty
         self.seed_default_search_providers(&conn)?;
+
+        // Migration: add type column to memories table (idempotent)
+        let _ = conn.execute(
+            "ALTER TABLE memories ADD COLUMN type TEXT NOT NULL DEFAULT 'experience'",
+            [],
+        );
 
         Ok(())
     }

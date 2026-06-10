@@ -62,7 +62,7 @@ fn get_key() -> &'static [u8; 32] {
 
         // Save key to file
         let hex_key = bytes_to_hex(&key);
-        let parent = key_path.parent().unwrap();
+        let parent = key_path.parent().expect("key_path should have a parent directory");
         let _ = fs::create_dir_all(parent);
         let _ = fs::write(&key_path, &hex_key);
 
@@ -122,7 +122,6 @@ pub fn decrypt(value: &str) -> String {
 }
 
 /// Check if a value is encrypted
-#[allow(dead_code)]
 pub fn is_encrypted(value: &str) -> bool {
     value.starts_with(ENCRYPTED_PREFIX)
 }

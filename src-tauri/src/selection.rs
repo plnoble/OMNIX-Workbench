@@ -45,6 +45,12 @@ fn get_focused_window_info() -> (String, String) {
         PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_NAME_FORMAT,
     };
 
+    // SAFETY: GetForegroundWindow returns a valid HWND (or null) with no preconditions.
+    // GetWindowTextW writes into a stack-allocated [0u16; 512] buffer — the buffer is
+    // large enough for any window title (max 512 wchars). GetWindowThreadProcessId
+    // writes a u32 at &mut pid, which is a valid u32 reference. OpenProcess returns
+    // a handle that is closed by the `?` operator via the Drop impl. QueryFullProcessImageNameW
+    // writes into a stack-allocated [0u16; 512] buffer with correct length tracking.
     unsafe {
         let hwnd = GetForegroundWindow();
 
@@ -106,6 +112,11 @@ pub fn simulate_ctrl_c() {
         VK_CONTROL,
     };
 
+    // SAFETY: SendInput accepts a slice of INPUT structs. We construct 4 INPUT
+    // structs on the stack with valid VKEY codes and correct INPUT_TYPE(1) for
+    // INPUT_KEYBOARD. All fields are zeroed or explicitly set. SendInput posts
+    // input events to the system queue; there are no memory safety invariants beyond
+    // the structs being valid for the duration of the call.
     unsafe {
         let vk_ctrl = VK_CONTROL.0 as u16;
         let vk_c = 0x43u16; // 'C' key
@@ -188,6 +199,13 @@ pub fn read_clipboard_win32() -> Result<String, String> {
     // CF_UNICODETEXT = 13 (Win32 clipboard format constant)
     const CF_UNICODETEXT: u32 = 13;
 
+    // SAFETY: All Win32 clipboard APIs require the caller to have opened the clipboard
+    // (via OpenClipboard) before calling GetClipboardData/GlobalLock. We retry
+    // OpenClipboard up to 3 times with sleep to handle contention. GlobalLock on a
+    // valid HGLOBAL from GetClipboardData returns a valid pointer; we copy the data
+    // immediately and call GlobalUnlock before closing. EmptyClipboard is only called
+    // when the caller requests clipboard clearing. All HWND arguments are null/default
+    // as required for the process-level clipboard access pattern.
     unsafe {
         // Check if there's Unicode text available
         if IsClipboardFormatAvailable(CF_UNICODETEXT).is_err() {
@@ -264,6 +282,13 @@ pub fn get_selected_text_via_uia() -> Result<String, String> {
     use windows::Win32::UI::Accessibility::*;
     use windows::Win32::System::Com::*;
 
+    // SAFETY: CoInitializeEx initializes the COM library on the current thread.
+    // COINIT_MULTITHREADED is valid for background threads. The returned _com
+    // value is dropped at function end, which calls CoUninitialize. CoCreateInstance
+    // creates a COM object with CLSCTX_INPROC_SERVER — the IUIAutomation interface
+    // pointer is valid for the lifetime of the function. All UIA method calls
+    // (GetFocusedElement, GetCurrentPattern, GetSelection) operate on valid COM
+    // interface pointers obtained from the automation object.
     unsafe {
         // Initialize COM on this thread
         let _com = CoInitializeEx(None, COINIT_MULTITHREADED);

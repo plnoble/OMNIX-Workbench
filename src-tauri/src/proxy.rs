@@ -142,9 +142,9 @@ impl ProxyServer {
         let cors_layer = if use_wsl {
             CorsLayer::new()
                 .allow_origin([
-                    "http://localhost:1420".parse::<axum::http::HeaderValue>().unwrap(),
-                    "http://127.0.0.1:1420".parse::<axum::http::HeaderValue>().unwrap(),
-                    "tauri://localhost".parse::<axum::http::HeaderValue>().unwrap(),
+                    "http://localhost:1420".parse::<axum::http::HeaderValue>().expect("valid localhost URL"),
+                    "http://127.0.0.1:1420".parse::<axum::http::HeaderValue>().expect("valid 127.0.0.1 URL"),
+                    "tauri://localhost".parse::<axum::http::HeaderValue>().expect("valid tauri scheme"),
                 ])
                 .allow_methods(tower_http::cors::Any)
                 .allow_headers(tower_http::cors::Any)

@@ -312,7 +312,7 @@ impl AgentManager {
         }
 
         // Inject long-term memory anti-failure files into the workspace directory
-        let _ = self.inject_workspace_memories(&resolved_workspace_str);
+        let _ = self.inject_workspace_memories(&resolved_workspace_str, &agent_name);
 
         // Configure environment variables (supporting WSL cross-boundary translation or local loopback)
         let use_wsl = self.db.get_setting("use_wsl").unwrap_or(None).unwrap_or_else(|| "false".to_string()) == "true";
@@ -1027,10 +1027,12 @@ impl AgentManager {
         });
     }
 
-    fn inject_workspace_memories(&self, workspace_dir: &str) -> Result<(), String> {
+    fn inject_workspace_memories(&self, workspace_dir: &str, agent_name: &str) -> Result<(), String> {
         let conn = self.db.get_connection().map_err(|e| e.to_string())?;
-        let mut stmt = conn.prepare("SELECT incident_desc, code_pattern, remediation, keywords FROM memories")
-            .map_err(|e| e.to_string())?;
+        // Only inject experience-type memories (not preferences — those are queried on demand)
+        let mut stmt = conn.prepare(
+            "SELECT incident_desc, code_pattern, remediation, keywords FROM memories WHERE type = 'experience' ORDER BY created_at DESC"
+        ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -1045,8 +1047,11 @@ impl AgentManager {
         memories_md.push_str("## 🧠 OMNIX Anti-Failure Guidelines & Memory Bank\n");
         memories_md.push_str("以下是历史项目踩坑事故记录与规约，请在此工作区内严加防范，避免重犯相同错误：\n\n");
 
+        // Cap at 20 memories to avoid context bloat
+        const MAX_MEMORIES: usize = 20;
         let mut count = 0;
         for r in rows {
+            if count >= MAX_MEMORIES { break; }
             if let Ok((desc, pattern, remediation, keywords)) = r {
                 count += 1;
                 memories_md.push_str(&format!("### ❌ 坑点 {}: {}\n", count, desc));
@@ -1066,30 +1071,47 @@ impl AgentManager {
             return Ok(());
         }
 
-        // Write to CLAUDE.md
-        let claude_md_path = workspace_path.join("CLAUDE.md");
-        if claude_md_path.exists() {
-            if let Ok(mut content) = fs::read_to_string(&claude_md_path) {
-                if let (Some(start_idx), Some(end_idx)) = (content.find("<!--- OMNIX MEMORY START --->"), content.find("<!--- OMNIX MEMORY END --->")) {
-                    let end_block_len = "<!--- OMNIX MEMORY END --->\n".len();
-                    let actual_end = if end_idx + end_block_len <= content.len() {
-                        end_idx + end_block_len
-                    } else {
-                        end_idx
-                    };
-                    content.replace_range(start_idx..actual_end, &memories_md);
-                } else {
-                    content.push_str(&memories_md);
-                }
-                let _ = fs::write(&claude_md_path, content);
-            }
+        // Determine which context files to write based on agent type.
+        // Each AI agent reads its own project-level instruction file.
+        let context_files: Vec<&str> = if agent_name.contains("Claude") || agent_name.contains("claude") {
+            vec!["CLAUDE.md"]
+        } else if agent_name.contains("Gemini") || agent_name.contains("gemini") {
+            vec!["GEMINI.md"]
+        } else if agent_name.contains("Codex") || agent_name.contains("codex") {
+            vec!["AGENTS.md"]
+        } else if agent_name.contains("Copilot") || agent_name.contains("copilot") {
+            vec![".github/copilot-instructions.md"]
         } else {
-            let _ = fs::write(&claude_md_path, &memories_md);
-        }
+            vec!["CLAUDE.md", "GEMINI.md", "AGENTS.md"]
+        };
 
-        // Also write to OMNIX_MEMORY.md for generic model reference
-        let omnix_md_path = workspace_path.join("OMNIX_MEMORY.md");
-        let _ = fs::write(&omnix_md_path, &memories_md);
+        for filename in &context_files {
+            let file_path = workspace_path.join(filename);
+
+            // Create parent directory if needed (e.g. .github/)
+            if let Some(parent) = file_path.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+
+            if file_path.exists() {
+                if let Ok(mut content) = fs::read_to_string(&file_path) {
+                    if let (Some(start_idx), Some(end_idx)) = (content.find("<!--- OMNIX MEMORY START --->"), content.find("<!--- OMNIX MEMORY END --->")) {
+                        let end_block_len = "<!--- OMNIX MEMORY END --->\n".len();
+                        let actual_end = if end_idx + end_block_len <= content.len() {
+                            end_idx + end_block_len
+                        } else {
+                            end_idx
+                        };
+                        content.replace_range(start_idx..actual_end, &memories_md);
+                    } else {
+                        content.push_str(&memories_md);
+                    }
+                    let _ = fs::write(&file_path, content);
+                }
+            } else {
+                let _ = fs::write(&file_path, &memories_md);
+            }
+        }
 
         Ok(())
     }
@@ -1503,7 +1525,7 @@ mod tests {
         fs::create_dir_all(&test_workspace).unwrap();
 
         // Run injection
-        manager.inject_workspace_memories(&test_workspace.to_string_lossy()).unwrap();
+        manager.inject_workspace_memories(&test_workspace.to_string_lossy(), "Claude Code").unwrap();
 
         // Verify files exist
         let claude_md = test_workspace.join("CLAUDE.md");

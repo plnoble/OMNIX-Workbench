@@ -8,6 +8,27 @@ export interface SkillNode {
   profile: string;
 }
 
+// D3 simulation node — position fields (x, y, fx, fy) are added by the force engine.
+// We define these as required numbers because we seed them (x:0, y:0) and D3 always
+// fills them in before the first tick. Using a standalone interface avoids the
+// number | undefined mismatch with SimulationNodeDatum.
+interface SimNode {
+  id: string;
+  name: string;
+  category: string;
+  is_active: boolean;
+  profile: string;
+  x: number;
+  y: number;
+  fx?: number | null;
+  fy?: number | null;
+}
+
+interface SimLink {
+  source: SimNode | string;
+  target: SimNode | string;
+}
+
 export interface SkillDependency {
   source: string;
   target: string;
@@ -129,11 +150,11 @@ export const SkillTopology: React.FC<SkillTopologyProps> = ({
 
     // Physics force simulation
     const simulation = d3
-      .forceSimulation<any>(nodes)
+      .forceSimulation<D3SimNode>(nodes as D3SimNode[])
       .force(
         "link",
         d3
-          .forceLink<any, any>(links)
+          .forceLink<D3SimNode, SimLink>(links as SimLink[])
           .id((d) => d.id)
           .distance(90)
       )
@@ -167,7 +188,7 @@ export const SkillTopology: React.FC<SkillTopologyProps> = ({
       })
       .call(
         d3
-          .drag<any, any>()
+          .drag<SVGGElement, D3SimNode>()
           .on("start", dragstarted)
           .on("drag", dragged)
           .on("end", dragended)
@@ -217,32 +238,38 @@ export const SkillTopology: React.FC<SkillTopologyProps> = ({
 
     // Physical simulation tick
     simulation.on("tick", () => {
+      // After D3 resolves links, source/target are SimNode objects (not strings).
+      // The double cast via unknown is required because TypeScript cannot model
+      // D3's runtime string→object replacement in the link datum type.
       link
-        .attr("x1", (d: any) => d.source.x)
-        .attr("y1", (d: any) => d.source.y)
-        .attr("x2", (d: any) => d.target.x)
-        .attr("y2", (d: any) => d.target.y);
+        .attr("x1", (d) => (d.source as unknown as D3SimNode).x ?? 0)
+        .attr("y1", (d) => (d.source as unknown as D3SimNode).y ?? 0)
+        .attr("x2", (d) => (d.target as unknown as D3SimNode).x ?? 0)
+        .attr("y2", (d) => (d.target as unknown as D3SimNode).y ?? 0);
 
-      node.attr("transform", (d: any) => `translate(${d.x}, ${d.y})`);
+      node.attr("transform", (d) => `translate(${d.x ?? 0}, ${d.y ?? 0})`);
     });
 
     // Drag helper methods
-    function dragstarted(event: any, d: any) {
+    function dragstarted(event: d3.D3DragEvent<SVGGElement, D3SimNode, D3SimNode>, d: D3SimNode) {
       if (!event.active) simulation.alphaTarget(0.3).restart();
       d.fx = d.x;
       d.fy = d.y;
     }
 
-    function dragged(event: any, d: any) {
+    function dragged(event: d3.D3DragEvent<SVGGElement, D3SimNode, D3SimNode>, d: D3SimNode) {
       d.fx = event.x;
       d.fy = event.y;
     }
 
-    function dragended(event: any, d: any) {
+    function dragended(event: d3.D3DragEvent<SVGGElement, D3SimNode, D3SimNode>, d: D3SimNode) {
       if (!event.active) simulation.alphaTarget(0);
       d.fx = null;
       d.fy = null;
     }
+
+    // Type-safe wrappers for D3 APIs that expect SimulationNodeDatum
+    type D3SimNode = SimNode & d3.SimulationNodeDatum;
 
     return () => {
       simulation.stop();

@@ -35,31 +35,26 @@ pub fn wrap_untrusted(content: &str, source_label: &str) -> String {
 }
 
 /// Wrap web search results
-#[allow(dead_code)]
 pub fn wrap_search_results(results: &str) -> String {
     wrap_untrusted(results, "web search")
 }
 
 /// Wrap knowledge base retrieval results
-#[allow(dead_code)]
 pub fn wrap_kb_results(results: &str) -> String {
     wrap_untrusted(results, "knowledge base")
 }
 
 /// Wrap fetched web page content
-#[allow(dead_code)]
 pub fn wrap_fetched_page(content: &str, url: &str) -> String {
     wrap_untrusted(content, &format!("fetched page: {}", url))
 }
 
 /// Wrap email content
-#[allow(dead_code)]
 pub fn wrap_email_content(content: &str) -> String {
     wrap_untrusted(content, "email")
 }
 
 /// Wrap external document content
-#[allow(dead_code)]
 pub fn wrap_document_content(content: &str, doc_name: &str) -> String {
     wrap_untrusted(content, &format!("document: {}", doc_name))
 }

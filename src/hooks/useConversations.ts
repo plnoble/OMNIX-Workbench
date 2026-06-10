@@ -12,8 +12,9 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { listen, emit } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { conversationApi, ptyApi, agentApi } from "@/lib/tauri-api";
-import { processTerminalStream, detectInteractivePrompts } from "@/lib/terminal";
+import { processTerminalStream, detectInteractivePrompts, detectMistakes } from "@/lib/terminal";
 import { AGENT_NAMES } from "@/lib/constants";
 import type {
   ConversationInfo,
@@ -89,6 +90,7 @@ export function useConversations(
   // Refs for cross-render access
   const terminalLogsRef = useRef<Record<string, string>>({});
   const currentConvIdRef = useRef(currentConvId);
+  const loggedMistakesRef = useRef<Set<string>>(new Set()); // dedup per raw_line
   currentConvIdRef.current = currentConvId;
 
   // ── PTY Event Listener (mount once) ────────────────
@@ -111,6 +113,20 @@ export function useConversations(
       // Detect interactive prompts
       const detected = detectInteractivePrompts(updatedLogs);
       setPromptType(detected);
+
+      // Detect development mistakes and log to activity_log
+      const mistakes = detectMistakes(updatedLogs);
+      if (mistakes.length > 0) {
+        const newMistakes = mistakes.filter(m => !loggedMistakesRef.current.has(m.raw_line));
+        if (newMistakes.length > 0) {
+          newMistakes.forEach(m => loggedMistakesRef.current.add(m.raw_line));
+          invoke("log_activity", {
+            action: "mistake_detected",
+            target: session_id,
+            details: JSON.stringify(newMistakes),
+          }).catch(() => {});
+        }
+      }
 
       // If this is the active conversation, update UI state
       if (session_id === currentConvIdRef.current) {
@@ -154,10 +170,13 @@ export function useConversations(
   }, []);
 
   // ── Status Dock events bridge ──────────────────────
+  // Use a ref so the listeners always call the latest sendStdinDirect without re-registering.
+  // The ref is initialized as a no-op and updated after sendStdinDirect is defined.
+  const sendStdinRef = useRef<(input: string) => void>(() => {});
 
   useEffect(() => {
     const unlistenApproval = listen("omnix-action-toggle-approval", () => {
-      sendStdinDirect("\r");
+      sendStdinRef.current("\r");
     });
     const unlistenNewConv = listen("omnix-action-new-conversation", () => {
       newConversation();
@@ -173,7 +192,7 @@ export function useConversations(
       unlistenNewConv.then((fn) => fn());
       unlistenSettings.then((fn) => fn());
     };
-  }, [currentConvId, chatWorkspace, activeAgent]);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- listeners registered once; callbacks accessed via ref
 
   // ── Persist status updates to StatusDock window ────
 
@@ -365,6 +384,9 @@ export function useConversations(
       console.error("[useConversations] Failed to send direct stdin:", err);
     }
   }, [currentConvId]);
+
+  // Keep the ref in sync so the event listener always calls the latest version
+  sendStdinRef.current = sendStdinDirect;
 
   const stopAgentSession = useCallback(async (sessionId: string) => {
     try {

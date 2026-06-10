@@ -375,7 +375,12 @@ export const SkillHub: React.FC = () => {
     setFusedResult(null);
     setShowDiff(false);
     try {
-      const res: any = await invoke("fuse_skills_api", { skills: furnacePot });
+      const res = await invoke<{
+        name: string;
+        description: string;
+        fused_code: string;
+        explanation: string;
+      }>("fuse_skills_api", { skills: furnacePot });
       setFusedResult(res);
       setFusedSaveName(`${furnacePot[0]}_fused`);
       setShowDiff(true);

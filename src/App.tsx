@@ -10,7 +10,7 @@
  * All business logic lives in hooks. All rendering lives in components.
  */
 
-import { useState, useEffect, Suspense, lazy } from "react";
+import { useState, useEffect, useRef, Suspense, lazy } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
@@ -143,7 +143,7 @@ function MainApp() {
     selection.loadSelectionSettings();
     checkOnboarding();
     setTipIndex(Math.floor(Math.random() * 5));
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- mount-only init: all load functions are stable ref-less fetchers
 
   const checkOnboarding = async () => {
     try {
@@ -180,29 +180,35 @@ function MainApp() {
 
   // ── Register Selection Assistant global shortcut ───
 
+  const registeredShortcutRef = useRef<string>("");
+
   useEffect(() => {
-    let currentShortcut = "";
+    let cancelled = false;
     (async () => {
       try {
         const shortcut = await settingsApi.get("selection_assistant_shortcut") || "Ctrl+Alt+C";
-        currentShortcut = shortcut;
+        if (cancelled) return;
+        registeredShortcutRef.current = shortcut;
         await register(shortcut, (event) => {
           if (event.state === "Pressed") {
             selection.captureAndShow();
           }
         });
       } catch (e) {
+        if (cancelled) return;
         console.error("[Selection] Failed to register shortcut:", e);
         toast.error("划词助手快捷键注册失败：" + String(e));
       }
     })();
 
     return () => {
-      if (currentShortcut) {
-        unregister(currentShortcut).catch(() => { /* ignore */ });
+      cancelled = true;
+      const shortcut = registeredShortcutRef.current;
+      if (shortcut) {
+        unregister(shortcut).catch(() => { /* already unmounted */ });
       }
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- registration only on mount; shortcut stored in ref for cleanup
 
   // ── Tab change handler ────────────────────────────
 

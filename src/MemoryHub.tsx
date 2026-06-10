@@ -13,6 +13,7 @@ interface Memory {
   code_pattern: string;
   remediation: string;
   keywords: string;
+  type: string; // 'preference' | 'experience'
   created_at: string;
 }
 
@@ -54,7 +55,7 @@ export function MemoryHub() {
   useEffect(() => {
     loadMemories();
     loadConversations();
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- mount-only data fetch
 
   const loadMemories = async () => {
     try {
@@ -257,7 +258,11 @@ export function MemoryHub() {
                 <div>
                   <div className="flex justify-between items-start mb-2">
                     <div className="flex items-center gap-2">
-                      <AlertTriangle size={16} className="text-red-500" />
+                      {m.type === "preference" ? (
+                        <span className="text-xs px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400">偏好</span>
+                      ) : (
+                        <span className="text-xs px-1.5 py-0.5 rounded bg-red-500/10 text-red-400">经验</span>
+                      )}
                       <h4 className="m-0 text-base font-semibold">{m.incident_desc}</h4>
                     </div>
 

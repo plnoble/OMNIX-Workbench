@@ -81,6 +81,7 @@ export const WelcomeTour: React.FC<WelcomeTourProps> = ({
   
   const step = TOUR_STEPS[currentStep];
   const resizeRef = useRef<number | null>(null);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Sync state tab with tour tab step
   useEffect(() => {
@@ -107,8 +108,10 @@ export const WelcomeTour: React.FC<WelcomeTourProps> = ({
       });
     } else {
       // Element might not be rendered yet, retry in a moment
-      setTimeout(() => {
-        const el = document.getElementById(step.targetId!);
+      if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = setTimeout(() => {
+        if (!step.targetId) return;
+        const el = document.getElementById(step.targetId);
         if (el) {
           const rect = el.getBoundingClientRect();
           setCoords({
@@ -134,6 +137,7 @@ export const WelcomeTour: React.FC<WelcomeTourProps> = ({
     window.addEventListener("resize", handleResize);
     return () => {
       clearTimeout(timer);
+      if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
       window.removeEventListener("resize", handleResize);
       if (resizeRef.current) cancelAnimationFrame(resizeRef.current);
     };

@@ -11,7 +11,6 @@ use serde::{Deserialize, Serialize};
 use crate::db::DbManager;
 
 /// Event types that can trigger tasks
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum EventType {
     SessionCreated,
@@ -22,7 +21,6 @@ pub enum EventType {
     AgentFailed,
 }
 
-#[allow(dead_code)]
 impl EventType {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -60,7 +58,6 @@ pub struct EventTrigger {
 }
 
 /// Initialize event_bus tables in DB
-#[allow(dead_code)]
 pub fn init_event_bus_tables(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS event_triggers (
@@ -78,7 +75,6 @@ pub fn init_event_bus_tables(conn: &rusqlite::Connection) -> rusqlite::Result<()
 
 /// Emit an event — increments counters for all matching triggers.
 /// Returns list of task_ids that should be fired (threshold reached).
-#[allow(dead_code)]
 pub fn emit_event(db: &DbManager, event: EventType) -> Vec<String> {
     let conn = match db.get_connection() {
         Ok(c) => c,

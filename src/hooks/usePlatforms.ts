@@ -248,7 +248,7 @@ export function usePlatforms(): UsePlatformsReturn {
 
   const toggleCapability = useCallback(
     async (model: PlatformModel, field: CapabilityField) => {
-      const key = `has_${field}` as keyof PlatformModel;
+      const key = `has_${field}` as keyof PlatformModel; // field is CapabilityField which maps to has_* boolean fields
       const updated = { ...model, [key]: !model[key] };
       await modelApi.save(updated);
       if (selectedPlatformId) await selectPlatform(selectedPlatformId);

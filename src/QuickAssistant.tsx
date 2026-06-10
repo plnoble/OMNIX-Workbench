@@ -286,11 +286,17 @@ export function QuickAssistant() {
 
       const unlistenDone = listen<Record<string, unknown>>("qa-stream-done", (event) => {
         const payload = event.payload;
-        if (payload.sources) {
-          setSources(payload.sources as SearchResult[]);
+        if (Array.isArray(payload.sources)) {
+          const validated = payload.sources.filter(
+            (s): s is SearchResult =>
+              typeof s === "object" && s !== null &&
+              typeof (s as Record<string, unknown>).chunk_id === "string" &&
+              typeof (s as Record<string, unknown>).content === "string"
+          );
+          setSources(validated);
         }
-        if (payload.used_kb !== undefined) {
-          setUsedKb(payload.used_kb as boolean);
+        if (typeof payload.used_kb === "boolean") {
+          setUsedKb(payload.used_kb);
         }
         setIsStreaming(false);
         setIsLoading(false);

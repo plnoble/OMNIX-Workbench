@@ -69,7 +69,7 @@ export function useMcpServers(): UseMcpServersReturn {
         args: server.args,
         env: server.env,
         url: server.url,
-        server_type: server.server_type as "stdio" | "sse",
+        server_type: (server.server_type === "stdio" || server.server_type === "sse") ? server.server_type : "stdio",
         is_enabled: server.is_enabled,
       });
     } else {

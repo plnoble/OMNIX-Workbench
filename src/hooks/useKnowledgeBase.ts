@@ -165,13 +165,16 @@ export function useKnowledgeBase(): UseKnowledgeBaseReturn {
     try {
       const models = await knowledgeApi.getEmbeddingModels();
       setEmbeddingModels(models);
-      if (models.length > 0 && !selectedEmbedModel) {
-        setSelectedEmbedModel(models[0].model_name);
-      }
+      // Use a functional update to read the latest selectedEmbedModel
+      // without adding it as a dependency, preventing infinite re-render loops.
+      setSelectedEmbedModel((prev) => {
+        if (!prev && models.length > 0) return models[0].model_name;
+        return prev;
+      });
     } catch (e) {
       console.error("[useKnowledgeBase] Failed to load embedding models:", e);
     }
-  }, [selectedEmbedModel]);
+  }, []);
 
   // Auto-load on mount
   useEffect(() => {
@@ -249,12 +252,17 @@ export function useKnowledgeBase(): UseKnowledgeBaseReturn {
   }, [loadDocuments]);
 
   const deleteDocument = useCallback(async (id: string) => {
-    await knowledgeApi.deleteDocument(id);
-    if (selectedDocId === id) {
-      setSelectedDocId(null);
-      setChunks([]);
+    try {
+      await knowledgeApi.deleteDocument(id);
+      if (selectedDocId === id) {
+        setSelectedDocId(null);
+        setChunks([]);
+      }
+      await loadDocuments();
+    } catch (e) {
+      console.error("[useKnowledgeBase] Failed to delete document:", e);
+      throw e; // re-throw so callers can show user feedback
     }
-    await loadDocuments();
   }, [selectedDocId, loadDocuments]);
 
   // ── Embedding ───────────────────────────────────────

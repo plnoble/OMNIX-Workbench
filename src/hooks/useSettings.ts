@@ -6,7 +6,7 @@
  * themeMode
  */
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import { settingsApi } from "@/lib/tauri-api";
 import type { GatewayStatus } from "@/types";
 import { DEFAULT_PROXY_PORT, DEFAULT_IDLE_TIMEOUT, DEFAULT_WSL_DISTRO } from "@/lib/constants";
@@ -48,6 +48,7 @@ interface SettingsActions {
 export type UseSettingsReturn = SettingsState & SettingsActions;
 
 export function useSettings(): UseSettingsReturn {
+  const gatewayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [apiKey, setApiKey] = useState("");
   const [apiHost, setApiHost] = useState("");
   const [targetModel, setTargetModel] = useState("");
@@ -106,8 +107,10 @@ export function useSettings(): UseSettingsReturn {
 
       await settingsApi.syncExternalConfigs();
 
-      setTimeout(() => {
-        setGatewayStatus(apiKey.trim().length > 0 ? "idle" : "error");
+      // Clear any pending gateway status update before scheduling a new one
+      if (gatewayTimerRef.current) clearTimeout(gatewayTimerRef.current);
+      gatewayTimerRef.current = setTimeout(() => {
+        setGatewayStatus(apiKey?.trim().length > 0 ? "idle" : "error");
       }, 500);
     } catch (e) {
       console.error("[useSettings] Failed to save settings:", e);

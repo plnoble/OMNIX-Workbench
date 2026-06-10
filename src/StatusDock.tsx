@@ -122,7 +122,7 @@ export default function StatusDock() {
   const handleOpenSettings = async () => {
     // Emit event to App.tsx to switch to settings tab and focus main window
     emit("omnix-action-open-settings");
-    try { await invoke("focus_main_window"); } catch {}
+    try { await invoke("focus_main_window"); } catch (e) { console.warn("[StatusDock] focus_main_window failed:", e); }
     await closeMenu();
   };
 

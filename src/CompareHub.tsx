@@ -189,7 +189,7 @@ export const CompareHub: React.FC<CompareHubProps> = ({ proxyPort }) => {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "Authorization": "Bearer bypass",
+            "Authorization": "Bearer local-proxy",
             "x-omnix-account-id": accId
           },
           body: JSON.stringify({
@@ -238,7 +238,7 @@ export const CompareHub: React.FC<CompareHubProps> = ({ proxyPort }) => {
                     }
                   }));
                 } catch (err) {
-                  // Sometimes line is partial, ignore JSON parsing errors
+                  // Partial SSE lines are expected during streaming; skip silently
                 }
               }
             }
@@ -257,15 +257,16 @@ export const CompareHub: React.FC<CompareHubProps> = ({ proxyPort }) => {
           }
         }));
 
-      } catch (err: any) {
-        if (err.name === 'AbortError') return;
-        console.error("API dispatch error for account:", accId, err);
+      } catch (err: unknown) {
+        const error = err instanceof Error ? err : new Error(String(err));
+        if (error.name === 'AbortError') return;
+        console.error("API dispatch error for account:", accId, error);
         setApiResults(prev => ({
           ...prev,
           [accId]: {
             ...prev[accId],
             loading: false,
-            error: err.message || "请求失败"
+            error: error.message || "请求失败"
           }
         }));
       } finally {
@@ -327,9 +328,7 @@ export const CompareHub: React.FC<CompareHubProps> = ({ proxyPort }) => {
     if (!prompt.trim()) return;
 
     // Write to clipboard as a safety copy
-    try {
-      navigator.clipboard.writeText(prompt);
-    } catch (_) {}
+    navigator.clipboard.writeText(prompt).catch(() => { /* non-critical */ });
 
     selectedWebExps.forEach(async (expId) => {
       const exp = WEB_EXPERTS.find(e => e.id === expId);
@@ -534,7 +533,7 @@ ${sources}
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": "Bearer bypass"
+          "Authorization": "Bearer local-proxy"
         },
         body: JSON.stringify({
           model: "Auto", // Route through Auto router
@@ -579,10 +578,11 @@ ${sources}
         }
       }
 
-    } catch (e: any) {
-      if (e.name === 'AbortError') return;
-      console.error("Fusion furnace summary error:", e);
-      setFusionContent("熔炼总结发生错误: " + (e.message || e));
+    } catch (e: unknown) {
+      const error = e instanceof Error ? e : new Error(String(e));
+      if (error.name === 'AbortError') return;
+      console.error("Fusion furnace summary error:", error);
+      setFusionContent("熔炼总结发生错误: " + error.message);
     } finally {
       if (fusionAbortControllerRef.current === controller) {
         fusionAbortControllerRef.current = null;
@@ -592,8 +592,10 @@ ${sources}
   };
 
   const handleCopyText = (text: string) => {
-    navigator.clipboard.writeText(text);
-    toast.success("文本已复制到剪贴板！");
+    navigator.clipboard.writeText(text).then(
+      () => toast.success("文本已复制到剪贴板！"),
+      () => toast.error("复制失败，请手动复制。")
+    );
   };
 
   return (

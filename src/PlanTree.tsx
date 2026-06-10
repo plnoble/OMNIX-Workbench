@@ -18,7 +18,7 @@ interface MailboxMessage {
   sender: string;
   receiver: string;
   command: string;
-  params: any;
+  params: Record<string, unknown>;
   status: string;
   timestamp: string;
 }
@@ -59,19 +59,19 @@ export const PlanTree: React.FC<PlanTreeProps> = ({ conversationId, containerWid
     fetchData();
 
     // Listen for live ACP plan updates from Tauri
-    const unlisten = listen<{ session_id: string; payload: any }>(
+    const unlisten = listen<{ session_id: string; payload: { method: string; params: { tasks: TaskNode[] } } }>(
       "agent-task-update",
       (event) => {
         const { session_id, payload } = event.payload;
         if (session_id === conversationId && payload && payload.method === "task/plan") {
-          const rawTasks = payload.params.tasks || [];
-          const formattedTasks: TaskNode[] = rawTasks.map((t: any, idx: number) => ({
-            id: t.id,
+          const rawTasks: TaskNode[] = Array.isArray(payload.params?.tasks) ? payload.params.tasks : [];
+          const formattedTasks: TaskNode[] = rawTasks.map((t, idx: number) => ({
+            id: String(t.id ?? ""),
             conversation_id: session_id,
-            title: t.title,
-            status: t.status,
+            title: String(t.title ?? ""),
+            status: String(t.status ?? "todo"),
             order_num: idx,
-            dependencies: [],
+            dependencies: Array.isArray(t.dependencies) ? t.dependencies : [],
           }));
           setTasks(formattedTasks);
 
