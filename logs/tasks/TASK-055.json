@@ -1,0 +1,1 @@
+{"task_id":"TASK-055","title":"CC Switch 借鉴: Per-Agent API 供应商绑定 — 每个 Agent 独立路由到不同平台","goal":"实现代理层的 per-agent 平台路由，每个 Agent 可绑定不同的 API 供应商","owner":"claude","status":"IN_PROGRESS","priority":"high","related_files":["src-tauri/src/proxy.rs","src-tauri/src/db.rs","src-tauri/src/commands.rs","src-tauri/src/lib.rs","src/lib/tauri-api.ts"],"start_time":"2026-06-09T00:00:00Z"}

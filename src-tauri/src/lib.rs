@@ -326,6 +326,11 @@ pub fn run() {
             commands::get_steering_messages,
             commands::consume_steering_messages,
             commands::detect_file_change,
+            // Agent-Platform Bindings (CC Switch inspired)
+            commands::get_agent_bindings,
+            commands::set_agent_binding,
+            commands::remove_agent_binding,
+            commands::toggle_agent_binding,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

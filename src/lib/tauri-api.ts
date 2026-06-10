@@ -965,6 +965,21 @@ export const tokenEconomyApi = {
     invoke<FileChange>("detect_file_change", { filePath, oldContent, newContent }),
 };
 
+// Agent-Platform Bindings (CC Switch inspired)
+export interface AgentPlatformBinding {
+  agent_name: string; platform_id: string; platform_name: string;
+  model_name: string | null; enabled: boolean;
+}
+export const agentBindingApi = {
+  getAll: () => invoke<AgentPlatformBinding[]>("get_agent_bindings"),
+  set: (agentName: string, platformId: string, modelName?: string) =>
+    invoke("set_agent_binding", { agentName, platformId, modelName }),
+  remove: (agentName: string) =>
+    invoke("remove_agent_binding", { agentName }),
+  toggle: (agentName: string) =>
+    invoke("toggle_agent_binding", { agentName }),
+};
+
 // ── P2 Sync Engine Types ──────────────────────────────
 
 export interface ConflictInfo {

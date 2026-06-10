@@ -168,6 +168,20 @@ impl DbManager {
             [],
         )?;
 
+        // 6c. Agent-Platform Bindings (CC Switch inspired)
+        // Maps each agent to a specific API platform for per-agent routing
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS agent_platform_bindings (
+                agent_name TEXT PRIMARY KEY,
+                platform_id TEXT NOT NULL,
+                model_name TEXT NULL,          -- Optional: specific model override
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )?;
+
         // Migration: add new columns to existing skills table if they don't exist
         let migrations = [
             "ALTER TABLE skills ADD COLUMN source_type TEXT NOT NULL DEFAULT 'local'",

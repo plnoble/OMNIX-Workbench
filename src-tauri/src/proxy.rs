@@ -245,6 +245,9 @@ async fn handle_messages_impl(
 
     let start_time = std::time::Instant::now();
 
+    // Preserve agent_name before consuming agent_name_opt
+    let agent_name_for_routing = agent_name_opt.clone().unwrap_or_else(|| "Claude Code".to_string());
+
     let target_account_id = headers.get("x-omnix-account-id")
         .and_then(|v| v.to_str().ok().map(|s| s.to_string()));
 
@@ -323,7 +326,7 @@ async fn handle_messages_impl(
         }
     }
 
-    let (api_key_raw, api_host, api_type, actual_model_name) = match resolve_model_upstream(&state.db, &resolved_model) {
+    let (api_key_raw, api_host, api_type, actual_model_name) = match resolve_model_upstream_for_agent(&state.db, &resolved_model, Some(&agent_name_for_routing)) {
         Ok(res) => res,
         Err(e) => {
             return (
@@ -595,6 +598,8 @@ async fn handle_openai_forward_impl(
         }
     };
 
+    let agent_name_for_routing = agent_name_opt.clone().unwrap_or_else(|| "Codex".to_string());
+
     let start_time = std::time::Instant::now();
     let mut payload = payload;
     let target_account_id = headers.get("x-omnix-account-id")
@@ -692,7 +697,7 @@ async fn handle_openai_forward_impl(
         }
     }
 
-    let (api_key_raw, api_host, api_type, actual_model_name) = match resolve_model_upstream(&state.db, &resolved_model) {
+    let (api_key_raw, api_host, api_type, actual_model_name) = match resolve_model_upstream_for_agent(&state.db, &resolved_model, Some(&agent_name_for_routing)) {
         Ok(res) => res,
         Err(e) => {
             return (
@@ -1278,7 +1283,39 @@ fn resolve_model_upstream(
     db: &DbManager,
     target_model_name: &str,
 ) -> Result<(String, String, String, String), String> {
+    resolve_model_upstream_for_agent(db, target_model_name, None)
+}
+
+/// Resolve upstream with optional agent name for per-agent routing (CC Switch inspired)
+fn resolve_model_upstream_for_agent(
+    db: &DbManager,
+    target_model_name: &str,
+    agent_name: Option<&str>,
+) -> Result<(String, String, String, String), String> {
     let conn = db.get_connection().map_err(|e| e.to_string())?;
+
+    // 0. Check per-agent platform binding (CC Switch inspired)
+    if let Some(agent) = agent_name {
+        if let Ok(row) = conn.query_row(
+            "SELECT apb.platform_id, COALESCE(apb.model_name, mp.name), mp.api_key, mp.api_address, mp.api_type
+             FROM agent_platform_bindings apb
+             JOIN model_platforms mp ON apb.platform_id = mp.id
+             WHERE apb.agent_name = ?1 AND apb.enabled = 1 AND mp.is_enabled = 1 AND mp.is_healthy = 1",
+            params![agent],
+            |r| Ok((
+                r.get::<_, String>(0)?,  // platform_id
+                r.get::<_, String>(1)?,  // model_name
+                r.get::<_, String>(2)?,  // api_key
+                r.get::<_, String>(3)?,  // api_address
+                r.get::<_, String>(4)?,  // api_type
+            )),
+        ) {
+            let (platform_id, model_name, api_key, api_address, api_type) = row;
+            let decrypted_key = crate::crypto::decrypt(&api_key);
+            println!("OMNIX Router: Agent '{}' bound to platform '{}' → {}", agent, platform_id, model_name);
+            return Ok((decrypted_key, api_address, api_type, model_name));
+        }
+    }
 
     // 1. If target_model_name has platform prefix (e.g. "platform_id:model_name")
     if let Some(pos) = target_model_name.find(':') {
