@@ -8,11 +8,11 @@ import { useState, useEffect } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Bot, Plus, Edit, Trash2, ToggleLeft, BookOpen, Bug, Search, Layout, Palette, GitCommit, GitPullRequest, FileText, AlertTriangle, HelpCircle, TestTube, Target, Users, Lightbulb, Languages, Mail, Briefcase, Presentation, GraduationCap, Type, MessageSquare, ChevronDown, ChevronRight } from "lucide-react";
+import { Bot, Plus, Edit, Trash2, ToggleLeft, BookOpen, Bug, Search, Layout, Palette, GitCommit, GitPullRequest, FileText, AlertTriangle, HelpCircle, TestTube, Target, Users, Lightbulb, Languages, Mail, Briefcase, Presentation, GraduationCap, Type, MessageSquare, ChevronDown, ChevronRight, Link, Unlink, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { agentTemplateApi } from "@/lib/tauri-api";
+import { agentTemplateApi, agentBindingApi, platformHealthApi } from "@/lib/tauri-api";
 import type { DetectedAgent, AgentAccount, PlatformModel } from "@/types";
-import type { AgentTemplate } from "@/lib/tauri-api";
+import type { AgentTemplate, AgentPlatformBinding, PlatformHealth } from "@/lib/tauri-api";
 
 interface AgentHubTabProps {
   detectedAgents: DetectedAgent[];
@@ -64,9 +64,53 @@ export function AgentHubTab({
   const [expandedCategory, setExpandedCategory] = useState<string | null>("Engineering");
   const [expandedTemplate, setExpandedTemplate] = useState<string | null>(null);
 
+  // Per-agent binding state (CC Switch inspired)
+  const [bindings, setBindings] = useState<AgentPlatformBinding[]>([]);
+  const [platformHealth, setPlatformHealth] = useState<PlatformHealth[]>([]);
+  const [editingAgent, setEditingAgent] = useState<string | null>(null);
+
   useEffect(() => {
     agentTemplateApi.getAll().then(setTemplates).catch(console.error);
+    loadBindings();
+    loadPlatformHealth();
   }, []);
+
+  const loadBindings = async () => {
+    try {
+      const list = await agentBindingApi.getAll();
+      setBindings(list);
+    } catch (e) {
+      console.error("Failed to load bindings:", e);
+    }
+  };
+
+  const loadPlatformHealth = async () => {
+    try {
+      const health = await platformHealthApi.getAll();
+      setPlatformHealth(health);
+    } catch (e) {
+      console.error("Failed to load platform health:", e);
+    }
+  };
+
+  const handleBindAgent = async (agentName: string, platformId: string) => {
+    try {
+      await agentBindingApi.set(agentName, platformId);
+      await loadBindings();
+      setEditingAgent(null);
+    } catch (e) {
+      console.error("Failed to bind agent:", e);
+    }
+  };
+
+  const handleUnbindAgent = async (agentName: string) => {
+    try {
+      await agentBindingApi.remove(agentName);
+      await loadBindings();
+    } catch (e) {
+      console.error("Failed to unbind agent:", e);
+    }
+  };
 
   // Group templates by category
   const categories = templates.reduce<Record<string, AgentTemplate[]>>((acc, t) => {
@@ -204,6 +248,106 @@ export function AgentHubTab({
               )}
             </div>
           ))}
+        </div>
+      </div>
+
+      {/* Agent-Platform Binding Panel (CC Switch inspired) */}
+      <div>
+        <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
+          <Link className="h-4 w-4" /> Agent API 供应商绑定
+        </h3>
+        <p className="text-xs text-muted-foreground mb-3">
+          为每个 Agent 绑定不同的 API 供应商。Agent 发起请求时自动路由到绑定的平台。
+        </p>
+
+        <div className="flex flex-col gap-2">
+          {detectedAgents.filter(a => a.status === "installed").map((agent) => {
+            const binding = bindings.find(b => b.agent_name === agent.name);
+            const isEditing = editingAgent === agent.name;
+            const boundPlatform = platformHealth.find(p => p.id === binding?.platform_id);
+
+            return (
+              <Card key={agent.name} className={cn(binding && "border-cyan-500/20")}>
+                <CardContent className="p-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Bot className="h-4 w-4" />
+                      <span className="text-sm font-medium">{agent.name}</span>
+                      {binding ? (
+                        <Badge variant="outline" className="text-[10px] bg-cyan-500/10 text-cyan-400 border-cyan-500/30">
+                          → {binding.platform_name}
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className="text-[10px] text-muted-foreground">
+                          默认路由
+                        </Badge>
+                      )}
+                      {boundPlatform && (
+                        <span className={cn(
+                          "inline-block w-2 h-2 rounded-full",
+                          boundPlatform.is_healthy ? "bg-emerald-500" : "bg-red-500"
+                        )} />
+                      )}
+                    </div>
+                    <div className="flex gap-1.5">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="text-[10px] h-6"
+                        onClick={() => setEditingAgent(isEditing ? null : agent.name)}
+                      >
+                        {isEditing ? "取消" : binding ? "切换" : "绑定"}
+                      </Button>
+                      {binding && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="text-[10px] h-6 text-red-400"
+                          onClick={() => handleUnbindAgent(agent.name)}
+                        >
+                          <Unlink className="h-3 w-3" />
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Platform selector (expanded) */}
+                  {isEditing && (
+                    <div className="mt-3 pt-3 border-t border-border">
+                      <div className="grid grid-cols-2 gap-2">
+                        {platformHealth.map((platform) => (
+                          <button
+                            key={platform.id}
+                            className={cn(
+                              "flex items-center gap-2 p-2 rounded-lg border text-left text-xs transition-all",
+                              binding?.platform_id === platform.id
+                                ? "bg-cyan-500/12 border-cyan-500/40 text-cyan-400"
+                                : platform.is_healthy
+                                  ? "bg-white/2 border-border hover:bg-white/5"
+                                  : "bg-red-500/5 border-red-500/20 text-red-400 opacity-60"
+                            )}
+                            onClick={() => handleBindAgent(agent.name, platform.id)}
+                          >
+                            <span className={cn(
+                              "inline-block w-2 h-2 rounded-full",
+                              platform.is_healthy ? "bg-emerald-500" : "bg-red-500"
+                            )} />
+                            <div className="flex-1 min-w-0">
+                              <div className="font-medium truncate">{platform.name}</div>
+                              <div className="text-[10px] text-muted-foreground">{platform.api_type}</div>
+                            </div>
+                            {binding?.platform_id === platform.id && (
+                              <Check className="h-3 w-3 text-cyan-400 shrink-0" />
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            );
+          })}
         </div>
       </div>
 
