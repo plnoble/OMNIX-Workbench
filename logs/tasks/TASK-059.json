@@ -1,0 +1,1 @@
+{"task_id":"TASK-059","title":"AionUi 深度借鉴: 技能规则生成器 + 会话技能指示器 + 工具确认队列","goal":"3个AionUi深度特性实现","owner":"claude","status":"IN_PROGRESS","priority":"high","related_files":["src-tauri/src/commands.rs","src-tauri/src/lib.rs","src/lib/tauri-api.ts"],"start_time":"2026-06-09T00:00:00Z"}

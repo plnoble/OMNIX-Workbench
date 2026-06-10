@@ -1059,6 +1059,42 @@ export const persistentCronApi = {
   delete: (taskId: string) => invoke("delete_persistent_cron", { taskId }),
 };
 
+// Skill Rule Generator (AionUi inspired)
+export interface WorkspaceFile {
+  name: string; path: string; relativePath: string; extension: string; size: number;
+}
+export interface SkillDraft {
+  name: string; draft: string; files_analyzed: number; total_chars: number;
+}
+export const skillGeneratorApi = {
+  scanWorkspace: (workspacePath: string) =>
+    invoke<WorkspaceFile[]>("scan_workspace_for_skills", { workspacePath }),
+  generate: (skillName: string, filePaths: string[], workspacePath: string) =>
+    invoke<SkillDraft>("generate_skill_from_files", { skillName, filePaths, workspacePath }),
+};
+
+// Conversation Skills Indicator (AionUi inspired)
+export const conversationSkillsApi = {
+  get: (conversationId: string) =>
+    invoke<Array<{ name: string; description: string; category: string | null; usage_count: number; priority_score: number }>>("get_conversation_skills", { conversationId }),
+};
+
+// Tool Call Confirmation Queue (AionUi inspired)
+export interface ToolCallConfirmation {
+  id: string; session_id: string; tool_name: string;
+  tool_input: string; status: string; created_at: string;
+}
+export const toolConfirmationApi = {
+  queue: (sessionId: string, toolName: string, toolInput: string) =>
+    invoke<string>("queue_tool_confirmation", { sessionId, toolName, toolInput }),
+  resolve: (confirmationId: string, approved: boolean) =>
+    invoke("resolve_tool_confirmation", { confirmationId, approved }),
+  getPending: (sessionId: string) =>
+    invoke<ToolCallConfirmation[]>("get_pending_confirmations", { sessionId }),
+  getPendingCount: (sessionId: string) =>
+    invoke<number>("get_pending_confirmation_count", { sessionId }),
+};
+
 // ── P2 Sync Engine Types ──────────────────────────────
 
 export interface ConflictInfo {

@@ -358,6 +358,16 @@ pub fn run() {
             commands::get_persistent_cron_tasks,
             commands::create_persistent_cron,
             commands::delete_persistent_cron,
+            // Skill Rule Generator (AionUi inspired)
+            commands::scan_workspace_for_skills,
+            commands::generate_skill_from_files,
+            // Conversation Skills Indicator (AionUi inspired)
+            commands::get_conversation_skills,
+            // Tool Call Confirmation Queue (AionUi inspired)
+            commands::queue_tool_confirmation,
+            commands::resolve_tool_confirmation,
+            commands::get_pending_confirmations,
+            commands::get_pending_confirmation_count,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

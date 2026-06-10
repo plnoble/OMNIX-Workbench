@@ -7613,3 +7613,265 @@ pub fn delete_persistent_cron(
         .map_err(|e: rusqlite::Error| e.to_string())?;
     Ok(())
 }
+
+// ══════════════════════════════════════════════════
+// Skill Rule Generator (AionUi SkillRuleGenerator inspired)
+// ══════════════════════════════════════════════════
+
+/// Scan workspace files suitable for skill rule generation
+#[tauri::command]
+pub fn scan_workspace_for_skills(
+    workspace_path: String,
+) -> Result<Vec<serde_json::Value>, String> {
+    let root = PathBuf::from(&workspace_path);
+    if !root.exists() || !root.is_dir() {
+        return Err(format!("Path does not exist: {}", workspace_path));
+    }
+
+    let mut files = Vec::new();
+    scan_dir_recursive(&root, &root, &mut files, 0);
+
+    // Sort by relevance (config files first, then docs, then source)
+    files.sort_by(|a, b| {
+        let a_score = file_relevance_score(a["name"].as_str().unwrap_or(""));
+        let b_score = file_relevance_score(b["name"].as_str().unwrap_or(""));
+        b_score.cmp(&a_score)
+    });
+
+    Ok(files)
+}
+
+fn scan_dir_recursive(root: &PathBuf, dir: &PathBuf, files: &mut Vec<serde_json::Value>, depth: u32) {
+    if depth > 3 { return; } // Max depth 3
+    let entries = match fs::read_dir(dir) { Ok(e) => e, Err(_) => return };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+
+        // Skip hidden and build directories
+        if name.starts_with('.') || name == "node_modules" || name == "target" || name == "dist" {
+            continue;
+        }
+
+        if path.is_dir() {
+            scan_dir_recursive(root, &path, files, depth + 1);
+        } else {
+            let ext = path.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_default();
+            let supported = matches!(ext.as_str(), "md" | "json" | "toml" | "yaml" | "yml" | "txt" | "py" | "rs" | "ts" | "js" | "tsx" | "jsx");
+            if supported {
+                let relative = path.strip_prefix(root).unwrap_or(&path);
+                files.push(serde_json::json!({
+                    "name": name,
+                    "path": path.to_string_lossy(),
+                    "relativePath": relative.to_string_lossy(),
+                    "extension": ext,
+                    "size": fs::metadata(&path).map(|m| m.len()).unwrap_or(0),
+                }));
+            }
+        }
+    }
+}
+
+/// Score file relevance for skill generation (higher = more useful)
+fn file_relevance_score(name: &str) -> u32 {
+    let lower = name.to_lowercase();
+    if lower.contains("readme") { return 100; }
+    if lower.contains("package.json") || lower.contains("cargo.toml") { return 90; }
+    if lower.contains(".env.example") || lower.contains("config") { return 80; }
+    if lower.ends_with(".md") { return 70; }
+    if lower.ends_with(".toml") || lower.ends_with(".yaml") || lower.ends_with(".yml") { return 60; }
+    if lower.ends_with(".json") { return 50; }
+    if lower.ends_with(".ts") || lower.ends_with(".tsx") { return 40; }
+    if lower.ends_with(".rs") || lower.ends_with(".py") { return 30; }
+    10
+}
+
+/// Generate a skill rule from selected workspace files
+/// Reads file contents and returns a draft SKILL.md
+#[tauri::command]
+pub fn generate_skill_from_files(
+    skill_name: String,
+    file_paths: Vec<String>,
+    workspace_path: String,
+) -> Result<serde_json::Value, String> {
+    let mut file_summaries = Vec::new();
+    let mut total_chars = 0;
+
+    for path_str in &file_paths {
+        let path = PathBuf::from(path_str);
+        if !path.exists() { continue; }
+
+        let content = match fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        // Truncate to first 2000 chars per file for context
+        let preview: String = content.chars().take(2000).collect();
+        let file_name = path.file_name().unwrap().to_string_lossy().to_string();
+        total_chars += preview.len();
+
+        file_summaries.push(format!("## {}\n\n{}\n", file_name, preview));
+    }
+
+    if file_summaries.is_empty() {
+        return Err("No readable files provided".into());
+    }
+
+    // Build the draft SKILL.md with frontmatter
+    let draft = format!(
+        "---\nname: {}\ndescription: \"Auto-generated skill from workspace analysis\"\ncategory: \"Custom\"\nversion: \"1.0.0\"\n---\n\n# Role & Identity\n\nYou are a specialist for this project. Your knowledge is based on the following workspace files.\n\n# Core Knowledge\n\n{}\n# Step-by-Step Workflow\n\n1. Analyze the project structure\n2. Follow existing patterns and conventions\n3. Implement changes respecting the codebase style\n\n# Quality Checklist\n\n- [ ] Follow existing code conventions\n- [ ] Maintain consistency with project patterns\n- [ ] Verify changes don't break existing functionality\n\n# Anti-Patterns\n\nDo NOT deviate from established project patterns without justification.",
+        skill_name,
+        file_summaries.join("\n---\n\n"),
+    );
+
+    Ok(serde_json::json!({
+        "name": skill_name,
+        "draft": draft,
+        "files_analyzed": file_paths.len(),
+        "total_chars": total_chars,
+    }))
+}
+
+// ══════════════════════════════════════════════════
+// Conversation Skills Indicator (AionUi inspired)
+// ══════════════════════════════════════════════════
+
+/// Get skills loaded in a specific conversation
+#[tauri::command]
+pub fn get_conversation_skills(
+    conversation_id: String,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+
+    // Get skills that are relevant to this conversation's workspace
+    let workspace: Option<String> = conn.query_row(
+        "SELECT workspace_path FROM conversations WHERE id = ?1",
+        params![conversation_id],
+        |r| r.get(0),
+    ).ok();
+
+    // Get active skills
+    let mut stmt = conn.prepare(
+        "SELECT name, description, category, usage_count, priority_score FROM skills WHERE is_active = 1 ORDER BY priority_score DESC, usage_count DESC"
+    ).map_err(|e: rusqlite::Error| e.to_string())?;
+
+    let skills: Vec<serde_json::Value> = stmt.query_map([], |row| {
+        Ok(serde_json::json!({
+            "name": row.get::<_, String>(0)?,
+            "description": row.get::<_, String>(1)?,
+            "category": row.get::<_, Option<String>>(2)?,
+            "usage_count": row.get::<_, i32>(3)?,
+            "priority_score": row.get::<_, f64>(4)?,
+        }))
+    }).map_err(|e: rusqlite::Error| e.to_string())?
+        .flatten()
+        .collect();
+
+    Ok(skills)
+}
+
+// ══════════════════════════════════════════════════
+// Tool Call Confirmation Queue (AionUi inspired)
+// ══════════════════════════════════════════════════
+
+/// Pending tool call confirmation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCallConfirmation {
+    pub id: String,
+    pub session_id: String,
+    pub tool_name: String,
+    pub tool_input: String,
+    pub status: String,  // "pending" | "approved" | "rejected"
+    pub created_at: String,
+}
+
+/// Queue a tool call for user confirmation
+#[tauri::command]
+pub fn queue_tool_confirmation(
+    session_id: String,
+    tool_name: String,
+    tool_input: String,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<String, String> {
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS tool_confirmations (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            tool_name TEXT NOT NULL,
+            tool_input TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )", [],
+    );
+    let id = format!("tc_{}", chrono::Utc::now().timestamp_millis());
+    conn.execute(
+        "INSERT INTO tool_confirmations (id, session_id, tool_name, tool_input) VALUES (?1, ?2, ?3, ?4)",
+        params![id, session_id, tool_name, tool_input],
+    ).map_err(|e: rusqlite::Error| e.to_string())?;
+    Ok(id)
+}
+
+/// Approve or reject a tool call
+#[tauri::command]
+pub fn resolve_tool_confirmation(
+    confirmation_id: String,
+    approved: bool,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<(), String> {
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+    let status = if approved { "approved" } else { "rejected" };
+    conn.execute(
+        "UPDATE tool_confirmations SET status = ?1 WHERE id = ?2",
+        params![status, confirmation_id],
+    ).map_err(|e: rusqlite::Error| e.to_string())?;
+    Ok(())
+}
+
+/// Get pending tool confirmations for a session
+#[tauri::command]
+pub fn get_pending_confirmations(
+    session_id: String,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<Vec<ToolCallConfirmation>, String> {
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS tool_confirmations (
+            id TEXT PRIMARY KEY, session_id TEXT NOT NULL, tool_name TEXT NOT NULL,
+            tool_input TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )", [],
+    );
+    let mut stmt = conn.prepare(
+        "SELECT id, session_id, tool_name, tool_input, status, created_at FROM tool_confirmations WHERE session_id = ?1 AND status = 'pending' ORDER BY created_at ASC"
+    ).map_err(|e: rusqlite::Error| e.to_string())?;
+    let rows = stmt.query_map(params![session_id], |row| {
+        Ok(ToolCallConfirmation {
+            id: row.get(0)?,
+            session_id: row.get(1)?,
+            tool_name: row.get(2)?,
+            tool_input: row.get(3)?,
+            status: row.get(4)?,
+            created_at: row.get(5)?,
+        })
+    }).map_err(|e: rusqlite::Error| e.to_string())?;
+    Ok(rows.flatten().collect())
+}
+
+/// Get pending confirmation count (for badge display)
+#[tauri::command]
+pub fn get_pending_confirmation_count(
+    session_id: String,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<i32, String> {
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+    let count: i32 = conn.query_row(
+        "SELECT COUNT(*) FROM tool_confirmations WHERE session_id = ?1 AND status = 'pending'",
+        params![session_id],
+        |r| r.get(0),
+    ).unwrap_or(0);
+    Ok(count)
+}
