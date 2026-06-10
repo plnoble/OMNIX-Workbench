@@ -946,6 +946,25 @@ export const skillLibraryApi = {
     invoke<DistillRecommendation[]>("distill_from_project", { projectPath }),
 };
 
+// DeepSeek-GUI Inspired APIs
+export interface FileChange {
+  file_path: string; change_type: string;
+  old_content: string | null; new_content: string | null;
+  diff_summary: string; timestamp: number;
+}
+export const tokenEconomyApi = {
+  compressToolResult: (content: string, maxLines?: number, maxBytes?: number) =>
+    invoke<string>("compress_tool_result", { content, maxLines, maxBytes }),
+  pushSteering: (sessionId: string, content: string) =>
+    invoke<string>("push_steering_message", { sessionId, content }),
+  getSteeringMessages: (sessionId: string) =>
+    invoke<Array<{ id: string; content: string; created_at: string }>>("get_steering_messages", { sessionId }),
+  consumeSteering: (sessionId: string) =>
+    invoke("consume_steering_messages", { sessionId }),
+  detectFileChange: (filePath: string, oldContent?: string, newContent?: string) =>
+    invoke<FileChange>("detect_file_change", { filePath, oldContent, newContent }),
+};
+
 // ── P2 Sync Engine Types ──────────────────────────────
 
 export interface ConflictInfo {

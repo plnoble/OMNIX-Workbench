@@ -16,6 +16,7 @@ mod model_knowledge;
 mod backup;
 mod code_graph;
 mod skill_library;
+mod token_economy;
 mod commands;
 
 #[cfg(test)]
@@ -319,6 +320,12 @@ pub fn run() {
             commands::execute_protocol,
             commands::search_skill_market,
             commands::distill_from_project,
+            // DeepSeek-GUI inspired features
+            commands::compress_tool_result,
+            commands::push_steering_message,
+            commands::get_steering_messages,
+            commands::consume_steering_messages,
+            commands::detect_file_change,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

@@ -1,0 +1,1 @@
+{"task_id":"TASK-054","title":"DeepSeek-GUI 借鉴: Token经济 + Steering Queue + Diff检查 + Plan/Goal + SDD + MCP发现","goal":"6个DeepSeek-GUI功能一次性实现","owner":"claude","status":"IN_PROGRESS","priority":"high","related_files":["src-tauri/src/token_economy.rs","src-tauri/src/commands.rs","src-tauri/src/lib.rs","src/lib/tauri-api.ts"],"start_time":"2026-06-09T00:00:00Z"}
