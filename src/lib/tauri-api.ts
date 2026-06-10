@@ -1017,6 +1017,48 @@ export const skillDagApi = {
     invoke<string>("remove_skill_edge", { source, target, edgeType }),
 };
 
+// Async Agent Mailbox (AionUi inspired)
+export interface MailMessage {
+  id: string; from_agent: string; to_agent: string;
+  subject: string; body: string; read: boolean; created_at: string;
+}
+export const mailboxApi = {
+  send: (fromAgent: string, toAgent: string, subject: string, body: string) =>
+    invoke<string>("send_mail", { fromAgent, toAgent, subject, body }),
+  get: (agentName: string, includeRead?: boolean) =>
+    invoke<MailMessage[]>("get_mail", { agentName, includeRead }),
+  markRead: (messageIds: string[]) =>
+    invoke("mark_mail_read", { messageIds }),
+};
+
+// Enhanced Task Dependencies (AionUi inspired)
+export const taskDependencyApi = {
+  setBlocks: (taskId: string, blocksIds: string[]) =>
+    invoke("set_task_blocks", { taskId, blocksIds }),
+  autoUnblock: (completedTaskId: string) =>
+    invoke<string[]>("auto_unblock_tasks", { completedTaskId }),
+};
+
+// YOLO Full-Auto Mode (AionUi inspired)
+export const yoloApi = {
+  getStatus: () => invoke<boolean>("get_yolo_mode"),
+  set: (enabled: boolean) => invoke("set_yolo_mode", { enabled }),
+};
+
+// Persistent Cron (AionUi inspired)
+export interface PersistentCronTask {
+  id: string; name: string; schedule: string; timezone: string;
+  agent_name: string | null; prompt_template: string | null;
+  mode: string; keep_awake: boolean; enabled: boolean;
+  last_run_at: string | null; next_run_at: string | null;
+}
+export const persistentCronApi = {
+  getAll: () => invoke<PersistentCronTask[]>("get_persistent_cron_tasks"),
+  create: (name: string, schedule: string, timezone?: string, agentName?: string, promptTemplate?: string, mode?: string, keepAwake?: boolean) =>
+    invoke<string>("create_persistent_cron", { name, schedule, timezone, agentName, promptTemplate, mode, keepAwake }),
+  delete: (taskId: string) => invoke("delete_persistent_cron", { taskId }),
+};
+
 // ── P2 Sync Engine Types ──────────────────────────────
 
 export interface ConflictInfo {

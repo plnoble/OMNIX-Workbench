@@ -7341,3 +7341,275 @@ fn persist_edge_to_db(db: &DbManager, source: &str, target: &str, edge_type: &st
     // Other edge types are stored only in memory for now
     Ok(())
 }
+
+// ══════════════════════════════════════════════════
+// Async Agent Mailbox (AionUi inspired)
+// ══════════════════════════════════════════════════
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MailMessage {
+    pub id: String,
+    pub from_agent: String,
+    pub to_agent: String,
+    pub subject: String,
+    pub body: String,
+    pub read: bool,
+    pub created_at: String,
+}
+
+/// Send a message to another agent's mailbox
+#[tauri::command]
+pub fn send_mail(
+    from_agent: String,
+    to_agent: String,
+    subject: String,
+    body: String,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<String, String> {
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS agent_mailbox (
+            id TEXT PRIMARY KEY,
+            from_agent TEXT NOT NULL,
+            to_agent TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            body TEXT NOT NULL,
+            read INTEGER NOT NULL DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )", [],
+    );
+    let id = format!("mail_{}", chrono::Utc::now().timestamp_millis());
+    conn.execute(
+        "INSERT INTO agent_mailbox (id, from_agent, to_agent, subject, body) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![id, from_agent, to_agent, subject, body],
+    ).map_err(|e: rusqlite::Error| e.to_string())?;
+    Ok(id)
+}
+
+/// Get unread messages for an agent
+#[tauri::command]
+pub fn get_mail(
+    agent_name: String,
+    include_read: Option<bool>,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<Vec<MailMessage>, String> {
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS agent_mailbox (
+            id TEXT PRIMARY KEY, from_agent TEXT NOT NULL, to_agent TEXT NOT NULL,
+            subject TEXT NOT NULL, body TEXT NOT NULL, read INTEGER NOT NULL DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )", [],
+    );
+
+    let sql = if include_read.unwrap_or(false) {
+        "SELECT id, from_agent, to_agent, subject, body, read, created_at FROM agent_mailbox WHERE to_agent = ?1 ORDER BY created_at DESC"
+    } else {
+        "SELECT id, from_agent, to_agent, subject, body, read, created_at FROM agent_mailbox WHERE to_agent = ?1 AND read = 0 ORDER BY created_at DESC"
+    };
+
+    let mut stmt = conn.prepare(sql).map_err(|e: rusqlite::Error| e.to_string())?;
+    let rows = stmt.query_map(params![agent_name], |row| {
+        Ok(MailMessage {
+            id: row.get(0)?,
+            from_agent: row.get(1)?,
+            to_agent: row.get(2)?,
+            subject: row.get(3)?,
+            body: row.get(4)?,
+            read: row.get::<_, i32>(5)? != 0,
+            created_at: row.get(6)?,
+        })
+    }).map_err(|e: rusqlite::Error| e.to_string())?;
+    Ok(rows.flatten().collect())
+}
+
+/// Mark messages as read
+#[tauri::command]
+pub fn mark_mail_read(
+    message_ids: Vec<String>,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<(), String> {
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+    for id in &message_ids {
+        let _ = conn.execute("UPDATE agent_mailbox SET read = 1 WHERE id = ?1", params![id]);
+    }
+    Ok(())
+}
+
+// ══════════════════════════════════════════════════
+// Enhanced Task Board with Dependency Tracking (AionUi inspired)
+// ══════════════════════════════════════════════════
+
+/// Update task with blocks dependency (reverse of blocked_by)
+#[tauri::command]
+pub fn set_task_blocks(
+    task_id: String,
+    blocks_ids: Vec<String>,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<(), String> {
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+    // Store blocks relationship in a separate table
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS task_dependencies (
+            task_id TEXT NOT NULL,
+            depends_on TEXT NOT NULL,
+            PRIMARY KEY (task_id, depends_on)
+        )", [],
+    );
+    // Clear existing
+    let _ = conn.execute("DELETE FROM task_dependencies WHERE task_id = ?1", params![task_id]);
+    // Add new
+    for dep in &blocks_ids {
+        let _ = conn.execute(
+            "INSERT INTO task_dependencies (task_id, depends_on) VALUES (?1, ?2)",
+            params![task_id, dep],
+        );
+    }
+    Ok(())
+}
+
+/// Auto-unblock tasks when a blocking task completes
+#[tauri::command]
+pub fn auto_unblock_tasks(
+    completed_task_id: String,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<Vec<String>, String> {
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS task_dependencies (
+            task_id TEXT NOT NULL, depends_on TEXT NOT NULL,
+            PRIMARY KEY (task_id, depends_on)
+        )", [],
+    );
+    // Find tasks blocked by this completed task
+    let mut stmt = conn.prepare(
+        "SELECT task_id FROM task_dependencies WHERE depends_on = ?1"
+    ).map_err(|e: rusqlite::Error| e.to_string())?;
+    let blocked: Vec<String> = stmt.query_map(params![completed_task_id], |r| r.get(0))
+        .map_err(|e: rusqlite::Error| e.to_string())?
+        .flatten()
+        .collect();
+
+    // Remove the dependency
+    let _ = conn.execute("DELETE FROM task_dependencies WHERE depends_on = ?1", params![completed_task_id]);
+
+    Ok(blocked)
+}
+
+// ══════════════════════════════════════════════════
+// YOLO Full-Auto Mode (AionUi inspired)
+// ══════════════════════════════════════════════════
+
+/// Get YOLO mode status
+#[tauri::command]
+pub fn get_yolo_mode(db: State<'_, Arc<DbManager>>) -> bool {
+    db.get_setting("yolo_mode").ok().flatten().map(|v| v == "true").unwrap_or(false)
+}
+
+/// Toggle YOLO mode
+#[tauri::command]
+pub fn set_yolo_mode(enabled: bool, db: State<'_, Arc<DbManager>>) -> Result<(), String> {
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+    conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES ('yolo_mode', ?1)",
+        params![if enabled { "true" } else { "false" }],
+    ).map_err(|e: rusqlite::Error| e.to_string())?;
+    Ok(())
+}
+
+// ══════════════════════════════════════════════════
+// Persistent Cron with Timezone + Missed Detection (AionUi inspired)
+// ══════════════════════════════════════════════════
+
+/// Get persistent cron tasks with timezone support
+#[tauri::command]
+pub fn get_persistent_cron_tasks(
+    db: State<'_, Arc<DbManager>>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS cron_tasks_persistent (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            schedule TEXT NOT NULL,
+            timezone TEXT NOT NULL DEFAULT 'UTC',
+            agent_name TEXT NULL,
+            prompt_template TEXT NULL,
+            mode TEXT NOT NULL DEFAULT 'new_conversation',
+            keep_awake INTEGER NOT NULL DEFAULT 0,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            last_run_at DATETIME NULL,
+            next_run_at DATETIME NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )", [],
+    );
+    let mut stmt = conn.prepare(
+        "SELECT id, name, schedule, timezone, agent_name, prompt_template, mode, keep_awake, enabled, last_run_at, next_run_at FROM cron_tasks_persistent ORDER BY created_at DESC"
+    ).map_err(|e: rusqlite::Error| e.to_string())?;
+    let rows = stmt.query_map([], |row| {
+        Ok(serde_json::json!({
+            "id": row.get::<_, String>(0)?,
+            "name": row.get::<_, String>(1)?,
+            "schedule": row.get::<_, String>(2)?,
+            "timezone": row.get::<_, String>(3)?,
+            "agent_name": row.get::<_, Option<String>>(4)?,
+            "prompt_template": row.get::<_, Option<String>>(5)?,
+            "mode": row.get::<_, String>(6)?,
+            "keep_awake": row.get::<_, i32>(7)? != 0,
+            "enabled": row.get::<_, i32>(8)? != 0,
+            "last_run_at": row.get::<_, Option<String>>(9)?,
+            "next_run_at": row.get::<_, Option<String>>(10)?,
+        }))
+    }).map_err(|e: rusqlite::Error| e.to_string())?;
+    Ok(rows.flatten().collect())
+}
+
+/// Create a persistent cron task
+#[tauri::command]
+pub fn create_persistent_cron(
+    name: String,
+    schedule: String,
+    timezone: Option<String>,
+    agent_name: Option<String>,
+    prompt_template: Option<String>,
+    mode: Option<String>,
+    keep_awake: Option<bool>,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<String, String> {
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS cron_tasks_persistent (
+            id TEXT PRIMARY KEY, name TEXT NOT NULL, schedule TEXT NOT NULL,
+            timezone TEXT NOT NULL DEFAULT 'UTC', agent_name TEXT NULL,
+            prompt_template TEXT NULL, mode TEXT NOT NULL DEFAULT 'new_conversation',
+            keep_awake INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1,
+            last_run_at DATETIME NULL, next_run_at DATETIME NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )", [],
+    );
+    let id = format!("pcron_{}", chrono::Utc::now().timestamp_millis());
+    conn.execute(
+        "INSERT INTO cron_tasks_persistent (id, name, schedule, timezone, agent_name, prompt_template, mode, keep_awake) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            id, name, schedule,
+            timezone.unwrap_or_else(|| "UTC".into()),
+            agent_name,
+            prompt_template,
+            mode.unwrap_or_else(|| "new_conversation".into()),
+            if keep_awake.unwrap_or(false) { 1 } else { 0 },
+        ],
+    ).map_err(|e: rusqlite::Error| e.to_string())?;
+    Ok(id)
+}
+
+/// Delete a persistent cron task
+#[tauri::command]
+pub fn delete_persistent_cron(
+    task_id: String,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<(), String> {
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+    conn.execute("DELETE FROM cron_tasks_persistent WHERE id = ?1", params![task_id])
+        .map_err(|e: rusqlite::Error| e.to_string())?;
+    Ok(())
+}

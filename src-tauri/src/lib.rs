@@ -344,6 +344,20 @@ pub fn run() {
             commands::expand_skill_set,
             commands::add_skill_edge,
             commands::remove_skill_edge,
+            // Async Agent Mailbox (AionUi inspired)
+            commands::send_mail,
+            commands::get_mail,
+            commands::mark_mail_read,
+            // Enhanced Task Dependencies (AionUi inspired)
+            commands::set_task_blocks,
+            commands::auto_unblock_tasks,
+            // YOLO Mode (AionUi inspired)
+            commands::get_yolo_mode,
+            commands::set_yolo_mode,
+            // Persistent Cron (AionUi inspired)
+            commands::get_persistent_cron_tasks,
+            commands::create_persistent_cron,
+            commands::delete_persistent_cron,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

@@ -1,0 +1,1 @@
+{"task_id":"TASK-058","title":"AionUi 借鉴: 异步邮箱 + 依赖任务板 + 持久化调度 + YOLO模式","goal":"4个AionUi功能实现","owner":"claude","status":"IN_PROGRESS","priority":"high","related_files":["src-tauri/src/commands.rs","src-tauri/src/lib.rs","src/lib/tauri-api.ts"],"start_time":"2026-06-09T00:00:00Z"}
