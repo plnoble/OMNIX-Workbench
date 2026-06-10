@@ -7204,3 +7204,140 @@ pub fn estimate_model_cost(
 ) -> f64 {
     crate::circuit_breaker::estimate_cost(&model, prompt_tokens, completion_tokens)
 }
+
+// ══════════════════════════════════════════════════
+// Skill DAG (SkillDAG inspired)
+// ══════════════════════════════════════════════════
+
+use crate::skill_dag::{SkillGraph, SkillEdge, EdgeType, SkillSearchResult, SetValidation};
+
+/// Search skills with conflict awareness
+#[tauri::command]
+pub fn search_skills_dag(
+    query: String,
+    top_k: Option<usize>,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<SkillSearchResult, String> {
+    let graph = build_skill_graph(&db)?;
+    Ok(graph.search(&query, top_k.unwrap_or(10)))
+}
+
+/// Validate a skill set
+#[tauri::command]
+pub fn check_skill_set(
+    skill_ids: Vec<String>,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<SetValidation, String> {
+    let graph = build_skill_graph(&db)?;
+    Ok(graph.check_set(&skill_ids))
+}
+
+/// Expand skill set with transitive dependencies
+#[tauri::command]
+pub fn expand_skill_set(
+    skill_ids: Vec<String>,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<Vec<String>, String> {
+    let graph = build_skill_graph(&db)?;
+    Ok(graph.expand_set(&skill_ids))
+}
+
+/// Add an edge between skills (with cycle detection)
+#[tauri::command]
+pub fn add_skill_edge(
+    source: String,
+    target: String,
+    edge_type: String,
+    reason: String,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<String, String> {
+    let et = EdgeType::from_str(&edge_type).ok_or("Invalid edge type")?;
+
+    let mut graph = build_skill_graph(&db)?;
+
+    // Cycle check for directed edges
+    if graph.would_create_cycle(&source, &target, &et) {
+        return Err(format!("Adding {} → {} would create a cycle", source, target));
+    }
+
+    let edge = SkillEdge {
+        source: source.clone(),
+        target: target.clone(),
+        edge_type: et,
+        reason,
+        origin: "manual".into(),
+    };
+
+    if graph.commit_add(edge) {
+        // Persist to DB: store as dependency in skills table
+        persist_edge_to_db(&db, &source, &target, &edge_type)?;
+        Ok(format!("Edge added: {} → {} ({})", source, target, edge_type))
+    } else {
+        Err("Edge already exists".into())
+    }
+}
+
+/// Remove an edge between skills
+#[tauri::command]
+pub fn remove_skill_edge(
+    source: String,
+    target: String,
+    edge_type: String,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<String, String> {
+    let et = EdgeType::from_str(&edge_type).ok_or("Invalid edge type")?;
+    let mut graph = build_skill_graph(&db)?;
+
+    if graph.commit_remove(&source, &target, &et) {
+        Ok(format!("Edge removed: {} → {} ({})", source, target, edge_type))
+    } else {
+        Err("Edge not found".into())
+    }
+}
+
+/// Build skill graph from database (helper)
+fn build_skill_graph(db: &DbManager) -> Result<SkillGraph, String> {
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT name, description, file_path, COALESCE(dependencies, '[]') FROM skills WHERE is_active = 1"
+    ).map_err(|e: rusqlite::Error| e.to_string())?;
+
+    let skills: Vec<(String, String, String, String)> = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+        ))
+    }).map_err(|e: rusqlite::Error| e.to_string())?
+        .flatten()
+        .collect();
+
+    Ok(SkillGraph::from_skills(&skills))
+}
+
+/// Persist an edge to the skills table (as dependency)
+fn persist_edge_to_db(db: &DbManager, source: &str, target: &str, edge_type: &str) -> Result<(), String> {
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+
+    if edge_type == "depends_on" {
+        // Add target to source's dependencies JSON array
+        let current_deps: String = conn.query_row(
+            "SELECT COALESCE(dependencies, '[]') FROM skills WHERE name = ?1",
+            params![source],
+            |r| r.get(0),
+        ).unwrap_or_else(|_| "[]".into());
+
+        let mut deps: Vec<String> = serde_json::from_str(&current_deps).unwrap_or_default();
+        if !deps.contains(&target.to_string()) {
+            deps.push(target.to_string());
+            let deps_json = serde_json::to_string(&deps).unwrap_or_else(|_| "[]".into());
+            conn.execute(
+                "UPDATE skills SET dependencies = ?1 WHERE name = ?2",
+                params![deps_json, source],
+            ).map_err(|e: rusqlite::Error| e.to_string())?;
+        }
+    }
+    // Other edge types are stored only in memory for now
+    Ok(())
+}

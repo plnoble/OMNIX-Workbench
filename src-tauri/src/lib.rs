@@ -18,6 +18,7 @@ mod code_graph;
 mod skill_library;
 mod token_economy;
 mod circuit_breaker;
+mod skill_dag;
 mod commands;
 
 #[cfg(test)]
@@ -337,6 +338,12 @@ pub fn run() {
             commands::reset_circuit_breaker,
             commands::get_model_pricing,
             commands::estimate_model_cost,
+            // Skill DAG (SkillDAG inspired)
+            commands::search_skills_dag,
+            commands::check_skill_set,
+            commands::expand_skill_set,
+            commands::add_skill_edge,
+            commands::remove_skill_edge,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

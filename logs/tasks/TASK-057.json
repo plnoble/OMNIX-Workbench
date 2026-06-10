@@ -1,0 +1,1 @@
+{"task_id":"TASK-057","title":"SkillDAG 借鉴: 5种边类型依赖图 + 冲突感知 + 集合验证 + Propose/Commit + 冷启动 + 环路检测","goal":"6个SkillDAG功能一次性实现","owner":"claude","status":"IN_PROGRESS","priority":"high","related_files":["src-tauri/src/skill_dag.rs","src-tauri/src/commands.rs","src-tauri/src/lib.rs","src/lib/tauri-api.ts"],"start_time":"2026-06-09T00:00:00Z"}
