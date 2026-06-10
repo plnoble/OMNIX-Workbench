@@ -1,0 +1,1 @@
+{"task_id":"TASK-056","title":"CC Switch 借鉴: 断路器 + Session Log追踪 + Provider扩展 + 托盘切换 + MCP增强","goal":"5个CC Switch功能一次性实现","owner":"claude","status":"IN_PROGRESS","priority":"high","related_files":["src-tauri/src/circuit_breaker.rs","src-tauri/src/commands.rs","src-tauri/src/lib.rs","src-tauri/src/proxy.rs","src/lib/tauri-api.ts"],"start_time":"2026-06-09T00:00:00Z"}

@@ -17,6 +17,7 @@ mod backup;
 mod code_graph;
 mod skill_library;
 mod token_economy;
+mod circuit_breaker;
 mod commands;
 
 #[cfg(test)]
@@ -331,6 +332,11 @@ pub fn run() {
             commands::set_agent_binding,
             commands::remove_agent_binding,
             commands::toggle_agent_binding,
+            // Circuit Breaker & Session Usage (CC Switch inspired)
+            commands::get_circuit_status,
+            commands::reset_circuit_breaker,
+            commands::get_model_pricing,
+            commands::estimate_model_cost,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

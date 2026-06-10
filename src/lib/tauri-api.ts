@@ -980,6 +980,22 @@ export const agentBindingApi = {
     invoke("toggle_agent_binding", { agentName }),
 };
 
+// Circuit Breaker & Session Usage (CC Switch inspired)
+export type CircuitState = "Closed" | "Open" | "HalfOpen";
+export interface CircuitBreakerStatus {
+  platform_id: string; state: CircuitState; consecutive_failures: number;
+  total_failures: number; total_successes: number;
+  last_failure_at: string | null; last_success_at: string | null;
+  last_error: string | null; half_open_threshold: number; failure_threshold: number;
+}
+export const circuitBreakerApi = {
+  getStatus: () => invoke<CircuitBreakerStatus[]>("get_circuit_status"),
+  reset: (platformId: string) => invoke("reset_circuit_breaker", { platformId }),
+  getModelPricing: () => invoke<Record<string, [number, number]>>("get_model_pricing"),
+  estimateCost: (model: string, promptTokens: number, completionTokens: number) =>
+    invoke<number>("estimate_model_cost", { model, promptTokens, completionTokens }),
+};
+
 // ── P2 Sync Engine Types ──────────────────────────────
 
 export interface ConflictInfo {

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::sync::Arc;
 use std::path::PathBuf;
@@ -7166,4 +7167,40 @@ pub fn toggle_agent_binding(
         params![agent_name],
     ).map_err(|e: rusqlite::Error| e.to_string())?;
     Ok(())
+}
+
+// ══════════════════════════════════════════════════
+// Circuit Breaker & Session Usage (CC Switch inspired)
+// ══════════════════════════════════════════════════
+
+/// Get circuit breaker status for all platforms
+#[tauri::command]
+pub fn get_circuit_status(db: State<'_, Arc<DbManager>>) -> Vec<crate::circuit_breaker::CircuitBreakerStatus> {
+    crate::circuit_breaker::get_all_circuit_status(&db)
+}
+
+/// Reset circuit breaker for a platform
+#[tauri::command]
+pub fn reset_circuit_breaker(
+    platform_id: String,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<(), String> {
+    crate::circuit_breaker::reset_circuit(&db, &platform_id);
+    Ok(())
+}
+
+/// Get model pricing table
+#[tauri::command]
+pub fn get_model_pricing() -> HashMap<String, (f64, f64)> {
+    crate::circuit_breaker::get_model_pricing()
+}
+
+/// Estimate cost for model usage
+#[tauri::command]
+pub fn estimate_model_cost(
+    model: String,
+    prompt_tokens: i64,
+    completion_tokens: i64,
+) -> f64 {
+    crate::circuit_breaker::estimate_cost(&model, prompt_tokens, completion_tokens)
 }
