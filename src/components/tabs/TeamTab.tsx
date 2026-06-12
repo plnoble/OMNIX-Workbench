@@ -4,8 +4,9 @@
  * Left: PTY interactive pane, Right: PlanTree
  */
 
+import { useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Play, Square, Send } from "lucide-react";
 import { PlanTree } from "@/PlanTree";
@@ -47,6 +48,23 @@ export function TeamTab({
   startResizing,
 }: TeamTabProps) {
   const isSessionRunning = currentConvId && activeSessions.includes(currentConvId);
+
+  // Auto-resize Stdin textarea
+  const stdinRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    const el = stdinRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const next = Math.min(Math.max(el.scrollHeight, 48), 240);
+    el.style.height = `${next}px`;
+  }, [collabStdin]);
+
+  const handleSend = () => {
+    if (collabStdin.trim()) {
+      onSendStdinDirect(collabStdin + "\n");
+      setCollabStdin("");
+    }
+  };
 
   return (
     <div className="flex h-full overflow-hidden flex-1">
@@ -101,42 +119,37 @@ export function TeamTab({
         </div>
 
         {/* Log Display */}
-        <div className="flex-1 bg-[#050508] border border-border rounded-lg p-3 flex flex-col overflow-hidden">
+        <div className="flex-1 min-h-[150px] bg-[#050508] border border-border rounded-lg p-3 flex flex-col overflow-hidden">
           <div className="flex-1 overflow-y-auto font-mono text-sm text-lime-400 whitespace-pre-wrap">
             {collabLogs || "等待智能体启动并输出日志..."}
           </div>
         </div>
 
-        {/* Stdin Input */}
-        <div className="flex gap-2.5">
-          <Input
-            placeholder="输入标准输入指令并按回车发送 (Stdin)..."
+        {/* Stdin Input (auto-grows; Enter = send, Shift+Enter = newline) */}
+        <div className="flex gap-2.5 items-end">
+          <Textarea
+            ref={stdinRef}
+            placeholder="输入标准输入指令... (Enter 发送，Shift+Enter 换行)"
             value={collabStdin}
             onChange={(e) => setCollabStdin(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && collabStdin.trim()) {
-                onSendStdinDirect(collabStdin + "\n");
-                setCollabStdin("");
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                handleSend();
               }
             }}
-            className="flex-1"
+            className="flex-1 resize-none min-h-[48px] overflow-y-auto"
+            style={{ maxHeight: "240px" }}
           />
-          <Button
-            onClick={() => {
-              if (collabStdin.trim()) {
-                onSendStdinDirect(collabStdin + "\n");
-                setCollabStdin("");
-              }
-            }}
-          >
-            <Send className="h-4 w-4" /> 发送 Stdin
+          <Button onClick={handleSend} className="self-end">
+            <Send className="h-4 w-4" /> 发送
           </Button>
         </div>
       </div>
 
       {/* Resize Handle */}
       <div
-        className="w-2 bg-white/5 cursor-col-resize h-full hover:bg-white/10 transition-colors"
+        className="w-2 bg-muted/20 cursor-col-resize h-full hover:bg-muted/30 transition-colors"
         onMouseDown={startResizing}
       />
 
@@ -145,7 +158,7 @@ export function TeamTab({
         className="flex flex-col border-l border-border"
         style={{ width: `${rightPaneWidth}px` }} // Dynamic width — cannot use Tailwind for runtime px values
       >
-        <div className="px-4 py-3 border-b border-border bg-white/[0.01]">
+        <div className="px-4 py-3 border-b border-border bg-muted/5">
           <h3 className="text-sm font-semibold m-0">👥 协同任务计划树</h3>
         </div>
         <div className="flex-1 overflow-y-auto">

@@ -19,6 +19,8 @@ mod skill_library;
 mod token_economy;
 mod circuit_breaker;
 mod skill_dag;
+mod hash;
+mod input_validation;
 mod commands;
 
 #[cfg(test)]
@@ -26,9 +28,16 @@ mod tests;
 
 use std::sync::Arc;
 use tauri::Manager;
+use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
+use log::warn;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 0. Initialize logging
+    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
+        .format_timestamp_secs()
+        .try_init();
+
     // 1. Initialize SQLite Database Schema
     let db = Arc::new(db::DbManager::new());
     
@@ -36,22 +45,61 @@ pub fn run() {
     let agent_manager = Arc::new(agent::AgentManager::new(Arc::clone(&db)));
     
     // 3. Resolve port and launch background HTTP translation proxy
-    let port_str = db.get_setting("proxy_port").unwrap_or(None).unwrap_or_else(|| "1421".to_string());
-    let port = port_str.parse::<u16>().unwrap_or(1421);
+    // The proxy port is an internal constant — users configure API keys/addresses
+    // per-platform in the Model Hub, not here.
+    let port: u16 = 1421;
     
     let proxy_server = proxy::ProxyServer::new();
     let proxy_state = std::sync::Mutex::new(proxy_server);
-    
+
+    // Parse QA shortcut for toggle handler.
+    // Selection shortcut removed — auto-capture is the only trigger mode now.
+    let qa_shortcut_str = db.get_setting("quick_assistant_shortcut").unwrap_or(None)
+        .unwrap_or_else(|| "Ctrl+Shift+Space".to_string());
+
+    let qa_id: Option<u32> = qa_shortcut_str.parse::<tauri_plugin_global_shortcut::Shortcut>()
+        .map(|s| s.id())
+        .ok();
+
+    if qa_id.is_none() {
+        log::warn!("Failed to parse QA shortcut '{}'", qa_shortcut_str);
+    }
+
+    let qa_str_for_register = qa_shortcut_str.clone();
+
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        // Register the global-shortcut plugin with handler only — NO with_shortcuts().
+        // Shortcut registration is deferred to after the event loop starts,
+        // so that a conflict (e.g., Alt+Space already taken) doesn't crash the app.
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(move |app, shortcut, event| {
+                    use tauri_plugin_global_shortcut::ShortcutState;
+                    if event.state == ShortcutState::Pressed {
+                        if Some(shortcut.id()) == qa_id {
+                            // Quick Assistant toggle
+                            use tauri::Manager;
+                            if let Some(qa) = app.get_webview_window("quick-assistant") {
+                                if qa.is_visible().unwrap_or(false) {
+                                    let _ = qa.hide();
+                                } else {
+                                    let _ = qa.show();
+                                    let _ = qa.set_focus();
+                                }
+                            }
+                        }
+                    }
+                })
+                .build(),
+        )
         .plugin(tauri_plugin_clipboard_manager::init())
         .setup(move |app| {
             // Start the proxy server inside the Tokio runtime context
             if let Ok(mut server) = proxy_state.lock() {
                 server.start(Arc::clone(&db), Arc::clone(&agent_manager), port);
             }
-            
+
             // Share references globally as Tauri App State
             app.manage(Arc::clone(&db));
             app.manage(Arc::clone(&agent_manager));
@@ -59,6 +107,33 @@ pub fn run() {
 
             // Start background tasks once the Tokio runtime is fully initialized by Tauri
             agent_manager.start_services();
+
+            // Enforce minimum window size (belt-and-suspenders with tauri.conf.json)
+            if let Some(main) = app.get_webview_window("main") {
+                let _ = main.set_min_size(Some(tauri::LogicalSize::new(1024.0, 680.0)));
+            }
+
+            // Register global shortcuts after the event loop starts.
+            // We do NOT use with_shortcuts() in the plugin builder because if ANY
+            // shortcut conflicts (e.g., Alt+Space taken by another app), the entire
+            // plugin init fails and crashes the app. Instead, register each one
+            // individually here with graceful error handling.
+            {
+                let app_handle = app.handle().clone();
+                let qa_str = qa_str_for_register.clone();
+                tauri::async_runtime::spawn(async move {
+                    // Wait for the event loop to start so run_main_thread! can dispatch
+                    tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+
+                    let gs = app_handle.global_shortcut();
+
+                    if let Err(e) = gs.register(qa_str.as_str()) {
+                        log::warn!("[Shortcut] Failed to register QA shortcut '{}': {}", qa_str, e);
+                    } else {
+                        log::warn!("[Shortcut] Registered QA shortcut: {}", qa_str);
+                    }
+                });
+            }
 
             // Initialize OMNIX Status Dock floating window
             let _status_dock = tauri::WebviewWindowBuilder::new(
@@ -114,7 +189,7 @@ pub fn run() {
             commands::get_active_agent_model,
             commands::update_active_agent_model,
             commands::get_agent_accounts,
-            commands::create_agent_account,
+            commands::save_agent_account,
             commands::switch_agent_account,
             commands::delete_agent_account,
             commands::get_all_memories,
@@ -148,13 +223,24 @@ pub fn run() {
             commands::save_platform_model,
             commands::delete_platform_model,
             commands::get_active_models,
+            commands::get_available_models,
             commands::fetch_remote_models,
             commands::check_model_status,
             commands::batch_check_models,
+            commands::reinfer_model_capabilities,
+            // Multi-Key API Key Management
+            commands::add_platform_api_key,
+            commands::list_platform_api_keys,
+            commands::select_platform_api_key,
+            commands::delete_platform_api_key,
+            commands::reveal_platform_api_key,
             commands::get_conversation_messages,
             commands::create_conversation,
             commands::add_conversation_message,
             commands::delete_conversation,
+            commands::get_archived_conversations,
+            commands::archive_conversation,
+            commands::unarchive_conversation,
             commands::get_previewable_files,
             commands::read_file_content_utf8,
             commands::read_file_as_base64,
@@ -285,6 +371,9 @@ pub fn run() {
             commands::save_autopilot_result_to_kb,
             // Odysseus-Inspired Features
             commands::wrap_untrusted_content,
+            commands::scan_prompt_injection,
+            // Selection Auto-Capture
+            commands::toggle_selection_auto_capture,
             commands::checklist_add,
             commands::checklist_update,
             commands::checklist_get,
@@ -310,6 +399,12 @@ pub fn run() {
             commands::restore_backup,
             // API Provider Preset (ZCF inspired)
             commands::apply_api_preset,
+            // MCP Presets (ZCF inspired)
+            commands::get_mcp_presets,
+            commands::apply_mcp_preset,
+            // Output Styles (ZCF inspired)
+            commands::get_output_styles,
+            commands::get_output_style_prompt,
             // Architecture Graph (Understand-Anything inspired)
             commands::build_architecture_graph,
             commands::save_architecture_graph,
@@ -354,6 +449,9 @@ pub fn run() {
             // YOLO Mode (AionUi inspired)
             commands::get_yolo_mode,
             commands::set_yolo_mode,
+            commands::get_yolo_mode_config,
+            commands::set_yolo_mode_config,
+            commands::check_yolo_permission,
             // Persistent Cron (AionUi inspired)
             commands::get_persistent_cron_tasks,
             commands::create_persistent_cron,

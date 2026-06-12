@@ -4,10 +4,9 @@
 //! OpenAI-compatible format serves as the canonical wire format.
 //! New platforms only need to implement this trait — no proxy.rs changes needed.
 //!
-//! NOTE: This module defines the abstraction layer. Integration with proxy.rs
-//! will happen in a follow-up refactor.
-
-#![allow(dead_code)]
+//! INTEGRATION STATUS: Types are used by proxy_middleware.rs for pipeline context.
+//! Concrete provider implementations (OpenAI, Anthropic, etc.) will be added
+//! as the proxy migration progresses.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

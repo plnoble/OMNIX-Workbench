@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/sonner";
+import { DEFAULT_PROXY_PORT } from "@/lib/constants";
 
 interface AgentAccount {
   id: string;
@@ -65,11 +66,7 @@ const WEB_EXPERTS: WebExpert[] = [
   }
 ];
 
-interface CompareHubProps {
-  proxyPort: string;
-}
-
-export const CompareHub: React.FC<CompareHubProps> = ({ proxyPort }) => {
+export const CompareHub: React.FC = () => {
   const [mode, setMode] = useState<"api" | "web">("api");
   const [prompt, setPrompt] = useState("");
   const [accounts, setAccounts] = useState<AgentAccount[]>([]);
@@ -180,12 +177,12 @@ export const CompareHub: React.FC<CompareHubProps> = ({ proxyPort }) => {
     setApiResults(initialResults);
     setFusionContent("");
 
-    // Concurrently trigger fetch requests
-    selectedApiAccs.forEach(async (accId) => {
+    // Concurrently trigger fetch requests (use Promise.all for proper async handling)
+    const apiPromises = selectedApiAccs.map(async (accId) => {
       const controller = new AbortController();
       abortControllersRef.current.push(controller);
       try {
-        const response = await fetch(`http://localhost:${proxyPort}/v1/chat/completions`, {
+        const response = await fetch(`http://localhost:${DEFAULT_PROXY_PORT}/v1/chat/completions`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -273,6 +270,8 @@ export const CompareHub: React.FC<CompareHubProps> = ({ proxyPort }) => {
         abortControllersRef.current = abortControllersRef.current.filter(c => c !== controller);
       }
     });
+    // Fire all promises concurrently (forEach doesn't await, but we want concurrent anyway)
+    Promise.allSettled(apiPromises);
   };
 
   // Sync Layout calculation and positioning of sub-Webview windows over HTML placeholders
@@ -330,7 +329,7 @@ export const CompareHub: React.FC<CompareHubProps> = ({ proxyPort }) => {
     // Write to clipboard as a safety copy
     navigator.clipboard.writeText(prompt).catch(() => { /* non-critical */ });
 
-    selectedWebExps.forEach(async (expId) => {
+    selectedWebExps.forEach((expId) => {
       const exp = WEB_EXPERTS.find(e => e.id === expId);
       if (!exp) return;
 
@@ -529,7 +528,7 @@ ${sources}
     fusionAbortControllerRef.current = controller;
 
     try {
-      const response = await fetch(`http://localhost:${proxyPort}/v1/chat/completions`, {
+      const response = await fetch(`http://localhost:${DEFAULT_PROXY_PORT}/v1/chat/completions`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -572,7 +571,7 @@ ${sources}
                 const delta = dataObj.choices?.[0]?.delta?.content || "";
                 accumText += delta;
                 setFusionContent(accumText);
-              } catch (err) {}
+              } catch (_err) { /* non-JSON SSE line, skip */ }
             }
           }
         }
@@ -612,16 +611,26 @@ ${sources}
           </span>
         </div>
 
-        <div className="tab-switcher flex bg-white/[0.03] p-1 rounded-lg border border-border">
+        <div className="tab-switcher flex bg-muted/10 p-1 rounded-lg border border-border">
           <button
-            className={cn("btn-tab", mode === "api" && "active", "px-4 py-1.5 border-none text-white rounded-md text-xs cursor-pointer", mode === "api" ? "bg-[var(--accent-color)]" : "bg-transparent")}
+            className={cn(
+              "px-4 py-1.5 border-none rounded-md text-xs cursor-pointer transition-all",
+              mode === "api"
+                ? "bg-accent text-accent-foreground font-medium shadow-sm"
+                : "bg-transparent text-muted-foreground hover:text-foreground"
+            )}
             onClick={() => { setMode("api"); handleCloseWebCompare(); }}
             disabled={webActive}
           >
             🔌 API 并行极速比对
           </button>
           <button
-            className={cn("btn-tab", mode === "web" && "active", "px-4 py-1.5 border-none text-white rounded-md text-xs cursor-pointer", mode === "web" ? "bg-[var(--accent-color)]" : "bg-transparent")}
+            className={cn(
+              "px-4 py-1.5 border-none rounded-md text-xs cursor-pointer transition-all",
+              mode === "web"
+                ? "bg-accent text-accent-foreground font-medium shadow-sm"
+                : "bg-transparent text-muted-foreground hover:text-foreground"
+            )}
             onClick={() => setMode("web")}
             disabled={webActive}
           >
@@ -633,11 +642,11 @@ ${sources}
       {/* Selector Error Banner */}
       {selectorError && (
         <div className="card p-3 flex justify-between items-center bg-red-500/[0.08] border border-dashed border-red-500/40 rounded-lg">
-          <span className="text-sm text-red-300 font-medium">
+          <span className="text-sm text-red-500 dark:text-red-400 font-medium">
             ⚠️ {selectorError}
           </span>
           <button
-            className="btn btn-secondary px-2.5 py-1 text-xs border border-red-500/20 text-red-300 bg-transparent cursor-pointer"
+            className="btn btn-secondary px-2.5 py-1 text-xs border border-red-500/30 text-red-500 dark:text-red-400 bg-transparent cursor-pointer"
             onClick={() => setSelectorError(null)}
           >
             我知道了
@@ -659,7 +668,7 @@ ${sources}
                   key={acc.id}
                   className={cn(
                     "checkbox-label flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer",
-                    selectedApiAccs.includes(acc.id) ? "checked bg-purple-500/12 border border-purple-500" : "bg-white/[0.02] border border-border",
+                    selectedApiAccs.includes(acc.id) ? "checked bg-purple-500/12 border border-purple-500" : "bg-muted/5 border border-border",
                     !connected && "cursor-not-allowed opacity-60"
                   )}
                   title={connected ? `模型: ${acc.target_model}` : "未配置 API Key"}
@@ -700,7 +709,7 @@ ${sources}
                 key={exp.id}
                 className={cn(
                   "flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer",
-                  selectedWebExps.includes(exp.id) ? "bg-pink-500/10 border border-pink-500" : "bg-white/[0.02] border border-border"
+                  selectedWebExps.includes(exp.id) ? "bg-pink-500/10 border border-pink-500" : "bg-muted/5 border border-border"
                 )}
               >
                 <input
@@ -742,17 +751,20 @@ ${sources}
 
       {/* Central Input Prompt Form */}
       {(!webActive || mode === "web") && (
-        <form onSubmit={mode === "api" ? handleApiCompareSubmit : (e) => e.preventDefault()} className="card p-4 flex flex-col gap-3">
+        <form onSubmit={mode === "api" ? handleApiCompareSubmit : (e) => e.preventDefault()} className="card p-5 flex flex-col gap-4">
           <div className="form-group">
-            <label className="flex justify-between">
-              <span>输入开发提问/提示词 (System Prompt)</span>
+            <label className="flex justify-between items-center mb-2">
+              <span className="text-sm font-semibold text-foreground">
+                📝 输入开发提问 / System Prompt
+              </span>
               <span className="text-xs text-muted-foreground">
-                快捷模板：点选常用 CORS 域名跨域、异步 Tokio 死锁、线程安全缓存
+                ⚡ 快捷模板：点选下方常用问题
               </span>
             </label>
             <textarea
-              className="form-input"
-              rows={3}
+              className="w-full bg-muted/10 border border-border rounded-lg px-3.5 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30 resize-y leading-relaxed font-mono"
+              rows={6}
+              style={{ minHeight: "140px", maxHeight: "400px" }}
               placeholder="例如：分析以下 Rust Tokio 并发死锁的根本原因，并给出优化好的线程安全锁方案..."
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
@@ -762,13 +774,13 @@ ${sources}
 
           <div className="flex gap-2.5">
             {mode === "api" ? (
-              <button type="submit" className="btn btn-primary flex-1 flex items-center justify-center gap-1.5">
+              <button type="submit" className="btn btn-primary flex-1 flex items-center justify-center gap-1.5 py-2.5">
                 🎯 开始 API 并行比对
               </button>
             ) : (
               <button
                 type="button"
-                className="btn btn-primary flex-1 flex items-center justify-center gap-1.5"
+                className="btn btn-primary flex-1 flex items-center justify-center gap-1.5 py-2.5"
                 onClick={handleWebSyncPrompt}
                 disabled={!webActive}
               >
@@ -777,10 +789,29 @@ ${sources}
             )}
           </div>
 
-          <div className="flex flex-wrap gap-1.5">
-            <span className="cap-badge speedy cursor-pointer" onClick={() => setPrompt("如何解决 Node.js 跨域请求（CORS）中首发 OPTIONS 预检请求抛出的 403 跨域失败错误？")}>CORS OPTIONS 预检</span>
-            <span className="cap-badge reas cursor-pointer" onClick={() => setPrompt("分析以下 Rust 代码在使用 tokio::sync::Mutex 时为什么在多路 select 中造成死锁，如何用 std 或 ParkingLot 锁修复？")}>Tokio 异步死锁</span>
-            <span className="cap-badge cod cursor-pointer" onClick={() => setPrompt("编写一个用 Rust 泛型实现的高并发 Thread-Safe LruCache 缓存模块，要求附带生命周期淘汰逻辑与单元测试用例。")}>高并发线程安全缓存</span>
+          <div className="flex flex-wrap gap-2 pt-1 border-t border-border">
+            <span className="text-xs text-muted-foreground mr-1 self-center">模板：</span>
+            <button
+              type="button"
+              className="text-xs px-2.5 py-1 rounded-full border border-border bg-muted/10 hover:bg-accent/10 hover:border-accent/40 hover:text-accent text-foreground cursor-pointer transition-colors"
+              onClick={() => setPrompt("如何解决 Node.js 跨域请求（CORS）中首发 OPTIONS 预检请求抛出的 403 跨域失败错误？")}
+            >
+              CORS OPTIONS 预检
+            </button>
+            <button
+              type="button"
+              className="text-xs px-2.5 py-1 rounded-full border border-border bg-muted/10 hover:bg-accent/10 hover:border-accent/40 hover:text-accent text-foreground cursor-pointer transition-colors"
+              onClick={() => setPrompt("分析以下 Rust 代码在使用 tokio::sync::Mutex 时为什么在多路 select 中造成死锁，如何用 std 或 ParkingLot 锁修复？")}
+            >
+              Tokio 异步死锁
+            </button>
+            <button
+              type="button"
+              className="text-xs px-2.5 py-1 rounded-full border border-border bg-muted/10 hover:bg-accent/10 hover:border-accent/40 hover:text-accent text-foreground cursor-pointer transition-colors"
+              onClick={() => setPrompt("编写一个用 Rust 泛型实现的高并发 Thread-Safe LruCache 缓存模块，要求附带生命周期淘汰逻辑与单元测试用例。")}
+            >
+              高并发线程安全缓存
+            </button>
           </div>
         </form>
       )}
@@ -801,7 +832,7 @@ ${sources}
                     <strong className="text-sm block">{res.accountName}</strong>
                     <span className="text-xs text-muted-foreground">{res.model}</span>
                     {res.latencyMs && !res.loading && (
-                      <span className="text-[10px] text-cyan-400 ml-2">
+                      <span className="text-xs text-cyan-400 ml-2">
                         ⏱ {(res.latencyMs / 1000).toFixed(1)}s · ~{Math.ceil(res.tokenCount! / 4)} tokens
                       </span>
                     )}
@@ -809,13 +840,13 @@ ${sources}
                   {res.loading ? (
                     <span className="pulse-dot active" title="正在生成实时流..." />
                   ) : (
-                    <button className="btn-icon border-none bg-transparent cursor-pointer text-sm" onClick={() => handleCopyText(res.content)} title="复制代码">
+                    <button className="btn-icon border-none bg-transparent cursor-pointer text-sm" onClick={() => handleCopyText(res.content)} title="复制代码" aria-label="复制代码">
                       📋
                     </button>
                   )}
                 </div>
 
-                <div className="flex-1 min-h-[180px] overflow-y-auto text-sm leading-relaxed whitespace-pre-wrap text-gray-200">
+                <div className="flex-1 min-h-[180px] overflow-y-auto text-sm leading-relaxed whitespace-pre-wrap text-foreground">
                   {res.error ? (
                     <span className="text-red-500">🚫 错误: {res.error}</span>
                   ) : (
@@ -831,13 +862,13 @@ ${sources}
       {/* Web Columns Placeholders */}
       {mode === "web" && webActive && (
         // TODO: migrate to Tailwind - gridTemplateColumns is dynamic based on selectedWebExps.length
-        <div style={{ display: "grid", gridTemplateColumns: `repeat(${selectedWebExps.length}, 1fr)` }} className="gap-3 h-[450px] border border-border rounded-xl bg-black/15 p-2 overflow-hidden">
+        <div style={{ display: "grid", gridTemplateColumns: `repeat(${selectedWebExps.length}, 1fr)` }} className="gap-3 h-[450px] border border-border rounded-xl bg-muted/10 p-2 overflow-hidden">
           {selectedWebExps.map(expId => {
             const exp = WEB_EXPERTS.find(e => e.id === expId);
             return (
               <div
                 key={expId}
-                className="web-placeholder-card h-full rounded-lg border border-dashed border-white/[0.06] bg-black/45 flex items-center justify-center relative"
+                className="web-placeholder-card h-full rounded-lg border border-dashed border-border bg-muted/5 flex items-center justify-center relative"
                 data-exp-id={expId}
               >
                 {/* Visual indicator for HTML placeholder bounding box */}
@@ -860,7 +891,7 @@ ${sources}
         }}>
           <div className="flex justify-between items-center">
             <div>
-              <strong className="text-base text-purple-100 block">🔮 AI 专家比对总结熔炼炉 (Fusion Summary Furnace)</strong>
+              <strong className="text-base text-foreground block">🔮 AI 专家比对总结熔炼炉 (Fusion Summary Furnace)</strong>
               <span className="text-xs text-muted-foreground">
                 {mode === "api"
                   ? "提取上述所有 API 专家的回答内容进行智能提炼，融合出最安全、无漏洞的最优系统级决策。"
@@ -878,10 +909,10 @@ ${sources}
           </div>
 
           {(fusionLoading || fusionContent) && (
-            <div className="bg-black/35 border border-purple-500/15 rounded-lg p-4 min-h-[100px] text-sm leading-relaxed text-gray-200 whitespace-pre-wrap relative">
+            <div className="bg-muted/10 border border-purple-500/15 rounded-lg p-4 min-h-[100px] text-sm leading-relaxed text-foreground whitespace-pre-wrap relative">
               {fusionContent ? (
                 <>
-                  <div className="flex justify-end mb-2 border-b border-white/[0.04] pb-1.5">
+                  <div className="flex justify-end mb-2 border-b border-border pb-1.5">
                     <button className="btn-icon border-none bg-transparent cursor-pointer text-sm" onClick={() => handleCopyText(fusionContent)} title="复制熔炼方案">
                       📋 复制方案
                     </button>

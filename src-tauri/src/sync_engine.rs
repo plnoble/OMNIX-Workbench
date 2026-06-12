@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use crate::db::DbManager;
 use crate::tool_adapters::{AdapterRegistry, SyncMode};
+use log::warn;
 
 // ─────────────────────────────────────────────
 // Conflict Detection
@@ -524,13 +525,7 @@ impl SyncEngine {
 
 /// Compute FNV-1a hash over full content (non-cryptographic, for change detection)
 pub fn compute_content_hash(content: &str) -> String {
-    let data = content.as_bytes();
-    let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in data {
-        hash ^= *byte as u64;
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    format!("fnv-{:016x}", hash)
+    crate::hash::fnv1a_hash(content)
 }
 
 // ══════════════════════════════════════════════════
@@ -1133,7 +1128,7 @@ impl SyncEngine {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             // Non-fatal: repo might be up to date or have conflicts
-            eprintln!("[git_pull] Warning: {}", stderr.trim());
+            log::warn!("[git_pull] Warning: {}", stderr.trim());
         }
         Ok(())
     }

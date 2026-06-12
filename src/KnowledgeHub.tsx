@@ -34,7 +34,7 @@ function EmbeddingStatusBadge({ status }: { status: string }) {
     failed: { className: "bg-red-500/20 text-red-400 border-red-500/30", label: "失败" },
   };
   const v = variants[status] || variants.pending;
-  return <Badge variant="outline" className={cn("text-[10px] px-1.5 py-0", v.className)}>{v.label}</Badge>;
+  return <Badge variant="outline" className={cn("text-xs px-1.5 py-0", v.className)}>{v.label}</Badge>;
 }
 
 function FileTypeIcon({ fileType }: { fileType: string }) {
@@ -137,9 +137,9 @@ export function KnowledgeHub() {
   // ── Render ──────────────────────────────────────────
 
   return (
-    <div className="flex h-full">
+    <div className="flex h-full w-full min-w-0">
       {/* ── Left Panel: Document List ── */}
-      <div className="w-64 border-r border-border flex flex-col bg-card/50">
+      <div className="w-48 sm:w-64 border-r border-border flex flex-col bg-card/50">
         <div className="p-3 border-b border-border flex items-center justify-between">
           <h3 className="text-sm font-semibold text-foreground flex items-center gap-1.5">
             <BookOpen className="h-4 w-4 text-cyan-400" />
@@ -193,7 +193,7 @@ export function KnowledgeHub() {
                   key={t}
                   size="sm"
                   variant={kb.importForm.fileType === t ? "default" : "ghost"}
-                  className="h-6 text-[10px] px-2"
+                  className="h-6 text-xs px-2"
                   onClick={() => kb.updateImportForm("fileType", t)}
                 >
                   {t === "markdown" ? "MD" : t === "code" ? "Code" : "Text"}
@@ -207,11 +207,11 @@ export function KnowledgeHub() {
               className="min-h-[80px] text-xs"
             />
             <div className="flex gap-1">
-              <Button size="sm" className="h-6 text-[10px] flex-1" onClick={handleImport} disabled={kb.isImporting}>
+              <Button size="sm" className="h-6 text-xs flex-1" onClick={handleImport} disabled={kb.isImporting}>
                 {kb.isImporting ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Upload className="h-3 w-3 mr-1" />}
                 导入
               </Button>
-              <Button size="sm" variant="ghost" className="h-6 text-[10px]" onClick={() => kb.setShowImportForm(false)}>
+              <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={() => kb.setShowImportForm(false)}>
                 取消
               </Button>
             </div>
@@ -224,7 +224,7 @@ export function KnowledgeHub() {
             <div className="text-center text-muted-foreground text-xs mt-8">
               <BookOpen className="h-8 w-8 mx-auto mb-2 opacity-30" />
               <p>暂无文档</p>
-              <p className="text-[10px] mt-1">点击 ↑ 导入文档开始</p>
+              <p className="text-xs mt-1">点击 ↑ 导入文档开始</p>
             </div>
           )}
           {kb.documents.map(doc => (
@@ -253,7 +253,7 @@ export function KnowledgeHub() {
                 </Button>
               </div>
               <div className="flex items-center gap-2 mt-1 text-muted-foreground">
-                <span className="text-[10px]">{doc.chunk_count} chunks</span>
+                <span className="text-xs">{doc.chunk_count} chunks</span>
                 <EmbeddingStatusBadge status={doc.embedding_status} />
               </div>
             </div>
@@ -264,7 +264,7 @@ export function KnowledgeHub() {
         <div className="p-3 border-t border-border space-y-2">
           <div className="flex items-center gap-1.5">
             <Brain className="h-3.5 w-3.5 text-purple-400" />
-            <span className="text-[10px] font-medium text-muted-foreground">嵌入模型</span>
+            <span className="text-xs font-medium text-muted-foreground">嵌入模型</span>
           </div>
           <select
             className="w-full h-7 rounded-md bg-background border border-border text-xs px-2"
@@ -280,7 +280,7 @@ export function KnowledgeHub() {
           </select>
           <Button
             size="sm"
-            className="w-full h-7 text-[10px]"
+            className="w-full h-7 text-xs"
             onClick={handleGenerateEmbeddings}
             disabled={!kb.selectedDocId || kb.isEmbedding || !kb.selectedEmbedModel}
           >
@@ -291,7 +291,7 @@ export function KnowledgeHub() {
             <Button
               size="sm"
               variant="outline"
-              className="w-full h-7 text-[10px]"
+              className="w-full h-7 text-xs"
               onClick={handleBatchEmbed}
               disabled={kb.isEmbedding || !kb.selectedEmbedModel}
             >
@@ -352,17 +352,17 @@ export function KnowledgeHub() {
                     >
                       <CardContent className="p-3">
                         <div className="flex items-center gap-2 mb-1">
-                          <Badge variant="outline" className="text-[10px] h-5">#{chunk.chunk_index}</Badge>
-                          <span className="text-[10px] text-muted-foreground">
+                          <Badge variant="outline" className="text-xs h-5">#{chunk.chunk_index}</Badge>
+                          <span className="text-xs text-muted-foreground">
                             {chunk.char_start}–{chunk.char_end} chars
                           </span>
                           {chunk.has_embedding && (
-                            <Badge variant="outline" className="text-[10px] h-5 bg-green-500/10 text-green-400 border-green-500/30">
+                            <Badge variant="outline" className="text-xs h-5 bg-green-500/10 text-green-400 border-green-500/30">
                               已嵌入
                             </Badge>
                           )}
                           {typeof chunk.metadata?.heading === "string" && (
-                            <Badge variant="outline" className="text-[10px] h-5 bg-purple-500/10 text-purple-400 border-purple-500/30">
+                            <Badge variant="outline" className="text-xs h-5 bg-purple-500/10 text-purple-400 border-purple-500/30">
                               {chunk.metadata.heading}
                             </Badge>
                           )}
@@ -409,23 +409,23 @@ export function KnowledgeHub() {
                   >
                     <CardContent className="p-3">
                       <div className="flex items-center gap-2 mb-1">
-                        <Badge variant="outline" className="text-[10px] h-5">#{result.rank}</Badge>
+                        <Badge variant="outline" className="text-xs h-5">#{result.rank}</Badge>
                         {result.bm25_score !== null && (
-                          <Badge variant="outline" className="text-[10px] h-5 bg-blue-500/10 text-blue-400 border-blue-500/30">
+                          <Badge variant="outline" className="text-xs h-5 bg-blue-500/10 text-blue-400 border-blue-500/30">
                             BM25: {result.bm25_score.toFixed(4)}
                           </Badge>
                         )}
                         {result.vector_score !== null && (
-                          <Badge variant="outline" className="text-[10px] h-5 bg-purple-500/10 text-purple-400 border-purple-500/30">
+                          <Badge variant="outline" className="text-xs h-5 bg-purple-500/10 text-purple-400 border-purple-500/30">
                             Vec: {result.vector_score.toFixed(4)}
                           </Badge>
                         )}
-                        <Badge variant="outline" className="text-[10px] h-5 bg-cyan-500/10 text-cyan-400 border-cyan-500/30">
+                        <Badge variant="outline" className="text-xs h-5 bg-cyan-500/10 text-cyan-400 border-cyan-500/30">
                           RRF: {result.rrf_score.toFixed(6)}
                         </Badge>
                       </div>
                       <p className="text-xs text-muted-foreground line-clamp-3">{result.content}</p>
-                      <p className="text-[10px] text-muted-foreground mt-1">文档: {result.document_id}</p>
+                      <p className="text-xs text-muted-foreground mt-1">文档: {result.document_id}</p>
                     </CardContent>
                   </Card>
                 ))}
@@ -438,7 +438,7 @@ export function KnowledgeHub() {
             <div className="h-full flex flex-col">
               {/* Config bar */}
               <div className="p-3 border-b border-border flex items-center gap-2">
-                <span className="text-[10px] text-muted-foreground">对话模型:</span>
+                <span className="text-xs text-muted-foreground">对话模型:</span>
                 <Input
                   placeholder="deepseek-chat"
                   value={kb.ragChatModel}
@@ -462,10 +462,10 @@ export function KnowledgeHub() {
                     <p className="whitespace-pre-wrap text-xs leading-relaxed">{msg.content}</p>
                     {msg.sources && msg.sources.length > 0 && (
                       <details className="mt-2">
-                        <summary className="text-[10px] text-cyan-400 cursor-pointer">查看来源 ({msg.sources.length})</summary>
+                        <summary className="text-xs text-cyan-400 cursor-pointer">查看来源 ({msg.sources.length})</summary>
                         <div className="mt-1 space-y-1">
                           {msg.sources.map((s, j) => (
-                            <p key={j} className="text-[10px] text-muted-foreground line-clamp-2">
+                            <p key={j} className="text-xs text-muted-foreground line-clamp-2">
                               [{j + 1}] {s.content.slice(0, 100)}…
                             </p>
                           ))}
@@ -502,7 +502,7 @@ export function KnowledgeHub() {
       </div>
 
       {/* ── Right Panel: Detail ── */}
-      <div className="w-80 border-l border-border flex flex-col bg-card/30">
+      <div className="hidden lg:flex lg:w-80 border-l border-border flex-col bg-card/30">
         <div className="p-3 border-b border-border">
           <h3 className="text-sm font-semibold text-foreground flex items-center gap-1.5">
             <ChevronRight className="h-4 w-4 text-cyan-400" />
@@ -523,24 +523,24 @@ export function KnowledgeHub() {
                 {chunk && (
                   <>
                     <div>
-                      <p className="text-[10px] text-muted-foreground">ID</p>
+                      <p className="text-xs text-muted-foreground">ID</p>
                       <p className="text-xs font-mono break-all">{chunk.id}</p>
                     </div>
                     <div>
-                      <p className="text-[10px] text-muted-foreground">位置</p>
+                      <p className="text-xs text-muted-foreground">位置</p>
                       <p className="text-xs">{chunk.char_start} – {chunk.char_end} chars</p>
                     </div>
                     <Separator />
                     <div>
-                      <p className="text-[10px] text-muted-foreground mb-1">内容</p>
+                      <p className="text-xs text-muted-foreground mb-1">内容</p>
                       <pre className="text-xs whitespace-pre-wrap bg-muted/50 rounded p-2 max-h-[400px] overflow-y-auto">
                         {chunk.content}
                       </pre>
                     </div>
                     {chunk.metadata && Object.keys(chunk.metadata).length > 0 && (
                       <div>
-                        <p className="text-[10px] text-muted-foreground mb-1">元数据</p>
-                        <pre className="text-[10px] whitespace-pre-wrap bg-muted/50 rounded p-2">
+                        <p className="text-xs text-muted-foreground mb-1">元数据</p>
+                        <pre className="text-xs whitespace-pre-wrap bg-muted/50 rounded p-2">
                           {JSON.stringify(chunk.metadata, null, 2)}
                         </pre>
                       </div>
@@ -551,7 +551,7 @@ export function KnowledgeHub() {
                   <>
                     <Separator />
                     <div>
-                      <p className="text-[10px] text-muted-foreground">搜索分数</p>
+                      <p className="text-xs text-muted-foreground">搜索分数</p>
                       <div className="space-y-1 mt-1">
                         {searchResult.bm25_score !== null && (
                           <div className="flex justify-between text-xs">

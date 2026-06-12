@@ -7,7 +7,7 @@
 
 import { useState, useCallback } from "react";
 import { platformApi, modelApi } from "@/lib/tauri-api";
-import type { ModelPlatform, PlatformModel, ModelTestState, ProviderType } from "@/types";
+import type { ModelPlatform, PlatformModel, ModelTestState, ProviderType, HealthCheckDetail } from "@/types";
 
 type CapabilityField = "vision" | "audio" | "reasoning" | "coding" | "long_context" | "tool_use" | "embedding" | "speedy";
 
@@ -79,7 +79,7 @@ export interface UsePlatformsReturn {
   // Model actions
   toggleModelEnabled: (model: PlatformModel) => Promise<void>;
   toggleCapability: (model: PlatformModel, field: CapabilityField) => Promise<void>;
-  testModel: (modelId: string) => Promise<string>;
+  testModel: (modelId: string) => Promise<HealthCheckDetail>;
   saveCustomModel: () => Promise<void>;
   deleteModel: (id: string) => Promise<void>;
   loadActiveModels: () => Promise<void>;
@@ -168,6 +168,22 @@ export function usePlatforms(): UsePlatformsReturn {
     };
 
     await platformApi.save(newPlatform);
+
+    // Auto-add API key to platform_api_keys table if provided
+    // (handles the case where user types a key in the simple input for new platforms)
+    if (platformForm.api_key.trim() && platformForm.api_type !== "ollama") {
+      try {
+        const { apiKeyApi } = await import("@/lib/tauri-api");
+        // Check if this platform already has keys
+        const existing = await apiKeyApi.list(id);
+        if (existing.length === 0) {
+          await apiKeyApi.add(id, platformForm.api_key.trim(), "主 Key");
+        }
+      } catch (e) {
+        console.error("[usePlatforms] Failed to auto-add API key:", e);
+      }
+    }
+
     setShowPlatformModal(false);
     setEditingPlatform(null);
     setPlatformForm(EMPTY_PLATFORM_FORM);
@@ -198,14 +214,21 @@ export function usePlatforms(): UsePlatformsReturn {
     try {
       const updated = await modelApi.batchCheck(platformId);
       setPlatformModels(updated);
-      // Sync testing state from results
+      // Sync testing state from model status values
       const newTestingState: Record<string, ModelTestState> = {};
       for (const m of updated) {
-        newTestingState[m.id] = m.status === "success" ? "success" : m.status === "error" ? "error" : "idle";
+        // Map backend status string to ModelTestState
+        const s = m.status;
+        newTestingState[m.id] = (
+          s === "success" || s === "auth_error" || s === "rate_limited" ||
+          s === "error" || s === "unreachable" || s === "no_api_key"
+        ) ? s as ModelTestState : "idle";
       }
       setModelTestingState((prev) => ({ ...prev, ...newTestingState }));
     } catch (e) {
       console.error("[usePlatforms] Batch test failed:", e);
+      const { toast } = await import("@/components/ui/sonner");
+      toast.error("健康检测失败：" + String(e));
     } finally {
       setBatchTesting((prev) => ({ ...prev, [platformId]: false }));
     }
@@ -260,10 +283,8 @@ export function usePlatforms(): UsePlatformsReturn {
     setModelTestingState((prev) => ({ ...prev, [modelId]: "testing" }));
     try {
       const res = await modelApi.checkStatus(modelId);
-      setModelTestingState((prev) => ({
-        ...prev,
-        [modelId]: res === "success" ? "success" : "error",
-      }));
+      // res is HealthCheckDetail { status, http_code, latency_ms, message }
+      setModelTestingState((prev) => ({ ...prev, [modelId]: res.status as ModelTestState }));
       return res;
     } catch (e) {
       console.error("[usePlatforms] Model test failed:", e);

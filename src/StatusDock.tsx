@@ -154,6 +154,7 @@ export default function StatusDock() {
         onContextMenu={handleContextMenu}
         title="左键拖动 | 单击唤起主窗口 | 右键打开菜单"
         className="flex items-center cursor-grab select-none box-border"
+        aria-label="OMNIX DevFlow 悬浮栏：拖动移动，单击唤起主窗口，右键打开菜单"
         style={{
           width: `${DOCK_W}px`,
           height: `${DOCK_H}px`,
@@ -204,11 +205,11 @@ export default function StatusDock() {
 
         {/* Text Area */}
         <div className="flex flex-col grow min-w-0">
-          <span className="text-xs font-bold text-white leading-tight" style={{ letterSpacing: "0.3px" }}>
+          <span className="text-xs font-bold text-foreground leading-tight" style={{ letterSpacing: "0.3px" }}>
             OMNIX DevFlow
           </span>
           <span
-            className="text-[9px] font-medium leading-snug whitespace-nowrap truncate opacity-85"
+            className="text-xs font-medium leading-snug whitespace-nowrap truncate opacity-85"
             style={{
               color: cfg.color,
               transition: "color 0.3s ease",
@@ -326,7 +327,7 @@ function MenuItem({ children, onClick, disabled, muted }: {
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       className={cn(
-        "py-2 px-3 text-[10px] font-medium select-none",
+        "py-2 px-3 text-xs font-medium select-none",
         disabled ? "cursor-not-allowed" : "cursor-pointer"
       )}
       style={{

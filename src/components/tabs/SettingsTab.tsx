@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 /**
- * SettingsTab — 模型中转代理与网关设置
+ * SettingsTab — 应用设置
  *
  * Sub-tabs: Platform (Model Hub), System, MCP Servers, Backup
  */
@@ -17,11 +17,14 @@ import { Badge } from "@/components/ui/badge";
 import {
   Plus, Edit, Trash2, RefreshCw, Eye, Brain, Mic, Code,
   Maximize2, Wrench, Layers, Zap, Activity,
-  Save, Plug, Settings, MousePointerClick, Clock, Copy,
+  Save, Plug, Settings, MousePointerClick,
   Languages, ArrowRightLeft, Search, Server, Database, Download, Upload,
+  ExternalLink, Store, Key, FileText,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/sonner";
+import { modelApi } from "@/lib/tauri-api";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { BUILTIN_LANGUAGES } from "@/lib/translate-constants";
 import type { ModelPlatform, PlatformModel, AgentAccount, ModelTestState, SettingsSubTab, SelectionHistoryEntry, SearchProvider, WebSearchResult, McpServer, BackupTableInfo, ImportResult } from "@/types";
 
@@ -43,8 +46,8 @@ interface SettingsTabProps {
   onFetchRemoteModels: () => void;
   onAddModel: () => void;
   onToggleModelEnabled: (model: PlatformModel) => void;
-  onToggleCapability: (model: PlatformModel, field: "vision" | "audio" | "reasoning" | "coding" | "long_context" | "tool_use" | "embedding" | "speedy") => void;
-  onTestModel: (id: string) => Promise<string>;
+  // onToggleCapability removed — capabilities are now auto-detected
+  onTestModel: (id: string) => Promise<import("@/types").HealthCheckDetail>;
   onDeleteModel: (id: string) => void;
   batchTesting: Record<string, boolean>;
   onBatchTestModels: (platformId: string) => void;
@@ -57,20 +60,14 @@ interface SettingsTabProps {
   onSwitchAccount: (id: string) => void;
 
   // Settings form
-  apiKey: string;
-  apiHost: string;
   targetModel: string;
-  proxyPort: string;
   gpuAcceleration: boolean;
   idleTimeout: string;
   autoStart: boolean;
   startToTray: boolean;
   useWsl: boolean;
   wslDistro: string;
-  setApiKey: (v: string) => void;
-  setApiHost: (v: string) => void;
   setTargetModel: (v: string) => void;
-  setProxyPort: (v: string) => void;
   setGpuAcceleration: (v: boolean) => void;
   setIdleTimeout: (v: string) => void;
   setAutoStart: (v: boolean) => void;
@@ -80,7 +77,6 @@ interface SettingsTabProps {
   onSaveSettings: () => Promise<void>;
 
   // Selection Assistant
-  selectionShortcut: string;
   selectionCaptureMode: string;
   selectionShowOnCapture: boolean;
   selectionPreserveClipboard: boolean;
@@ -88,7 +84,6 @@ interface SettingsTabProps {
   lastSelectionCapture: string | null;
   selectionCaptureError: string | null;
   selectionHistory: SelectionHistoryEntry[];
-  onSetSelectionShortcut: (v: string) => void;
   onSetSelectionCaptureMode: (v: string) => void;
   onSetSelectionShowOnCapture: (v: boolean) => void;
   onSetSelectionPreserveClipboard: (v: boolean) => void;
@@ -127,6 +122,13 @@ interface SettingsTabProps {
   onAddSearchProvider: () => void;
   onEditSearchProvider: (provider: SearchProvider) => void;
   onDeleteSearchProvider: (id: string) => Promise<void>;
+  // Search provider modal
+  showSearchProviderModal: boolean;
+  editingSearchProvider: SearchProvider | null;
+  searchProviderForm: { id: string; name: string; api_type: string; api_key: string; api_address: string; is_enabled: boolean };
+  onCloseSearchProviderModal: () => void;
+  onUpdateSearchProviderForm: (field: string, value: string | boolean) => void;
+  onSaveSearchProvider: () => Promise<void>;
 
   // MCP Servers
   mcpServers: McpServer[];
@@ -153,42 +155,36 @@ interface SettingsTabProps {
   onImportBackup: (jsonStr: string) => Promise<ImportResult | null>;
 }
 
+const SETTINGS_TABS: { id: SettingsSubTab; label: string; icon: React.ReactNode }[] = [
+  { id: "platform", label: "大模型平台", icon: <Plug className="h-3.5 w-3.5" /> },
+  { id: "system", label: "系统设置", icon: <Settings className="h-3.5 w-3.5" /> },
+  { id: "mcp", label: "MCP 服务器", icon: <Server className="h-3.5 w-3.5" /> },
+  { id: "backup", label: "数据备份", icon: <Database className="h-3.5 w-3.5" /> },
+];
+
 export function SettingsTab(props: SettingsTabProps) {
   return (
-    <div className="flex h-full overflow-hidden flex-1">
-      {/* Left sub-tab navigation */}
-      <div className="w-40 border-r border-border p-4 flex flex-col gap-2 bg-[rgba(10,10,14,0.1)]">
-        <Button
-          variant={props.settingsSubTab === "platform" ? "default" : "ghost"}
-          className="w-full justify-start"
-          onClick={() => props.setSettingsSubTab("platform")}
-        >
-          <Plug className="h-4 w-4" /> 大模型平台
-        </Button>
-        <Button
-          variant={props.settingsSubTab === "system" ? "default" : "ghost"}
-          className="w-full justify-start"
-          onClick={() => props.setSettingsSubTab("system")}
-        >
-          <Settings className="h-4 w-4" /> 系统设置
-        </Button>
-        <Button
-          variant={props.settingsSubTab === "mcp" ? "default" : "ghost"}
-          className="w-full justify-start"
-          onClick={() => props.setSettingsSubTab("mcp")}
-        >
-          <Server className="h-4 w-4" /> MCP 服务器
-        </Button>
-        <Button
-          variant={props.settingsSubTab === "backup" ? "default" : "ghost"}
-          className="w-full justify-start"
-          onClick={() => props.setSettingsSubTab("backup")}
-        >
-          <Database className="h-4 w-4" /> 数据备份
-        </Button>
+    <div className="flex flex-col h-full overflow-hidden flex-1">
+      {/* Top horizontal Tab bar */}
+      <div className="flex items-center gap-1 px-5 pt-4 pb-2 border-b border-border bg-[rgba(10,10,14,0.1)]">
+        {SETTINGS_TABS.map((tab) => (
+          <button
+            key={tab.id}
+            onClick={() => props.setSettingsSubTab(tab.id)}
+            className={cn(
+              "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-all cursor-pointer",
+              props.settingsSubTab === tab.id
+                ? "bg-accent/10 text-accent border border-accent/30"
+                : "text-muted-foreground hover:text-foreground hover:bg-muted/20 border border-transparent"
+            )}
+          >
+            {tab.icon}
+            {tab.label}
+          </button>
+        ))}
       </div>
 
-      {/* Right panel */}
+      {/* Content panel */}
       <div className="flex-1 overflow-y-auto p-5">
         {props.settingsSubTab === "platform" && <PlatformSubTab {...props} />}
         {props.settingsSubTab === "system" && <SystemSubTab {...props} />}
@@ -215,7 +211,6 @@ function PlatformSubTab({
   onFetchRemoteModels,
   onAddModel,
   onToggleModelEnabled,
-  onToggleCapability,
   onTestModel,
   onDeleteModel,
   batchTesting,
@@ -224,10 +219,10 @@ function PlatformSubTab({
   const selectedPlatform = platforms.find((p) => p.id === selectedPlatformId);
 
   return (
-    <div className="flex h-full gap-5">
+    <div className="flex h-full gap-0">
       {/* Setup guide banner when no platform has API key */}
       {platforms.every(p => !p.api_key) && (
-        <div className="absolute top-2 left-64 right-2 z-10 bg-amber-500/10 border border-amber-500/30 rounded-lg px-4 py-2.5 text-xs text-amber-400 flex items-center gap-2">
+        <div className="absolute top-2 right-2 z-10 bg-amber-500/10 border border-amber-500/30 rounded-lg px-4 py-2.5 text-xs text-amber-400 flex items-center gap-2">
           <Zap className="h-4 w-4 flex-shrink-0" />
           <span>
             <strong>快速开始：</strong>在下方选择一个平台，填入 API Key 后启用模型，即可使用 QA 翻译、知识库等 AI 功能。
@@ -236,16 +231,16 @@ function PlatformSubTab({
         </div>
       )}
 
-      {/* Platform List Sidebar */}
-      <div className="w-64 border-r border-border pr-5 flex flex-col gap-3">
+      {/* Platform List Sidebar — always visible */}
+      <div className="w-52 border-r border-border pr-3 flex flex-col gap-3 shrink-0">
         <div className="flex justify-between items-center">
-          <span className="text-sm font-semibold text-muted-foreground">模型提供商平台</span>
-          <Button size="sm" variant="outline" onClick={onAddPlatform}>
+          <span className="text-sm font-semibold text-muted-foreground">模型提供商</span>
+          <Button size="sm" variant="outline" onClick={onAddPlatform} className="h-7 w-7 p-0">
             <Plus className="h-3 w-3" />
           </Button>
         </div>
 
-        <div className="flex flex-col gap-2 flex-1 overflow-y-auto">
+        <div className="flex flex-col gap-1.5 flex-1 overflow-y-auto">
           {platforms.length === 0 ? (
             <div className="py-5 text-center text-muted-foreground text-xs">无平台</div>
           ) : (
@@ -255,14 +250,14 @@ function PlatformSubTab({
                 <div
                   key={plat.id}
                   className={cn(
-                    "p-2.5 rounded-lg border cursor-pointer flex justify-between items-center transition-all",
-                    isActive ? "bg-accent/[0.06] border-accent/30" : "bg-white/[0.01] border-border hover:bg-white/5"
+                    "p-2 rounded-lg border cursor-pointer flex justify-between items-center transition-all",
+                    isActive ? "bg-accent/[0.06] border-accent/30" : "bg-muted/5 border-border hover:bg-muted/20"
                   )}
                   onClick={() => onSelectPlatform(plat.id)}
                 >
-                  <div>
-                    <span className="font-semibold text-sm block">{plat.name}</span>
-                    <span className="text-[10px] text-muted-foreground">类型: {plat.api_type}</span>
+                  <div className="min-w-0">
+                    <span className="font-semibold text-sm block truncate">{plat.name}</span>
+                    <span className="text-xs text-muted-foreground">{plat.api_type}</span>
                   </div>
                   <div onClick={(e) => e.stopPropagation()}>
                     <Switch
@@ -278,22 +273,22 @@ function PlatformSubTab({
       </div>
 
       {/* Platform Detail */}
-      <div className="flex-1 flex flex-col gap-4">
+      <div className="flex-1 flex flex-col gap-4 min-w-0 pl-4">
         {selectedPlatform ? (
           <>
             {/* Header */}
             <Card>
-              <CardContent className="p-4 flex justify-between items-center">
-                <div>
+              <CardContent className="p-4 flex flex-wrap justify-between items-center gap-3">
+                <div className="min-w-0">
                   <h3 className="text-base font-semibold mb-1">{selectedPlatform.name}</h3>
                   <span className="text-xs text-muted-foreground">
-                    Endpoint: <code>{selectedPlatform.api_address}</code>
+                    Endpoint: <code className="break-all">{selectedPlatform.api_address}</code>
                   </span>
                 </div>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                   <Button size="sm" variant="outline" onClick={onFetchRemoteModels} disabled={fetchingModels}>
                     <RefreshCw className={cn("h-3 w-3", fetchingModels && "animate-spin")} />
-                    {fetchingModels ? "拉取中..." : "获取模型列表"}
+                    {fetchingModels ? "拉取中..." : "获取模型"}
                   </Button>
                   <Button size="sm" variant="outline" onClick={() => onBatchTestModels(selectedPlatform.id)} disabled={batchTesting[selectedPlatform.id]}>
                     {batchTesting[selectedPlatform.id] ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Activity className="h-3 w-3" />}
@@ -321,7 +316,7 @@ function PlatformSubTab({
               <div className="flex-1 overflow-y-auto flex flex-col gap-2">
                 {platformModels.length === 0 ? (
                   <div className="text-center text-muted-foreground py-10 text-xs">
-                    暂无可用模型，请点击上方"一键拉取模型"自动从服务商同步。
+                    暂无可用模型，请点击上方"获取模型"自动从服务商同步。
                   </div>
                 ) : (
                   platformModels.map((model) => {
@@ -329,44 +324,43 @@ function PlatformSubTab({
                     return (
                       <div
                         key={model.id}
-                        className="flex justify-between items-center px-3 py-2 border-b border-white/[0.02]"
+                        className="flex justify-between items-center px-3 py-2 border-b border-border"
                       >
-                        <div className="flex items-center gap-2.5">
+                        <div className="flex items-center gap-2.5 min-w-0">
                           <Checkbox
                             checked={model.is_enabled}
                             onCheckedChange={() => onToggleModelEnabled(model)}
                           />
-                          <span className={cn("text-sm font-medium", !model.is_enabled && "opacity-60")}>
+                          <span className={cn("text-sm font-medium truncate", !model.is_enabled && "opacity-60")}>
                             {model.model_name}
                           </span>
                         </div>
 
-                        <div className="flex items-center gap-4">
-                          {/* 9-Dimension Capability Icons */}
+                        <div className="flex items-center gap-3 shrink-0">
+                          {/* Capability Icons (read-only — auto-detected) */}
                           <div className="flex gap-0.5">
                             {([
-                              { key: "has_vision" as keyof PlatformModel, icon: <Eye className="h-3 w-3" />, title: "视觉", color: "text-blue-400", field: "vision" as const },
-                              { key: "has_audio" as keyof PlatformModel, icon: <Mic className="h-3 w-3" />, title: "音频", color: "text-purple-400", field: "audio" as const },
-                              { key: "has_reasoning" as keyof PlatformModel, icon: <Brain className="h-3 w-3" />, title: "推理", color: "text-amber-400", field: "reasoning" as const },
-                              { key: "has_coding" as keyof PlatformModel, icon: <Code className="h-3 w-3" />, title: "编程", color: "text-green-400", field: "coding" as const },
-                              { key: "has_long_context" as keyof PlatformModel, icon: <Maximize2 className="h-3 w-3" />, title: "长上下文", color: "text-cyan-400", field: "long_context" as const },
-                              { key: "has_tool_use" as keyof PlatformModel, icon: <Wrench className="h-3 w-3" />, title: "工具调用", color: "text-orange-400", field: "tool_use" as const },
-                              { key: "has_embedding" as keyof PlatformModel, icon: <Layers className="h-3 w-3" />, title: "嵌入", color: "text-pink-400", field: "embedding" as const },
-                              { key: "has_speedy" as keyof PlatformModel, icon: <Zap className="h-3 w-3" />, title: "快速", color: "text-yellow-400", field: "speedy" as const },
-                            ]).map(({ key, icon, title, color, field }) => {
+                              { key: "has_vision" as keyof PlatformModel, icon: <Eye className="h-3 w-3" />, title: "视觉", color: "text-blue-400" },
+                              { key: "has_audio" as keyof PlatformModel, icon: <Mic className="h-3 w-3" />, title: "音频", color: "text-purple-400" },
+                              { key: "has_reasoning" as keyof PlatformModel, icon: <Brain className="h-3 w-3" />, title: "推理", color: "text-amber-400" },
+                              { key: "has_coding" as keyof PlatformModel, icon: <Code className="h-3 w-3" />, title: "编程", color: "text-green-400" },
+                              { key: "has_long_context" as keyof PlatformModel, icon: <Maximize2 className="h-3 w-3" />, title: "长上下文", color: "text-cyan-400" },
+                              { key: "has_tool_use" as keyof PlatformModel, icon: <Wrench className="h-3 w-3" />, title: "工具调用", color: "text-orange-400" },
+                              { key: "has_embedding" as keyof PlatformModel, icon: <Layers className="h-3 w-3" />, title: "嵌入", color: "text-pink-400" },
+                              { key: "has_speedy" as keyof PlatformModel, icon: <Zap className="h-3 w-3" />, title: "快速", color: "text-yellow-400" },
+                            ]).map(({ key, icon, title, color }) => {
                               const isActive = model[key] as boolean;
                               return (
-                                <button
+                                <span
                                   key={key}
-                                  title={title}
-                                  onClick={() => onToggleCapability(model, field)}
+                                  title={`${title}${isActive ? " ✓" : " —"} (自动检测)`}
                                   className={cn(
-                                    "border-none bg-transparent cursor-pointer p-0.5",
-                                    isActive ? `opacity-100 ${color}` : "opacity-30 text-muted-foreground"
+                                    "p-0.5 inline-flex",
+                                    isActive ? `opacity-100 ${color}` : "opacity-20 text-muted-foreground"
                                   )}
                                 >
                                   {icon}
-                                </button>
+                                </span>
                               );
                             })}
                           </div>
@@ -374,11 +368,24 @@ function PlatformSubTab({
                           {/* Test Status */}
                           <div className="flex items-center gap-1.5">
                             <div
+                              title={
+                                testState === "success" ? "可用" :
+                                testState === "auth_error" ? "认证失败" :
+                                testState === "no_api_key" ? "无 API Key" :
+                                testState === "rate_limited" ? "限流中" :
+                                testState === "unreachable" ? "不可达" :
+                                testState === "error" ? "错误" :
+                                testState === "testing" ? "测试中" : "未测试"
+                              }
                               className={cn(
                                 "w-2 h-2 rounded-full",
                                 testState === "success" && "bg-emerald-500 shadow-[0_0_8px_#10b981]",
+                                testState === "auth_error" && "bg-red-500 shadow-[0_0_8px_#ef4444]",
+                                testState === "no_api_key" && "bg-red-400 shadow-[0_0_8px_#f87171]",
+                                testState === "rate_limited" && "bg-amber-500 shadow-[0_0_8px_#f59e0b]",
                                 testState === "error" && "bg-red-500 shadow-[0_0_8px_#ef4444]",
-                                testState === "testing" && "bg-amber-500",
+                                testState === "unreachable" && "bg-red-500 shadow-[0_0_8px_#ef4444]",
+                                testState === "testing" && "bg-amber-500 animate-pulse",
                                 testState === "idle" && "bg-gray-500"
                               )}
                             />
@@ -387,7 +394,7 @@ function PlatformSubTab({
                               variant="outline"
                               onClick={() => onTestModel(model.id)}
                               disabled={testState === "testing"}
-                              className="text-[10px] px-2 py-0.5"
+                              className="text-xs px-2 py-0.5"
                             >
                               {testState === "testing" ? "测试中..." : "⚡ 测试"}
                             </Button>
@@ -425,10 +432,7 @@ function SystemSubTab({
   onEditAccount,
   onDeleteAccount,
   onSwitchAccount,
-  apiKey, setApiKey,
-  apiHost, setApiHost,
   targetModel, setTargetModel,
-  proxyPort, setProxyPort,
   gpuAcceleration, setGpuAcceleration,
   idleTimeout, setIdleTimeout,
   autoStart, setAutoStart,
@@ -436,19 +440,18 @@ function SystemSubTab({
   useWsl, setUseWsl,
   wslDistro, setWslDistro,
   onSaveSettings,
-  selectionShortcut, onSetSelectionShortcut,
   selectionCaptureMode, onSetSelectionCaptureMode,
   selectionShowOnCapture, onSetSelectionShowOnCapture,
   selectionPreserveClipboard, onSetSelectionPreserveClipboard,
   isSelectionCapturing,
   lastSelectionCapture: _lastSelectionCapture,
   selectionCaptureError,
-  selectionHistory,
+  selectionHistory: _selectionHistory,
   onTestSelectionCapture,
-  onSaveSelectionSettings,
-  onLoadSelectionHistory,
-  onDeleteSelectionHistoryItem,
-  onClearSelectionHistory,
+  onSaveSelectionSettings: _onSaveSelectionSettings,
+  onLoadSelectionHistory: _onLoadSelectionHistory,
+  onDeleteSelectionHistoryItem: _onDeleteSelectionHistoryItem,
+  onClearSelectionHistory: _onClearSelectionHistory,
   translatePreferredLang, onSetTranslatePreferredLang,
   translateAlterLang, onSetTranslateAlterLang,
   translateModel, onSetTranslateModel,
@@ -458,11 +461,27 @@ function SystemSubTab({
   themeMode,
   onSetThemeMode,
   searchProviders,
+  onAddSearchProvider,
   onEditSearchProvider,
   onDeleteSearchProvider,
+  showSearchProviderModal,
+  editingSearchProvider: _editingSearchProvider,
+  searchProviderForm,
+  onCloseSearchProviderModal,
+  onUpdateSearchProviderForm,
+  onSaveSearchProvider,
 }: SettingsTabProps) {
+  // ── Available models for dropdowns ────────────────────
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
+
+  useEffect(() => {
+    modelApi.getAvailableNames()
+      .then(names => setAvailableModels(names))
+      .catch(e => console.error("[Settings] Failed to load available models:", e));
+  }, []);
+
   return (
-    <div className="flex flex-col gap-4 max-w-[650px]">
+    <div className="flex flex-col gap-4 max-w-4xl mx-auto">
       {/* Theme Selector */}
       <Card>
         <CardHeader>
@@ -488,7 +507,7 @@ function SystemSubTab({
                 )}
               >
                 <span className="text-sm font-medium">{opt.label}</span>
-                <span className="text-[10px] text-muted-foreground">{opt.desc}</span>
+                <span className="text-xs text-muted-foreground">{opt.desc}</span>
               </button>
             ))}
           </div>
@@ -512,7 +531,7 @@ function SystemSubTab({
                 <div
                   key={acc.id}
                   className={cn(
-                    "flex justify-between items-center p-2.5 border-b border-white/[0.01] rounded-md",
+                    "flex justify-between items-center p-2.5 border-b border-border rounded-md",
                     acc.is_active && "bg-accent/[0.04]"
                   )}
                 >
@@ -545,24 +564,24 @@ function SystemSubTab({
         <CardContent className="p-5 flex flex-col gap-3">
           <div className="space-y-3">
             <div className="space-y-1.5">
-              <Label>本地 HTTP 网关代理端口</Label>
-              <Input value={proxyPort} onChange={(e) => setProxyPort(e.target.value)} />
-            </div>
-            <div className="space-y-1.5">
-              <Label>默认全局大模型名称</Label>
-              <Input value={targetModel} onChange={(e) => setTargetModel(e.target.value)} placeholder="例如: deepseek-chat 或 gpt-4o" />
-            </div>
-            <div className="space-y-1.5">
-              <Label>默认全局 API 基准地址</Label>
-              <Input value={apiHost} onChange={(e) => setApiHost(e.target.value)} />
-            </div>
-            <div className="space-y-1.5">
-              <Label>默认全局 API 密钥</Label>
-              <Input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
+              <Label>默认大模型</Label>
+              <select
+                className="w-full border border-border rounded-md px-3 py-2 text-sm bg-background"
+                value={targetModel}
+                onChange={(e) => setTargetModel(e.target.value)}
+              >
+                <option value="">— 请选择 —</option>
+                {availableModels.map(m => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+              <span className="text-xs text-muted-foreground">
+                用于翻译、语言检测等内置功能的默认模型。模型列表从「大模型平台」已配置的模型中获取。
+              </span>
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-4 my-2.5">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 my-2.5">
             <div className="flex items-center gap-2.5">
               <Switch checked={gpuAcceleration} onCheckedChange={setGpuAcceleration} id="gpu_chk" />
               <Label htmlFor="gpu_chk" className="m-0">启用本地 LLM 硬件 GPU 加速</Label>
@@ -573,7 +592,7 @@ function SystemSubTab({
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="flex items-center gap-2.5">
               <Switch checked={autoStart} onCheckedChange={setAutoStart} id="autostart_chk" />
               <Label htmlFor="autostart_chk" className="m-0">跟随 Windows 开机自启动</Label>
@@ -586,7 +605,7 @@ function SystemSubTab({
 
           <Separator className="my-2.5" />
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="flex items-center gap-2.5">
               <Switch checked={useWsl} onCheckedChange={setUseWsl} id="wsl_chk" />
               <Label htmlFor="wsl_chk" className="m-0">在 WSL 中启动</Label>
@@ -609,20 +628,39 @@ function SystemSubTab({
       <Card>
         <CardHeader>
           <CardTitle className="text-sm flex items-center gap-2">
-            <MousePointerClick className="h-4 w-4" /> 🖱️ 划词助手（系统级）
+            <MousePointerClick className="h-4 w-4" /> 🖱️ 划词助手
           </CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
-          <div className="space-y-1.5">
-            <Label>全局快捷键</Label>
-            <Input
-              value={selectionShortcut}
-              onChange={(e) => onSetSelectionShortcut(e.target.value)}
-              placeholder="例如: Ctrl+Alt+C"
-            />
-            <span className="text-[10px] text-muted-foreground">
-              在任意应用中选中文字后按下快捷键，自动捕获并送入 QuickAssistant
+          <div className="bg-muted/30 rounded-md px-3 py-2 text-xs text-muted-foreground flex items-start gap-2">
+            <MousePointerClick className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+            <span>
+              <strong>使用方法：</strong>开启自动捕获后，在任意应用中用鼠标选中文字，QA 窗口会自动弹出操作栏（翻译/解释/总结/搜索）。
+              按 Ctrl+Shift+Space 可手动唤起 QA 窗口。
             </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="flex items-center gap-2.5">
+              <Switch
+                checked={selectionShowOnCapture}
+                onCheckedChange={async (v) => {
+                  onSetSelectionShowOnCapture(v);
+                  try {
+                    const { selectionApi } = await import("@/lib/tauri-api");
+                    await selectionApi.toggleAutoCapture(v);
+                  } catch (e) {
+                    console.error("[AutoCapture] Toggle failed:", e);
+                  }
+                }}
+                id="sel_auto_capture"
+              />
+              <Label htmlFor="sel_auto_capture" className="m-0">🖱️ 自动捕获选中文字</Label>
+            </div>
+            <div className="flex items-center gap-2.5">
+              <Switch checked={selectionPreserveClipboard} onCheckedChange={onSetSelectionPreserveClipboard} id="sel_preserve_cb" />
+              <Label htmlFor="sel_preserve_cb" className="m-0">保护剪贴板原内容</Label>
+            </div>
           </div>
 
           <div className="space-y-1.5">
@@ -636,17 +674,6 @@ function SystemSubTab({
               <option value="uia_only">仅 UI Automation（被动读取，不修改剪贴板）</option>
               <option value="clipboard_only">仅剪贴板（模拟 Ctrl+C）</option>
             </select>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <div className="flex items-center gap-2.5">
-              <Switch checked={selectionShowOnCapture} onCheckedChange={onSetSelectionShowOnCapture} id="sel_show_qa" />
-              <Label htmlFor="sel_show_qa" className="m-0">捕获后自动弹出 QA</Label>
-            </div>
-            <div className="flex items-center gap-2.5">
-              <Switch checked={selectionPreserveClipboard} onCheckedChange={onSetSelectionPreserveClipboard} id="sel_preserve_cb" />
-              <Label htmlFor="sel_preserve_cb" className="m-0">保护剪贴板原内容</Label>
-            </div>
           </div>
 
           <div className="flex gap-2 mt-1">
@@ -665,101 +692,11 @@ function SystemSubTab({
             >
               {isSelectionCapturing ? "捕获中..." : "🎯 测试捕获"}
             </Button>
-            <Button
-              size="sm"
-              variant="default"
-              onClick={async () => {
-                try {
-                  await onSaveSelectionSettings({
-                    shortcut: selectionShortcut,
-                    captureMode: selectionCaptureMode,
-                    showOnCapture: selectionShowOnCapture,
-                    preserveClipboard: selectionPreserveClipboard,
-                  });
-                  toast.success("划词助手设置已保存！快捷键已热重载。");
-                } catch (e) {
-                  toast.error("保存失败：" + String(e));
-                }
-              }}
-            >
-              <Save className="h-3 w-3" /> 保存设置
-            </Button>
           </div>
 
           {selectionCaptureError && (
             <div className="text-xs text-destructive bg-destructive/10 rounded px-2 py-1.5 mt-1">
               ⚠️ {selectionCaptureError}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* ── Capture History ─────────────────────────── */}
-      <Card>
-        <CardHeader className="flex-row justify-between items-center">
-          <CardTitle className="text-sm flex items-center gap-2">
-            <Clock className="h-4 w-4" /> 📋 捕获历史
-          </CardTitle>
-          <div className="flex gap-2">
-            <Button size="sm" variant="outline" onClick={onLoadSelectionHistory}>
-              <RefreshCw className="h-3 w-3" /> 刷新
-            </Button>
-            {selectionHistory.length > 0 && (
-              <Button size="sm" variant="outline" onClick={onClearSelectionHistory}>
-                <Trash2 className="h-3 w-3 text-destructive" /> 清空
-              </Button>
-            )}
-          </div>
-        </CardHeader>
-        <CardContent>
-          {selectionHistory.length === 0 ? (
-            <div className="py-3 text-center text-muted-foreground text-xs">
-              暂无捕获记录，选中文字后按 {selectionShortcut} 试试
-            </div>
-          ) : (
-            <div className="flex flex-col gap-1.5 max-h-64 overflow-y-auto">
-              {selectionHistory.map((entry) => (
-                <div
-                  key={entry.id}
-                  className="flex items-start gap-2 p-2 border border-white/[0.03] rounded-md hover:bg-white/[0.02]"
-                >
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-0.5">
-                      <Badge variant="outline" className="text-[9px] px-1 py-0">
-                        {entry.source === "uia" ? "UIA" : "剪贴板"}
-                      </Badge>
-                      <span className="text-[10px] text-muted-foreground truncate">
-                        {entry.window_title || "未知窗口"}
-                      </span>
-                      <span className="text-[9px] text-muted-foreground/60">
-                        {new Date(entry.created_at).toLocaleTimeString()}
-                      </span>
-                    </div>
-                    <pre className="text-xs text-foreground/80 truncate whitespace-nowrap overflow-hidden">
-                      {entry.captured_text.slice(0, 120)}{entry.captured_text.length > 120 ? "…" : ""}
-                    </pre>
-                  </div>
-                  <div className="flex gap-1 flex-shrink-0">
-                    <button
-                      className="p-1 hover:bg-white/10 rounded"
-                      title="复制"
-                      onClick={() => {
-                        navigator.clipboard.writeText(entry.captured_text);
-                        toast.success("已复制到剪贴板");
-                      }}
-                    >
-                      <Copy className="h-3 w-3" />
-                    </button>
-                    <button
-                      className="p-1 hover:bg-white/10 rounded"
-                      title="删除"
-                      onClick={() => onDeleteSelectionHistoryItem(entry.id)}
-                    >
-                      <Trash2 className="h-3 w-3 text-destructive" />
-                    </button>
-                  </div>
-                </div>
-              ))}
             </div>
           )}
         </CardContent>
@@ -773,7 +710,7 @@ function SystemSubTab({
           </CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="space-y-1.5">
               <Label>首选目标语言</Label>
               <select
@@ -807,11 +744,16 @@ function SystemSubTab({
 
           <div className="space-y-1.5">
             <Label>翻译模型（留空使用全局默认）</Label>
-            <Input
+            <select
+              className="w-full border border-border rounded-md px-3 py-2 text-sm bg-background"
               value={translateModel}
               onChange={(e) => onSetTranslateModel(e.target.value)}
-              placeholder="例如: deepseek-chat 或 gpt-4o"
-            />
+            >
+              <option value="">— 使用全局默认 —</option>
+              {availableModels.map(m => (
+                <option key={m} value={m}>{m}</option>
+              ))}
+            </select>
           </div>
 
           <div className="flex items-center gap-2.5">
@@ -852,20 +794,135 @@ function SystemSubTab({
         </CardContent>
       </Card>
 
-      {/* ── Search Providers ─────────────────────── */}
+      {/* ── Document Processing ────────────────────── */}
       <Card>
         <CardHeader>
           <CardTitle className="text-sm flex items-center gap-2">
-            <Search className="h-4 w-4" /> 🔍 网络搜索配置
+            <FileText className="h-4 w-4" /> 📄 文档处理
           </CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
+          <span className="text-xs text-muted-foreground">
+            配置文档处理器后，导入 PDF/Word 等文件时可自动转换为 Markdown 再入库，提高检索精度。
+          </span>
+
+          <div className="space-y-1.5">
+            <Label>文档转 Markdown 处理器</Label>
+            <select
+              className="w-full border border-border rounded-md px-3 py-2 text-sm bg-background"
+              defaultValue="system_ocr"
+            >
+              <option value="system_ocr">系统 OCR（Windows 内置）</option>
+              <option value="tesseract">Tesseract OCR（需安装）</option>
+              <option value="mineru">MinerU API</option>
+              <option value="doc2x">Doc2X API</option>
+              <option value="mistral_ocr">Mistral OCR API</option>
+              <option value="paddleocr">PaddleOCR API</option>
+            </select>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <Label>API 地址（可选）</Label>
+              <Input placeholder="https://api.example.com/v1/convert" />
+            </div>
+            <div className="space-y-1.5">
+              <Label>API Key（可选）</Label>
+              <Input type="password" placeholder="留空则无需认证" />
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2.5">
+            <Switch defaultChecked={true} id="doc_auto_convert" />
+            <Label htmlFor="doc_auto_convert" className="m-0">导入文档时自动转换为 Markdown</Label>
+          </div>
+
+          <div className="bg-muted/30 rounded-md px-3 py-2 text-xs text-muted-foreground">
+            💡 <strong>提示：</strong>本地 OCR 无需额外配置；API 处理器需填写地址和密钥。
+            推荐使用 Doc2X 或 MinerU 以获得最佳转换质量。
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* ── Search Providers ─────────────────────── */}
+      <Card>
+        <CardHeader className="flex-row justify-between items-center">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <Search className="h-4 w-4" /> 🔍 网络搜索配置
+          </CardTitle>
+          <Button size="sm" variant="outline" onClick={onAddSearchProvider}>
+            <Plus className="h-3 w-3" /> 新增
+          </Button>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <span className="text-xs text-muted-foreground">
+            配置网络搜索引擎后，在智能体对话中启用"联网搜索"即可让 AI 获取实时网络信息。
+          </span>
+
+          {/* Preset search providers (Cherry Studio style) */}
+          <div>
+            <span className="text-xs font-medium text-muted-foreground mb-2 block">🌐 搜索引擎</span>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+              {([
+                { name: "Google", type: "google", url: "https://developers.google.com/custom-search", color: "text-blue-400", desc: "Custom Search API" },
+                { name: "Bing", type: "bing", url: "https://www.microsoft.com/en-us/bing/apis", color: "text-cyan-400", desc: "Bing Search API" },
+                { name: "DuckDuckGo", type: "duckduckgo", url: "https://duckduckgo.com/api", color: "text-orange-400", desc: "免费免 Key" },
+                { name: "SearXNG", type: "searxng", url: "https://docs.searxng.org", color: "text-amber-400", desc: "自托管元搜索" },
+              ]).map(preset => (
+                <button
+                  key={preset.name}
+                  className="flex items-start gap-1.5 p-2 rounded-md border border-border/30 bg-background/20 hover:bg-background/40 transition-all text-left cursor-pointer"
+                  onClick={() => {
+                    onUpdateSearchProviderForm("api_type", preset.type);
+                    onUpdateSearchProviderForm("name", preset.name);
+                    if (preset.type === "searxng") {
+                      onUpdateSearchProviderForm("api_address", "http://localhost:8080");
+                    } else if (preset.type === "google") {
+                      onUpdateSearchProviderForm("api_address", "");
+                    }
+                    openUrl(preset.url).catch(() => window.open(preset.url, "_blank"));
+                  }}
+                >
+                  <ExternalLink className={cn("h-3 w-3 shrink-0 mt-0.5", preset.color)} />
+                  <div className="flex flex-col">
+                    <span className="text-xs font-medium">{preset.name}</span>
+                    <span className="text-xs text-muted-foreground leading-tight">{preset.desc}</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <span className="text-xs font-medium text-muted-foreground mb-2 block">☁️ 云端搜索</span>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+              {([
+                { name: "Tavily", type: "tavily", url: "https://tavily.com", color: "text-blue-400" },
+                { name: "Exa", type: "exa", url: "https://exa.ai", color: "text-emerald-400" },
+                { name: "智谱搜索", type: "zhipu", url: "https://open.bigmodel.cn", color: "text-violet-400" },
+                { name: "Bocha", type: "bocha", url: "https://bocha.ai", color: "text-amber-400" },
+                { name: "Jina", type: "jina", url: "https://jina.ai", color: "text-cyan-400" },
+              ]).map(preset => (
+                <button
+                  key={preset.name}
+                  className="flex items-center gap-1.5 p-2 rounded-md border border-border/30 bg-background/20 hover:bg-background/40 transition-all text-left cursor-pointer"
+                  onClick={() => {
+                    onUpdateSearchProviderForm("api_type", preset.type);
+                    onUpdateSearchProviderForm("name", preset.name);
+                    openUrl(preset.url).catch(() => window.open(preset.url, "_blank"));
+                  }}
+                >
+                  <ExternalLink className={cn("h-3 w-3 shrink-0", preset.color)} />
+                  <span className="text-xs font-medium">{preset.name}</span>
+                </button>
+              ))}
+            </div>
+          </div>
           {searchProviders.length === 0 ? (
-            <div className="text-xs text-muted-foreground text-center py-2">暂无搜索引擎配置</div>
+            <div className="text-xs text-muted-foreground text-center py-2">暂无搜索引擎配置，点击"新增"添加</div>
           ) : (
             <div className="flex flex-col gap-2">
               {searchProviders.map((sp) => (
-                <div key={sp.id} className="flex justify-between items-center p-2 rounded-md border-b border-white/[0.01]">
+                <div key={sp.id} className="flex justify-between items-center p-2 rounded-md border-b border-border">
                   <div className="flex items-center gap-2">
                     <Badge variant={sp.is_enabled ? "default" : "secondary"}>
                       {sp.api_type.toUpperCase()}
@@ -889,6 +946,92 @@ function SystemSubTab({
           )}
         </CardContent>
       </Card>
+      {/* Search Provider Modal */}
+      {showSearchProviderModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="glass-card p-6 w-full max-w-[480px] mx-4 max-h-[80vh] overflow-y-auto">
+            <h3 className="text-lg font-semibold mb-4">
+              {_editingSearchProvider ? "编辑搜索引擎" : "新增搜索引擎"}
+            </h3>
+            <div className="flex flex-col gap-3">
+              <div className="space-y-1.5">
+                <Label>名称</Label>
+                <Input value={searchProviderForm.name} onChange={(e) => onUpdateSearchProviderForm("name", e.target.value)} placeholder="例如: SearXNG" />
+              </div>
+              <div className="space-y-1.5">
+                <Label>类型</Label>
+                <div className="flex flex-wrap gap-1.5">
+                  {(["google", "bing", "duckduckgo", "searxng", "brave", "tavily", "exa", "zhipu", "bocha", "jina"] as const).map((t) => (
+                    <button
+                      key={t}
+                      onClick={() => onUpdateSearchProviderForm("api_type", t)}
+                      className={cn(
+                        "px-2.5 py-1.5 rounded-md border text-xs",
+                        searchProviderForm.api_type === t ? "border-primary bg-primary/10" : "border-border"
+                      )}
+                    >
+                      {t.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <Label>{searchProviderForm.api_type === "searxng" ? "SearXNG 地址" : "API 地址"}</Label>
+                <Input value={searchProviderForm.api_address} onChange={(e) => onUpdateSearchProviderForm("api_address", e.target.value)} placeholder={searchProviderForm.api_type === "searxng" ? "http://localhost:8080" : "https://api.example.com"} />
+                {searchProviderForm.api_type === "searxng" && (
+                  <span className="text-xs text-muted-foreground">自托管 SearXNG 实例地址，通常为 Docker 部署的 localhost:8080</span>
+                )}
+              </div>
+              {/* SearXNG: no API key needed, show Basic Auth instead */}
+              {searchProviderForm.api_type === "searxng" ? (
+                <div className="space-y-1.5">
+                  <Label>HTTP Basic Auth（可选）</Label>
+                  <div className="flex gap-2">
+                    <Input value={searchProviderForm.api_key || ""} onChange={(e) => onUpdateSearchProviderForm("api_key", e.target.value)} placeholder="用户名" className="flex-1" />
+                    <Input type="password" value={(searchProviderForm as Record<string, unknown>).basicAuthPassword as string || ""} onChange={(e) => onUpdateSearchProviderForm("basicAuthPassword" as keyof typeof searchProviderForm, e.target.value as never)} placeholder="密码" className="flex-1" />
+                  </div>
+                  <span className="text-xs text-muted-foreground">适用于远程部署的 SearXNG 实例（RFC 7617 Basic 认证）</span>
+                </div>
+              ) : (
+                <div className="space-y-1.5">
+                  <Label>API Key（可选）</Label>
+                  <Input type="password" value={searchProviderForm.api_key} onChange={(e) => onUpdateSearchProviderForm("api_key", e.target.value)} placeholder="留空则无需认证" />
+                </div>
+              )}
+              <div className="flex items-center gap-2">
+                <Switch checked={searchProviderForm.is_enabled} onCheckedChange={(v) => onUpdateSearchProviderForm("is_enabled", v)} id="sp_enabled" />
+                <Label htmlFor="sp_enabled">启用</Label>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 mt-4">
+              <Button variant="ghost" onClick={onCloseSearchProviderModal}>取消</Button>
+              <Button variant="outline" onClick={async () => {
+                try {
+                  // Save first so the provider exists for testing
+                  await onSaveSearchProvider();
+                  const { search: searchFn } = await import("@/lib/tauri-api").then(m => m.searchApi);
+                  const results = await searchFn("hello world", searchProviderForm.id, 3);
+                  toast.success(`连通成功！返回 ${results.length} 条结果`);
+                } catch (e) {
+                  toast.error("连通失败：" + String(e));
+                }
+              }}>
+                <Search className="h-4 w-4" /> 测试连接
+              </Button>
+              <Button onClick={async () => {
+                try {
+                  await onSaveSearchProvider();
+                  toast.success("搜索引擎保存成功！");
+                } catch (e) {
+                  toast.error("保存失败：" + String(e));
+                }
+              }}>
+                <Save className="h-4 w-4" /> 保存
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -907,7 +1050,7 @@ function McpSubTab({
   onSaveMcpServer,
 }: SettingsTabProps) {
   return (
-    <div className="flex flex-col gap-4 max-w-[650px]">
+    <div className="flex flex-col gap-4 max-w-4xl mx-auto">
       <Card>
         <CardHeader className="flex-row justify-between items-center mb-4">
           <CardTitle className="text-sm">🔌 MCP 服务器管理</CardTitle>
@@ -925,7 +1068,7 @@ function McpSubTab({
               {mcpServers.map((srv) => (
                 <div
                   key={srv.id}
-                  className="flex justify-between items-center p-2.5 border-b border-white/[0.01] rounded-md"
+                  className="flex justify-between items-center p-2.5 border-b border-border rounded-md"
                 >
                   <div className="flex items-center gap-2">
                     <Badge variant={srv.server_type === "stdio" ? "default" : "secondary"}>
@@ -961,10 +1104,86 @@ function McpSubTab({
         </CardContent>
       </Card>
 
+      {/* ── MCP Market (Discover) ──────────────────────── */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm flex items-center gap-2">
+            <Store className="h-4 w-4" /> 🛒 发现 MCP 服务器
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <span className="text-xs text-muted-foreground">
+            浏览 MCP 市场以发现和安装新的 MCP 服务器，扩展 AI 的工具能力。
+          </span>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {([
+              { name: "Smithery", desc: "MCP 服务器市场与注册中心", url: "https://smithery.ai", color: "text-blue-400" },
+              { name: "MCP.so", desc: "MCP 服务器目录与搜索", url: "https://mcp.so", color: "text-emerald-400" },
+              { name: "Glama", desc: "MCP 服务器与 AI 工具发现", url: "https://glama.ai/mcp/servers", color: "text-purple-400" },
+              { name: "MCP Hub", desc: "官方 MCP 服务器集合", url: "https://github.com/modelcontextprotocol/servers", color: "text-orange-400" },
+            ]).map(market => (
+              <button
+                key={market.name}
+                className="flex items-center gap-2.5 p-3 rounded-lg border border-border/50 bg-background/30 hover:bg-background/60 transition-all text-left cursor-pointer"
+                onClick={() => {
+                  openUrl(market.url).catch(() => window.open(market.url, "_blank"));
+                }}
+              >
+                <ExternalLink className={cn("h-4 w-4 shrink-0", market.color)} />
+                <div className="min-w-0">
+                  <span className="text-sm font-medium block">{market.name}</span>
+                  <span className="text-xs text-muted-foreground">{market.desc}</span>
+                </div>
+              </button>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* ── MCP Providers ──────────────────────────────── */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm flex items-center gap-2">
+            <Key className="h-4 w-4" /> 🔑 MCP 供应商
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <span className="text-xs text-muted-foreground">
+            通过 API Token 从 MCP 供应商批量获取和安装 MCP 服务器。
+          </span>
+          <div className="flex flex-col gap-2.5">
+            {([
+              { name: "通义百炼", desc: "阿里云百炼平台 MCP 服务", url: "https://bailian.console.aliyun.com/" },
+              { name: "ModelScope", desc: "魔搭社区 MCP 工具", url: "https://modelscope.cn/" },
+              { name: "蓝耘", desc: "蓝耘科技 MCP 服务", url: "https://cloud.lanyun.net/" },
+              { name: "302.AI", desc: "302.AI MCP 网关", url: "https://302.ai/" },
+              { name: "MCP Router", desc: "MCP 路由代理服务", url: "https://mcprouter.com/" },
+            ]).map(provider => (
+              <div key={provider.name} className="flex justify-between items-center p-2.5 border border-border/30 rounded-md bg-background/20">
+                <div className="min-w-0">
+                  <span className="text-sm font-medium">{provider.name}</span>
+                  <span className="text-xs text-muted-foreground ml-2">{provider.desc}</span>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="text-xs gap-1"
+                  onClick={() => {
+                    openUrl(provider.url).catch(() => window.open(provider.url, "_blank"));
+                  }}
+                >
+                  <ExternalLink className="h-3 w-3" /> 官网
+                </Button>
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
       {/* MCP Server Modal */}
       {showMcpModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="glass-card p-6 w-[480px] max-h-[80vh] overflow-y-auto">
+          <div className="glass-card p-6 w-full max-w-[480px] mx-4 max-h-[80vh] overflow-y-auto">
             <h3 className="text-lg font-semibold mb-4">
               {editingMcpServer ? "编辑 MCP 服务器" : "新增 MCP 服务器"}
             </h3>
@@ -1100,7 +1319,7 @@ function BackupSubTab({
   };
 
   return (
-    <div className="flex flex-col gap-4 max-w-[650px]">
+    <div className="flex flex-col gap-4 max-w-4xl mx-auto">
       {/* Export */}
       <Card>
         <CardHeader>
@@ -1116,7 +1335,7 @@ function BackupSubTab({
               <Button size="sm" variant="ghost" onClick={onDeselectAllBackupTables}>全不选</Button>
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-1.5 max-h-[240px] overflow-y-auto">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-[240px] overflow-y-auto">
             {backupTableInfo.map((t) => (
               <label key={t.table_name} className="flex items-center gap-2 text-xs p-1.5 rounded hover:bg-muted/50 cursor-pointer">
                 <Checkbox
@@ -1124,7 +1343,7 @@ function BackupSubTab({
                   onCheckedChange={() => onToggleBackupTable(t.table_name)}
                 />
                 <span className="flex-1 truncate">{t.table_name}</span>
-                <Badge variant="secondary" className="text-[10px]">{t.row_count}</Badge>
+                <Badge variant="secondary" className="text-xs">{t.row_count}</Badge>
               </label>
             ))}
           </div>

@@ -9,13 +9,12 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Lightbulb, Wifi, Cpu, Bot, Wrench, Globe, RefreshCw, BarChart3 } from "lucide-react";
-import { OMNIX_TIPS } from "@/lib/constants";
+import { OMNIX_TIPS, DEFAULT_PROXY_PORT } from "@/lib/constants";
 import { requestLogApi } from "@/lib/tauri-api";
 import type { DetectedAgent, RemoteAccessInfo } from "@/types";
 import type { ModelUsage } from "@/lib/tauri-api";
 
 interface DashboardTabProps {
-  proxyPort: string;
   activeSessionsCount: number;
   detectedAgents: DetectedAgent[];
   tipIndex: number;
@@ -29,7 +28,6 @@ interface DashboardTabProps {
 }
 
 export function DashboardTab({
-  proxyPort,
   activeSessionsCount,
   detectedAgents,
   tipIndex,
@@ -74,13 +72,13 @@ export function DashboardTab({
       </Card>
 
       {/* Status Overview Cards */}
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         <Card>
           <CardContent className="p-4">
             <span className="text-xs text-muted-foreground flex items-center gap-1.5">
               <Wifi className="h-3 w-3" /> 中转代理端口
             </span>
-            <span className="text-2xl font-bold block mt-1">:{proxyPort}</span>
+            <span className="text-2xl font-bold block mt-1">:{DEFAULT_PROXY_PORT}</span>
           </CardContent>
         </Card>
         <Card>
@@ -119,11 +117,11 @@ export function DashboardTab({
                   <div className="flex-1">
                     <div className="flex items-center justify-between mb-1">
                       <span className="text-xs font-medium truncate max-w-[200px]">{m.model}</span>
-                      <span className="text-[10px] text-muted-foreground">
+                      <span className="text-xs text-muted-foreground">
                         {m.request_count} 次 · {m.total_tokens.toLocaleString()} tokens
                       </span>
                     </div>
-                    <div className="h-1.5 bg-white/5 rounded-full overflow-hidden">
+                    <div className="h-1.5 bg-muted/20 rounded-full overflow-hidden">
                       <div
                         className="h-full bg-gradient-to-r from-cyan-500 to-blue-500 rounded-full transition-all"
                         style={{ width: `${(m.request_count / maxCount) * 100}%` }}
@@ -153,13 +151,13 @@ export function DashboardTab({
               点击诊断按钮以获取本机的 Node.js、Git、Ripgrep 以及各个 CLI 智能体的安装信息。
             </p>
           ) : (
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               {Object.entries(envDiagnostics).map(([tool, version]) => {
                 const isInstalled = version && !version.toLowerCase().includes("not found");
                 return (
                   <div
                     key={tool}
-                    className="flex justify-between items-center p-3 rounded-lg bg-white/[0.01] border border-border"
+                    className="flex justify-between items-center p-3 rounded-lg bg-muted/5 border border-border"
                   >
                     <div>
                       <span className="text-sm font-semibold block">{tool}</span>

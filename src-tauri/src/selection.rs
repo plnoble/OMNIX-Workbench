@@ -10,6 +10,7 @@
  */
 
 use serde::Serialize;
+use tauri::Emitter;
 
 // ── Capture Result Types ────────────────────────────────
 
@@ -438,5 +439,64 @@ pub async fn capture_selection_with_context() -> Result<CaptureResult, String> {
         window_title,
         process_name,
         timestamp,
+    })
+}
+
+// ── Auto-Capture Monitor ────────────────────────────────
+
+/// Start a background auto-capture monitor that polls UIA every `interval_ms`
+/// for selected text changes. When new text is detected, it emits a
+/// `selection-auto-captured` event to the frontend.
+///
+/// This runs on a dedicated Tokio task and stops when the returned `JoinHandle`
+/// is aborted or the app exits.
+pub fn start_auto_capture_monitor(
+    app_handle: tauri::AppHandle,
+    interval_ms: u64,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut last_text = String::new();
+        let mut last_window = String::new();
+
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_millis(interval_ms)).await;
+
+            // Try UIA capture on a blocking thread
+            let result = tokio::task::spawn_blocking(|| {
+                // Get window info first
+                let (window_title, _process_name) = get_focused_window_info();
+                // Then try UIA
+                match get_selected_text_via_uia() {
+                    Ok(text) if !text.trim().is_empty() => Some((text, window_title)),
+                    _ => None,
+                }
+            }).await;
+
+            match result {
+                Ok(Some((text, window_title))) => {
+                    let text = text.trim().to_string();
+                    // Only emit if text changed AND window changed (new selection in different focus)
+                    // OR if text is different from last capture
+                    if text != last_text || window_title != last_window {
+                        last_text = text.clone();
+                        last_window = window_title.clone();
+
+                        let _ = app_handle.emit("selection-auto-captured", serde_json::json!({
+                            "text": text,
+                            "window_title": window_title,
+                        }));
+                    }
+                }
+                Ok(None) => {
+                    // No selection — clear last text so next selection triggers
+                    if !last_text.is_empty() {
+                        last_text.clear();
+                    }
+                }
+                Err(_) => {
+                    // Task error — ignore and continue
+                }
+            }
+        }
     })
 }

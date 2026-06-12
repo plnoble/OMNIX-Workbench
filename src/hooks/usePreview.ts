@@ -5,6 +5,7 @@
 import { useState, useCallback } from "react";
 import { previewApi } from "@/lib/tauri-api";
 import type { PreviewType } from "@/types";
+import { DEFAULT_PROXY_PORT } from "@/lib/constants";
 
 export interface UsePreviewReturn {
   showPreviewPane: boolean;
@@ -21,7 +22,7 @@ export interface UsePreviewReturn {
   loadGitDiff: () => Promise<void>;
 }
 
-export function usePreview(chatWorkspace: string, proxyPort: string): UsePreviewReturn {
+export function usePreview(chatWorkspace: string): UsePreviewReturn {
   const [showPreviewPane, setShowPreviewPane] = useState(false);
   const [previewFiles, setPreviewFiles] = useState<string[]>([]);
   const [selectedPreviewFile, setSelectedPreviewFile] = useState("");
@@ -51,7 +52,7 @@ export function usePreview(chatWorkspace: string, proxyPort: string): UsePreview
 
     if (ext === "html") {
       setPreviewType("html");
-      const url = `http://localhost:${proxyPort}/preview/${encodeURIComponent(chatWorkspace)}/${encodeURIComponent(file)}`;
+      const url = `http://localhost:${DEFAULT_PROXY_PORT}/preview/${encodeURIComponent(chatWorkspace)}/${encodeURIComponent(file)}`;
       setPreviewHtmlUrl(url);
     } else if (ext && ["png", "jpg", "jpeg", "gif", "svg"].includes(ext)) {
       setPreviewType("image");
@@ -70,7 +71,7 @@ export function usePreview(chatWorkspace: string, proxyPort: string): UsePreview
         console.error("[usePreview] Failed to read file:", e);
       }
     }
-  }, [chatWorkspace, proxyPort]);
+  }, [chatWorkspace]);
 
   const loadGitDiff = useCallback(async () => {
     if (!chatWorkspace || chatWorkspace === "direct") return;

@@ -1,0 +1,25 @@
+{
+  "change_id": "CHANGE-001",
+  "modified_files": [
+    "src-tauri/Cargo.toml",
+    "src-tauri/src/crypto.rs",
+    "src-tauri/src/lib.rs",
+    "src-tauri/src/proxy.rs",
+    "src-tauri/src/proxy_middleware.rs",
+    "src-tauri/src/model_provider.rs",
+    "src-tauri/src/commands.rs → src-tauri/src/commands/ (22个子模块)"
+  ],
+  "change_summary": "审计P0+P1修复：H1命令命名修正、C1 AES-256-GCM加密替换、C3 commands拆分、C2中间件接入",
+  "reason": "全维度审计发现的3个CRITICAL+1个HIGH问题修复",
+  "related_task": "TASK-060",
+  "affected_modules": ["crypto", "proxy", "commands", "proxy_middleware", "model_provider"],
+  "requires_followup": true,
+  "followup_items": [
+    "YOLO模式分级权限实现",
+    "Skills Lock File真实逻辑",
+    "响应式断点修复",
+    "a11y基础补全",
+    "proxy.rs完整中间件迁移"
+  ],
+  "timestamp": "2026-06-11T01:30:00+08:00"
+}

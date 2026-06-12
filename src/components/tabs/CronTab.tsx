@@ -68,7 +68,7 @@ export function CronTab({
                     />
                   </div>
 
-                  <div className="text-xs bg-white/[0.01] p-2 rounded-md space-y-0.5">
+                  <div className="text-xs bg-muted/5 p-2 rounded-md space-y-0.5">
                     <div><span className="text-muted-foreground">工作区:</span> {task.workspace_dir}</div>
                     {task.args && (
                       <div><span className="text-muted-foreground">指令参数:</span> <code>{task.args}</code></div>
@@ -110,7 +110,7 @@ export function CronTab({
                 {cronRuns.slice(0, 10).map((run) => (
                   <div
                     key={run.id}
-                    className="flex justify-between items-center text-xs border-b border-white/[0.02] pb-1.5"
+                    className="flex justify-between items-center text-xs border-b border-border pb-1.5"
                   >
                     <div>
                       <Badge variant={run.status === "success" ? "success" : "destructive"}>
@@ -120,7 +120,7 @@ export function CronTab({
                         日志: <code>{run.log_path}</code>
                       </span>
                     </div>
-                    <span className="text-[10px] text-muted-foreground">
+                    <span className="text-xs text-muted-foreground">
                       {new Date(run.started_at).toLocaleString()}
                     </span>
                   </div>

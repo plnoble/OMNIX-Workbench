@@ -525,7 +525,7 @@ export const SkillHub: React.FC = () => {
   };
 
   return (
-    <div className="skill-hub-layout grid grid-cols-[260px_1fr] gap-5 h-[calc(100vh-120px)]">
+    <div className="skill-hub-layout grid grid-cols-1 sm:grid-cols-[260px_1fr] gap-5 h-[calc(100vh-120px)]">
 
       {/* Left panel: list of skills + tool status */}
       <div className="card flex flex-col h-full p-4 min-w-0">
@@ -537,7 +537,7 @@ export const SkillHub: React.FC = () => {
         {/* Quick sync + scan + git buttons */}
         <div className="flex gap-1.5 mb-3 mt-2">
           <button
-            className="btn btn-secondary py-1 px-2 text-[10px] flex items-center gap-1 flex-1"
+            className="btn btn-secondary py-1 px-2 text-xs flex items-center gap-1 flex-1"
             onClick={handleScanDisk}
             disabled={isScanning}
           >
@@ -545,15 +545,16 @@ export const SkillHub: React.FC = () => {
             {isScanning ? "扫描中..." : "扫描磁盘"}
           </button>
           <button
-            className="btn btn-secondary py-1 px-2 text-[10px] flex items-center gap-1 flex-1"
+            className="btn btn-secondary py-1 px-2 text-xs flex items-center gap-1 flex-1"
             onClick={() => setShowGitPanel(!showGitPanel)}
           >
             <Upload size={11} />
             Git 源
           </button>
           <button
-            className="btn btn-secondary py-1 px-2 text-[10px] flex items-center gap-1"
+            className="btn btn-secondary py-1 px-2 text-xs flex items-center gap-1"
             onClick={loadToolStatuses}
+            aria-label="刷新工具状态"
           >
             <RefreshCw size={11} />
           </button>
@@ -579,7 +580,7 @@ export const SkillHub: React.FC = () => {
                 onChange={(e) => setGitBranch(e.target.value)}
               />
               <button
-                className="btn py-1 px-3 text-[10px]"
+                className="btn py-1 px-3 text-xs"
                 onClick={handleCloneRepo}
                 disabled={isCloning}
               >
@@ -590,16 +591,16 @@ export const SkillHub: React.FC = () => {
             {/* Candidates list */}
             {gitCandidates.length > 0 && (
               <div className="flex flex-col gap-1.5">
-                <span className="text-[10px] text-secondary-foreground">发现 {gitCandidates.length} 个技能：</span>
+                <span className="text-xs text-secondary-foreground">发现 {gitCandidates.length} 个技能：</span>
                 {gitCandidates.map(c => (
-                  <div key={c.name} className="flex items-center justify-between bg-white/2 border border-border rounded py-1 px-2">
+                  <div key={c.name} className="flex items-center justify-between bg-muted/10 border border-border rounded py-1 px-2">
                     <div className="flex items-center gap-2">
                       <span className="text-xs font-medium">{c.name}</span>
-                      {c.already_imported && <span className="text-[9px] text-[var(--color-success)]">已导入</span>}
+                      {c.already_imported && <span className="text-xs text-[var(--color-success)]">已导入</span>}
                     </div>
                     {!c.already_imported && (
                       <button
-                        className="btn btn-secondary py-0.5 px-2 text-[9px]"
+                        className="btn btn-secondary py-0.5 px-2 text-xs"
                         onClick={() => handleImportGitSkill(c)}
                       >
                         导入
@@ -612,7 +613,7 @@ export const SkillHub: React.FC = () => {
 
             {/* Check updates button for existing git skills */}
             <button
-              className="btn btn-secondary py-0.5 px-2 text-[10px] mt-2 w-full"
+              className="btn btn-secondary py-0.5 px-2 text-xs mt-2 w-full"
               onClick={handleCheckGitUpdates}
             >
               <RefreshCw size={10} /> 检查 Git 技能更新
@@ -635,10 +636,10 @@ export const SkillHub: React.FC = () => {
             <label className="text-xs text-secondary-foreground">分类过滤</label>
             <button
               className={cn(
-                "flex items-center gap-1 text-[10px] py-0.5 px-1.5 rounded-full border ml-auto",
+                "flex items-center gap-1 text-xs py-0.5 px-1.5 rounded-full border ml-auto",
                 showStarredOnly
                   ? "bg-amber-500/12 border-amber-500/40 text-amber-400"
-                  : "bg-white/2 border-border text-muted-foreground"
+                  : "bg-muted/10 border-border text-muted-foreground"
               )}
               onClick={() => setShowStarredOnly(!showStarredOnly)}
             >
@@ -647,7 +648,7 @@ export const SkillHub: React.FC = () => {
             </button>
           </div>
           <select
-            className="form-input text-xs py-1 px-2 bg-black/30 w-full"
+            className="form-input text-xs py-1 px-2 bg-muted/15 w-full"
             value={categoryFilter}
             onChange={(e) => setCategoryFilter(e.target.value)}
           >
@@ -668,7 +669,7 @@ export const SkillHub: React.FC = () => {
               key={sk.name}
               className={cn(
                 "nav-item flex flex-col items-start py-2 px-3 rounded-lg border",
-                selectedSkillName === sk.name ? "active bg-cyan-500/8 border-[var(--color-secondary)]" : "bg-white/1 border-transparent"
+                selectedSkillName === sk.name ? "active bg-cyan-500/8 border-[var(--color-secondary)]" : "bg-muted/5 border-transparent"
               )}
               onClick={() => {
                 setSelectedSkillName(sk.name);
@@ -678,7 +679,7 @@ export const SkillHub: React.FC = () => {
               <div className="flex justify-between w-full items-center mb-1">
                 <div className="flex items-center gap-1.5">
                   <span
-                    className={cn("cursor-pointer text-xs", sk.starred ? "text-amber-400" : "text-white/20")}
+                    className={cn("cursor-pointer text-xs", sk.starred ? "text-amber-400" : "text-muted-foreground/30")}
                     onClick={(e) => { e.stopPropagation(); handleToggleStarred(sk.name); }}
                   >
                     <Star size={12} fill={sk.starred ? "currentColor" : "none"} />
@@ -688,12 +689,12 @@ export const SkillHub: React.FC = () => {
                 <div className="flex items-center gap-1.5">
                   {/* Source type badge */}
                   {sk.source_type === "git" && (
-                    <span className="text-[9px] bg-purple-500/15 text-purple-400 py-px px-1.5 rounded-full">Git</span>
+                    <span className="text-xs bg-purple-500/15 text-purple-400 py-px px-1.5 rounded-full">Git</span>
                   )}
                   <span
                     className={cn(
                       "inline-block w-1.5 h-1.5 rounded-full",
-                      sk.is_active ? "bg-[var(--color-success)]" : "bg-white/15"
+                      sk.is_active ? "bg-[var(--color-success)]" : "bg-muted/55"
                     )}
                   />
                 </div>
@@ -716,34 +717,37 @@ export const SkillHub: React.FC = () => {
       <div className="flex flex-col h-full min-w-0 gap-4 overflow-y-auto pr-1.5">
 
         {selectedSkill ? (
-          <div className="card flex flex-col flex-1 p-4 min-h-[550px]">
-            {/* Header section */}
-            <div className="flex justify-between items-start border-b border-border pb-3 mb-4">
-              <div>
-                <div className="flex items-center gap-2">
-                  <h2 className="text-lg font-semibold text-[var(--text-primary)]">{selectedSkill.name}</h2>
-                  <span className="workspace-badge text-[10px] py-0.5 px-1.5">{getCategory(selectedSkill.name)}</span>
+          <div className="card flex flex-col flex-1 p-4 min-h-0">
+            {/* Header section — responsive header that wraps action buttons on small windows */}
+            <div className="flex flex-col gap-3 border-b border-border pb-3 mb-4">
+              <div className="flex justify-between items-start gap-3 flex-wrap">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h2 className="text-lg font-semibold text-foreground m-0 truncate">{selectedSkill.name}</h2>
+                    <span className="text-xs py-0.5 px-2 rounded-md bg-muted/15 border border-border text-secondary-foreground shrink-0">{getCategory(selectedSkill.name)}</span>
+                  </div>
+                  <p className="text-secondary-foreground text-xs mt-1 m-0 line-clamp-2">{selectedSkill.description}</p>
                 </div>
-                <p className="text-secondary-foreground text-xs mt-1">{selectedSkill.description}</p>
               </div>
 
-              <div className="flex gap-2.5 items-center">
+              {/* Toolbar row — wraps gracefully on narrow widths */}
+              <div className="flex gap-2 items-center flex-wrap">
                 {/* Active switch */}
-                <div className="flex items-center gap-2 bg-white/2 py-1 px-2.5 rounded-full border border-border">
-                  <span className="text-xs text-secondary-foreground">激活状态:</span>
+                <label className="flex items-center gap-1.5 bg-muted/10 py-1.5 px-2.5 rounded-md border border-border cursor-pointer text-xs">
                   <input
                     type="checkbox"
                     checked={selectedSkill.is_active}
                     onChange={() => handleToggleActive(selectedSkill.name, selectedSkill.is_active)}
                     className="cursor-pointer w-3.5 h-3.5"
                   />
-                </div>
+                  <span className="text-secondary-foreground">激活</span>
+                </label>
 
-                {/* Profile switch */}
-                <div className="flex items-center gap-1.5">
-                  <span className="text-xs text-secondary-foreground">当前变体:</span>
+                {/* Profile select */}
+                <div className="flex items-center gap-1.5 bg-muted/10 py-1 px-2 rounded-md border border-border">
+                  <span className="text-xs text-secondary-foreground whitespace-nowrap">变体:</span>
                   <select
-                    className="form-input text-xs py-1 px-2 bg-black/30"
+                    className="bg-transparent border-none text-xs text-foreground cursor-pointer focus:outline-none"
                     value={selectedProfile}
                     onChange={(e) => {
                       const newProf = e.target.value;
@@ -751,19 +755,19 @@ export const SkillHub: React.FC = () => {
                       handleUpdateProfile(selectedSkill.name, newProf);
                     }}
                   >
-                    <option value="Minimal">Minimal (精简版)</option>
-                    <option value="Core">Core (核心版)</option>
-                    <option value="Comprehensive">Comprehensive (完整版)</option>
+                    <option value="Minimal">Minimal</option>
+                    <option value="Core">Core</option>
+                    <option value="Comprehensive">Comprehensive</option>
                   </select>
                 </div>
 
-                <button className="btn btn-secondary py-1.5 px-3 text-xs" onClick={addToFurnace}>
-                  🔥 放入融合炉
+                <button className="btn btn-secondary py-1.5 px-3 text-xs h-8 whitespace-nowrap" onClick={addToFurnace}>
+                  🔥 融合炉
                 </button>
 
                 {/* P6: Export package */}
                 <button
-                  className="btn btn-secondary py-1.5 px-3 text-xs flex items-center gap-1"
+                  className="btn btn-secondary py-1.5 px-3 text-xs h-8 flex items-center gap-1 whitespace-nowrap"
                   onClick={async () => {
                     try {
                       const path = await skillSyncApi.exportPackage(selectedSkill.name);
@@ -787,7 +791,7 @@ export const SkillHub: React.FC = () => {
                   同步到工具
                 </span>
                 <button
-                  className="btn py-0.5 px-2.5 text-[11px]"
+                  className="btn py-0.5 px-2.5 text-xs"
                   onClick={() => handleSyncSkill(selectedSkill.name)}
                   disabled={isSyncing}
                 >
@@ -801,12 +805,12 @@ export const SkillHub: React.FC = () => {
                     <label
                       key={ts.tool_id}
                       className={cn(
-                        "flex items-center gap-1.5 py-1 px-2.5 rounded-full border text-[11px] cursor-pointer transition-all",
+                        "flex items-center gap-1.5 py-1 px-2.5 rounded-full border text-xs cursor-pointer transition-all",
                         ts.is_installed
                           ? checked
                             ? "bg-cyan-500/12 border-cyan-500/40 text-cyan-400"
-                            : "bg-white/2 border-border text-secondary-foreground"
-                          : "bg-white/1 border-border/50 text-muted-foreground opacity-50 cursor-not-allowed"
+                            : "bg-muted/10 border-border text-secondary-foreground"
+                          : "bg-muted/5 border-border/50 text-muted-foreground opacity-50 cursor-not-allowed"
                       )}
                     >
                       <input
@@ -819,7 +823,7 @@ export const SkillHub: React.FC = () => {
                       {ts.is_installed ? (
                         <CheckCircle2 size={11} className="text-[var(--color-success)]" />
                       ) : (
-                        <XCircle size={11} className="text-white/20" />
+                        <XCircle size={11} className="text-muted-foreground/30" />
                       )}
                       {ts.display_name}
                     </label>
@@ -839,10 +843,10 @@ export const SkillHub: React.FC = () => {
                       <button
                         key={s}
                         className={cn(
-                          "py-0.5 px-2 text-[10px] rounded-full border",
+                          "py-0.5 px-2 text-xs rounded-full border",
                           conflictStrategy === s
                             ? "bg-amber-500/15 border-amber-500/40 text-amber-400"
-                            : "bg-white/2 border-border text-secondary-foreground"
+                            : "bg-muted/10 border-border text-secondary-foreground"
                         )}
                         onClick={() => setConflictStrategy(s)}
                       >
@@ -852,13 +856,13 @@ export const SkillHub: React.FC = () => {
                   </div>
                   <div className="flex gap-2">
                     <button
-                      className="btn py-0.5 px-2.5 text-[11px]"
+                      className="btn py-0.5 px-2.5 text-xs"
                       onClick={() => doSync(selectedSkill.name, syncTargets[selectedSkill.name] || [])}
                     >
                       确认同步
                     </button>
                     <button
-                      className="btn btn-secondary py-0.5 px-2.5 text-[11px]"
+                      className="btn btn-secondary py-0.5 px-2.5 text-xs"
                       onClick={() => setConflicts([])}
                     >
                       取消
@@ -869,7 +873,7 @@ export const SkillHub: React.FC = () => {
             </div>
 
             {/* Split workspace: Editor & Graph */}
-            <div className="grid grid-cols-[1.2fr_1fr] gap-4 flex-1 min-h-0">
+            <div className="grid grid-cols-1 lg:grid-cols-[1.2fr_1fr] gap-4 flex-1 min-h-0">
 
               {/* Left side: Code content editor */}
               <div className="flex flex-col h-full">
@@ -883,13 +887,13 @@ export const SkillHub: React.FC = () => {
                     {isEditing ? (
                       <>
                         <button
-                          className="btn btn-secondary py-0.5 px-2 text-[11px] h-6"
+                          className="btn btn-secondary py-0.5 px-2 text-xs h-6"
                           onClick={() => loadSkillContent(selectedSkill.name, selectedProfile)}
                         >
                           取消
                         </button>
                         <button
-                          className="btn py-0.5 px-2 text-[11px] h-6"
+                          className="btn py-0.5 px-2 text-xs h-6"
                           onClick={handleSaveContent}
                           disabled={isSaving}
                         >
@@ -898,7 +902,7 @@ export const SkillHub: React.FC = () => {
                       </>
                     ) : (
                       <button
-                        className="btn btn-secondary py-0.5 px-2 text-[11px] h-6"
+                        className="btn btn-secondary py-0.5 px-2 text-xs h-6"
                         onClick={() => setIsEditing(true)}
                       >
                         编辑
@@ -910,13 +914,13 @@ export const SkillHub: React.FC = () => {
                 <div className="flex-1 relative min-h-0">
                   {isEditing ? (
                     <textarea
-                      className="form-input w-full h-full font-mono text-xs bg-black/40 resize-none text-[var(--text-primary)] p-3 leading-normal shadow-[inset_0_0_10px_rgba(0,0,0,0.5)]"
+                      className="form-input w-full h-full font-mono text-xs bg-muted/15 resize-none text-foreground p-3 leading-normal"
                       value={skillContent}
                       onChange={(e) => setSkillContent(e.target.value)}
                     />
                   ) : (
                     <div
-                      className="w-full h-full overflow-y-auto bg-black/25 border border-border rounded-lg p-3 font-mono text-xs whitespace-pre-wrap text-muted-foreground leading-normal"
+                      className="w-full h-full overflow-y-auto bg-muted/10 border border-border rounded-lg p-3 font-mono text-xs whitespace-pre-wrap text-foreground leading-normal"
                     >
                       {skillContent}
                     </div>
@@ -957,7 +961,7 @@ export const SkillHub: React.FC = () => {
                 <Sparkles size={16} color="var(--color-warning)" />
                 技能融合炉 (Fusion Furnace)
               </h3>
-              <p className="text-secondary-foreground text-[11px] mt-0.5">
+              <p className="text-secondary-foreground text-xs mt-0.5">
                 至少将 2 个零散或冲突技能投入融合，AI 会进行知识蒸馏并合并冲突。
               </p>
             </div>
@@ -1001,13 +1005,13 @@ export const SkillHub: React.FC = () => {
               <div className="flex justify-between items-center mb-3">
                 <div>
                   <h4 className="text-emerald-500 text-sm font-bold">AI 融合成功！请对比审核差异</h4>
-                  <p className="text-[11px] text-secondary-foreground mt-0.5">{fusedResult.explanation}</p>
+                  <p className="text-xs text-secondary-foreground mt-0.5">{fusedResult.explanation}</p>
                 </div>
 
                 <div className="flex gap-2 items-center">
                   <input
                     type="text"
-                    className="form-input text-xs py-1 px-2 w-40 bg-black/30"
+                    className="form-input text-xs py-1 px-2 w-40 bg-muted/15"
                     value={fusedSaveName}
                     onChange={(e) => setFusedSaveName(e.target.value)}
                     placeholder="超级技能 ID (例如: file_operations)"
@@ -1032,7 +1036,7 @@ export const SkillHub: React.FC = () => {
             <Download size={16} color="var(--color-secondary)" />
             公共技能市场 (Skill Marketplace)
           </h3>
-          <p className="text-secondary-foreground text-[11px] mt-0.5 mb-3">
+          <p className="text-secondary-foreground text-xs mt-0.5 mb-3">
             由 OMNIX 官方和社区维护的成熟技能包，点击即可一键下载并自动导入至您当前的本地开发库中。
           </p>
 
@@ -1040,18 +1044,18 @@ export const SkillHub: React.FC = () => {
             {MARKETPLACE_SKILLS.map((item) => (
               <div
                 key={item.name}
-                className="bg-white/2 border border-border rounded-lg p-3 flex flex-col justify-between"
+                className="bg-muted/10 border border-border rounded-lg p-3 flex flex-col justify-between"
               >
                 <div>
                   <div className="flex justify-between items-center mb-1.5">
                     <span className="font-semibold text-xs">{item.name}</span>
-                    <span className="text-[10px] text-muted-foreground bg-black/25 py-px px-1.5 rounded-[10px]">{item.category}</span>
+                    <span className="text-xs text-muted-foreground bg-muted/15 py-px px-1.5 rounded-[10px]">{item.category}</span>
                   </div>
-                  <p className="text-secondary-foreground text-[11px] leading-snug m-0">{item.description}</p>
+                  <p className="text-secondary-foreground text-xs leading-snug m-0">{item.description}</p>
                 </div>
 
                 <button
-                  className="btn btn-secondary mt-3 w-full py-1 px-2 text-[11px] flex items-center justify-center gap-1"
+                  className="btn btn-secondary mt-3 w-full py-1 px-2 text-xs flex items-center justify-center gap-1"
                   onClick={() => handleDownloadMarketSkill(item)}
                 >
                   <Download size={12} />
@@ -1070,7 +1074,7 @@ export const SkillHub: React.FC = () => {
                 <Search size={16} color="var(--color-secondary)" />
                 磁盘扫描结果 ({scanReport.total_found})
               </h3>
-              <button className="btn btn-secondary py-0.5 px-2 text-[11px]" onClick={() => setShowScanPanel(false)}>
+              <button className="btn btn-secondary py-0.5 px-2 text-xs" onClick={() => setShowScanPanel(false)}>
                 关闭
               </button>
             </div>
@@ -1081,10 +1085,10 @@ export const SkillHub: React.FC = () => {
                 <div
                   key={t.tool_id}
                   className={cn(
-                    "flex items-center gap-1.5 py-0.5 px-2 rounded-full text-[10px] border",
+                    "flex items-center gap-1.5 py-0.5 px-2 rounded-full text-xs border",
                     t.is_installed
                       ? "bg-[var(--color-success)]/8 border-[var(--color-success)]/20 text-[var(--color-success)]"
-                      : "bg-white/1 border-border/50 text-muted-foreground"
+                      : "bg-muted/5 border-border/50 text-muted-foreground"
                   )}
                 >
                   {t.is_installed ? <CheckCircle2 size={10} /> : <XCircle size={10} />}
@@ -1105,11 +1109,11 @@ export const SkillHub: React.FC = () => {
                     <div key={`${item.tool_id}-${item.name}`} className="flex items-center justify-between bg-amber-500/5 border border-amber-500/15 rounded-lg py-1.5 px-3">
                       <div className="flex items-center gap-2">
                         <span className="text-xs font-medium">{item.name}</span>
-                        <span className="text-[10px] text-muted-foreground">← {item.tool_display_name}</span>
-                        {item.preview && <span className="text-[10px] text-secondary-foreground truncate max-w-[200px]">{item.preview}</span>}
+                        <span className="text-xs text-muted-foreground">← {item.tool_display_name}</span>
+                        {item.preview && <span className="text-xs text-secondary-foreground truncate max-w-[200px]">{item.preview}</span>}
                       </div>
                       <button
-                        className="btn btn-secondary py-0.5 px-2 text-[10px]"
+                        className="btn btn-secondary py-0.5 px-2 text-xs"
                         onClick={() => handleImportUnmanaged([item])}
                       >
                         <Upload size={10} /> 导入
@@ -1118,7 +1122,7 @@ export const SkillHub: React.FC = () => {
                   ))}
                   {scanReport.unmanaged.length > 1 && (
                     <button
-                      className="btn py-1 px-3 text-[11px] mt-1"
+                      className="btn py-1 px-3 text-xs mt-1"
                       onClick={() => handleImportUnmanaged(scanReport.unmanaged)}
                     >
                       一键导入全部 ({scanReport.unmanaged.length})
@@ -1140,9 +1144,9 @@ export const SkillHub: React.FC = () => {
                     <div key={`${item.tool_id}-${item.name}`} className="flex items-center justify-between bg-blue-500/5 border border-blue-500/15 rounded-lg py-1.5 px-3">
                       <div className="flex items-center gap-2">
                         <span className="text-xs font-medium">{item.name}</span>
-                        <span className="text-[10px] text-muted-foreground">→ {item.tool_display_name}</span>
+                        <span className="text-xs text-muted-foreground">→ {item.tool_display_name}</span>
                       </div>
-                      <span className="text-[10px] text-blue-400">版本不一致</span>
+                      <span className="text-xs text-blue-400">版本不一致</span>
                     </div>
                   ))}
                 </div>
@@ -1158,9 +1162,9 @@ export const SkillHub: React.FC = () => {
                     <div key={`${item.tool_id}-${item.name}`} className="flex items-center justify-between bg-red-500/5 border border-red-500/15 rounded-lg py-1.5 px-3">
                       <div className="flex items-center gap-2">
                         <span className="text-xs font-medium">{item.name}</span>
-                        <span className="text-[10px] text-muted-foreground">→ {item.tool_display_name}</span>
+                        <span className="text-xs text-muted-foreground">→ {item.tool_display_name}</span>
                       </div>
-                      <span className="text-[10px] text-red-400">目标文件丢失</span>
+                      <span className="text-xs text-red-400">目标文件丢失</span>
                     </div>
                   ))}
                 </div>
@@ -1176,7 +1180,7 @@ export const SkillHub: React.FC = () => {
                 </h4>
                 <div className="flex flex-wrap gap-1.5">
                   {scanReport.managed.map(item => (
-                    <span key={`${item.tool_id}-${item.name}`} className="text-[10px] bg-[var(--color-success)]/5 text-[var(--color-success)] py-0.5 px-2 rounded-full border border-[var(--color-success)]/15">
+                    <span key={`${item.tool_id}-${item.name}`} className="text-xs bg-[var(--color-success)]/5 text-[var(--color-success)] py-0.5 px-2 rounded-full border border-[var(--color-success)]/15">
                       {item.name} ({item.tool_display_name})
                     </span>
                   ))}

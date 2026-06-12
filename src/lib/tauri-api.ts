@@ -39,6 +39,8 @@ import type {
   ImportResult,
   PromptEntry,
   ActivityLogEntry,
+  HealthCheckDetail,
+  PlatformApiKey,
 } from "@/types";
 
 // ── Settings ──────────────────────────────────────────
@@ -65,8 +67,20 @@ export const modelApi = {
   save: (model: PlatformModel) => invoke("save_platform_model", { model }),
   delete: (id: string) => invoke("delete_platform_model", { id }),
   getActive: () => invoke<PlatformModel[]>("get_active_models"),
-  checkStatus: (modelId: string) => invoke<string>("check_model_status", { modelId }),
+  getAvailableNames: () => invoke<string[]>("get_available_models"),
+  checkStatus: (modelId: string) => invoke<HealthCheckDetail>("check_model_status", { modelId }),
   batchCheck: (platformId: string) => invoke<PlatformModel[]>("batch_check_models", { platformId }),
+  reinferCapabilities: (opts: { modelId?: string; platformId?: string }) => invoke<number>("reinfer_model_capabilities", opts),
+};
+
+// ── Platform API Keys (multi-key, encrypted) ──────────
+
+export const apiKeyApi = {
+  add: (platformId: string, key: string, label?: string) => invoke<PlatformApiKey>("add_platform_api_key", { platformId, key, label }),
+  list: (platformId: string) => invoke<PlatformApiKey[]>("list_platform_api_keys", { platformId }),
+  select: (keyId: string) => invoke("select_platform_api_key", { keyId }),
+  delete: (keyId: string) => invoke("delete_platform_api_key", { keyId }),
+  reveal: (keyId: string) => invoke<string>("reveal_platform_api_key", { keyId }),
 };
 
 // ── Agent Accounts ────────────────────────────────────
@@ -84,7 +98,10 @@ export const conversationApi = {
   list: () => invoke<ConversationInfo[]>("get_all_conversations"),
   create: (params: { id: string; title: string; workspacePath: string; activeAgent: string }) =>
     invoke("create_conversation", params),
-  delete: (id: string) => invoke("delete_conversation", { id }),
+  delete: (id: string) => invoke("delete_conversation", { conversationId: id }),
+  archive: (id: string) => invoke("archive_conversation", { conversationId: id }),
+  unarchive: (id: string) => invoke("unarchive_conversation", { conversationId: id }),
+  listArchived: () => invoke<ConversationInfo[]>("get_archived_conversations"),
   getMessages: (conversationId: string) =>
     invoke<ConversationMessage[]>("get_conversation_messages", { conversationId }),
   addMessage: (params: { id: string; conversationId: string; role: string; content: string }) =>
@@ -188,6 +205,7 @@ export const selectionApi = {
     invoke<SelectionHistoryEntry[]>("get_selection_history", { limit: limit ?? 50 }),
   deleteHistoryItem: (id: string) => invoke("delete_selection_history_item", { id }),
   clearHistory: () => invoke("clear_selection_history"),
+  toggleAutoCapture: (enabled: boolean) => invoke<boolean>("toggle_selection_auto_capture", { enabled }),
 };
 
 // ── Translation ──────────────────────────────────────────
@@ -1040,9 +1058,29 @@ export const taskDependencyApi = {
 };
 
 // YOLO Full-Auto Mode (AionUi inspired)
+export interface YoloModeConfig {
+  /** Permission level: "off" | "safe" | "moderate" | "full" */
+  level: string;
+  /** Whether auto-retry is enabled for failed operations */
+  auto_retry: boolean;
+  /** Max consecutive auto-retries before requiring manual confirmation */
+  max_retries: number;
+}
+
 export const yoloApi = {
+  /** Get YOLO mode on/off status (backward compatible) */
   getStatus: () => invoke<boolean>("get_yolo_mode"),
+  /** Toggle YOLO mode on/off (backward compatible) */
   set: (enabled: boolean) => invoke("set_yolo_mode", { enabled }),
+  /** Get full YOLO mode configuration with graded permissions */
+  getConfig: () => invoke<YoloModeConfig>("get_yolo_mode_config"),
+  /** Set YOLO mode configuration with graded permissions */
+  setConfig: (config: Partial<YoloModeConfig>) => invoke("set_yolo_mode_config", { config }),
+  /** Check if a specific tool call should be auto-approved under current YOLO mode */
+  checkPermission: (toolName: string, dangerLevel: "safe" | "moderate" | "dangerous") =>
+    invoke<{ auto_approved: boolean; yolo_level: string; tool_name: string; danger_level: string; auto_retry: boolean; max_retries: number }>(
+      "check_yolo_permission", { toolName, dangerLevel }
+    ),
 };
 
 // Persistent Cron (AionUi inspired)

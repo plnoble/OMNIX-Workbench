@@ -3,12 +3,12 @@
 //! Decomposes the monolithic proxy handler into a chain of composable
 //! middleware stages. Each stage is independent and testable.
 //!
-//! Pipeline: RequestParse → FormatConvert → CapabilityRoute → UpstreamCall → ResponseProcess → LogRequest
+//! Pipeline: RequestParse → CapabilityClassify → UpstreamResolve → WebSearch → ReasoningEffort → LogRequest
 //!
-//! NOTE: This module defines the middleware architecture but is not yet wired into proxy.rs.
-//! Integration will happen in a follow-up refactor to avoid disrupting the working proxy.
-
-#![allow(dead_code)]
+//! INTEGRATION STATUS: Types and pipeline are wired into proxy.rs.
+//! The pipeline runs alongside the legacy handlers — middleware executes
+//! pre/post-processing (validation, classification, logging) while the
+//! core forwarding logic remains in proxy.rs until fully migrated.
 
 use std::sync::Arc;
 

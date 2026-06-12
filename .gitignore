@@ -6,6 +6,13 @@ build/
 out/
 .next/
 
+# Rust / Tauri build artifacts
+target/
+src-tauri/target/
+*.exe
+*.msi
+*.nsis
+
 # Dependencies
 node_modules/
 jspm_packages/
@@ -19,6 +26,9 @@ web_modules/
 .env.production.local
 *.pem
 *.key
+
+# User data directory (contains encrypted keys and SQLite DB)
+.omnix/
 
 # IDEs and editors
 .idea/
@@ -44,4 +54,7 @@ Desktop.ini
 
 # Temporary scratch space for clones/downloads
 scratch/
+
+# Reference source (not part of the project)
+cherry-studio-ref/
 

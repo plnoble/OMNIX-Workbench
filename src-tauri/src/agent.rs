@@ -13,6 +13,7 @@ use rusqlite::params;
 use chrono::{DateTime, Local, Datelike, TimeZone, Timelike};
 
 use crate::db::DbManager;
+use log::warn;
 
 fn current_time_ms() -> u64 {
     std::time::SystemTime::now()
@@ -294,7 +295,7 @@ impl AgentManager {
         };
         let resolved_workspace_str = resolved_workspace.to_string_lossy().to_string();
 
-        eprintln!("OMNIX spawn_agent: session_id={}, agent_name={}, exe_path={}, workspace_dir={}, resolved={}",
+        log::warn!("OMNIX spawn_agent: session_id={}, agent_name={}, exe_path={}, workspace_dir={}, resolved={}",
                  session_id, agent_name, exe_path, workspace_dir, resolved_workspace_str);
 
         // Auto-create workspace directory if it doesn't exist to prevent os error 267 (directory invalid)
@@ -426,7 +427,7 @@ impl AgentManager {
                             writer = w;
                         }
                         _ => {
-                            eprintln!("OMNIX spawn_agent (PTY): Failed to write to stdin");
+                            log::warn!("OMNIX spawn_agent (PTY): Failed to write to stdin");
                             break;
                         }
                     }
@@ -541,11 +542,11 @@ impl AgentManager {
 
             let mut child = match cmd.spawn() {
                 Ok(c) => {
-                    eprintln!("OMNIX spawn_agent: Successfully spawned fallback process with PID {:?}", c.id());
+                    log::warn!("OMNIX spawn_agent: Successfully spawned fallback process with PID {:?}", c.id());
                     c
                 }
                 Err(e) => {
-                    eprintln!("OMNIX spawn_agent: Failed to spawn fallback process: {}", e);
+                    log::warn!("OMNIX spawn_agent: Failed to spawn fallback process: {}", e);
                     return Err(format!("Failed to launch agent fallback process: {}", e));
                 }
             };
@@ -560,11 +561,11 @@ impl AgentManager {
                 while let Some(msg) = stdin_rx.recv().await {
                     last_activity_stdin.store(current_time_ms(), Ordering::Relaxed);
                     if let Err(e) = writer.write_all(msg.as_bytes()).await {
-                        eprintln!("OMNIX spawn_agent: Failed to write to fallback stdin: {}", e);
+                        log::warn!("OMNIX spawn_agent: Failed to write to fallback stdin: {}", e);
                         break;
                     }
                     if let Err(e) = writer.flush().await {
-                        eprintln!("OMNIX spawn_agent: Failed to flush fallback stdin: {}", e);
+                        log::warn!("OMNIX spawn_agent: Failed to flush fallback stdin: {}", e);
                         break;
                     }
                 }

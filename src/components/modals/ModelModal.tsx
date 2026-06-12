@@ -1,53 +1,29 @@
 /**
  * ModelModal — 添加自定义模型 Dialog
+ *
+ * Capabilities are auto-detected from the model name by the backend.
+ * Users only need to provide the model ID; the system infers
+ * vision/audio/reasoning/coding/etc. flags automatically.
  */
 
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Eye, Mic, Brain, Code, Maximize2, Wrench, Layers, Zap } from "lucide-react";
-
-interface ModelFormState {
-  model_name: string;
-  has_vision: boolean;
-  has_audio: boolean;
-  has_reasoning: boolean;
-  has_coding: boolean;
-  has_long_context: boolean;
-  has_tool_use: boolean;
-  has_embedding: boolean;
-  has_speedy: boolean;
-}
-
-type CapabilityField = keyof Omit<ModelFormState, "model_name">;
+import { Sparkles } from "lucide-react";
 
 interface ModelModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  modelForm: ModelFormState;
-  onFormChange: (field: CapabilityField, value: boolean) => void;
+  modelForm: { model_name: string };
   onNameChange: (name: string) => void;
   onSave: () => Promise<void>;
 }
-
-const CAPABILITIES: { field: CapabilityField; label: string; icon: React.ReactNode }[] = [
-  { field: "has_vision", label: "视觉", icon: <Eye className="h-3.5 w-3.5 text-blue-400" /> },
-  { field: "has_audio", label: "音频", icon: <Mic className="h-3.5 w-3.5 text-purple-400" /> },
-  { field: "has_reasoning", label: "推理", icon: <Brain className="h-3.5 w-3.5 text-amber-400" /> },
-  { field: "has_coding", label: "编程", icon: <Code className="h-3.5 w-3.5 text-green-400" /> },
-  { field: "has_long_context", label: "长上下文", icon: <Maximize2 className="h-3.5 w-3.5 text-cyan-400" /> },
-  { field: "has_tool_use", label: "工具调用", icon: <Wrench className="h-3.5 w-3.5 text-orange-400" /> },
-  { field: "has_embedding", label: "嵌入", icon: <Layers className="h-3.5 w-3.5 text-pink-400" /> },
-  { field: "has_speedy", label: "快速", icon: <Zap className="h-3.5 w-3.5 text-yellow-400" /> },
-];
 
 export function ModelModal({
   open,
   onOpenChange,
   modelForm,
-  onFormChange,
   onNameChange,
   onSave,
 }: ModelModalProps) {
@@ -56,7 +32,7 @@ export function ModelModal({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>添加自定义模型</DialogTitle>
-          <DialogDescription>指定模型名称和能力标记</DialogDescription>
+          <DialogDescription>输入模型标识名称，系统将自动检测模型能力</DialogDescription>
         </DialogHeader>
 
         <div className="flex flex-col gap-3">
@@ -69,13 +45,12 @@ export function ModelModal({
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-2.5 mt-2.5">
-            {CAPABILITIES.map(({ field, label, icon }) => (
-              <label key={field} className="flex items-center gap-2 cursor-pointer text-xs">
-                <Checkbox checked={modelForm[field] as boolean} onCheckedChange={(v) => onFormChange(field, !!v)} />
-                {icon} {label}
-              </label>
-            ))}
+          <div className="flex items-center gap-2 px-3 py-2.5 rounded-lg bg-muted/5 border border-border text-xs text-muted-foreground">
+            <Sparkles className="h-4 w-4 text-primary shrink-0" />
+            <span>
+              模型的视觉、推理、编程等能力标识将由系统根据模型名称自动识别，
+              无需手动设置。保存后可在模型列表中查看检测到的能力。
+            </span>
           </div>
         </div>
 

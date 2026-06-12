@@ -205,22 +205,43 @@ export function MemoryHub() {
   );
 
   return (
-    <div className="memory-hub-container flex flex-col gap-5 h-full">
+    <div className="memory-hub-container flex flex-col gap-5 h-full px-1">
+      {/* Page header */}
+      <div className="border-b border-border pb-3">
+        <h2 className="m-0 text-lg font-semibold text-foreground flex items-center gap-2">
+          <Brain className="text-red-500" size={20} />
+          长期避坑记忆库
+        </h2>
+        <p className="text-sm text-muted-foreground mt-1 m-0">
+          沉淀踩坑教训，让 AI 在后续开发中自动规避重复错误。支持手动归档与从历史会话蒸馏。
+        </p>
+      </div>
+
       {/* Sub tabs */}
-      <div className="flex gap-3 border-b border-border pb-3">
+      <div className="flex gap-2">
         <button
-          className={cn("btn flex items-center gap-2", selectedTab === "memories" ? "btn-primary" : "btn-secondary")}
+          className={cn(
+            "flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg cursor-pointer transition-all border",
+            selectedTab === "memories"
+              ? "bg-accent text-accent-foreground border-accent shadow-sm"
+              : "bg-muted/10 text-foreground border-border hover:bg-muted/20"
+          )}
           onClick={() => setSelectedTab("memories")}
         >
           <Brain size={16} />
-          长期避坑记忆库 ({memories.length})
+          避坑记忆库 ({memories.length})
         </button>
         <button
-          className={cn("btn flex items-center gap-2", selectedTab === "distill" ? "btn-primary" : "btn-secondary")}
+          className={cn(
+            "flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg cursor-pointer transition-all border",
+            selectedTab === "distill"
+              ? "bg-accent text-accent-foreground border-accent shadow-sm"
+              : "bg-muted/10 text-foreground border-border hover:bg-muted/20"
+          )}
           onClick={() => setSelectedTab("distill")}
         >
           <Sparkles size={16} />
-          开发经验蒸馏中枢 (Timeline Distiller)
+          经验蒸馏中枢
         </button>
       </div>
 
@@ -231,16 +252,16 @@ export function MemoryHub() {
             <div className="relative flex-1">
               <input
                 type="text"
-                className="form-input pl-9"
+                className="w-full pl-10 pr-3 py-2.5 text-sm bg-muted/10 border border-border rounded-lg text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-accent"
                 placeholder="搜索防错记忆（关键词、踩坑事故、危险模式...）"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
               />
-              <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+              <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
             </div>
 
             <button
-              className="btn btn-primary flex items-center gap-1.5"
+              className="btn btn-primary flex items-center gap-1.5 px-4 py-2.5 text-sm"
               onClick={() => { resetForm(); setIsFormOpen(true); }}
             >
               <Plus size={16} />
@@ -249,26 +270,27 @@ export function MemoryHub() {
           </div>
 
           {/* Memories grid */}
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-4 max-h-[60vh] overflow-y-auto pr-1">
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] gap-4 max-h-[60vh] overflow-y-auto pr-1">
             {filteredMemories.map(m => (
               <div
                 key={m.id}
-                className="card animate-fade-in relative border-l-4 border-l-red-500 bg-red-500/[0.02] flex flex-col justify-between gap-3"
+                className="card animate-fade-in relative border-l-4 border-l-red-500 bg-card flex flex-col justify-between gap-3 p-4 shadow-sm hover:shadow-md transition-shadow"
               >
                 <div>
-                  <div className="flex justify-between items-start mb-2">
-                    <div className="flex items-center gap-2">
+                  <div className="flex justify-between items-start mb-3 gap-2">
+                    <div className="flex items-center gap-2 flex-1 min-w-0">
                       {m.type === "preference" ? (
-                        <span className="text-xs px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400">偏好</span>
+                        <span className="text-xs px-2 py-0.5 rounded-md bg-blue-500/10 text-blue-500 dark:text-blue-400 font-medium shrink-0">偏好</span>
                       ) : (
-                        <span className="text-xs px-1.5 py-0.5 rounded bg-red-500/10 text-red-400">经验</span>
+                        <span className="text-xs px-2 py-0.5 rounded-md bg-red-500/10 text-red-500 dark:text-red-400 font-medium shrink-0">经验</span>
                       )}
-                      <h4 className="m-0 text-base font-semibold">{m.incident_desc}</h4>
+                      <h4 className="m-0 text-base font-semibold text-foreground truncate">{m.incident_desc}</h4>
                     </div>
 
-                    <div className="flex gap-1.5">
+                    <div className="flex gap-1 shrink-0">
                       <button
-                        className="btn-icon text-muted-foreground bg-transparent border-none cursor-pointer text-sm hover:text-foreground"
+                        className="p-1.5 rounded-md text-muted-foreground bg-transparent border-none cursor-pointer hover:text-foreground hover:bg-muted/20 transition-colors"
+                        title="编辑"
                         onClick={() => {
                           setFormId(m.id);
                           setFormDesc(m.incident_desc);
@@ -281,31 +303,32 @@ export function MemoryHub() {
                         ✏️
                       </button>
                       <button
-                        className="btn-icon text-red-500 bg-transparent border-none cursor-pointer"
+                        className="p-1.5 rounded-md text-muted-foreground bg-transparent border-none cursor-pointer hover:text-destructive hover:bg-destructive/10 transition-colors"
+                        title="删除"
                         onClick={() => handleDeleteMemory(m.id)}
                       >
-                        <Trash2 size={16} />
+                        <Trash2 size={14} />
                       </button>
                     </div>
                   </div>
 
-                  <div className="text-sm text-secondary-foreground mb-2">
-                    <div className="font-mono bg-black/20 px-2.5 py-1.5 rounded-md border border-border mb-2">
-                      <span className="text-red-500 text-xs block uppercase font-semibold">危险模式:</span>
-                      <code>{m.code_pattern}</code>
+                  <div className="text-sm space-y-2 mb-2">
+                    <div className="font-mono bg-muted/15 px-3 py-2 rounded-md border border-border">
+                      <span className="text-red-500 dark:text-red-400 text-xs block uppercase font-semibold mb-1 tracking-wide">⚠ 危险模式</span>
+                      <code className="text-sm text-foreground break-all">{m.code_pattern}</code>
                     </div>
-                    <div className="bg-white/[0.02] p-2 rounded-md border border-white/[0.04]">
-                      <span className="text-emerald-500 text-xs block uppercase font-semibold">安全方案:</span>
-                      {m.remediation}
+                    <div className="bg-muted/8 p-3 rounded-md border border-border">
+                      <span className="text-emerald-500 dark:text-emerald-400 text-xs block uppercase font-semibold mb-1 tracking-wide">✓ 安全方案</span>
+                      <p className="text-sm text-foreground m-0 leading-relaxed">{m.remediation}</p>
                     </div>
                   </div>
                 </div>
 
-                <div className="flex flex-wrap gap-1.5 border-t border-border pt-2">
+                <div className="flex flex-wrap gap-1.5 border-t border-border pt-3">
                   {m.keywords.split(",").map(kw => (
                     <span
                       key={kw}
-                      className="text-xs bg-[rgba(255,60,60,0.08)] text-[rgba(255,100,100,0.9)] px-2 py-0.5 rounded-[10px] border border-[rgba(255,60,60,0.15)]"
+                      className="text-xs bg-red-500/8 text-red-500 dark:text-red-400 px-2 py-0.5 rounded-md border border-red-500/15"
                     >
                       {kw.trim()}
                     </span>
@@ -315,7 +338,7 @@ export function MemoryHub() {
             ))}
 
             {filteredMemories.length === 0 && (
-              <div className="col-span-full text-center p-10 text-muted-foreground bg-white/[0.01] border border-dashed border-border rounded-lg">
+              <div className="col-span-full text-center p-10 text-muted-foreground bg-muted/10 border border-dashed border-border rounded-lg text-sm">
                 没有找到匹配的避坑卡片，请尝试其他关键词。
               </div>
             )}
@@ -361,7 +384,7 @@ export function MemoryHub() {
             {/* Conversation Log Preview */}
             <div className="flex-1 flex flex-col gap-2">
               <label className="text-sm font-medium">会话对话摘要</label>
-              <div className="flex-1 max-h-[260px] overflow-y-auto bg-black/30 border border-border rounded-lg p-3 flex flex-col gap-2.5">
+              <div className="flex-1 max-h-[260px] overflow-y-auto bg-muted/10 border border-border rounded-lg p-3 flex flex-col gap-2.5">
                 {convMessages.map((msg, i) => (
                   <div key={i} className="flex flex-col gap-1">
                     <span className={cn(
@@ -476,7 +499,7 @@ export function MemoryHub() {
       {isFormOpen && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[1000]">
           <div
-            className="card animate-fade-in w-[480px] bg-[rgba(20,20,25,0.95)] border border-border shadow-[0_10px_30px_rgba(0,0,0,0.5)]"
+            className="card animate-fade-in w-[480px] bg-card border border-border shadow-[0_10px_30px_rgba(0,0,0,0.3)] p-5"
           >
             <div className="flex justify-between items-center border-b border-border pb-3 mb-4">
               <h3 className="m-0 text-base flex items-center gap-2">
@@ -554,7 +577,7 @@ export function MemoryHub() {
       {/* D. CONFIRM DELETE DIALOG */}
       {pendingDeleteId && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[1000]">
-          <div className="card animate-fade-in w-[400px] bg-[rgba(20,20,25,0.95)] border border-border shadow-[0_10px_30px_rgba(0,0,0,0.5)]">
+          <div className="card animate-fade-in w-[400px] bg-card border border-border shadow-[0_10px_30px_rgba(0,0,0,0.3)] p-5">
             <div className="flex items-center gap-2 mb-4">
               <AlertTriangle size={18} className="text-amber-500" />
               <h3 className="m-0 text-base">确认删除防错记忆</h3>

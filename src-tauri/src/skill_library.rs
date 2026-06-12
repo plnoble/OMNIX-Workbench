@@ -323,16 +323,8 @@ pub fn execute_protocol_action(
             Ok(format!("Memory stored: {}", id))
         }
         "task" => {
-            // Add to checklist
+            // Add to checklist (table created in init_schema)
             let conn = db.get_connection().map_err(|e| e.to_string())?;
-            let _ = conn.execute(
-                "CREATE TABLE IF NOT EXISTS dev_checklist (
-                    id TEXT PRIMARY KEY, session_id TEXT NOT NULL, title TEXT NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'pending', priority INTEGER NOT NULL DEFAULT 3,
-                    source TEXT NOT NULL DEFAULT 'manual', created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    completed_at DATETIME NULL
-                )", [],
-            );
             let id = format!("proto_chk_{}", chrono::Utc::now().timestamp_millis());
             conn.execute(
                 "INSERT INTO dev_checklist (id, session_id, title, source) VALUES (?1, 'protocol', ?2, 'ai_generated')",

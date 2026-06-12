@@ -120,7 +120,7 @@ export function CommandPalette({ open, onClose, onNavigate, onToggleTheme }: Com
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
           />
-          <kbd className="text-[10px] px-1.5 py-0.5 rounded border border-border text-muted-foreground">ESC</kbd>
+          <kbd className="text-xs px-1.5 py-0.5 rounded border border-border text-muted-foreground">ESC</kbd>
         </div>
 
         {/* Results */}
@@ -154,7 +154,7 @@ export function CommandPalette({ open, onClose, onNavigate, onToggleTheme }: Com
         </div>
 
         {/* Footer */}
-        <div className="flex items-center gap-4 px-4 py-2 border-t border-border text-[10px] text-muted-foreground">
+        <div className="flex items-center gap-4 px-4 py-2 border-t border-border text-xs text-muted-foreground">
           <span>↑↓ 导航</span>
           <span>↵ 执行</span>
           <span>ESC 关闭</span>

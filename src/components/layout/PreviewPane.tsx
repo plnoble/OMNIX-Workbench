@@ -34,11 +34,11 @@ export function PreviewPane({
   onClose,
 }: PreviewPaneProps) {
   return (
-    <aside className="w-[420px] border-l border-border glass-panel flex flex-col h-full">
+    <aside className="w-[min(420px,30vw)] border-l border-border glass-panel flex flex-col h-full">
       {/* Header */}
       <div className="p-4 border-b border-border flex justify-between items-center">
         <span className="text-sm font-semibold">👁️ 实时预览</span>
-        <button onClick={onClose} className="bg-transparent border-none text-muted-foreground cursor-pointer hover:text-foreground">
+        <button onClick={onClose} className="bg-transparent border-none text-muted-foreground cursor-pointer hover:text-foreground" aria-label="关闭预览">
           <X className="h-4 w-4" />
         </button>
       </div>

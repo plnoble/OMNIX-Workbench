@@ -18,6 +18,7 @@ use tower_http::cors::CorsLayer;
 use rusqlite::params;
 
 use crate::db::DbManager;
+use log::warn;
 
 // Define sharing state
 pub struct ProxyState {
@@ -187,7 +188,7 @@ impl ProxyServer {
             let listener = match tokio::net::TcpListener::bind(addr).await {
                 Ok(l) => l,
                 Err(e) => {
-                    eprintln!("OMNIX Proxy: Failed to bind to {}: {}. Port may be in use.", addr, e);
+                    log::warn!("OMNIX Proxy: Failed to bind to {}: {}. Port may be in use.", addr, e);
                     return;
                 }
             };
@@ -198,7 +199,7 @@ impl ProxyServer {
                 })
                 .await
             {
-                eprintln!("OMNIX Proxy: Server error: {}", e);
+                log::warn!("OMNIX Proxy: Server error: {}", e);
             }
         });
     }
@@ -732,6 +733,35 @@ async fn handle_openai_forward_impl(
 
         println!("OMNIX Proxy (OpenAI Route): Forwarding request to {} (stream={})", upstream_url, is_stream);
 
+        // ── Prompt Injection Guard (Odysseus) ──
+        if let Some(msgs) = payload.get("messages").and_then(|m| m.as_array()) {
+            if let Some(last_msg) = msgs.last() {
+                if last_msg.get("role").and_then(|r| r.as_str()) == Some("user") {
+                    if let Some(content) = last_msg.get("content").and_then(|c| c.as_str()) {
+                        let (wrapped, scan_result) = crate::prompt_guard::scan_and_wrap(content, "user_message");
+                        if scan_result.risk_score > 0.7 {
+                            log::warn!("[omnix::proxy] High injection risk ({:.0}%) in user message — {} pattern(s): {:?}",
+                                scan_result.risk_score * 100.0,
+                                scan_result.detected_patterns.len(),
+                                scan_result.detected_patterns
+                            );
+                        }
+                        if wrapped != content {
+                            if let Some(obj) = payload.as_object_mut() {
+                                if let Some(msgs_arr) = obj.get_mut("messages").and_then(|m| m.as_array_mut()) {
+                                    if let Some(last) = msgs_arr.last_mut() {
+                                        if let Some(last_obj) = last.as_object_mut() {
+                                            last_obj.insert("content".to_string(), serde_json::Value::String(wrapped));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         let mut req_builder = state.http_client.post(&upstream_url)
             .header("Content-Type", "application/json")
             .json(&payload);
@@ -746,7 +776,7 @@ async fn handle_openai_forward_impl(
                 res
             }
             Err(e) => {
-                eprintln!("OMNIX Proxy (OpenAI Route): Upstream request failed: {}", e);
+                log::warn!("OMNIX Proxy (OpenAI Route): Upstream request failed: {}", e);
                 return (
                     StatusCode::BAD_GATEWAY,
                     format!("Failed to connect to upstream LLM API: {}", e),
@@ -758,7 +788,7 @@ async fn handle_openai_forward_impl(
         let status = upstream_res.status();
         if !status.is_success() {
             let err_body = upstream_res.text().await.unwrap_or_default();
-            eprintln!("OMNIX Proxy (OpenAI Route): Upstream non-success payload (status {}): {}", status, err_body);
+            log::warn!("OMNIX Proxy (OpenAI Route): Upstream non-success payload (status {}): {}", status, err_body);
             return (status, err_body).into_response();
         }
 

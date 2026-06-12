@@ -1,0 +1,16 @@
+{
+  "task_id": "TASK-060",
+  "title": "OMNIX DevFlow 全维度审计 — 功能/UI/参考/代码质量",
+  "goal": "对整个 OMNIX DevFlow 项目进行5维度全面审计",
+  "owner": "claude",
+  "status": "COMPLETED",
+  "priority": "critical",
+  "dependencies": [],
+  "related_files": ["src-tauri/src/", "src/"],
+  "acceptance_criteria": ["审计报告已生成"],
+  "risk_analysis": ["代码量大，可能遗漏边缘模块"],
+  "planned_actions": ["已完成全量扫描+4维度审计+交叉比对"],
+  "start_time": "2026-06-10T20:05:00+08:00",
+  "end_time": "2026-06-10T23:30:00+08:00",
+  "audit_summary": "发现 3 个 CRITICAL、8 个 HIGH、15 个 MEDIUM、10+ 个 MINOR 问题"
+}

@@ -134,12 +134,12 @@ export const PlanTree: React.FC<PlanTreeProps> = ({ conversationId, containerWid
 
       {/* Progress Section */}
       {tasks.length > 0 && (
-        <div className="bg-white/[0.02] p-3 rounded-lg border border-border">
+        <div className="bg-muted/5 p-3 rounded-lg border border-border">
           <div className="flex justify-between text-xs mb-1.5">
             <span className="text-secondary-foreground">任务完成度: {completedCount}/{tasks.length}</span>
             <span className="text-[var(--color-primary)] font-semibold">{progressPercent}%</span>
           </div>
-          <div className="w-full h-1.5 bg-white/[0.05] rounded-sm overflow-hidden">
+          <div className="w-full h-1.5 bg-muted/20 rounded-sm overflow-hidden">
             {/* TODO: migrate to Tailwind — dynamic width and CSS-variable gradient */}
             <div
               style={{
@@ -177,7 +177,7 @@ export const PlanTree: React.FC<PlanTreeProps> = ({ conversationId, containerWid
               </p>
             </div>
           ) : (
-            <div className="flex flex-col relative pl-5 border-l-2 border-white/[0.05]">
+            <div className="flex flex-col relative pl-5 border-l-2 border-border">
               {tasks.map((task) => {
                 const isActive = task.status === "in_progress";
                 const isDone = task.status === "done";
@@ -224,12 +224,12 @@ export const PlanTree: React.FC<PlanTreeProps> = ({ conversationId, containerWid
                       </span>
                       <span
                         className={cn(
-                          "text-[10px] px-1.5 py-0.5 rounded font-medium",
+                          "text-xs px-1.5 py-0.5 rounded font-medium",
                           isDone
                             ? "bg-emerald-500/10 text-emerald-500 border border-emerald-500/20"
                             : isActive
                               ? "bg-amber-500/10 text-amber-500 border border-amber-500/20"
-                              : "bg-white/[0.03] text-muted-foreground border border-transparent"
+                              : "bg-muted/10 text-muted-foreground border border-transparent"
                         )}
                       >
                         {isDone ? "已完成" : isActive ? "运行中" : "未开始"}
@@ -251,17 +251,17 @@ export const PlanTree: React.FC<PlanTreeProps> = ({ conversationId, containerWid
         )}>
 
           {/* Simulator Form */}
-          <div className="bg-white/[0.01] border border-border rounded-[10px] p-3.5">
+          <div className="bg-muted/5 border border-border rounded-[10px] p-3.5">
             <h4 className="text-xs mb-2.5 text-[var(--color-secondary)]">🧪 Team Mode 协议调试仿真器</h4>
 
             <div className="flex flex-col gap-2.5">
               <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className="text-[10px] text-secondary-foreground block mb-1">Leader Agent</label>
+                  <label className="text-xs text-secondary-foreground block mb-1">Leader Agent</label>
                   <select
                     value={leader}
                     onChange={(e) => setLeader(e.target.value)}
-                    className="w-full bg-background border border-border rounded text-white text-xs p-1"
+                    className="w-full bg-background border border-border rounded text-foreground text-xs p-1"
                   >
                     <option value="Claude Code">Claude Code</option>
                     <option value="Google Antigravity">Google Antigravity</option>
@@ -269,11 +269,11 @@ export const PlanTree: React.FC<PlanTreeProps> = ({ conversationId, containerWid
                   </select>
                 </div>
                 <div>
-                  <label className="text-[10px] text-secondary-foreground block mb-1">Teammate Agent</label>
+                  <label className="text-xs text-secondary-foreground block mb-1">Teammate Agent</label>
                   <select
                     value={teammate}
                     onChange={(e) => setTeammate(e.target.value)}
-                    className="w-full bg-background border border-border rounded text-white text-xs p-1"
+                    className="w-full bg-background border border-border rounded text-foreground text-xs p-1"
                   >
                     <option value="Google Antigravity">Google Antigravity</option>
                     <option value="OpenCode">OpenCode</option>
@@ -310,14 +310,17 @@ export const PlanTree: React.FC<PlanTreeProps> = ({ conversationId, containerWid
                   return (
                     <div
                       key={msg.filename}
-                      className="bg-white/[0.02] border border-border rounded-lg px-3 py-2 cursor-pointer"
+                      className="bg-muted/5 border border-border rounded-lg px-3 py-2 cursor-pointer"
                       onClick={() => setExpandedMsg(isExpanded ? null : msg.filename)}
+                      role="button"
+                      aria-expanded={isExpanded}
+                      aria-label="展开或折叠信箱消息详情"
                     >
                       <div className="flex justify-between items-center">
                         <span className="text-xs font-mono text-[var(--color-primary)]">
                           ✉️ {msg.filename.slice(0, 18)}...
                         </span>
-                        <span className="text-[10px] text-muted-foreground">
+                        <span className="text-xs text-muted-foreground">
                           {msg.timestamp.split("T")[1]?.slice(0, 5) || "Active"}
                         </span>
                       </div>
@@ -331,8 +334,8 @@ export const PlanTree: React.FC<PlanTreeProps> = ({ conversationId, containerWid
                       </div>
 
                       {isExpanded && (
-                        <div className="mt-2 bg-background p-2 rounded border border-white/[0.03] overflow-x-auto">
-                          <pre className="m-0 text-[10px] font-mono text-secondary-foreground">
+                        <div className="mt-2 bg-background p-2 rounded border border-border overflow-x-auto">
+                          <pre className="m-0 text-xs font-mono text-secondary-foreground">
                             {JSON.stringify(msg.params, null, 2)}
                           </pre>
                         </div>

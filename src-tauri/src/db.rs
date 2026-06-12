@@ -583,6 +583,114 @@ impl DbManager {
             [],
         )?;
 
+        // 21. Development Checklist Table (Odysseus inspired — moved from runtime CREATE)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS dev_checklist (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                priority INTEGER NOT NULL DEFAULT 0,
+                source TEXT NOT NULL DEFAULT 'manual',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                completed_at DATETIME NULL
+            )",
+            [],
+        )?;
+
+        // 22. Agent Mailbox Table (AionUI inspired — moved from runtime CREATE)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS agent_mailbox (
+                id TEXT PRIMARY KEY,
+                from_agent TEXT NOT NULL,
+                to_agent TEXT NOT NULL,
+                subject TEXT NOT NULL DEFAULT '',
+                body TEXT NOT NULL DEFAULT '',
+                is_read INTEGER NOT NULL DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )?;
+
+        // 23. Task Dependencies Table (AionUI inspired — moved from runtime CREATE)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS task_dependencies (
+                task_id TEXT NOT NULL,
+                blocks_id TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (task_id, blocks_id)
+            )",
+            [],
+        )?;
+
+        // 24. Event Triggers Table (Odysseus inspired — moved from runtime CREATE)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS event_triggers (
+                id TEXT PRIMARY KEY,
+                event_type TEXT NOT NULL,
+                threshold INTEGER NOT NULL DEFAULT 1,
+                task_id TEXT NOT NULL,
+                current_count INTEGER NOT NULL DEFAULT 0,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )?;
+
+        // 25. Tool Confirmation Queue (AionUI inspired — moved from runtime CREATE)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS tool_confirmations (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                tool_name TEXT NOT NULL,
+                tool_input TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                resolved_at DATETIME NULL
+            )",
+            [],
+        )?;
+
+        // Platform API Keys (multi-key per platform, encrypted storage)
+        let _ = conn.execute(
+            "CREATE TABLE IF NOT EXISTS platform_api_keys (
+                id TEXT PRIMARY KEY,
+                platform_id TEXT NOT NULL,
+                encrypted_key TEXT NOT NULL,
+                label TEXT DEFAULT '',
+                is_active INTEGER DEFAULT 0,
+                created_at TEXT DEFAULT (datetime('now'))
+            )",
+            [],
+        );
+
+        // ── Performance indexes ──────────────────────────────────────
+        // These are added AFTER all table creation to avoid FK ordering issues.
+        // Each uses IF NOT EXISTS so they're safe to run on every startup.
+        let indexes = [
+            // Most critical: messages by conversation (chat loads messages per-conversation)
+            "CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id)",
+            // Platform models by platform (settings page loads models per-platform)
+            "CREATE INDEX IF NOT EXISTS idx_platform_models_platform_id ON platform_models(platform_id)",
+            // Request logs by timestamp (dashboard analytics sort by time)
+            "CREATE INDEX IF NOT EXISTS idx_request_logs_timestamp ON request_logs(timestamp)",
+            // Cron runs by task (history view per-task)
+            "CREATE INDEX IF NOT EXISTS idx_cron_runs_task_id ON cron_runs(task_id)",
+            // Tasks by conversation (PlanTree loads tasks per-conversation)
+            "CREATE INDEX IF NOT EXISTS idx_tasks_conversation_id ON tasks(conversation_id)",
+            // Agent accounts by agent (sidebar shows accounts per-agent)
+            "CREATE INDEX IF NOT EXISTS idx_agent_accounts_agent_name ON agent_accounts(agent_name)",
+            // Search history by timestamp (recent searches sort)
+            "CREATE INDEX IF NOT EXISTS idx_search_history_timestamp ON search_history(timestamp)",
+            // Platform API keys by platform
+            "CREATE INDEX IF NOT EXISTS idx_platform_api_keys_platform_id ON platform_api_keys(platform_id)",
+            // Activity log by timestamp (recent activity)
+            "CREATE INDEX IF NOT EXISTS idx_activity_log_timestamp ON activity_log(timestamp)",
+        ];
+        for idx_sql in &indexes {
+            let _ = conn.execute(idx_sql, []);
+        }
+
         // Seed default settings if empty
         self.seed_default_settings(&conn)?;
 
@@ -687,10 +795,15 @@ impl DbManager {
     }
 
     fn seed_default_accounts(&self, conn: &Connection) -> Result<()> {
+        // Only seed on first install — never re-seed after user deletes accounts
+        if self.get_setting("seed_accounts_completed")?.is_some() {
+            return Ok(());
+        }
+
         // Fetch current setting configurations to establish default profile
         let api_key = self.get_setting("api_key")?.unwrap_or_default();
         let api_host = self.get_setting("api_host")?.unwrap_or_else(|| "https://api.openai.com/v1".to_string());
-        
+
         let agents_to_seed = vec![
             ("claude_code_default", "Claude Code 默认账户", "", "https://api.anthropic.com/v1", "claude-3-5-sonnet", "Claude Code"),
             ("gemini_cli_default", "Gemini CLI 默认账户", "", "https://generativelanguage.googleapis.com", "gemini-2.0-flash", "Gemini CLI"),
@@ -715,6 +828,12 @@ impl DbManager {
                 )?;
             }
         }
+
+        // Mark seed as completed — future starts will skip re-seeding
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?1, ?2, CURRENT_TIMESTAMP)",
+            params!["seed_accounts_completed", "true"],
+        )?;
 
         Ok(())
     }
@@ -874,7 +993,7 @@ impl DbManager {
             ("auto_start", "false"),
             ("start_to_tray", "true"),
             ("sandbox_dir", "~/.omnix/agents"),
-            ("quick_assistant_shortcut", "Alt+Space"),
+            ("quick_assistant_shortcut", "Ctrl+Shift+Space"),
             ("quick_assistant_model", "deepseek-chat"),
             ("quick_assistant_enabled", "true"),
             ("quick_assistant_use_kb", "true"),
@@ -1007,9 +1126,8 @@ impl DbManager {
     }
 
     fn seed_default_cron_tasks(&self, conn: &Connection) -> Result<()> {
-        let mut stmt = conn.prepare("SELECT COUNT(*) FROM cron_tasks")?;
-        let count: i64 = stmt.query_row([], |r| r.get(0))?;
-        if count > 0 {
+        // Only seed on first install — never re-seed after user deletes tasks
+        if self.get_setting("seed_cron_completed")?.is_some() {
             return Ok(());
         }
 
@@ -1037,6 +1155,12 @@ impl DbManager {
                 "[]",
                 "d:/Agent/Project/OMNIX-Development Tools"
             ],
+        )?;
+
+        // Mark seed as completed
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?1, ?2, CURRENT_TIMESTAMP)",
+            params!["seed_cron_completed", "true"],
         )?;
 
         Ok(())
@@ -1518,8 +1642,21 @@ impl DbManager {
             .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e)))?;
         if rows.is_empty() { return Ok(0); }
 
-        // Get column names from first row
+        // Get column names from first row, validate against SQL injection
         let cols: Vec<&str> = rows[0].keys().map(|s| s.as_str()).collect();
+        // Validate column names: only allow alphanumeric + underscore (prevent SQL injection via column names)
+        for col in &cols {
+            if col.is_empty() || !col.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                return Err(rusqlite::Error::InvalidParameterName(
+                    format!("Invalid column name: '{}'. Only alphanumeric and underscore allowed.", col)
+                ));
+            }
+            if col.starts_with(|c: char| c.is_ascii_digit()) {
+                return Err(rusqlite::Error::InvalidParameterName(
+                    format!("Invalid column name: '{}'. Must not start with a digit.", col)
+                ));
+            }
+        }
         let col_placeholders: Vec<&str> = cols.iter().map(|_| "?").collect();
         let sql = format!(
             "INSERT OR REPLACE INTO \"{}\" ({}) VALUES ({})",

@@ -1,7 +1,8 @@
 /**
  * useSearch — Web search providers and search execution
  *
- * Manages: search provider CRUD, search execution, search history
+ * Manages: search provider CRUD, search execution, search history,
+ *          add/edit modal state
  */
 
 import { useState, useCallback } from "react";
@@ -16,6 +17,14 @@ export interface UseSearchReturn {
   selectedProviderId: string;
   isSearching: boolean;
 
+  // Modal state
+  showSearchProviderModal: boolean;
+  editingSearchProvider: SearchProvider | null;
+  searchProviderForm: { id: string; name: string; api_type: string; api_key: string; api_address: string; is_enabled: boolean };
+  openSearchProviderModal: (provider?: SearchProvider) => void;
+  closeSearchProviderModal: () => void;
+  updateSearchProviderForm: (field: string, value: string | boolean) => void;
+
   loadProviders: () => Promise<void>;
   saveProvider: (provider: SearchProvider) => Promise<void>;
   deleteProvider: (id: string) => Promise<void>;
@@ -27,6 +36,15 @@ export interface UseSearchReturn {
   setSelectedProviderId: (id: string) => void;
 }
 
+const EMPTY_PROVIDER_FORM = {
+  id: "",
+  name: "",
+  api_type: "searxng",
+  api_key: "",
+  api_address: "",
+  is_enabled: true,
+};
+
 export function useSearch(): UseSearchReturn {
   const [providers, setProviders] = useState<SearchProvider[]>([]);
   const [results, setResults] = useState<WebSearchResult[]>([]);
@@ -34,6 +52,39 @@ export function useSearch(): UseSearchReturn {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedProviderId, setSelectedProviderId] = useState("");
   const [isSearching, setIsSearching] = useState(false);
+
+  // Modal state
+  const [showSearchProviderModal, setShowSearchProviderModal] = useState(false);
+  const [editingSearchProvider, setEditingSearchProvider] = useState<SearchProvider | null>(null);
+  const [searchProviderForm, setSearchProviderForm] = useState(EMPTY_PROVIDER_FORM);
+
+  const openSearchProviderModal = useCallback((provider?: SearchProvider) => {
+    if (provider) {
+      setEditingSearchProvider(provider);
+      setSearchProviderForm({
+        id: provider.id,
+        name: provider.name,
+        api_type: provider.api_type,
+        api_key: provider.api_key,
+        api_address: provider.api_address,
+        is_enabled: provider.is_enabled,
+      });
+    } else {
+      setEditingSearchProvider(null);
+      setSearchProviderForm({ ...EMPTY_PROVIDER_FORM, id: `sp_${Date.now()}` });
+    }
+    setShowSearchProviderModal(true);
+  }, []);
+
+  const closeSearchProviderModal = useCallback(() => {
+    setShowSearchProviderModal(false);
+    setEditingSearchProvider(null);
+    setSearchProviderForm(EMPTY_PROVIDER_FORM);
+  }, []);
+
+  const updateSearchProviderForm = useCallback((field: string, value: string | boolean) => {
+    setSearchProviderForm((prev) => ({ ...prev, [field]: value }));
+  }, []);
 
   const loadProviders = useCallback(async () => {
     try {
@@ -108,6 +159,8 @@ export function useSearch(): UseSearchReturn {
 
   return {
     providers, results, history, searchQuery, selectedProviderId, isSearching,
+    showSearchProviderModal, editingSearchProvider, searchProviderForm,
+    openSearchProviderModal, closeSearchProviderModal, updateSearchProviderForm,
     loadProviders, saveProvider, deleteProvider, search,
     loadHistory, deleteHistoryItem, clearHistory,
     setSearchQuery, setSelectedProviderId,

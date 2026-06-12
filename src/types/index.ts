@@ -123,7 +123,33 @@ export type PromptType = "none" | "trust" | "update" | "menu" | "editor";
 export type PreviewType = "html" | "markdown" | "image" | "diff";
 
 /** Model connectivity test state */
-export type ModelTestState = "idle" | "testing" | "success" | "error";
+export type ModelTestState =
+  | "idle"
+  | "testing"
+  | "success"
+  | "auth_error"
+  | "rate_limited"
+  | "error"
+  | "unreachable"
+  | "no_api_key";
+
+/** Detailed health check result from backend */
+export interface HealthCheckDetail {
+  status: ModelTestState;
+  http_code: number | null;
+  latency_ms: number | null;
+  message: string;
+}
+
+/** A platform API key entry (masked for display) */
+export interface PlatformApiKey {
+  id: string;
+  platform_id: string;
+  label: string;
+  masked_key: string;
+  is_active: boolean;
+  created_at: string;
+}
 
 /** Settings sub-tab selection */
 export type SettingsSubTab = "platform" | "system" | "mcp" | "backup";

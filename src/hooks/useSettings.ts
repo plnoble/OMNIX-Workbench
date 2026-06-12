@@ -1,23 +1,24 @@
 /**
  * useSettings — Application settings state and persistence
  *
- * Manages: apiKey, apiHost, targetModel, proxyPort, gpuAcceleration,
+ * Manages: targetModel, gpuAcceleration,
  * idleTimeout, autoStart, startToTray, useWsl, wslDistro, gatewayStatus,
  * themeMode
+ *
+ * Note: apiKey, apiHost, and proxyPort are NO LONGER user-configurable here.
+ *   - API keys and base URLs are managed per-platform in the Model Hub.
+ *   - The proxy port is an internal constant (1421), not a user setting.
  */
 
 import { useState, useCallback, useRef } from "react";
 import { settingsApi } from "@/lib/tauri-api";
 import type { GatewayStatus } from "@/types";
-import { DEFAULT_PROXY_PORT, DEFAULT_IDLE_TIMEOUT, DEFAULT_WSL_DISTRO } from "@/lib/constants";
+import { DEFAULT_IDLE_TIMEOUT, DEFAULT_WSL_DISTRO } from "@/lib/constants";
 
 export type ThemeMode = "dark" | "light" | "auto";
 
 interface SettingsState {
-  apiKey: string;
-  apiHost: string;
   targetModel: string;
-  proxyPort: string;
   gpuAcceleration: boolean;
   idleTimeout: string;
   autoStart: boolean;
@@ -29,10 +30,7 @@ interface SettingsState {
 }
 
 interface SettingsActions {
-  setApiKey: (v: string) => void;
-  setApiHost: (v: string) => void;
   setTargetModel: (v: string) => void;
-  setProxyPort: (v: string) => void;
   setGpuAcceleration: (v: boolean) => void;
   setIdleTimeout: (v: string) => void;
   setAutoStart: (v: boolean) => void;
@@ -49,10 +47,7 @@ export type UseSettingsReturn = SettingsState & SettingsActions;
 
 export function useSettings(): UseSettingsReturn {
   const gatewayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [apiKey, setApiKey] = useState("");
-  const [apiHost, setApiHost] = useState("");
   const [targetModel, setTargetModel] = useState("");
-  const [proxyPort, setProxyPort] = useState(DEFAULT_PROXY_PORT);
   const [gpuAcceleration, setGpuAcceleration] = useState(true);
   const [idleTimeout, setIdleTimeout] = useState(DEFAULT_IDLE_TIMEOUT);
   const [autoStart, setAutoStart] = useState(false);
@@ -60,15 +55,12 @@ export function useSettings(): UseSettingsReturn {
   const [useWsl, setUseWsl] = useState(false);
   const [wslDistro, setWslDistro] = useState(DEFAULT_WSL_DISTRO);
   const [gatewayStatus, setGatewayStatus] = useState<GatewayStatus>("idle");
-  const [themeMode, setThemeMode] = useState<ThemeMode>("dark");
+  const [themeMode, setThemeMode] = useState<ThemeMode>("auto");
 
   const loadSettings = useCallback(async () => {
     try {
-      const [key, host, model, port, gpu, timeout, start, tray, theme] = await Promise.all([
-        settingsApi.get("api_key"),
-        settingsApi.get("api_host"),
+      const [model, gpu, timeout, start, tray, theme] = await Promise.all([
         settingsApi.get("target_model"),
-        settingsApi.get("proxy_port"),
         settingsApi.get("gpu_acceleration"),
         settingsApi.get("idle_timeout_min"),
         settingsApi.get("auto_start"),
@@ -76,15 +68,27 @@ export function useSettings(): UseSettingsReturn {
         settingsApi.get("theme_mode"),
       ]);
 
-      if (key) setApiKey(key);
-      if (host) setApiHost(host);
       if (model) setTargetModel(model);
-      if (port) setProxyPort(port);
       if (gpu) setGpuAcceleration(gpu === "true");
       if (timeout) setIdleTimeout(timeout);
       if (start) setAutoStart(start === "true");
       if (tray) setStartToTray(tray === "true");
-      if (theme === "dark" || theme === "light" || theme === "auto") setThemeMode(theme);
+      // Theme migration: old default was "dark", new default is "auto"
+      // On first run after upgrade, migrate DB-stored "dark" → "auto" once
+      const migrated = await settingsApi.get("theme_mode_migrated");
+      if (!migrated) {
+        // No migration flag — if DB had old default "dark", change to "auto"
+        if (theme === "dark" || !theme) {
+          setThemeMode("auto");
+          await settingsApi.set("theme_mode", "auto");
+        } else if (theme === "light" || theme === "auto") {
+          setThemeMode(theme);
+        }
+        await settingsApi.set("theme_mode_migrated", "true");
+      } else {
+        // Already migrated — respect DB value
+        if (theme === "dark" || theme === "light" || theme === "auto") setThemeMode(theme);
+      }
     } catch (e) {
       console.error("[useSettings] Failed to load settings:", e);
     }
@@ -94,10 +98,7 @@ export function useSettings(): UseSettingsReturn {
     setGatewayStatus("busy");
     try {
       await Promise.all([
-        settingsApi.set("api_key", apiKey),
-        settingsApi.set("api_host", apiHost),
         settingsApi.set("target_model", targetModel),
-        settingsApi.set("proxy_port", proxyPort),
         settingsApi.set("gpu_acceleration", gpuAcceleration ? "true" : "false"),
         settingsApi.set("idle_timeout_min", idleTimeout),
         settingsApi.set("auto_start", autoStart ? "true" : "false"),
@@ -110,20 +111,17 @@ export function useSettings(): UseSettingsReturn {
       // Clear any pending gateway status update before scheduling a new one
       if (gatewayTimerRef.current) clearTimeout(gatewayTimerRef.current);
       gatewayTimerRef.current = setTimeout(() => {
-        setGatewayStatus(apiKey?.trim().length > 0 ? "idle" : "error");
+        setGatewayStatus("idle");
       }, 500);
     } catch (e) {
       console.error("[useSettings] Failed to save settings:", e);
       setGatewayStatus("error");
       throw e; // Re-throw so caller can show feedback
     }
-  }, [apiKey, apiHost, targetModel, proxyPort, gpuAcceleration, idleTimeout, autoStart, startToTray, themeMode]);
+  }, [targetModel, gpuAcceleration, idleTimeout, autoStart, startToTray, themeMode]);
 
   return {
-    apiKey, setApiKey,
-    apiHost, setApiHost,
     targetModel, setTargetModel,
-    proxyPort, setProxyPort,
     gpuAcceleration, setGpuAcceleration,
     idleTimeout, setIdleTimeout,
     autoStart, setAutoStart,

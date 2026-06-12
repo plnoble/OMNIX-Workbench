@@ -712,13 +712,7 @@ fn extract_exports(content: &str) -> Vec<String> {
 
 /// Simple FNV-1a content hash
 fn compute_content_hash(content: &str) -> String {
-    let data = content.as_bytes();
-    let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in data {
-        hash ^= *byte as u64;
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    format!("fnv-{:016x}", hash)
+    crate::hash::fnv1a_hash(content)
 }
 
 /// Save architecture graph to disk

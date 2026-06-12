@@ -40,8 +40,8 @@
   --color-ring: #a855f7;
 
   /* --- Typography --- */
-  --font-sans: 'Outfit', 'Inter', system-ui, sans-serif;
-  --font-mono: 'Fira Code', ui-monospace, monospace;
+  --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'Cascadia Code', 'JetBrains Mono', ui-monospace, monospace;
 
   /* --- Border Radius --- */
   --radius-sm: 6px;
@@ -81,6 +81,17 @@
       radial-gradient(ellipse at 10% 20%, rgba(79, 172, 254, 0.04) 0%, transparent 50%),
       radial-gradient(ellipse at 90% 80%, rgba(168, 85, 247, 0.04) 0%, transparent 50%),
       var(--color-background);
+  }
+
+  /* Focus-visible accessibility: keyboard navigation ring */
+  :focus-visible {
+    outline: 2px solid var(--color-ring);
+    outline-offset: 2px;
+  }
+
+  /* Remove default focus outline for mouse users */
+  :focus:not(:focus-visible) {
+    outline: none;
   }
 
   /* Scrollbar styling */

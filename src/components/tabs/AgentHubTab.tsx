@@ -8,8 +8,9 @@ import { useState, useEffect } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Bot, Plus, Edit, Trash2, ToggleLeft, BookOpen, Bug, Search, Layout, Palette, GitCommit, GitPullRequest, FileText, AlertTriangle, HelpCircle, TestTube, Target, Users, Lightbulb, Languages, Mail, Briefcase, Presentation, GraduationCap, Type, MessageSquare, ChevronDown, ChevronRight, Link, Unlink, Check } from "lucide-react";
+import { Bot, Plus, Edit, Trash2, ToggleLeft, BookOpen, Bug, Search, Layout, Palette, GitCommit, GitPullRequest, FileText, AlertTriangle, HelpCircle, TestTube, Target, Users, Lightbulb, Languages, Mail, Briefcase, Presentation, GraduationCap, Type, MessageSquare, ChevronDown, ChevronRight, Link, Unlink, Check, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { toast } from "sonner";
 import { agentTemplateApi, agentBindingApi, platformHealthApi } from "@/lib/tauri-api";
 import type { DetectedAgent, AgentAccount, PlatformModel } from "@/types";
 import type { AgentTemplate, AgentPlatformBinding, PlatformHealth } from "@/lib/tauri-api";
@@ -45,7 +46,7 @@ function getAccentClass(accent: string) {
     case "info": return "bg-cyan-500/12 text-cyan-400 border-cyan-500/30";
     case "success": return "bg-emerald-500/12 text-emerald-400 border-emerald-500/30";
     case "error": return "bg-red-500/12 text-red-400 border-red-500/30";
-    default: return "bg-white/5 text-muted-foreground border-border";
+    default: return "bg-muted/20 text-muted-foreground border-border";
   }
 }
 
@@ -63,24 +64,34 @@ export function AgentHubTab({
   const [templates, setTemplates] = useState<AgentTemplate[]>([]);
   const [expandedCategory, setExpandedCategory] = useState<string | null>("Engineering");
   const [expandedTemplate, setExpandedTemplate] = useState<string | null>(null);
+  const [isLoadingTemplates, setIsLoadingTemplates] = useState(true);
 
   // Per-agent binding state (CC Switch inspired)
   const [bindings, setBindings] = useState<AgentPlatformBinding[]>([]);
   const [platformHealth, setPlatformHealth] = useState<PlatformHealth[]>([]);
   const [editingAgent, setEditingAgent] = useState<string | null>(null);
+  const [isLoadingBindings, setIsLoadingBindings] = useState(true);
 
   useEffect(() => {
-    agentTemplateApi.getAll().then(setTemplates).catch(console.error);
+    setIsLoadingTemplates(true);
+    agentTemplateApi.getAll()
+      .then(setTemplates)
+      .catch((e) => { console.error("Failed to load templates:", e); toast.error("加载模板库失败"); })
+      .finally(() => setIsLoadingTemplates(false));
     loadBindings();
     loadPlatformHealth();
   }, []);
 
   const loadBindings = async () => {
+    setIsLoadingBindings(true);
     try {
       const list = await agentBindingApi.getAll();
       setBindings(list);
     } catch (e) {
       console.error("Failed to load bindings:", e);
+      toast.error("加载 Agent 绑定失败");
+    } finally {
+      setIsLoadingBindings(false);
     }
   };
 
@@ -90,6 +101,7 @@ export function AgentHubTab({
       setPlatformHealth(health);
     } catch (e) {
       console.error("Failed to load platform health:", e);
+      toast.error("加载平台健康状态失败");
     }
   };
 
@@ -100,6 +112,7 @@ export function AgentHubTab({
       setEditingAgent(null);
     } catch (e) {
       console.error("Failed to bind agent:", e);
+      toast.error("绑定 Agent 失败");
     }
   };
 
@@ -109,6 +122,7 @@ export function AgentHubTab({
       await loadBindings();
     } catch (e) {
       console.error("Failed to unbind agent:", e);
+      toast.error("解除绑定失败");
     }
   };
 
@@ -125,7 +139,7 @@ export function AgentHubTab({
         <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
           <Bot className="h-4 w-4" /> 已检测的智能体 CLI
         </h3>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           {detectedAgents.map((agent) => {
             const isActive = agent.name === activeAgent;
             const isInstalled = agent.status === "installed";
@@ -150,7 +164,7 @@ export function AgentHubTab({
                   {isInstalled && (
                     <div className="text-xs text-muted-foreground space-y-0.5">
                       <div>版本: <code>{agent.version}</code></div>
-                      <div className="truncate">路径: <code className="text-[10px]">{agent.path}</code></div>
+                      <div className="truncate">路径: <code className="text-xs">{agent.path}</code></div>
                     </div>
                   )}
                 </CardContent>
@@ -170,15 +184,19 @@ export function AgentHubTab({
         </p>
 
         <div className="flex flex-col gap-3">
-          {Object.entries(categories).map(([category, categoryTemplates]) => (
+          {isLoadingTemplates ? (
+            <div className="flex items-center justify-center py-8 text-muted-foreground">
+              <Loader2 className="h-5 w-5 animate-spin mr-2" /> 加载模板库中...
+            </div>
+          ) : Object.entries(categories).map(([category, categoryTemplates]) => (
             <div key={category}>
               <button
-                className="flex items-center gap-2 w-full text-left py-1.5 px-2 rounded-lg hover:bg-white/5 transition-colors"
+                className="flex items-center gap-2 w-full text-left py-1.5 px-2 rounded-lg hover:bg-muted/20 transition-colors"
                 onClick={() => setExpandedCategory(expandedCategory === category ? null : category)}
               >
                 {expandedCategory === category ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
                 <span className="text-xs font-medium text-secondary-foreground">{category}</span>
-                <span className="text-[10px] text-muted-foreground ml-auto">{categoryTemplates.length}</span>
+                <span className="text-xs text-muted-foreground ml-auto">{categoryTemplates.length}</span>
               </button>
 
               {expandedCategory === category && (
@@ -200,7 +218,7 @@ export function AgentHubTab({
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center gap-2">
                                 <span className="font-medium text-sm">{tmpl.name}</span>
-                                <Badge variant="outline" className={cn("text-[9px] py-0", getAccentClass(tmpl.accent))}>
+                                <Badge variant="outline" className={cn("text-xs py-0", getAccentClass(tmpl.accent))}>
                                   {tmpl.category}
                                 </Badge>
                               </div>
@@ -211,7 +229,7 @@ export function AgentHubTab({
                             <Button
                               size="sm"
                               variant="outline"
-                              className="shrink-0 text-[10px] h-6"
+                              className="shrink-0 text-xs h-6"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 onUseTemplate?.(tmpl);
@@ -224,15 +242,15 @@ export function AgentHubTab({
                           {/* Expanded details */}
                           {isExpanded && (
                             <div className="mt-3 pt-3 border-t border-border">
-                              <div className="text-[10px] font-medium text-secondary-foreground mb-1.5">系统提示预览:</div>
-                              <pre className="text-[10px] text-muted-foreground bg-black/20 rounded p-2 max-h-[200px] overflow-y-auto whitespace-pre-wrap font-mono">
+                              <div className="text-xs font-medium text-secondary-foreground mb-1.5">系统提示预览:</div>
+                              <pre className="text-xs text-muted-foreground bg-black/20 rounded p-2 max-h-[200px] overflow-y-auto whitespace-pre-wrap font-mono">
                                 {tmpl.instructions.slice(0, 500)}{tmpl.instructions.length > 500 ? "..." : ""}
                               </pre>
                               {tmpl.skills.length > 0 && (
                                 <div className="mt-2">
-                                  <span className="text-[10px] font-medium text-secondary-foreground">关联技能: </span>
+                                  <span className="text-xs font-medium text-secondary-foreground">关联技能: </span>
                                   {tmpl.skills.map((s, i) => (
-                                    <span key={i} className="text-[10px] text-cyan-400">
+                                    <span key={i} className="text-xs text-cyan-400">
                                       {s.name}{i < tmpl.skills.length - 1 ? ", " : ""}
                                     </span>
                                   ))}
@@ -261,7 +279,11 @@ export function AgentHubTab({
         </p>
 
         <div className="flex flex-col gap-2">
-          {detectedAgents.filter(a => a.status === "installed").map((agent) => {
+          {isLoadingBindings ? (
+            <div className="flex items-center justify-center py-4 text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin mr-2" /> 加载绑定状态...
+            </div>
+          ) : detectedAgents.filter(a => a.status === "installed").map((agent) => {
             const binding = bindings.find(b => b.agent_name === agent.name);
             const isEditing = editingAgent === agent.name;
             const boundPlatform = platformHealth.find(p => p.id === binding?.platform_id);
@@ -274,11 +296,11 @@ export function AgentHubTab({
                       <Bot className="h-4 w-4" />
                       <span className="text-sm font-medium">{agent.name}</span>
                       {binding ? (
-                        <Badge variant="outline" className="text-[10px] bg-cyan-500/10 text-cyan-400 border-cyan-500/30">
+                        <Badge variant="outline" className="text-xs bg-cyan-500/10 text-cyan-400 border-cyan-500/30">
                           → {binding.platform_name}
                         </Badge>
                       ) : (
-                        <Badge variant="outline" className="text-[10px] text-muted-foreground">
+                        <Badge variant="outline" className="text-xs text-muted-foreground">
                           默认路由
                         </Badge>
                       )}
@@ -293,7 +315,7 @@ export function AgentHubTab({
                       <Button
                         size="sm"
                         variant="outline"
-                        className="text-[10px] h-6"
+                        className="text-xs h-6"
                         onClick={() => setEditingAgent(isEditing ? null : agent.name)}
                       >
                         {isEditing ? "取消" : binding ? "切换" : "绑定"}
@@ -302,8 +324,9 @@ export function AgentHubTab({
                         <Button
                           size="sm"
                           variant="outline"
-                          className="text-[10px] h-6 text-red-400"
+                          className="text-xs h-6 text-red-400"
                           onClick={() => handleUnbindAgent(agent.name)}
+                          aria-label="解除绑定"
                         >
                           <Unlink className="h-3 w-3" />
                         </Button>
@@ -314,7 +337,7 @@ export function AgentHubTab({
                   {/* Platform selector (expanded) */}
                   {isEditing && (
                     <div className="mt-3 pt-3 border-t border-border">
-                      <div className="grid grid-cols-2 gap-2">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                         {platformHealth.map((platform) => (
                           <button
                             key={platform.id}
@@ -323,7 +346,7 @@ export function AgentHubTab({
                               binding?.platform_id === platform.id
                                 ? "bg-cyan-500/12 border-cyan-500/40 text-cyan-400"
                                 : platform.is_healthy
-                                  ? "bg-white/2 border-border hover:bg-white/5"
+                                  ? "bg-muted/10 border-border hover:bg-muted/20"
                                   : "bg-red-500/5 border-red-500/20 text-red-400 opacity-60"
                             )}
                             onClick={() => handleBindAgent(agent.name, platform.id)}
@@ -334,7 +357,7 @@ export function AgentHubTab({
                             )} />
                             <div className="flex-1 min-w-0">
                               <div className="font-medium truncate">{platform.name}</div>
-                              <div className="text-[10px] text-muted-foreground">{platform.api_type}</div>
+                              <div className="text-xs text-muted-foreground">{platform.api_type}</div>
                             </div>
                             {binding?.platform_id === platform.id && (
                               <Check className="h-3 w-3 text-cyan-400 shrink-0" />

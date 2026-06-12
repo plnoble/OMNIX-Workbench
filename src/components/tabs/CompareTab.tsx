@@ -4,14 +4,10 @@
 
 import { CompareHub } from "@/CompareHub";
 
-interface CompareTabProps {
-  proxyPort: string;
-}
-
-export function CompareTab({ proxyPort }: CompareTabProps) {
+export function CompareTab() {
   return (
-    <div className="flex-1 overflow-hidden">
-      <CompareHub proxyPort={proxyPort} />
+    <div className="flex-1 min-w-0 overflow-hidden">
+      <CompareHub />
     </div>
   );
 }

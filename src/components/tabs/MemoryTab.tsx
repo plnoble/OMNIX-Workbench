@@ -6,7 +6,7 @@ import { MemoryHub } from "@/MemoryHub";
 
 export function MemoryTab() {
   return (
-    <div className="flex-1 overflow-hidden">
+    <div className="flex-1 min-w-0 overflow-hidden">
       <MemoryHub />
     </div>
   );

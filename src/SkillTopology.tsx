@@ -283,7 +283,7 @@ export const SkillTopology: React.FC<SkillTopologyProps> = ({
         className="w-full h-full bg-black/20 rounded-lg border border-border"
       />
       <div
-        className="absolute bottom-2 right-2 text-[10px] text-muted-foreground bg-black/40 px-1.5 py-0.5 rounded pointer-events-none"
+        className="absolute bottom-2 right-2 text-xs text-muted-foreground bg-black/40 px-1.5 py-0.5 rounded pointer-events-none"
       >
         滚轮缩放 / 拖拽平移 & 节点
       </div>

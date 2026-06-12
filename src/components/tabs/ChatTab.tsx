@@ -4,12 +4,12 @@
  * Agent switcher, message list, interactive prompt cards, send bar
  */
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Send, Square, Shield, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Check, ChevronDown, ChevronRight, Brain, Globe } from "lucide-react";
-import { AGENT_NAMES, DEFAULT_MODEL_NAMES } from "@/lib/constants";
+import { Send, Square, Shield, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Check, ChevronDown, ChevronRight, Brain, Globe, AlertTriangle } from "lucide-react";
+import { AGENT_NAMES } from "@/lib/constants";
 import { cn } from "@/lib/utils";
 import { searchApi } from "@/lib/tauri-api";
 import type { ConversationMessage, DetectedAgent, PlatformModel, PromptType } from "@/types";
@@ -134,7 +134,27 @@ export function ChatTab({
   onSendStdinDirect,
   onStopSession,
 }: ChatTabProps) {
-  const modelOptions = buildModelOptions(activeModels, targetModel);
+  const modelOptions = activeModels.map((m) => m.model_name);
+  // True if the saved targetModel no longer matches any enabled platform model
+  // (e.g. user disabled the platform, or had a stale value like "mimo-v2-pro")
+  const isOrphanModel = !!targetModel && !modelOptions.includes(targetModel);
+
+  // Auto-heal: if targetModel is empty or orphan, default to the first available model
+  useEffect(() => {
+    if (modelOptions.length > 0 && (!targetModel || isOrphanModel)) {
+      setTargetModel(modelOptions[0]);
+    }
+  }, [modelOptions.join("|"), targetModel, isOrphanModel, setTargetModel]);
+
+  // Auto-resize textarea (grows with content, capped at 240px)
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const next = Math.min(el.scrollHeight, 240);
+    el.style.height = `${next}px`;
+  }, [chatInput]);
 
   // Web search toggle (AingDesk inspired)
   const [webSearchEnabled, setWebSearchEnabled] = useState(false);
@@ -184,7 +204,7 @@ export function ChatTab({
                 "flex items-center gap-1.5 px-3.5 py-1.5 rounded-full border text-xs cursor-pointer transition-all",
                 isActive
                   ? "bg-accent border-accent text-accent-foreground"
-                  : "bg-white/[0.02] border-border text-foreground hover:bg-white/5"
+                  : "bg-muted/5 border-border text-foreground hover:bg-muted/20"
               )}
             >
               <span
@@ -214,10 +234,10 @@ export function ChatTab({
             >
               <div
                 className={cn(
-                  "max-w-[70%] rounded-2xl px-4 py-3",
+                  "max-w-[70%] rounded-2xl px-4 py-3 break-words overflow-wrap-anywhere",
                   msg.role === "user"
                     ? "bg-accent/20 text-foreground"
-                    : "bg-white/[0.03] border border-border text-foreground"
+                    : "bg-muted/10 border border-border text-foreground"
                 )}
               >
                 <div className="text-xs text-muted-foreground mb-1">
@@ -242,7 +262,8 @@ export function ChatTab({
         <div className="flex flex-col gap-2.5">
           <div className="flex gap-2.5">
             <Textarea
-              placeholder={webSearchEnabled ? "联网搜索模式：输入问题将自动搜索最新信息..." : "发送命令或提问给智能体..."}
+              ref={textareaRef}
+              placeholder={webSearchEnabled ? "联网搜索模式：输入问题将自动搜索最新信息..." : "发送命令或提问给智能体... (Shift+Enter 换行)"}
               value={chatInput}
               onChange={(e) => setChatInput(e.target.value)}
               onKeyDown={(e) => {
@@ -251,7 +272,8 @@ export function ChatTab({
                   handleSendMessageWithSearch(e);
                 }
               }}
-              className="flex-1 resize-none h-[45px] min-h-0"
+              className="flex-1 resize-none min-h-[45px] overflow-y-auto"
+              style={{ maxHeight: "240px" }}
             />
             <Button type="submit" className="px-5 font-semibold self-end" disabled={isSearching}>
               {isSearching ? (
@@ -281,24 +303,35 @@ export function ChatTab({
               </div>
               <div className="flex items-center gap-1.5">
                 <span className="text-muted-foreground">映射模型:</span>
-                <select
-                  value={targetModel}
-                  onChange={(e) => setTargetModel(e.target.value)}
-                  className="bg-transparent border-none text-foreground cursor-pointer"
-                >
-                  {modelOptions.map((opt) => (
-                    <option key={opt} value={opt}>{opt}</option>
-                  ))}
-                </select>
+                {modelOptions.length === 0 ? (
+                  <span className="text-amber-500 flex items-center gap-1 text-xs">
+                    <AlertTriangle className="h-3 w-3" /> 未配置 — 请到设置启用平台模型
+                  </span>
+                ) : (
+                  <select
+                    value={modelOptions.includes(targetModel) ? targetModel : modelOptions[0] || ""}
+                    onChange={(e) => setTargetModel(e.target.value)}
+                    className="bg-transparent border-none text-foreground cursor-pointer"
+                  >
+                    {modelOptions.map((opt) => (
+                      <option key={opt} value={opt}>{opt}</option>
+                    ))}
+                  </select>
+                )}
+                {isOrphanModel && modelOptions.length > 0 && (
+                  <span title={`已自动切换：旧值 "${targetModel}" 在已启用平台中找不到`} className="text-amber-500 flex items-center text-xs">
+                    <AlertTriangle className="h-3 w-3" />
+                  </span>
+                )}
               </div>
               {/* Web Search Toggle (AingDesk inspired) */}
               <button
                 type="button"
                 className={cn(
-                  "flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] border transition-all cursor-pointer",
+                  "flex items-center gap-1 px-2 py-0.5 rounded-full text-xs border transition-all cursor-pointer",
                   webSearchEnabled
                     ? "bg-emerald-500/12 border-emerald-500/40 text-emerald-400"
-                    : "bg-white/2 border-border text-muted-foreground"
+                    : "bg-muted/10 border-border text-muted-foreground"
                 )}
                 onClick={() => setWebSearchEnabled(!webSearchEnabled)}
               >
@@ -344,7 +377,7 @@ function EmptyState({ activeAgent, onQuickPrompt }: { activeAgent: string; onQui
         ].map((item) => (
           <Card
             key={item.label}
-            className="cursor-pointer hover:bg-white/5 bg-white/[0.01]"
+            className="cursor-pointer hover:bg-muted/20 bg-muted/5"
             onClick={() => onQuickPrompt(item.prompt)}
           >
             <CardContent className="p-3 text-left text-sm">{item.label}</CardContent>
@@ -389,7 +422,7 @@ function PromptCards({ promptType, onSendStdin }: { promptType: PromptType; onSe
       )}
 
       {promptType === "menu" && (
-        <Card className="p-3 flex gap-2 flex-wrap justify-center bg-white/[0.02] border-dashed border-border">
+        <Card className="p-3 flex gap-2 flex-wrap justify-center bg-muted/5 border-dashed border-border">
           <Button variant="outline" size="sm" onClick={() => onSendStdin("\t")}>Tab 焦点</Button>
           <Button variant="outline" size="sm" onClick={() => onSendStdin(" ")}>空格 勾选</Button>
           <Button variant="outline" size="sm" onClick={() => onSendStdin("\x1b[A")}><ArrowUp className="h-3 w-3" /></Button>
@@ -412,14 +445,5 @@ function PromptCards({ promptType, onSendStdin }: { promptType: PromptType; onSe
 }
 
 // ── Helpers ─────────────────────────────────────────
+// (buildModelOptions removed — now inlined in ChatTab to support orphan-model detection)
 
-function buildModelOptions(activeModels: PlatformModel[], targetModel: string): string[] {
-  const list = [...activeModels.map((m) => m.model_name)];
-  DEFAULT_MODEL_NAMES.forEach((d) => {
-    if (!list.includes(d)) list.push(d);
-  });
-  if (targetModel && !list.includes(targetModel)) {
-    list.push(targetModel);
-  }
-  return list;
-}

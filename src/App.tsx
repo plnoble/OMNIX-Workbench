@@ -10,11 +10,10 @@
  * All business logic lives in hooks. All rendering lives in components.
  */
 
-import { useState, useEffect, useRef, Suspense, lazy } from "react";
+import { useState, useEffect, Suspense, lazy } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
-import { settingsApi } from "@/lib/tauri-api";
+// Global shortcuts registered on Rust side (lib.rs) for reliability
 
 // Hooks
 import { useSettings } from "@/hooks/useSettings";
@@ -38,6 +37,7 @@ import { AppSidebar } from "@/components/layout/AppSidebar";
 import { AppHeader } from "@/components/layout/AppHeader";
 import { PreviewPane } from "@/components/layout/PreviewPane";
 import { CommandPalette } from "@/components/CommandPalette";
+import { ConversationHistoryView } from "@/components/ConversationHistoryView";
 
 // Modals (eager — lightweight dialogs)
 import { PlatformModal } from "@/components/modals/PlatformModal";
@@ -111,7 +111,7 @@ function MainApp() {
   const accounts = useAccounts(platforms.activeModels);
   const convs = useConversations(settings.gatewayStatus);
   const cron = useCron(convs.detectedAgents);
-  const preview = usePreview(convs.chatWorkspace, settings.proxyPort);
+  const preview = usePreview(convs.chatWorkspace);
   const diagnostics = useDiagnostics();
   const remote = useRemoteAccess();
   const resizer = useResizer();
@@ -130,6 +130,7 @@ function MainApp() {
   const [showTour, setShowTour] = useState(false);
   const [settingsSubTab, setSettingsSubTab] = useState<SettingsSubTab>("platform");
   const [showCommandPalette, setShowCommandPalette] = useState(false);
+  const [showHistoryFullscreen, setShowHistoryFullscreen] = useState(false);
 
   // ── Initialization ────────────────────────────────
 
@@ -178,37 +179,8 @@ function MainApp() {
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
-  // ── Register Selection Assistant global shortcut ───
-
-  const registeredShortcutRef = useRef<string>("");
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const shortcut = await settingsApi.get("selection_assistant_shortcut") || "Ctrl+Alt+C";
-        if (cancelled) return;
-        registeredShortcutRef.current = shortcut;
-        await register(shortcut, (event) => {
-          if (event.state === "Pressed") {
-            selection.captureAndShow();
-          }
-        });
-      } catch (e) {
-        if (cancelled) return;
-        console.error("[Selection] Failed to register shortcut:", e);
-        toast.error("划词助手快捷键注册失败：" + String(e));
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-      const shortcut = registeredShortcutRef.current;
-      if (shortcut) {
-        unregister(shortcut).catch(() => { /* already unmounted */ });
-      }
-    };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- registration only on mount; shortcut stored in ref for cleanup
+  // ── Selection Assistant & Quick Assistant shortcuts ──
+  // (Registered on Rust side in lib.rs setup for reliability — no frontend registration needed)
 
   // ── Tab change handler ────────────────────────────
 
@@ -314,6 +286,8 @@ function MainApp() {
         activeSessions={convs.activeSessions}
         onSelectConversation={convs.selectConversation}
         onDeleteConversation={convs.deleteConversation}
+        onArchiveConversation={convs.archiveConversation}
+        onOpenHistoryFullscreen={() => setShowHistoryFullscreen(true)}
         onNewConversation={convs.newConversation}
         onOpenWorkspaceModal={() => convs.setIsWorkspaceModalOpen(true)}
       />
@@ -331,11 +305,10 @@ function MainApp() {
           }}
         />
 
-        <div className="flex flex-1 overflow-hidden">
+        <div className="flex flex-1 min-w-0 overflow-hidden">
           <Suspense fallback={<LazyFallback />}>
             {activeTab === "dashboard" && (
               <DashboardTab
-                proxyPort={settings.proxyPort}
                 activeSessionsCount={convs.activeSessions.length}
                 detectedAgents={convs.detectedAgents}
                 tipIndex={tipIndex}
@@ -385,7 +358,7 @@ function MainApp() {
               />
             )}
 
-            {activeTab === "compare" && <CompareTab proxyPort={settings.proxyPort} />}
+            {activeTab === "compare" && <CompareTab />}
             {activeTab === "memories" && <MemoryTab />}
             {activeTab === "skills" && <SkillTab />}
             {activeTab === "knowledge" && <KnowledgeTab />}
@@ -440,7 +413,6 @@ function MainApp() {
                 onFetchRemoteModels={platforms.fetchRemoteModels}
                 onAddModel={platforms.openModelModal}
                 onToggleModelEnabled={platforms.toggleModelEnabled}
-                onToggleCapability={platforms.toggleCapability}
                 onTestModel={platforms.testModel}
                 onDeleteModel={platforms.deleteModel}
                 batchTesting={platforms.batchTesting}
@@ -450,20 +422,14 @@ function MainApp() {
                 onEditAccount={(acc) => accounts.openAccountModal(acc)}
                 onDeleteAccount={accounts.deleteAccount}
                 onSwitchAccount={handleSwitchAccount}
-                apiKey={settings.apiKey}
-                apiHost={settings.apiHost}
                 targetModel={settings.targetModel}
-                proxyPort={settings.proxyPort}
                 gpuAcceleration={settings.gpuAcceleration}
                 idleTimeout={settings.idleTimeout}
                 autoStart={settings.autoStart}
                 startToTray={settings.startToTray}
                 useWsl={settings.useWsl}
                 wslDistro={settings.wslDistro}
-                setApiKey={settings.setApiKey}
-                setApiHost={settings.setApiHost}
                 setTargetModel={settings.setTargetModel}
-                setProxyPort={settings.setProxyPort}
                 setGpuAcceleration={settings.setGpuAcceleration}
                 setIdleTimeout={settings.setIdleTimeout}
                 setAutoStart={settings.setAutoStart}
@@ -471,7 +437,6 @@ function MainApp() {
                 setUseWsl={settings.setUseWsl}
                 setWslDistro={settings.setWslDistro}
                 onSaveSettings={handleSaveSettings}
-                selectionShortcut={selection.selectionShortcut}
                 selectionCaptureMode={selection.captureMode}
                 selectionShowOnCapture={selection.showOnCapture}
                 selectionPreserveClipboard={selection.preserveClipboard}
@@ -479,7 +444,6 @@ function MainApp() {
                 lastSelectionCapture={selection.lastCapture}
                 selectionCaptureError={selection.captureError}
                 selectionHistory={selection.selectionHistory}
-                onSetSelectionShortcut={(v) => selection.saveSelectionSettings({ shortcut: v })}
                 onSetSelectionCaptureMode={(v) => selection.saveSelectionSettings({ captureMode: v as "hybrid" | "uia_only" | "clipboard_only" })}
                 onSetSelectionShowOnCapture={(v) => selection.saveSelectionSettings({ showOnCapture: v })}
                 onSetSelectionPreserveClipboard={(v) => selection.saveSelectionSettings({ preserveClipboard: v })}
@@ -513,9 +477,25 @@ function MainApp() {
                 onSetSearchQuery={search.setSearchQuery}
                 onSetSearchSelectedProviderId={search.setSelectedProviderId}
                 onSearch={search.search}
-                onAddSearchProvider={() => {}}
-                onEditSearchProvider={() => {}}
+                onAddSearchProvider={() => search.openSearchProviderModal()}
+                onEditSearchProvider={(provider) => search.openSearchProviderModal(provider)}
                 onDeleteSearchProvider={search.deleteProvider}
+                showSearchProviderModal={search.showSearchProviderModal}
+                editingSearchProvider={search.editingSearchProvider}
+                searchProviderForm={search.searchProviderForm}
+                onCloseSearchProviderModal={search.closeSearchProviderModal}
+                onUpdateSearchProviderForm={search.updateSearchProviderForm}
+                onSaveSearchProvider={async () => {
+                  await search.saveProvider({
+                    id: search.searchProviderForm.id,
+                    name: search.searchProviderForm.name,
+                    api_type: search.searchProviderForm.api_type,
+                    api_key: search.searchProviderForm.api_key,
+                    api_address: search.searchProviderForm.api_address,
+                    is_enabled: search.searchProviderForm.is_enabled,
+                  });
+                  search.closeSearchProviderModal();
+                }}
                 mcpServers={mcpServers.mcpServers}
                 showMcpModal={mcpServers.showMcpModal}
                 editingMcpServer={mcpServers.editingMcpServer}
@@ -591,7 +571,6 @@ function MainApp() {
         open={platforms.showModelModal}
         onOpenChange={(open) => { if (!open) platforms.closeModelModal(); }}
         modelForm={platforms.modelForm}
-        onFormChange={platforms.updateModelForm}
         onNameChange={(name) => platforms.updateModelForm("model_name", name)}
         onSave={handleSaveCustomModel}
       />
@@ -641,6 +620,23 @@ function MainApp() {
           settings.setThemeMode(modes[(current + 1) % modes.length]);
         }}
       />
+
+      {/* Conversation History Fullscreen */}
+      {showHistoryFullscreen && (
+        <ConversationHistoryView
+          conversations={convs.conversations}
+          archivedConversations={convs.archivedConversations}
+          currentConvId={convs.currentConvId}
+          activeSessions={convs.activeSessions}
+          onSelectConversation={convs.selectConversation}
+          onDeleteConversation={convs.deleteConversation}
+          onArchiveConversation={convs.archiveConversation}
+          onUnarchiveConversation={convs.unarchiveConversation}
+          onNewConversation={convs.newConversation}
+          onLoadArchived={convs.loadArchivedConversations}
+          onClose={() => setShowHistoryFullscreen(false)}
+        />
+      )}
     </div>
   );
 }

@@ -62,6 +62,10 @@ export interface UseConversationsReturn {
   newConversation: () => void;
   saveWorkspaceChat: () => Promise<void>;
   deleteConversation: (id: string, event: React.MouseEvent) => Promise<void>;
+  archiveConversation: (id: string, event: React.MouseEvent) => Promise<void>;
+  unarchiveConversation: (id: string) => Promise<void>;
+  loadArchivedConversations: () => Promise<void>;
+  archivedConversations: ConversationInfo[];
   sendMessage: (e: React.FormEvent, searchContext?: string) => Promise<void>;
   sendStdinDirect: (input: string) => Promise<void>;
   stopAgentSession: (sessionId: string) => Promise<void>;
@@ -72,6 +76,7 @@ export function useConversations(
   gatewayStatus: GatewayStatus,
 ): UseConversationsReturn {
   const [conversations, setConversations] = useState<ConversationInfo[]>([]);
+  const [archivedConversations, setArchivedConversations] = useState<ConversationInfo[]>([]);
   const [currentConvId, setCurrentConvId] = useState("");
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
@@ -289,12 +294,56 @@ export function useConversations(
 
   const deleteConversation = useCallback(async (id: string, event: React.MouseEvent) => {
     event.stopPropagation();
-    await conversationApi.delete(id);
+    try {
+      await conversationApi.delete(id);
+    } catch (e) {
+      console.error("[useConversations] Failed to delete conversation:", e);
+      throw e;
+    }
     if (currentConvId === id) {
       newConversation();
     }
     await loadConversations();
   }, [currentConvId, loadConversations, newConversation]);
+
+  const archiveConversation = useCallback(async (id: string, event: React.MouseEvent) => {
+    event.stopPropagation();
+    try {
+      await conversationApi.archive(id);
+    } catch (e) {
+      console.error("[useConversations] Failed to archive conversation:", e);
+      throw e;
+    }
+    if (currentConvId === id) {
+      newConversation();
+    }
+    await loadConversations();
+  }, [currentConvId, loadConversations, newConversation]);
+
+  const unarchiveConversation = useCallback(async (id: string) => {
+    try {
+      await conversationApi.unarchive(id);
+    } catch (e) {
+      console.error("[useConversations] Failed to unarchive conversation:", e);
+      throw e;
+    }
+    await loadConversations();
+    try {
+      const list = await conversationApi.listArchived();
+      setArchivedConversations(list);
+    } catch (e) {
+      console.error("[useConversations] Failed to reload archived list:", e);
+    }
+  }, [loadConversations]);
+
+  const loadArchivedConversations = useCallback(async () => {
+    try {
+      const list = await conversationApi.listArchived();
+      setArchivedConversations(list);
+    } catch (e) {
+      console.error("[useConversations] Failed to load archived conversations:", e);
+    }
+  }, []);
 
   // ── PTY Session Management ─────────────────────────
 
@@ -423,12 +472,14 @@ export function useConversations(
     collabLogs, collabStdin,
     isWorkspaceModalOpen, workspaceFormPath,
     terminalLogsRef, currentConvIdRef,
+    archivedConversations,
     setChatInput, setChatWorkspace, setActiveAgent,
     setCollabLogs, setCollabStdin,
     setIsWorkspaceModalOpen, setWorkspaceFormPath,
     setCurrentConvId,
     loadConversations, detectAgents, selectConversation,
     newConversation, saveWorkspaceChat, deleteConversation,
+    archiveConversation, unarchiveConversation, loadArchivedConversations,
     sendMessage, sendStdinDirect, stopAgentSession, startAgentSession,
   };
 }

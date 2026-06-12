@@ -106,8 +106,19 @@ export function useSelection(): UseSelectionReturn {
       if (mode === "uia_only" || mode === "clipboard_only" || mode === "hybrid") {
         setCaptureMode(mode);
       }
-      if (show === "false") setShowOnCapture(false);
+      const shouldAutoCapture = show !== "false";
+      if (!shouldAutoCapture) setShowOnCapture(false);
       if (preserve === "true") setPreserveClipboard(true);
+
+      // Auto-start the Rust-side capture monitor if show_on_capture is enabled
+      if (shouldAutoCapture) {
+        try {
+          await selectionApi.toggleAutoCapture(true);
+          console.log("[useSelection] Auto-capture monitor started on app launch");
+        } catch (e) {
+          console.error("[useSelection] Failed to start auto-capture monitor:", e);
+        }
+      }
     } catch (e) {
       console.error("[useSelection] Failed to load settings:", e);
     }
