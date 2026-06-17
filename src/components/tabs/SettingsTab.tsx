@@ -28,7 +28,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { BUILTIN_LANGUAGES } from "@/lib/translate-constants";
 import type { ModelPlatform, PlatformModel, AgentAccount, ModelTestState, SettingsSubTab, SelectionHistoryEntry, SearchProvider, WebSearchResult, McpServer, BackupTableInfo, ImportResult } from "@/types";
 
-interface SettingsTabProps {
+export interface SettingsTabProps {
   settingsSubTab: SettingsSubTab;
   setSettingsSubTab: (tab: SettingsSubTab) => void;
 
@@ -162,12 +162,33 @@ const SETTINGS_TABS: { id: SettingsSubTab; label: string; icon: React.ReactNode 
   { id: "backup", label: "数据备份", icon: <Database className="h-3.5 w-3.5" /> },
 ];
 
+export type PlatformSubTabProps = Pick<
+  SettingsTabProps,
+  | "platforms"
+  | "selectedPlatformId"
+  | "platformModels"
+  | "modelTestingState"
+  | "fetchingModels"
+  | "onSelectPlatform"
+  | "onTogglePlatform"
+  | "onAddPlatform"
+  | "onEditPlatform"
+  | "onDeletePlatform"
+  | "onFetchRemoteModels"
+  | "onAddModel"
+  | "onToggleModelEnabled"
+  | "onTestModel"
+  | "onDeleteModel"
+  | "batchTesting"
+  | "onBatchTestModels"
+>;
+
 export function SettingsTab(props: SettingsTabProps) {
   return (
     <div className="flex flex-col h-full overflow-hidden flex-1">
       {/* Top horizontal Tab bar */}
       <div className="flex items-center gap-1 px-5 pt-4 pb-2 border-b border-border bg-[rgba(10,10,14,0.1)]">
-        {SETTINGS_TABS.map((tab) => (
+        {SETTINGS_TABS.filter((tab) => tab.id !== "platform").map((tab) => (
           <button
             key={tab.id}
             onClick={() => props.setSettingsSubTab(tab.id)}
@@ -197,7 +218,7 @@ export function SettingsTab(props: SettingsTabProps) {
 
 // ── Platform Sub-Tab ─────────────────────────────────
 
-function PlatformSubTab({
+export function PlatformSubTab({
   platforms,
   selectedPlatformId,
   platformModels,
@@ -215,7 +236,7 @@ function PlatformSubTab({
   onDeleteModel,
   batchTesting,
   onBatchTestModels,
-}: SettingsTabProps) {
+}: PlatformSubTabProps) {
   const selectedPlatform = platforms.find((p) => p.id === selectedPlatformId);
 
   return (
@@ -482,7 +503,8 @@ function SystemSubTab({
 
   return (
     <div className="flex flex-col gap-4 max-w-4xl mx-auto">
-      {/* Theme Selector */}
+      {/* Theme selector lives in the title bar. */}
+      {false && (
       <Card>
         <CardHeader>
           <CardTitle className="text-sm flex items-center gap-2">
@@ -513,6 +535,7 @@ function SystemSubTab({
           </div>
         </CardContent>
       </Card>
+      )}
 
       {/* Account Management */}
       <Card>

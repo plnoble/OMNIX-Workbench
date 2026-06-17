@@ -1,101 +1,40 @@
-/**
- * ChatTab — 智能体对话主界面
- *
- * Agent switcher, message list, interactive prompt cards, send bar
- */
+import { useEffect, useMemo, useRef, useState } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import {
+  AlertTriangle,
+  Brain,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Globe,
+  Loader2,
+  PanelRightClose,
+  PanelRightOpen,
+  Send,
+  Shield,
+  Sparkles,
+  Square,
+  Users,
+} from "lucide-react";
 
-import { useState, useEffect, useRef } from "react";
-import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Send, Square, Shield, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Check, ChevronDown, ChevronRight, Brain, Globe, AlertTriangle } from "lucide-react";
 import { AGENT_NAMES } from "@/lib/constants";
 import { cn } from "@/lib/utils";
-import { searchApi } from "@/lib/tauri-api";
-import type { ConversationMessage, DetectedAgent, PlatformModel, PromptType } from "@/types";
+import { knowledgeApi, searchApi } from "@/lib/tauri-api";
+import type {
+  ConversationMessage,
+  DetectedAgent,
+  EmbeddingModelInfo,
+  KbDocument,
+  PermissionPolicy,
+  PlatformModel,
+  PromptType,
+  SearchResult,
+  WorkMode,
+} from "@/types";
 
-/**
- * ThinkBlock — Collapsible <think> tag renderer (AingDesk inspired)
- * Renders reasoning model output as a collapsible panel
- */
-function ThinkBlock({ content }: { content: string }) {
-  const [expanded, setExpanded] = useState(false);
-  const trimmed = content.trim();
-  if (!trimmed) return null;
-
-  return (
-    <div className="my-2 rounded-lg border border-purple-500/20 bg-purple-500/5">
-      <button
-        className="flex items-center gap-1.5 w-full px-3 py-1.5 text-left text-xs text-purple-400 hover:bg-purple-500/10 transition-colors rounded-lg"
-        onClick={() => setExpanded(!expanded)}
-      >
-        {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-        <Brain size={12} />
-        <span className="font-medium">推理过程</span>
-        <span className="text-purple-400/60 ml-1">
-          ({trimmed.length} 字符)
-        </span>
-      </button>
-      {expanded && (
-        <div className="px-3 pb-3 pt-1">
-          <pre className="text-xs text-purple-300/80 whitespace-pre-wrap font-mono leading-relaxed">
-            {trimmed}
-          </pre>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/**
- * Render message content with <think> tag support
- * Splits content into text segments and think blocks
- */
-function MessageContent({ content }: { content: string }) {
-  // Split by <think>...</think> tags
-  const parts: Array<{ type: "text" | "think"; content: string }> = [];
-  let remaining = content;
-
-  while (remaining.length > 0) {
-    const thinkStart = remaining.indexOf("<think>");
-    if (thinkStart === -1) {
-      parts.push({ type: "text", content: remaining });
-      break;
-    }
-
-    // Text before <think>
-    if (thinkStart > 0) {
-      parts.push({ type: "text", content: remaining.slice(0, thinkStart) });
-    }
-
-    const thinkEnd = remaining.indexOf("</think>", thinkStart);
-    if (thinkEnd === -1) {
-      // Unclosed <think> — treat rest as think
-      parts.push({ type: "think", content: remaining.slice(thinkStart + 7) });
-      break;
-    }
-
-    parts.push({
-      type: "think",
-      content: remaining.slice(thinkStart + 7, thinkEnd),
-    });
-    remaining = remaining.slice(thinkEnd + 8);
-  }
-
-  return (
-    <>
-      {parts.map((part, i) =>
-        part.type === "think" ? (
-          <ThinkBlock key={i} content={part.content} />
-        ) : (
-          <span key={i}>{part.content}</span>
-        )
-      )}
-    </>
-  );
-}
-
-interface ChatTabProps {
+export interface ChatTabProps {
   activeAgent: string;
   detectedAgents: DetectedAgent[];
   messages: ConversationMessage[];
@@ -113,6 +52,69 @@ interface ChatTabProps {
   onSendMessage: (e: React.FormEvent, searchContext?: string) => void;
   onSendStdinDirect: (input: string) => void;
   onStopSession: (id: string) => void;
+  onSuggestTeam?: (prompt: string) => void;
+}
+
+const PERMISSION_OPTIONS: Array<{ id: PermissionPolicy; label: string; desc: string }> = [
+  { id: "ask_every_time", label: "请求审批", desc: "每次操作都先问你" },
+  { id: "ask_on_risk", label: "风险审批", desc: "低风险自动，风险操作询问" },
+  { id: "full_access", label: "完全访问", desc: "尽量少打断" },
+];
+
+const WORK_MODE_OPTIONS: Array<{ id: WorkMode; label: string; desc: string }> = [
+  { id: "chat", label: "直接执行", desc: "直接把任务交给 Agent" },
+  { id: "plan_first", label: "计划模式", desc: "先做计划，不直接操作" },
+  { id: "goal", label: "追求目标", desc: "自主且长效地推进目标" },
+];
+
+function MessageContent({ content }: { content: string }) {
+  const parts: Array<{ type: "text" | "think"; content: string }> = [];
+  let remaining = content;
+
+  while (remaining.length > 0) {
+    const thinkStart = remaining.indexOf("<think>");
+    if (thinkStart === -1) {
+      parts.push({ type: "text", content: remaining });
+      break;
+    }
+    if (thinkStart > 0) parts.push({ type: "text", content: remaining.slice(0, thinkStart) });
+    const thinkEnd = remaining.indexOf("</think>", thinkStart);
+    if (thinkEnd === -1) {
+      parts.push({ type: "think", content: remaining.slice(thinkStart + 7) });
+      break;
+    }
+    parts.push({ type: "think", content: remaining.slice(thinkStart + 7, thinkEnd) });
+    remaining = remaining.slice(thinkEnd + 8);
+  }
+
+  return (
+    <>
+      {parts.map((part, index) => (
+        part.type === "think" ? <ThinkBlock key={index} content={part.content} /> : <span key={index}>{part.content}</span>
+      ))}
+    </>
+  );
+}
+
+function ThinkBlock({ content }: { content: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const trimmed = content.trim();
+  if (!trimmed) return null;
+
+  return (
+    <div className="my-2 rounded-md border border-primary/20 bg-primary/5">
+      <button
+        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-primary"
+        onClick={() => setExpanded((value) => !value)}
+      >
+        {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+        <Brain className="h-3 w-3" />
+        推理过程
+        <span className="text-primary/60">{trimmed.length} 字符</span>
+      </button>
+      {expanded && <pre className="px-3 pb-3 text-xs whitespace-pre-wrap text-primary/80">{trimmed}</pre>}
+    </div>
+  );
 }
 
 export function ChatTab({
@@ -133,317 +135,488 @@ export function ChatTab({
   onSendMessage,
   onSendStdinDirect,
   onStopSession,
+  onSuggestTeam,
 }: ChatTabProps) {
-  const modelOptions = activeModels.map((m) => m.model_name);
-  // True if the saved targetModel no longer matches any enabled platform model
-  // (e.g. user disabled the platform, or had a stale value like "mimo-v2-pro")
-  const isOrphanModel = !!targetModel && !modelOptions.includes(targetModel);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [permissionPolicy, setPermissionPolicy] = useState<PermissionPolicy>("ask_on_risk");
+  const [workMode, setWorkMode] = useState<WorkMode>("chat");
+  const [webSearchEnabled, setWebSearchEnabled] = useState(false);
+  const [isSearching, setIsSearching] = useState(false);
+  const [workspacePanelOpen, setWorkspacePanelOpen] = useState(true);
+  const [knowledgeDocs, setKnowledgeDocs] = useState<KbDocument[]>([]);
+  const [embeddingModels, setEmbeddingModels] = useState<EmbeddingModelInfo[]>([]);
+  const [selectedKnowledgeIds, setSelectedKnowledgeIds] = useState<string[]>([]);
 
-  // Auto-heal: if targetModel is empty or orphan, default to the first available model
+  const modelOptions = useMemo(
+    () => activeModels.map((model) => ({
+      value: `${model.platform_id}:${model.model_name}`,
+      label: `${model.model_name} · ${model.platform_id}`,
+    })),
+    [activeModels],
+  );
+  const modelValues = useMemo(() => modelOptions.map((model) => model.value), [modelOptions]);
+  const isOrphanModel = !!targetModel && !modelValues.includes(targetModel);
+  const isWorkspaceMode = chatWorkspace !== "direct";
+  const isRunning = !!currentConvId && activeSessions.includes(currentConvId);
+
   useEffect(() => {
     if (modelOptions.length > 0 && (!targetModel || isOrphanModel)) {
-      setTargetModel(modelOptions[0]);
+      setTargetModel(modelOptions[0].value);
     }
-  }, [modelOptions.join("|"), targetModel, isOrphanModel, setTargetModel]);
+  }, [modelOptions, targetModel, isOrphanModel, setTargetModel]);
 
-  // Auto-resize textarea (grows with content, capped at 240px)
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = "auto";
-    const next = Math.min(el.scrollHeight, 240);
-    el.style.height = `${next}px`;
+    el.style.height = `${Math.min(el.scrollHeight, Math.floor(window.innerHeight * 0.5))}px`;
   }, [chatInput]);
 
-  // Web search toggle (AingDesk inspired)
-  const [webSearchEnabled, setWebSearchEnabled] = useState(false);
-  const [isSearching, setIsSearching] = useState(false);
+  useEffect(() => {
+    knowledgeApi.listDocuments().then(setKnowledgeDocs).catch(() => setKnowledgeDocs([]));
+    knowledgeApi.getEmbeddingModels().then(setEmbeddingModels).catch(() => setEmbeddingModels([]));
+  }, []);
 
-  const handleSendMessageWithSearch = async (e: React.FormEvent) => {
-    if (!webSearchEnabled) {
-      onSendMessage(e);
-      return;
-    }
+  const selectedPermission = PERMISSION_OPTIONS.find((item) => item.id === permissionPolicy)!;
+  const selectedWorkMode = WORK_MODE_OPTIONS.find((item) => item.id === workMode)!;
+  const selectedKnowledgeDocs = knowledgeDocs.filter((doc) => selectedKnowledgeIds.includes(doc.id));
+  const selectedEmbeddingModel = embeddingModels[0]?.model_name ?? "";
 
-    e.preventDefault();
-    if (!chatInput.trim()) return;
+  const handleKnowledgeToggle = (id: string) => {
+    setSelectedKnowledgeIds((prev) => prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]);
+  };
 
-    setIsSearching(true);
-    try {
+  const buildContext = async () => {
+    const blocks: string[] = [];
+
+    if (webSearchEnabled) {
       const results = await searchApi.search(chatInput, undefined, 5);
       if (results.length > 0) {
-        const searchContext = results
-          .map((r, i) => `[${i + 1}] ${r.title}\n${r.snippet}\n${r.url}`)
-          .join("\n\n");
-        onSendMessage(e, searchContext);
-      } else {
-        onSendMessage(e);
+        blocks.push([
+          "[联网搜索结果]",
+          ...results.map((result, index) => `[${index + 1}] ${result.title}\n${result.snippet}\n${result.url}`),
+        ].join("\n\n"));
       }
-    } catch {
-      onSendMessage(e);
+    }
+
+    if (!isWorkspaceMode && selectedKnowledgeIds.length > 0 && selectedEmbeddingModel) {
+      const results = await knowledgeApi.hybridSearch({
+        query: chatInput,
+        embeddingModel: selectedEmbeddingModel,
+        limit: 8,
+      });
+      if (results.length > 0) {
+        blocks.push(formatKnowledgeContext(results, selectedKnowledgeDocs));
+      }
+    }
+
+    if (workMode === "plan_first") {
+      blocks.push("[工作模式]\n请先给出计划、风险和需要用户确认的步骤，不要直接执行文件或系统操作。");
+    }
+    if (workMode === "goal") {
+      blocks.push("[工作模式]\n请围绕用户目标持续推进，遇到关键风险或权限边界时暂停请求确认。");
+    }
+    blocks.push(`[权限模式]\n${selectedPermission.label}: ${selectedPermission.desc}`);
+
+    return blocks.join("\n\n---\n\n");
+  };
+
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!chatInput.trim()) return;
+
+    setIsSearching(webSearchEnabled || selectedKnowledgeIds.length > 0);
+    try {
+      const context = await buildContext();
+      onSendMessage(event, context || undefined);
     } finally {
       setIsSearching(false);
     }
   };
 
+  const openWorkspace = async () => {
+    if (!isWorkspaceMode) {
+      setChatWorkspace("direct");
+      return;
+    }
+    const normalized = chatWorkspace.replace(/\\/g, "/");
+    await openUrl(`file:///${normalized}`);
+  };
+
   return (
-    <div className="flex flex-col h-full flex-1">
-      {/* Agent Switcher */}
-      <div className="px-4 py-3 border-b border-border flex gap-2 overflow-x-auto">
-        {AGENT_NAMES.map((name) => {
-          const agentInfo = detectedAgents.find((a) => a.name === name);
-          const isInstalled = agentInfo?.status === "installed";
-          const isActive = activeAgent === name;
+    <div className="flex h-full flex-1 overflow-hidden bg-background">
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex items-center gap-2 border-b border-border px-5 py-3">
+          <AgentStrip
+            activeAgent={activeAgent}
+            detectedAgents={detectedAgents}
+            onSelectAgent={setActiveAgent}
+          />
+          <Button
+            variant="outline"
+            size="sm"
+            className="ml-auto"
+            onClick={() => onSuggestTeam?.(chatInput)}
+            disabled={!chatInput.trim()}
+            title="把当前任务转为团队计划"
+          >
+            <Users className="h-3.5 w-3.5" />
+            转团队
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-8 w-8 p-0"
+            onClick={() => setWorkspacePanelOpen((open) => !open)}
+            title={workspacePanelOpen ? "收起工作区" : "展开工作区"}
+          >
+            {workspacePanelOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
+          </Button>
+        </div>
 
-          return (
-            <button
-              key={name}
-              onClick={() => setActiveAgent(name)}
-              className={cn(
-                "flex items-center gap-1.5 px-3.5 py-1.5 rounded-full border text-xs cursor-pointer transition-all",
-                isActive
-                  ? "bg-accent border-accent text-accent-foreground"
-                  : "bg-muted/5 border-border text-foreground hover:bg-muted/20"
-              )}
-            >
-              <span
-                className={cn(
-                  "w-1.5 h-1.5 rounded-full",
-                  isInstalled ? "bg-emerald-500" : "bg-gray-500"
-                )}
-              />
-              {name}
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Messages */}
-      <div className="flex-1 p-5 overflow-y-auto flex flex-col gap-4">
-        {messages.length === 0 ? (
-          <EmptyState activeAgent={activeAgent} onQuickPrompt={setChatInput} />
-        ) : (
-          messages.map((msg) => (
-            <div
-              key={msg.id}
-              className={cn(
-                "flex",
-                msg.role === "user" ? "justify-end" : "justify-start"
-              )}
-            >
-              <div
-                className={cn(
-                  "max-w-[70%] rounded-2xl px-4 py-3 break-words overflow-wrap-anywhere",
-                  msg.role === "user"
-                    ? "bg-accent/20 text-foreground"
-                    : "bg-muted/10 border border-border text-foreground"
-                )}
-              >
-                <div className="text-xs text-muted-foreground mb-1">
-                  {msg.role === "user" ? "用户" : activeAgent}
+        <div className="flex-1 overflow-y-auto px-6 py-5">
+          {messages.length === 0 ? (
+            <FirstScreen
+              activeAgent={activeAgent}
+              installed={detectedAgents.find((agent) => agent.name === activeAgent)?.status === "installed"}
+              onPrompt={setChatInput}
+            />
+          ) : (
+            <div className="mx-auto flex max-w-4xl flex-col gap-5">
+              {messages.map((message) => (
+                <div key={message.id} className={cn("flex", message.role === "user" ? "justify-end" : "justify-start")}>
+                  <div
+                    className={cn(
+                      "max-w-[78%] rounded-md border px-4 py-3 text-sm leading-6",
+                      message.role === "user"
+                        ? "border-primary/20 bg-primary/12"
+                        : "border-border bg-card/50"
+                    )}
+                  >
+                    <div className="mb-1 text-xs text-muted-foreground">{message.role === "user" ? "你" : activeAgent}</div>
+                    <div className="whitespace-pre-wrap break-words">
+                      <MessageContent content={message.content} />
+                    </div>
+                  </div>
                 </div>
-                <div className="text-sm leading-relaxed whitespace-pre-wrap">
-                  <MessageContent content={msg.content} />
-                </div>
-              </div>
+              ))}
+              {promptType !== "none" && <PromptCards promptType={promptType} onSendStdin={onSendStdinDirect} />}
             </div>
-          ))
-        )}
+          )}
+        </div>
 
-        {/* Interactive Prompt Cards */}
-        {promptType !== "none" && (
-          <PromptCards promptType={promptType} onSendStdin={onSendStdinDirect} />
-        )}
-      </div>
-
-      {/* Send Bar */}
-      <form onSubmit={handleSendMessageWithSearch} className="p-4 border-t border-border glass-panel">
-        <div className="flex flex-col gap-2.5">
-          <div className="flex gap-2.5">
+        <form onSubmit={handleSubmit} className="border-t border-border bg-background/95 p-5">
+          <div className="mx-auto max-w-5xl rounded-md border border-border bg-card/60 p-3 shadow-lg">
             <Textarea
               ref={textareaRef}
-              placeholder={webSearchEnabled ? "联网搜索模式：输入问题将自动搜索最新信息..." : "发送命令或提问给智能体... (Shift+Enter 换行)"}
               value={chatInput}
-              onChange={(e) => setChatInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  handleSendMessageWithSearch(e);
+              onChange={(event) => setChatInput(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  event.currentTarget.form?.requestSubmit();
                 }
               }}
-              className="flex-1 resize-none min-h-[45px] overflow-y-auto"
-              style={{ maxHeight: "240px" }}
+              placeholder={`${activeAgent}，输入你要做的事情... 支持长文本、换行、@引用文件`}
+              className="min-h-28 resize-none border-0 bg-transparent text-base leading-7 focus-visible:ring-0 focus-visible:ring-offset-0"
+              style={{ maxHeight: "50vh" }}
             />
-            <Button type="submit" className="px-5 font-semibold self-end" disabled={isSearching}>
-              {isSearching ? (
-                <><Globe className="h-4 w-4 animate-spin" /> 搜索中</>
-              ) : (
-                <><Send className="h-4 w-4" /> 发送</>
-              )}
-            </Button>
-          </div>
 
-          <div className="flex justify-between items-center text-xs">
-            <div className="flex gap-4">
-              <div className="flex items-center gap-1.5">
-                <span className="text-muted-foreground">工作区:</span>
-                <select
-                  value={chatWorkspace}
-                  onChange={(e) => setChatWorkspace(e.target.value)}
-                  className="bg-transparent border-none text-foreground cursor-pointer"
-                >
-                  <option value="direct">直聊模式</option>
-                  {chatWorkspace !== "direct" && (
-                    <option value={chatWorkspace}>
-                      {chatWorkspace.split(/[\\/]/).pop()}
-                    </option>
-                  )}
-                </select>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <span className="text-muted-foreground">映射模型:</span>
-                {modelOptions.length === 0 ? (
-                  <span className="text-amber-500 flex items-center gap-1 text-xs">
-                    <AlertTriangle className="h-3 w-3" /> 未配置 — 请到设置启用平台模型
-                  </span>
-                ) : (
-                  <select
-                    value={modelOptions.includes(targetModel) ? targetModel : modelOptions[0] || ""}
-                    onChange={(e) => setTargetModel(e.target.value)}
-                    className="bg-transparent border-none text-foreground cursor-pointer"
-                  >
-                    {modelOptions.map((opt) => (
-                      <option key={opt} value={opt}>{opt}</option>
-                    ))}
-                  </select>
-                )}
-                {isOrphanModel && modelOptions.length > 0 && (
-                  <span title={`已自动切换：旧值 "${targetModel}" 在已启用平台中找不到`} className="text-amber-500 flex items-center text-xs">
-                    <AlertTriangle className="h-3 w-3" />
-                  </span>
-                )}
-              </div>
-              {/* Web Search Toggle (AingDesk inspired) */}
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <select
+                value={modelValues.includes(targetModel) ? targetModel : modelOptions[0]?.value || ""}
+                onChange={(event) => setTargetModel(event.target.value)}
+                className="h-8 max-w-56 rounded-md border border-border bg-background px-2 text-sm"
+                disabled={modelOptions.length === 0}
+              >
+                {modelOptions.length === 0 ? <option value="">请先配置模型</option> : modelOptions.map((model) => <option key={model.value} value={model.value}>{model.label}</option>)}
+              </select>
+
+              <select
+                value={permissionPolicy}
+                onChange={(event) => setPermissionPolicy(event.target.value as PermissionPolicy)}
+                className="h-8 rounded-md border border-border bg-background px-2 text-sm"
+                title={selectedPermission.desc}
+              >
+                {PERMISSION_OPTIONS.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+              </select>
+
+              <select
+                value={workMode}
+                onChange={(event) => setWorkMode(event.target.value as WorkMode)}
+                className="h-8 rounded-md border border-border bg-background px-2 text-sm"
+                title={selectedWorkMode.desc}
+              >
+                {WORK_MODE_OPTIONS.map((option) => (
+                  <option key={option.id} value={option.id}>{option.label}</option>
+                ))}
+              </select>
+
+              {!isWorkspaceMode && (
+                <KnowledgePicker
+                  documents={knowledgeDocs}
+                  selectedIds={selectedKnowledgeIds}
+                  disabled={!selectedEmbeddingModel}
+                  onToggle={handleKnowledgeToggle}
+                />
+              )}
+
               <button
                 type="button"
                 className={cn(
-                  "flex items-center gap-1 px-2 py-0.5 rounded-full text-xs border transition-all cursor-pointer",
-                  webSearchEnabled
-                    ? "bg-emerald-500/12 border-emerald-500/40 text-emerald-400"
-                    : "bg-muted/10 border-border text-muted-foreground"
+                  "flex h-8 items-center gap-1.5 rounded-md border px-2 text-sm",
+                  webSearchEnabled ? "border-success/40 bg-success/10 text-success" : "border-border text-muted-foreground hover:text-foreground"
                 )}
-                onClick={() => setWebSearchEnabled(!webSearchEnabled)}
+                onClick={() => setWebSearchEnabled((enabled) => !enabled)}
               >
-                <Globe size={11} />
-                联网搜索
+                <Globe className="h-3.5 w-3.5" />
+                搜索
+              </button>
+
+              <div className="ml-auto flex items-center gap-2">
+                {isOrphanModel && modelOptions.length > 0 && (
+                  <span className="flex items-center gap-1 text-xs text-warning">
+                    <AlertTriangle className="h-3.5 w-3.5" />
+                    已切换可用模型
+                  </span>
+                )}
+                {isRunning && (
+                  <Button type="button" variant="destructive" size="sm" onClick={() => onStopSession(currentConvId)}>
+                    <Square className="h-3.5 w-3.5" />
+                    停止
+                  </Button>
+                )}
+                <Button type="submit" disabled={isSearching || !chatInput.trim()}>
+                  {isSearching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                  发送
+                </Button>
+              </div>
+            </div>
+          </div>
+        </form>
+      </div>
+
+      {workspacePanelOpen && (
+        <aside className="hidden w-72 shrink-0 border-l border-border bg-card/30 xl:flex xl:flex-col 2xl:w-80">
+          <div className="flex items-center justify-between border-b border-border p-4">
+            <div>
+              <div className="text-base font-semibold">工作区</div>
+              <button
+                className="mt-1 max-w-56 truncate text-left text-xs text-muted-foreground hover:text-foreground"
+                onClick={openWorkspace}
+                disabled={!isWorkspaceMode}
+                title={isWorkspaceMode ? chatWorkspace : "当前是普通对话"}
+              >
+                {isWorkspaceMode ? chatWorkspace.split(/[\\/]/).pop() : "未选择工作区"}
               </button>
             </div>
+            <button className="rounded p-1 text-muted-foreground hover:bg-muted/20" onClick={() => setWorkspacePanelOpen(false)}>
+              <ChevronRight className="h-4 w-4" />
+            </button>
+          </div>
 
-            {currentConvId && activeSessions.includes(currentConvId) && (
-              <Button
-                type="button"
-                variant="destructive"
-                size="sm"
-                onClick={() => onStopSession(currentConvId)}
-              >
-                <Square className="h-3 w-3" /> 强行终止
-              </Button>
+          <div className="flex-1 overflow-y-auto p-4">
+            {isWorkspaceMode ? (
+              <div className="space-y-4">
+                <InfoBlock label="分支" value="等待 Git 状态接入" />
+                <InfoBlock label="最近变更" value="Agent 修改文件后会在这里集中显示。" />
+                <InfoBlock label="文件" value="后续接入文件树和点击打开文件。" />
+              </div>
+            ) : (
+              <div className="rounded-md border border-dashed border-border p-4 text-sm text-muted-foreground">
+                普通对话不绑定工作区。需要开发项目时，从左侧选择工作区或创建工作会话。
+              </div>
             )}
           </div>
-        </div>
-      </form>
+        </aside>
+      )}
     </div>
   );
 }
 
-// ── Sub-components ──────────────────────────────────
-
-function EmptyState({ activeAgent, onQuickPrompt }: { activeAgent: string; onQuickPrompt: (v: string) => void }) {
+function AgentStrip({
+  activeAgent,
+  detectedAgents,
+  onSelectAgent,
+}: {
+  activeAgent: string;
+  detectedAgents: DetectedAgent[];
+  onSelectAgent: (name: string) => void;
+}) {
   return (
-    <div className="flex-1 flex flex-col justify-center items-center gap-5 opacity-80">
-      <div className="text-5xl">🤖</div>
-      <div className="text-center">
-        <h3 className="text-lg font-semibold">开始与 {activeAgent} 对话</h3>
-        <p className="text-muted-foreground text-sm max-w-[450px] mt-1">
-          OMNIX 已经在后台准备好了 PTY 伪终端。发送任何开发指令，智能体会在当前工作区环境下开始执行。
-        </p>
-      </div>
-      <div className="flex flex-col gap-2.5 w-full max-w-[500px]">
-        {[
-          { label: "🚀 初始化一个 Vite React TS 应用", prompt: "在工作区下初始化一个 Vite React TS 应用，并配置好 ESLint 与 Prettier。" },
-          { label: "🔒 诊断并修复 Rust Tokio 异步死锁", prompt: "诊断并重构项目中的异步锁设计，避免跨越 await 持有 Mutex 锁导致死锁。" },
-          { label: "🧬 编写高性能并发本地缓存", prompt: "开发一个带超时淘汰与并发访问控制的高性能 Local Cache 模块。" },
-        ].map((item) => (
-          <Card
-            key={item.label}
-            className="cursor-pointer hover:bg-muted/20 bg-muted/5"
-            onClick={() => onQuickPrompt(item.prompt)}
+    <div className="flex min-w-0 items-center gap-2 overflow-x-auto">
+      {AGENT_NAMES.map((name) => {
+        const agent = detectedAgents.find((item) => item.name === name);
+        const installed = agent?.status === "installed";
+        const active = activeAgent === name;
+
+        return (
+          <button
+            key={name}
+            onClick={() => onSelectAgent(name)}
+            className={cn(
+              "flex h-9 shrink-0 items-center gap-2 rounded-full border px-3 text-sm",
+              active ? "border-primary/40 bg-primary/12 text-primary" : "border-border bg-card/40 text-muted-foreground hover:text-foreground"
+            )}
           >
-            <CardContent className="p-3 text-left text-sm">{item.label}</CardContent>
-          </Card>
+            <span className={cn("h-2 w-2 rounded-full", installed ? "bg-success" : "bg-muted-foreground")} />
+            {name}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function FirstScreen({ activeAgent, installed, onPrompt }: { activeAgent: string; installed: boolean; onPrompt: (prompt: string) => void }) {
+  return (
+    <div className="mx-auto flex h-full max-w-4xl flex-col items-center justify-center px-6 text-center">
+      <div className="mb-5 flex h-16 w-16 items-center justify-center rounded-md border border-border bg-card/70">
+        <Sparkles className="h-8 w-8 text-primary" />
+      </div>
+      <h2 className="m-0 text-3xl font-semibold">今天让 {activeAgent} 做什么？</h2>
+      <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">
+        先选择 Agent，再直接输入任务。复杂任务可以转团队；普通问答可以手动接入知识库。
+      </p>
+      {!installed && (
+        <div className="mt-4 flex items-center gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-warning">
+          <AlertTriangle className="h-4 w-4" />
+          当前 Agent 未检测到，仍可先整理任务，稍后到智能体页安装或配置。
+        </div>
+      )}
+      <div className="mt-7 grid w-full grid-cols-1 gap-2 md:grid-cols-3">
+        {[
+          ["盘点项目结构", "读取当前工作区，给我总结项目结构、关键模块和下一步重构建议。"],
+          ["修复一个问题", "帮我定位并修复一个具体 bug，先说明原因，再给出最小改动。"],
+          ["做一个计划", "先不要改文件，帮我把这个目标拆成可确认的开发计划。"],
+        ].map(([label, prompt]) => (
+          <button key={label} className="rounded-md border border-border bg-card/40 p-4 text-left hover:bg-muted/20" onClick={() => onPrompt(prompt)}>
+            <div className="text-sm font-semibold">{label}</div>
+            <div className="mt-2 line-clamp-2 text-xs leading-5 text-muted-foreground">{prompt}</div>
+          </button>
         ))}
       </div>
     </div>
   );
 }
 
-function PromptCards({ promptType, onSendStdin }: { promptType: PromptType; onSendStdin: (input: string) => void }) {
+function KnowledgePicker({
+  documents,
+  selectedIds,
+  disabled,
+  onToggle,
+}: {
+  documents: KbDocument[];
+  selectedIds: string[];
+  disabled: boolean;
+  onToggle: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+
   return (
-    <div className="flex justify-center py-3">
-      {promptType === "trust" && (
-        <Card className="p-4 bg-emerald-500/[0.08] border-emerald-500/40 border-dashed max-w-[450px]">
-          <h4 className="text-emerald-500 font-semibold mb-1.5">🛡️ 安全信任鉴权提示</h4>
-          <p className="text-xs text-muted-foreground mb-3">
-            智能体需要您授权确认是否信任并继续执行此目录下的工具和命令。
+    <div className="relative">
+      <button
+        type="button"
+        className={cn(
+          "flex h-8 items-center gap-1.5 rounded-md border px-2 text-sm",
+          selectedIds.length > 0 ? "border-primary/40 bg-primary/10 text-primary" : "border-border text-muted-foreground hover:text-foreground",
+          disabled && "opacity-60"
+        )}
+        onClick={() => setOpen((value) => !value)}
+        title={disabled ? "请先配置可用的 embedding 模型" : "选择知识库"}
+      >
+        <Brain className="h-3.5 w-3.5" />
+        知识库 {selectedIds.length > 0 ? selectedIds.length : ""}
+      </button>
+
+      {open && (
+        <div className="absolute bottom-10 left-0 z-40 w-80 rounded-md border border-border bg-popover p-3 shadow-xl">
+          <div className="mb-2 text-sm font-semibold">选择知识库</div>
+          <p className="mb-3 text-xs leading-5 text-muted-foreground">
+            仅普通对话启用。工作区和团队任务默认不使用知识库。
           </p>
-          <div className="flex gap-2.5">
-            <Button className="flex-1" size="sm" onClick={() => onSendStdin("1\n")}>
-              <Shield className="h-3 w-3" /> 信任并确认
-            </Button>
-            <Button className="flex-1" variant="outline" size="sm" onClick={() => onSendStdin("2\n")}>
-              ❌ 拒绝并退出
-            </Button>
-          </div>
-        </Card>
-      )}
-
-      {promptType === "update" && (
-        <Card className="p-4 bg-blue-500/[0.08] border-blue-500/40 border-dashed max-w-[450px]">
-          <h4 className="text-blue-500 font-semibold mb-1.5">💡 智能体 CLI 存在新版本</h4>
-          <p className="text-xs text-muted-foreground mb-3">
-            检测到终端内抛出更新提示。是否确认现在进行自动升级？
-          </p>
-          <div className="flex gap-2.5">
-            <Button className="flex-1" size="sm" onClick={() => onSendStdin("\r")}>确认更新</Button>
-            <Button className="flex-1" variant="outline" size="sm" onClick={() => onSendStdin("\x1b")}>跳过更新</Button>
-          </div>
-        </Card>
-      )}
-
-      {promptType === "menu" && (
-        <Card className="p-3 flex gap-2 flex-wrap justify-center bg-muted/5 border-dashed border-border">
-          <Button variant="outline" size="sm" onClick={() => onSendStdin("\t")}>Tab 焦点</Button>
-          <Button variant="outline" size="sm" onClick={() => onSendStdin(" ")}>空格 勾选</Button>
-          <Button variant="outline" size="sm" onClick={() => onSendStdin("\x1b[A")}><ArrowUp className="h-3 w-3" /></Button>
-          <Button variant="outline" size="sm" onClick={() => onSendStdin("\x1b[B")}><ArrowDown className="h-3 w-3" /></Button>
-          <Button variant="outline" size="sm" onClick={() => onSendStdin("\x1b[D")}><ArrowLeft className="h-3 w-3" /></Button>
-          <Button variant="outline" size="sm" onClick={() => onSendStdin("\x1b[C")}><ArrowRight className="h-3 w-3" /></Button>
-          <Button size="sm" onClick={() => onSendStdin("\r")}><Check className="h-3 w-3" /> 确认</Button>
-        </Card>
-      )}
-
-      {promptType === "editor" && (
-        <div className="flex justify-center">
-          <Button size="sm" onClick={() => onSendStdin("\x1b[Z")}>
-            📤 提交/发送 (Shift+Tab)
-          </Button>
+          {disabled ? (
+            <div className="rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground">没有可用 embedding 模型。</div>
+          ) : documents.length === 0 ? (
+            <div className="rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground">还没有知识库文档。</div>
+          ) : (
+            <div className="max-h-64 overflow-y-auto">
+              {documents.map((doc) => (
+                <button
+                  key={doc.id}
+                  type="button"
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-muted/20"
+                  onClick={() => onToggle(doc.id)}
+                >
+                  <span className={cn("flex h-4 w-4 items-center justify-center rounded border", selectedIds.includes(doc.id) ? "border-primary bg-primary/20 text-primary" : "border-border")}>
+                    {selectedIds.includes(doc.id) && <Check className="h-3 w-3" />}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm">{doc.title}</span>
+                    <span className="block text-xs text-muted-foreground">{doc.chunk_count} chunks · {doc.embedding_status}</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>
   );
 }
 
-// ── Helpers ─────────────────────────────────────────
-// (buildModelOptions removed — now inlined in ChatTab to support orphan-model detection)
+function formatKnowledgeContext(results: SearchResult[], selectedDocs: KbDocument[]) {
+  const docNames = selectedDocs.map((doc) => doc.title).join(", ") || "已选择知识库";
+  return [
+    `[知识库检索结果: ${docNames}]`,
+    ...results.map((result, index) => `[${index + 1}] ${result.content}\nsource=${result.document_id}`),
+  ].join("\n\n");
+}
 
+function InfoBlock({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-border bg-background/40 p-3">
+      <div className="text-xs font-semibold text-muted-foreground">{label}</div>
+      <div className="mt-2 text-sm leading-6">{value}</div>
+    </div>
+  );
+}
+
+function PromptCards({ promptType, onSendStdin }: { promptType: PromptType; onSendStdin: (input: string) => void }) {
+  if (promptType === "trust") {
+    return (
+      <div className="mx-auto max-w-xl rounded-md border border-success/30 bg-success/10 p-4">
+        <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-success">
+          <Shield className="h-4 w-4" />
+          安全确认
+        </div>
+        <p className="mb-3 text-xs leading-5 text-muted-foreground">Agent 正在请求信任当前目录或继续执行。请确认后再放行。</p>
+        <div className="flex gap-2">
+          <Button size="sm" onClick={() => onSendStdin("1\n")}>确认</Button>
+          <Button size="sm" variant="outline" onClick={() => onSendStdin("2\n")}>拒绝</Button>
+        </div>
+      </div>
+    );
+  }
+
+  if (promptType === "update") {
+    return (
+      <div className="mx-auto max-w-xl rounded-md border border-info/30 bg-info/10 p-4">
+        <div className="mb-2 text-sm font-semibold text-info">检测到 CLI 更新提示</div>
+        <div className="flex gap-2">
+          <Button size="sm" onClick={() => onSendStdin("\r")}>确认更新</Button>
+          <Button size="sm" variant="outline" onClick={() => onSendStdin("\x1b")}>跳过</Button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mx-auto flex max-w-xl flex-wrap justify-center gap-2 rounded-md border border-border bg-card/50 p-3">
+      <Button variant="outline" size="sm" onClick={() => onSendStdin("\t")}>Tab</Button>
+      <Button variant="outline" size="sm" onClick={() => onSendStdin(" ")}>空格</Button>
+      <Button size="sm" onClick={() => onSendStdin("\r")}>确认</Button>
+      <Button variant="outline" size="sm" onClick={() => onSendStdin("\x1b")}>Esc</Button>
+    </div>
+  );
+}

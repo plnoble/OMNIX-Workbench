@@ -4,8 +4,17 @@ import { SkillTopology } from "./SkillTopology";
 import { Layers, Sparkles, BookOpen, Download, RefreshCw, Search, Star, Upload, ArrowRightLeft, HardDrive, CheckCircle2, XCircle, AlertCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/sonner";
-import { skillSyncApi } from "@/lib/tauri-api";
-import type { ToolStatus as SyncToolStatus, ScanReport, ScanItem, ConflictInfo, GitCloneResult, GitSkillCandidate } from "@/lib/tauri-api";
+import { skillLibraryApi, skillSetApi, skillSyncApi } from "@/lib/tauri-api";
+import type {
+  ToolStatus as SyncToolStatus,
+  ScanReport,
+  ScanItem,
+  ConflictInfo,
+  GitCloneResult,
+  GitSkillCandidate,
+  MarketSkill,
+  SkillSet,
+} from "@/lib/tauri-api";
 
 interface Skill {
   name: string;
@@ -53,6 +62,16 @@ export interface DiscoveredSkill {
   content_hash: string;
 }
 
+type SkillHubSection = "library" | "furnace" | "sets" | "market" | "sync";
+
+const SKILL_HUB_SECTIONS: Array<{ id: SkillHubSection; label: string; desc: string }> = [
+  { id: "library", label: "技能库", desc: "查看、编辑、收藏和启停本地技能" },
+  { id: "furnace", label: "熔炉", desc: "融合多个技能并审批写入" },
+  { id: "sets", label: "组合", desc: "保存 Skill Set 并同步到工具" },
+  { id: "market", label: "市场", desc: "搜索、预览和导入外部技能" },
+  { id: "sync", label: "同步", desc: "扫描、Git 来源、漂移与冲突处理" },
+];
+
 // Mock marketplace skills
 const MARKETPLACE_SKILLS = [
   {
@@ -79,6 +98,7 @@ const MARKETPLACE_SKILLS = [
 ];
 
 export const SkillHub: React.FC = () => {
+  const [section, setSection] = useState<SkillHubSection>("library");
   const [skills, setSkills] = useState<Skill[]>([]);
   const [selectedSkillName, setSelectedSkillName] = useState<string | null>(null);
   const [selectedProfile, setSelectedProfile] = useState<string>("Core");
@@ -121,9 +141,23 @@ export const SkillHub: React.FC = () => {
   const [conflicts, setConflicts] = useState<ConflictInfo[]>([]);
   const [conflictStrategy, setConflictStrategy] = useState<"skip" | "overwrite" | "rename">("overwrite");
 
+  // Skill set states
+  const [skillSets, setSkillSets] = useState<SkillSet[]>([]);
+  const [skillSetName, setSkillSetName] = useState("");
+  const [skillSetDescription, setSkillSetDescription] = useState("");
+  const [skillSetTargets, setSkillSetTargets] = useState<string[]>([]);
+  const [isSavingSkillSet, setIsSavingSkillSet] = useState(false);
+
+  // Marketplace states
+  const [marketQuery, setMarketQuery] = useState("");
+  const [marketResults, setMarketResults] = useState<MarketSkill[]>([]);
+  const [isSearchingMarket, setIsSearchingMarket] = useState(false);
+  const [selectedMarketSkill, setSelectedMarketSkill] = useState<MarketSkill | null>(null);
+
   useEffect(() => {
     loadSkills();
     loadToolStatuses();
+    loadSkillSets();
   }, []);
 
   useEffect(() => {
@@ -155,6 +189,15 @@ export const SkillHub: React.FC = () => {
       setToolStatuses(statuses);
     } catch (e) {
       console.error("Failed to load tool statuses:", e);
+    }
+  };
+
+  const loadSkillSets = async () => {
+    try {
+      setSkillSets(await skillSetApi.list());
+    } catch (e) {
+      console.error("Failed to load skill sets:", e);
+      setSkillSets([]);
     }
   };
 
@@ -248,6 +291,85 @@ export const SkillHub: React.FC = () => {
         : [...current, toolId];
       return { ...prev, [skillName]: next };
     });
+  };
+
+  const toggleSkillSetTarget = (toolId: string) => {
+    setSkillSetTargets((prev) =>
+      prev.includes(toolId) ? prev.filter((id) => id !== toolId) : [...prev, toolId]
+    );
+  };
+
+  const handleCreateSkillSet = async () => {
+    const skillIds = furnacePot.length > 0 ? furnacePot : selectedSkillName ? [selectedSkillName] : [];
+    if (!skillSetName.trim()) {
+      toast.warning("请输入组合名称");
+      return;
+    }
+    if (skillIds.length === 0) {
+      toast.warning("请至少选择一个技能");
+      return;
+    }
+    setIsSavingSkillSet(true);
+    try {
+      await skillSetApi.create(skillSetName.trim(), skillSetDescription.trim(), skillIds, skillSetTargets);
+      toast.success("技能组合已保存");
+      setSkillSetName("");
+      setSkillSetDescription("");
+      await loadSkillSets();
+    } catch (e) {
+      toast.error("保存技能组合失败：" + e);
+    } finally {
+      setIsSavingSkillSet(false);
+    }
+  };
+
+  const handleDeleteSkillSet = async (id: string) => {
+    try {
+      await skillSetApi.delete(id);
+      await loadSkillSets();
+      toast.success("技能组合已删除");
+    } catch (e) {
+      toast.error("删除技能组合失败：" + e);
+    }
+  };
+
+  const handleSyncSkillSet = async (set: SkillSet) => {
+    const targets = set.sync_targets.length > 0 ? set.sync_targets : skillSetTargets;
+    if (targets.length === 0) {
+      toast.warning("请先选择同步目标");
+      return;
+    }
+    setIsSyncing(true);
+    try {
+      await skillSetApi.syncToTools(set.id, targets, "copy", conflictStrategy);
+      toast.success(`已同步组合：${set.name}`);
+      await loadToolStatuses();
+    } catch (e) {
+      toast.error("同步技能组合失败：" + e);
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  const handleSearchMarket = async () => {
+    const query = marketQuery.trim();
+    if (!query) {
+      toast.warning("请输入搜索关键词");
+      return;
+    }
+    setIsSearchingMarket(true);
+    try {
+      const results = await skillLibraryApi.searchMarket(query);
+      setMarketResults(results);
+      setSelectedMarketSkill(results[0] ?? null);
+      if (results.length === 0) {
+        toast.info("没有找到匹配技能");
+      }
+    } catch (e) {
+      toast.error("搜索技能市场失败：" + e);
+    } finally {
+      setIsSearchingMarket(false);
+    }
   };
 
   // ── P5: Git skill source helpers ──
@@ -444,6 +566,39 @@ export const SkillHub: React.FC = () => {
     }
   };
 
+  const handleImportMarketSkill = async (item: MarketSkill) => {
+    const safeName = item.name.replace(/[^\w-]+/g, "_").replace(/^_+|_+$/g, "");
+    if (!safeName) {
+      toast.warning("市场技能名称无效，无法导入");
+      return;
+    }
+    try {
+      await invoke("create_skill", {
+        name: safeName,
+        description: item.description,
+        profile: "Core",
+        dependencies: [],
+        content: [
+          `# ${item.name}`,
+          "",
+          item.description,
+          "",
+          "## Source",
+          `- Provider: ${item.source}`,
+          `- Author: ${item.author}`,
+          `- URL: ${item.url}`,
+          "",
+          "## Usage",
+          "Review this imported market skill, then refine the workflow before enabling it in production.",
+        ].join("\n"),
+      });
+      toast.success(`已导入市场技能：${item.name}`);
+      await loadSkills();
+    } catch (e) {
+      toast.error("导入市场技能失败：" + e);
+    }
+  };
+
   // Helper to determine skill category for lists
   const getCategory = (name: string) => {
     switch (name) {
@@ -525,10 +680,30 @@ export const SkillHub: React.FC = () => {
   };
 
   return (
-    <div className="skill-hub-layout grid grid-cols-1 sm:grid-cols-[260px_1fr] gap-5 h-[calc(100vh-120px)]">
+    <div className="flex h-full min-h-0 w-full flex-col gap-4 overflow-hidden">
+      <div className="flex flex-wrap items-center gap-2 border-b border-border px-1 pb-3">
+        {SKILL_HUB_SECTIONS.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            className={cn(
+              "rounded-md border px-3 py-2 text-left text-sm transition-colors",
+              section === item.id
+                ? "border-primary/40 bg-primary/10 text-primary"
+                : "border-border bg-card/40 text-muted-foreground hover:bg-muted/20"
+            )}
+            onClick={() => setSection(item.id)}
+            title={item.desc}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+
+    <div className="skill-hub-layout grid min-h-0 w-full flex-1 grid-cols-1 gap-5 overflow-y-auto lg:grid-cols-[260px_minmax(0,1fr)] lg:overflow-hidden xl:grid-cols-[280px_minmax(0,1fr)]">
 
       {/* Left panel: list of skills + tool status */}
-      <div className="card flex flex-col h-full p-4 min-w-0">
+      <div className="card flex h-full min-h-0 min-w-0 flex-col overflow-hidden p-4">
         <h3 className="card-title flex items-center gap-1.5 text-sm">
           <BookOpen size={16} color="var(--color-secondary)" />
           技能列表 ({filteredSkills.length})
@@ -714,10 +889,10 @@ export const SkillHub: React.FC = () => {
       </div>
 
       {/* Right workspace: split visual editor & topology graph */}
-      <div className="flex flex-col h-full min-w-0 gap-4 overflow-y-auto pr-1.5">
+      <div className="flex h-full min-h-0 min-w-0 flex-col gap-4 overflow-y-auto pr-1.5 pb-4">
 
-        {selectedSkill ? (
-          <div className="card flex flex-col flex-1 p-4 min-h-0">
+        {section === "library" && (selectedSkill ? (
+          <div className="card flex min-h-[560px] flex-none flex-col overflow-hidden p-4">
             {/* Header section — responsive header that wraps action buttons on small windows */}
             <div className="flex flex-col gap-3 border-b border-border pb-3 mb-4">
               <div className="flex justify-between items-start gap-3 flex-wrap">
@@ -873,10 +1048,10 @@ export const SkillHub: React.FC = () => {
             </div>
 
             {/* Split workspace: Editor & Graph */}
-            <div className="grid grid-cols-1 lg:grid-cols-[1.2fr_1fr] gap-4 flex-1 min-h-0">
+            <div className="grid flex-1 min-h-0 grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(260px,1fr)] xl:grid-cols-[minmax(0,1.2fr)_minmax(280px,1fr)]">
 
               {/* Left side: Code content editor */}
-              <div className="flex flex-col h-full">
+              <div className="flex h-full min-h-0 flex-col">
                 <div className="flex justify-between items-center mb-2">
                   <span className="text-xs font-medium text-secondary-foreground flex items-center gap-1">
                     <Layers size={13} />
@@ -920,7 +1095,7 @@ export const SkillHub: React.FC = () => {
                     />
                   ) : (
                     <div
-                      className="w-full h-full overflow-y-auto bg-muted/10 border border-border rounded-lg p-3 font-mono text-xs whitespace-pre-wrap text-foreground leading-normal"
+                      className="h-full w-full overflow-y-auto break-words rounded-lg border border-border bg-muted/10 p-3 font-mono text-xs leading-normal text-foreground whitespace-pre-wrap"
                     >
                       {skillContent}
                     </div>
@@ -929,12 +1104,12 @@ export const SkillHub: React.FC = () => {
               </div>
 
               {/* Right side: Force network */}
-              <div className="flex flex-col h-full">
+              <div className="flex h-full min-h-0 flex-col">
                 <span className="text-xs font-medium text-secondary-foreground mb-2 flex items-center gap-1">
                   <Sparkles size={13} />
                   力导向关联拓扑图 (OBSIDIAN STYLE)
                 </span>
-                <div className="flex-1 min-h-0">
+                <div className="min-h-[280px] flex-1 overflow-hidden">
                   <SkillTopology
                     skills={skills}
                     selectedSkill={selectedSkillName}
@@ -951,10 +1126,10 @@ export const SkillHub: React.FC = () => {
           <div className="card flex items-center justify-center flex-1 text-muted-foreground">
             点按左侧列表加载技能
           </div>
-        )}
+        ))}
 
         {/* Fusion Furnace Drawer */}
-        <div className="card p-4">
+        {section === "furnace" && <div className="card flex-none p-4">
           <div className="flex justify-between items-center">
             <div>
               <h3 className="card-title flex items-center gap-1.5 text-sm m-0">
@@ -1028,10 +1203,105 @@ export const SkillHub: React.FC = () => {
               {renderSplitDiff()}
             </div>
           )}
-        </div>
+        </div>}
+
+        {section === "sets" && (
+          <div className="card flex-none p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h3 className="card-title flex items-center gap-1.5 text-sm m-0">
+                  <Layers size={16} color="var(--color-secondary)" />
+                  技能组合 (Skill Set)
+                </h3>
+                <p className="mt-1 text-xs leading-5 text-secondary-foreground">
+                  将多个技能保存为一个组合，并一键同步到 Claude、Codex、Gemini、OpenCode 等工具。
+                </p>
+              </div>
+              <button className="btn btn-secondary py-1 px-3 text-xs" onClick={loadSkillSets}>
+                刷新组合
+              </button>
+            </div>
+
+            <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,360px)_minmax(0,1fr)]">
+              <div className="rounded-lg border border-border bg-muted/10 p-3">
+                <div className="mb-2 text-xs font-semibold">新建组合</div>
+                <input
+                  className="form-input mb-2 text-sm"
+                  value={skillSetName}
+                  onChange={(e) => setSkillSetName(e.target.value)}
+                  placeholder="组合名称，例如 前端重构套件"
+                />
+                <textarea
+                  className="form-input mb-3 min-h-20 text-sm"
+                  value={skillSetDescription}
+                  onChange={(e) => setSkillSetDescription(e.target.value)}
+                  placeholder="组合用途说明"
+                />
+                <div className="mb-2 text-xs text-muted-foreground">
+                  当前将保存：{(furnacePot.length > 0 ? furnacePot : selectedSkillName ? [selectedSkillName] : []).join(", ") || "未选择技能"}
+                </div>
+                <div className="mb-3 flex flex-wrap gap-2">
+                  {toolStatuses.map((tool) => (
+                    <button
+                      key={tool.tool_id}
+                      type="button"
+                      className={cn(
+                        "rounded-md border px-2 py-1 text-xs",
+                        skillSetTargets.includes(tool.tool_id)
+                          ? "border-primary/40 bg-primary/10 text-primary"
+                          : "border-border bg-background/60 text-muted-foreground"
+                      )}
+                      onClick={() => toggleSkillSetTarget(tool.tool_id)}
+                    >
+                      {tool.display_name}
+                    </button>
+                  ))}
+                </div>
+                <button className="btn w-full py-2 text-sm" onClick={handleCreateSkillSet} disabled={isSavingSkillSet}>
+                  {isSavingSkillSet ? "保存中..." : "保存组合"}
+                </button>
+              </div>
+
+              <div className="grid gap-3">
+                {skillSets.length === 0 ? (
+                  <div className="rounded-lg border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
+                    还没有技能组合。先把常用技能放进熔炉，或选中左侧技能后创建组合。
+                  </div>
+                ) : skillSets.map((set) => (
+                  <div key={set.id} className="rounded-lg border border-border bg-muted/10 p-3">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-sm font-semibold">{set.name}</div>
+                        <p className="mt-1 line-clamp-2 text-xs text-secondary-foreground">{set.description || "无描述"}</p>
+                      </div>
+                      <div className="flex gap-2">
+                        <button className="btn btn-secondary py-1 px-2 text-xs" onClick={() => handleSyncSkillSet(set)} disabled={isSyncing}>
+                          同步
+                        </button>
+                        <button className="btn btn-secondary py-1 px-2 text-xs" onClick={() => handleDeleteSkillSet(set.id)}>
+                          删除
+                        </button>
+                      </div>
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {set.items.map((item) => (
+                        <span key={item.id} className="rounded-full border border-border bg-background/70 px-2 py-1 text-xs">
+                          {item.skill_id}
+                        </span>
+                      ))}
+                    </div>
+                    <div className="mt-2 text-xs text-muted-foreground">
+                      目标：{set.sync_targets.length > 0 ? set.sync_targets.join(", ") : "未设置"}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Skill Marketplace */}
-        <div className="card p-4">
+        {section === "market" && <div className="card flex-none p-4">
           <h3 className="card-title flex items-center gap-1.5 text-sm">
             <Download size={16} color="var(--color-secondary)" />
             公共技能市场 (Skill Marketplace)
@@ -1040,6 +1310,63 @@ export const SkillHub: React.FC = () => {
             由 OMNIX 官方和社区维护的成熟技能包，点击即可一键下载并自动导入至您当前的本地开发库中。
           </p>
 
+          <div className="mb-4 flex flex-col gap-2 sm:flex-row">
+            <input
+              type="text"
+              className="form-input text-sm"
+              placeholder="搜索技能市场，例如 code review、git、frontend"
+              value={marketQuery}
+              onChange={(e) => setMarketQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  handleSearchMarket();
+                }
+              }}
+            />
+            <button className="btn shrink-0 px-4 py-2 text-sm" onClick={handleSearchMarket} disabled={isSearchingMarket}>
+              {isSearchingMarket ? "搜索中..." : "搜索"}
+            </button>
+          </div>
+
+          {selectedMarketSkill && (
+            <div className="mb-4 rounded-lg border border-primary/20 bg-primary/5 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-sm font-semibold">{selectedMarketSkill.name}</div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    {selectedMarketSkill.source} · {selectedMarketSkill.author || "unknown"} · {selectedMarketSkill.stars ?? 0} stars
+                  </div>
+                </div>
+                <button className="btn btn-secondary py-1 px-3 text-xs" onClick={() => handleImportMarketSkill(selectedMarketSkill)}>
+                  导入预览技能
+                </button>
+              </div>
+              <p className="mt-2 text-xs leading-5 text-secondary-foreground">{selectedMarketSkill.description}</p>
+              <div className="mt-2 truncate text-xs text-muted-foreground">{selectedMarketSkill.url}</div>
+            </div>
+          )}
+
+          {marketResults.length > 0 && (
+            <div className="mb-4 grid grid-cols-[repeat(auto-fit,minmax(240px,1fr))] gap-3">
+              {marketResults.map((item) => (
+                <button
+                  key={`${item.source}-${item.name}-${item.url}`}
+                  type="button"
+                  className={cn(
+                    "rounded-lg border p-3 text-left",
+                    selectedMarketSkill?.url === item.url ? "border-primary/40 bg-primary/10" : "border-border bg-muted/10"
+                  )}
+                  onClick={() => setSelectedMarketSkill(item)}
+                >
+                  <div className="text-xs font-semibold">{item.name}</div>
+                  <p className="mt-1 line-clamp-3 text-xs leading-snug text-secondary-foreground">{item.description}</p>
+                  <div className="mt-2 text-xs text-muted-foreground">{item.source} · {item.stars ?? 0} stars</div>
+                </button>
+              ))}
+            </div>
+          )}
+
+          <div className="mb-2 text-xs font-medium text-muted-foreground">精选本地示例</div>
           <div className="grid grid-cols-[repeat(auto-fit,minmax(240px,1fr))] gap-3">
             {MARKETPLACE_SKILLS.map((item) => (
               <div
@@ -1051,7 +1378,7 @@ export const SkillHub: React.FC = () => {
                     <span className="font-semibold text-xs">{item.name}</span>
                     <span className="text-xs text-muted-foreground bg-muted/15 py-px px-1.5 rounded-[10px]">{item.category}</span>
                   </div>
-                  <p className="text-secondary-foreground text-xs leading-snug m-0">{item.description}</p>
+                  <p className="m-0 line-clamp-3 text-xs leading-snug text-secondary-foreground">{item.description}</p>
                 </div>
 
                 <button
@@ -1064,11 +1391,46 @@ export const SkillHub: React.FC = () => {
               </div>
             ))}
           </div>
-        </div>
+        </div>}
 
         {/* ── P3: Disk Scanner Results ── */}
-        {showScanPanel && scanReport && (
-          <div className="card p-4">
+        {section === "sync" && (
+          <div className="card flex-none p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h3 className="card-title flex items-center gap-1.5 text-sm m-0">
+                  <RefreshCw size={16} color="var(--color-secondary)" />
+                  技能同步
+                </h3>
+                <p className="mt-1 text-xs leading-5 text-secondary-foreground">
+                  管理工具安装状态、磁盘扫描、Git 技能源、冲突策略和漂移检测。
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <button className="btn btn-secondary py-1 px-3 text-xs" onClick={handleScanDisk} disabled={isScanning}>
+                  {isScanning ? "扫描中..." : "扫描磁盘"}
+                </button>
+                <button className="btn btn-secondary py-1 px-3 text-xs" onClick={() => setShowGitPanel(!showGitPanel)}>
+                  Git 源
+                </button>
+              </div>
+            </div>
+            <div className="mt-4 grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3">
+              {toolStatuses.map((tool) => (
+                <div key={tool.tool_id} className="rounded-lg border border-border bg-muted/10 p-3">
+                  <div className="text-sm font-semibold">{tool.display_name}</div>
+                  <div className={cn("mt-2 text-xs", tool.is_installed ? "text-[var(--color-success)]" : "text-muted-foreground")}>
+                    {tool.is_installed ? "已检测" : "未检测"}
+                  </div>
+                  <div className="mt-2 truncate text-xs text-muted-foreground">{tool.skill_base_path}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {section === "sync" && showScanPanel && scanReport && (
+          <div className="card flex-none p-4">
             <div className="flex justify-between items-center mb-3">
               <h3 className="card-title flex items-center gap-1.5 text-sm m-0">
                 <Search size={16} color="var(--color-secondary)" />
@@ -1198,6 +1560,7 @@ export const SkillHub: React.FC = () => {
 
       </div>
 
+    </div>
     </div>
   );
 };

@@ -1,23 +1,29 @@
-/**
- * CommandPalette — Ctrl+K 全局命令面板
- *
- * 快速搜索 tab、设置项、快捷操作。
- * 居中弹窗，glass-card 风格，搜索输入框 + 列表。
- */
-
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import {
-  LayoutDashboard, MessageSquare, Bot, GitCompare, Users,
-  Brain, Sparkles, BookOpen, Clock, Settings,
-  Search, ArrowRight, Zap,
+  ArrowRight,
+  Bot,
+  Brain,
+  BookOpen,
+  Clock,
+  Database,
+  FlaskConical,
+  GitCompare,
+  MessageSquare,
+  Plug,
+  Search,
+  Settings,
+  Sparkles,
+  Users,
+  Zap,
 } from "lucide-react";
+
 import { cn } from "@/lib/utils";
 
 interface CommandItem {
   id: string;
   label: string;
   description?: string;
-  icon: React.ReactNode;
+  icon: ReactNode;
   category: "navigation" | "action";
   action: () => void;
 }
@@ -30,16 +36,19 @@ interface CommandPaletteProps {
 }
 
 const NAV_COMMANDS = [
-  { id: "nav-dashboard", label: "控制面板", icon: <LayoutDashboard className="h-4 w-4" />, tab: "dashboard" },
-  { id: "nav-chat", label: "智能体对话", icon: <MessageSquare className="h-4 w-4" />, tab: "chat" },
-  { id: "nav-agents", label: "Agent 仓库", icon: <Bot className="h-4 w-4" />, tab: "agents" },
-  { id: "nav-compare", label: "比对中枢", icon: <GitCompare className="h-4 w-4" />, tab: "compare" },
-  { id: "nav-team", label: "团队协同", icon: <Users className="h-4 w-4" />, tab: "team" },
-  { id: "nav-memories", label: "长期记忆", icon: <Brain className="h-4 w-4" />, tab: "memories" },
-  { id: "nav-skills", label: "自进化技能", icon: <Sparkles className="h-4 w-4" />, tab: "skills" },
-  { id: "nav-knowledge", label: "知识库 RAG", icon: <BookOpen className="h-4 w-4" />, tab: "knowledge" },
-  { id: "nav-cron", label: "定时任务", icon: <Clock className="h-4 w-4" />, tab: "cron" },
-  { id: "nav-settings", label: "中转与设置", icon: <Settings className="h-4 w-4" />, tab: "settings" },
+  { id: "nav-work", label: "工作", description: "选择 Agent 后直接开始输入", icon: <MessageSquare className="h-4 w-4" />, tab: "work" },
+  { id: "nav-team", label: "团队", description: "队长生成计划，确认后启动 Worker", icon: <Users className="h-4 w-4" />, tab: "team" },
+  { id: "nav-agents", label: "智能体", description: "检测、安装、更新和模型绑定", icon: <Bot className="h-4 w-4" />, tab: "agents" },
+  { id: "nav-skills", label: "技能", description: "管理技能包和同步目标", icon: <Sparkles className="h-4 w-4" />, tab: "skills" },
+  { id: "nav-models", label: "模型中心", description: "供应商、API Key、模型列表和健康检查", icon: <Database className="h-4 w-4" />, tab: "models" },
+  { id: "nav-knowledge", label: "知识库", description: "普通对话可手动启用的 RAG 资料源", icon: <BookOpen className="h-4 w-4" />, tab: "knowledge" },
+  { id: "nav-search", label: "搜索", description: "搜索供应商和搜索调试", icon: <Search className="h-4 w-4" />, tab: "search" },
+  { id: "nav-mcp", label: "MCP", description: "工具服务和 MCP Server", icon: <Plug className="h-4 w-4" />, tab: "mcp" },
+  { id: "nav-memory", label: "Memory", description: "长期记忆和经验复用", icon: <Brain className="h-4 w-4" />, tab: "memories" },
+  { id: "nav-labs", label: "Labs", description: "实验功能总览", icon: <FlaskConical className="h-4 w-4" />, tab: "labs" },
+  { id: "nav-compare", label: "Compare", description: "模型对比实验", icon: <GitCompare className="h-4 w-4" />, tab: "compare" },
+  { id: "nav-cron", label: "Cron", description: "定时任务", icon: <Clock className="h-4 w-4" />, tab: "cron" },
+  { id: "nav-settings", label: "设置", description: "系统设置和数据备份", icon: <Settings className="h-4 w-4" />, tab: "settings" },
 ];
 
 export function CommandPalette({ open, onClose, onNavigate, onToggleTheme }: CommandPaletteProps) {
@@ -48,26 +57,31 @@ export function CommandPalette({ open, onClose, onNavigate, onToggleTheme }: Com
   const inputRef = useRef<HTMLInputElement>(null);
 
   const commands: CommandItem[] = [
-    ...NAV_COMMANDS.map((c) => ({
-      ...c,
-      description: `导航到 ${c.label}`,
+    ...NAV_COMMANDS.map((command) => ({
+      ...command,
       category: "navigation" as const,
-      action: () => { onNavigate(c.tab); onClose(); },
+      action: () => {
+        onNavigate(command.tab);
+        onClose();
+      },
     })),
     {
       id: "action-theme",
       label: "切换主题",
-      description: "切换深色/浅色/自动主题",
+      description: "深色 / 浅色 / 跟随系统",
       icon: <Zap className="h-4 w-4" />,
       category: "action" as const,
-      action: () => { onToggleTheme(); onClose(); },
+      action: () => {
+        onToggleTheme();
+        onClose();
+      },
     },
   ];
 
   const filtered = query.trim()
-    ? commands.filter((c) =>
-        c.label.toLowerCase().includes(query.toLowerCase()) ||
-        (c.description && c.description.toLowerCase().includes(query.toLowerCase()))
+    ? commands.filter((command) =>
+        command.label.toLowerCase().includes(query.toLowerCase()) ||
+        (command.description && command.description.toLowerCase().includes(query.toLowerCase()))
       )
     : commands;
 
@@ -82,19 +96,17 @@ export function CommandPalette({ open, onClose, onNavigate, onToggleTheme }: Com
     }
   }, [open]);
 
-  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (e.key === "ArrowDown") {
-      e.preventDefault();
+  const handleKeyDown = useCallback((event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
       setSelectedIndex((prev) => Math.min(prev + 1, filtered.length - 1));
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
       setSelectedIndex((prev) => Math.max(prev - 1, 0));
-    } else if (e.key === "Enter") {
-      e.preventDefault();
-      if (filtered[selectedIndex]) {
-        filtered[selectedIndex].action();
-      }
-    } else if (e.key === "Escape") {
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      filtered[selectedIndex]?.action();
+    } else if (event.key === "Escape") {
       onClose();
     }
   }, [filtered, selectedIndex, onClose]);
@@ -103,61 +115,52 @@ export function CommandPalette({ open, onClose, onNavigate, onToggleTheme }: Com
 
   return (
     <div className="fixed inset-0 z-[100] flex items-start justify-center pt-[20vh]">
-      {/* Backdrop */}
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
 
-      {/* Palette */}
-      <div className="relative w-[520px] glass-card p-0 overflow-hidden animate-fade-in">
-        {/* Search input */}
-        <div className="flex items-center gap-3 px-4 py-3 border-b border-border">
+      <div className="relative w-[560px] overflow-hidden rounded-md border border-border bg-card shadow-xl animate-fade-in">
+        <div className="flex items-center gap-3 border-b border-border px-4 py-3">
           <Search className="h-4 w-4 text-muted-foreground" />
           <input
             ref={inputRef}
             type="text"
             className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
-            placeholder="搜索命令、导航、操作…"
+            placeholder="搜索页面或操作..."
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(event) => setQuery(event.target.value)}
             onKeyDown={handleKeyDown}
           />
-          <kbd className="text-xs px-1.5 py-0.5 rounded border border-border text-muted-foreground">ESC</kbd>
+          <kbd className="rounded border border-border px-1.5 py-0.5 text-xs text-muted-foreground">ESC</kbd>
         </div>
 
-        {/* Results */}
-        <div className="max-h-[300px] overflow-y-auto py-1">
+        <div className="max-h-[340px] overflow-y-auto py-1">
           {filtered.length === 0 ? (
-            <div className="py-6 text-center text-sm text-muted-foreground">
-              无匹配结果
-            </div>
+            <div className="py-6 text-center text-sm text-muted-foreground">没有匹配结果</div>
           ) : (
-            filtered.map((item, i) => (
+            filtered.map((item, index) => (
               <button
                 key={item.id}
                 className={cn(
-                  "w-full flex items-center gap-3 px-4 py-2 text-left text-sm transition-colors",
-                  i === selectedIndex
-                    ? "bg-primary/10 text-primary"
-                    : "hover:bg-muted/50"
+                  "flex w-full items-center gap-3 px-4 py-2 text-left text-sm transition-colors",
+                  index === selectedIndex ? "bg-primary/10 text-primary" : "hover:bg-muted/30"
                 )}
                 onClick={() => item.action()}
-                onMouseEnter={() => setSelectedIndex(i)}
+                onMouseEnter={() => setSelectedIndex(index)}
               >
                 <span className="text-muted-foreground">{item.icon}</span>
-                <span className="flex-1">{item.label}</span>
+                <span className="min-w-0 flex-1 truncate">{item.label}</span>
                 {item.description && (
-                  <span className="text-xs text-muted-foreground">{item.description}</span>
+                  <span className="max-w-[220px] truncate text-xs text-muted-foreground">{item.description}</span>
                 )}
-                <ArrowRight className="h-3 w-3 text-muted-foreground opacity-0 group-hover:opacity-100" />
+                <ArrowRight className="h-3 w-3 text-muted-foreground" />
               </button>
             ))
           )}
         </div>
 
-        {/* Footer */}
-        <div className="flex items-center gap-4 px-4 py-2 border-t border-border text-xs text-muted-foreground">
-          <span>↑↓ 导航</span>
-          <span>↵ 执行</span>
-          <span>ESC 关闭</span>
+        <div className="flex items-center gap-4 border-t border-border px-4 py-2 text-xs text-muted-foreground">
+          <span>上下键导航</span>
+          <span>Enter 执行</span>
+          <span>Esc 关闭</span>
         </div>
       </div>
     </div>

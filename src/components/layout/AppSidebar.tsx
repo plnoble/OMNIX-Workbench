@@ -1,34 +1,19 @@
-/**
- * AppSidebar — 品牌头 + 10 Tab 导航 + 对话列表抽屉（含归档/删除/全屏切换）
- */
-
-import { useState } from "react";
-import { Separator } from "@/components/ui/separator";
+import { useMemo, useState, type MouseEvent, type ReactNode } from "react";
 import {
-  LayoutDashboard, MessageSquare, Bot, GitCompare, Users,
-  Brain, Sparkles, BookOpen, Clock, Settings, Plus, FolderOpen, Trash2, Archive, Maximize2,
+  Archive,
+  CalendarClock,
+  FolderOpen,
+  Maximize2,
+  MessageSquare,
+  Plus,
+  Search,
+  Trash2,
+  Users,
 } from "lucide-react";
+
+import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import type { ConversationInfo, GatewayStatus } from "@/types";
-
-interface NavItem {
-  id: string;
-  label: string;
-  icon: React.ReactNode;
-}
-
-const NAV_ITEMS: NavItem[] = [
-  { id: "dashboard", label: "控制面板", icon: <LayoutDashboard className="h-4 w-4" /> },
-  { id: "chat", label: "智能体对话", icon: <MessageSquare className="h-4 w-4" /> },
-  { id: "agents", label: "Agent 仓库", icon: <Bot className="h-4 w-4" /> },
-  { id: "compare", label: "比对中枢", icon: <GitCompare className="h-4 w-4" /> },
-  { id: "team", label: "团队协同", icon: <Users className="h-4 w-4" /> },
-  { id: "memories", label: "长期记忆", icon: <Brain className="h-4 w-4" /> },
-  { id: "skills", label: "自进化技能", icon: <Sparkles className="h-4 w-4" /> },
-  { id: "knowledge", label: "知识库 RAG", icon: <BookOpen className="h-4 w-4" /> },
-  { id: "cron", label: "定时任务", icon: <Clock className="h-4 w-4" /> },
-  { id: "settings", label: "中转与设置", icon: <Settings className="h-4 w-4" /> },
-];
 
 interface AppSidebarProps {
   activeTab: string;
@@ -39,8 +24,8 @@ interface AppSidebarProps {
   currentConvId: string;
   activeSessions: string[];
   onSelectConversation: (id: string) => void;
-  onDeleteConversation: (id: string, e: React.MouseEvent) => void;
-  onArchiveConversation?: (id: string, e: React.MouseEvent) => void;
+  onDeleteConversation: (id: string, e: MouseEvent) => void;
+  onArchiveConversation?: (id: string, e: MouseEvent) => void;
   onOpenHistoryFullscreen?: () => void;
   onNewConversation: () => void;
   onOpenWorkspaceModal: () => void;
@@ -62,171 +47,149 @@ export function AppSidebar({
   onOpenWorkspaceModal,
 }: AppSidebarProps) {
   const [pendingDelete, setPendingDelete] = useState<{ id: string; title: string } | null>(null);
+  const isWorkSurface = showConversations && (activeTab === "work" || activeTab === "team");
+
+  const grouped = useMemo(() => {
+    const direct: ConversationInfo[] = [];
+    const workspace: ConversationInfo[] = [];
+    for (const conv of conversations) {
+      if (conv.workspace_path && conv.workspace_path !== "direct") workspace.push(conv);
+      else direct.push(conv);
+    }
+    return { direct, workspace };
+  }, [conversations]);
+
+  const statusText = {
+    idle: "空闲",
+    busy: "执行中",
+    error: "异常",
+  }[gatewayStatus];
+
+  if (!isWorkSurface) {
+    return null;
+  }
 
   return (
-    <aside className="flex flex-col w-56 shrink-0 border-r border-border glass-panel">
-      {/* Brand Header */}
-      <div className="p-5 border-b border-border flex items-center gap-2.5">
-        <div
-          className={cn(
-            "w-2 h-2 rounded-full",
-            gatewayStatus === "idle" && "bg-emerald-500 animate-pulse-green",
-            gatewayStatus === "busy" && "bg-amber-500 animate-pulse-amber",
-            gatewayStatus === "error" && "bg-red-500 animate-pulse-red"
+    <aside className="flex w-60 shrink-0 flex-col border-r border-border bg-background/70 backdrop-blur-xl xl:w-72">
+      <div className="border-b border-border p-4">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="truncate text-sm font-semibold">{activeTab === "team" ? "团队上下文" : "工作上下文"}</div>
+            <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+              <span className={cn("h-1.5 w-1.5 rounded-full", gatewayStatus === "idle" && "bg-success", gatewayStatus === "busy" && "bg-warning", gatewayStatus === "error" && "bg-destructive")} />
+              {statusText}
+            </div>
+          </div>
+          {onOpenHistoryFullscreen && (
+            <button
+              title="展开历史"
+              aria-label="展开历史"
+              onClick={onOpenHistoryFullscreen}
+              className="rounded-md border border-border p-2 text-muted-foreground hover:bg-muted/20 hover:text-foreground"
+            >
+              <Maximize2 className="h-4 w-4" />
+            </button>
           )}
-        />
-        <div>
-          <h1 className="text-base font-bold m-0">OMNIX DevFlow</h1>
-          <span className="text-xs text-muted-foreground">智能跨模型网关桌面端 v0.1.0</span>
         </div>
       </div>
 
-      {/* Navigation */}
-      <nav className="p-2.5 flex flex-col gap-1">
-        {NAV_ITEMS.map((item) => (
-          <button
-            key={item.id}
-            onClick={() => onTabChange(item.id)}
-            className={cn(
-              "w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm cursor-pointer transition-all",
-              activeTab === item.id
-                ? "bg-accent/10 text-accent"
-                : "text-foreground hover:bg-muted/20"
-            )}
-          >
-            {item.icon}
-            <span>{item.label}</span>
-          </button>
-        ))}
-      </nav>
-
-      {/* Conversation Drawer */}
-      {showConversations && (
+      {isWorkSurface ? (
         <>
-          <Separator />
-          <div className="flex-1 flex flex-col overflow-hidden">
-            <div className="px-4 py-3 flex justify-between items-center border-b border-border">
-              <span className="text-xs font-semibold text-muted-foreground uppercase">
-                💬 智能体对话
+          <div className="grid grid-cols-1 gap-1.5 p-3">
+            <button className="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm hover:bg-muted/20" onClick={onNewConversation}>
+              <span className="flex h-8 w-8 items-center justify-center rounded-md bg-muted/30">
+                <Plus className="h-4 w-4" />
               </span>
-              <div className="flex gap-1.5">
-                {onOpenHistoryFullscreen && (
-                  <button
-                    title="在大窗口查看历史"
-                    aria-label="在大窗口查看历史"
-                    onClick={onOpenHistoryFullscreen}
-                    className="bg-transparent border-none text-muted-foreground cursor-pointer text-sm hover:text-foreground"
-                  >
-                    <Maximize2 className="h-3.5 w-3.5" />
-                  </button>
-                )}
-                <button
-                  title="载入项目工作区"
-                  aria-label="载入项目工作区"
-                  onClick={onOpenWorkspaceModal}
-                  className="bg-transparent border-none text-muted-foreground cursor-pointer text-sm hover:text-foreground"
-                >
-                  <FolderOpen className="h-3.5 w-3.5" />
-                </button>
-                <button
-                  title="新建对话"
-                  aria-label="新建对话"
-                  onClick={onNewConversation}
-                  className="bg-transparent border-none text-muted-foreground cursor-pointer text-sm hover:text-foreground"
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            </div>
+              新会话
+            </button>
+            <button className="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm hover:bg-muted/20" onClick={onOpenHistoryFullscreen}>
+              <span className="flex h-8 w-8 items-center justify-center rounded-md bg-muted/30">
+                <Search className="h-4 w-4" />
+              </span>
+              搜索
+            </button>
+            <button className="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm hover:bg-muted/20" onClick={() => onTabChange("cron")}>
+              <span className="flex h-8 w-8 items-center justify-center rounded-md bg-muted/30">
+                <CalendarClock className="h-4 w-4" />
+              </span>
+              定时任务
+            </button>
+          </div>
 
-            <div className="flex-1 overflow-y-auto p-2.5 flex flex-col gap-0.5">
-              {conversations.length === 0 ? (
-                <div className="py-5 text-center text-muted-foreground text-xs">
-                  无历史会话
-                  <div className="text-xs mt-1">点 + 开始新对话</div>
-                </div>
-              ) : (
-                conversations.map((conv) => {
-                  const isActive = currentConvId === conv.id;
-                  const isRunning = activeSessions.includes(conv.id);
-                  const isProject = conv.workspace_path && conv.workspace_path !== "direct";
-                  const folderName = isProject ? conv.workspace_path.split(/[\\/]/).pop() : "";
+          <Separator />
 
-                  return (
-                    <div
-                      key={conv.id}
-                      className={cn(
-                        "group w-full relative pr-14 flex justify-between items-center px-3 py-2 rounded-lg cursor-pointer transition-all",
-                        isActive ? "bg-accent/10 text-accent" : "hover:bg-muted/20 text-foreground"
-                      )}
-                      onClick={() => onSelectConversation(conv.id)}
-                    >
-                      <div className="flex flex-col gap-0.5 overflow-hidden">
-                        <span className="text-sm font-medium truncate">{conv.title}</span>
-                        <div className="flex items-center gap-1.5">
-                          {isRunning && (
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse-green" />
-                          )}
-                          {isProject ? (
-                            <span className="text-xs text-muted-foreground">📁 {folderName}</span>
-                          ) : (
-                            <span className="text-xs text-muted-foreground">💬 {conv.active_agent}</span>
-                          )}
-                        </div>
-                      </div>
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            <ConversationSection
+              title="工作"
+              icon={<FolderOpen className="h-3.5 w-3.5" />}
+              emptyText="还没有工作区会话"
+              conversations={grouped.workspace}
+              currentConvId={currentConvId}
+              activeSessions={activeSessions}
+              onSelectConversation={onSelectConversation}
+              onDelete={(conv) => setPendingDelete({ id: conv.id, title: conv.title })}
+              onArchiveConversation={onArchiveConversation}
+            />
+            <ConversationSection
+              title={activeTab === "team" ? "团队" : "对话"}
+              icon={activeTab === "team" ? <Users className="h-3.5 w-3.5" /> : <MessageSquare className="h-3.5 w-3.5" />}
+              emptyText="还没有普通对话"
+              conversations={grouped.direct}
+              currentConvId={currentConvId}
+              activeSessions={activeSessions}
+              onSelectConversation={onSelectConversation}
+              onDelete={(conv) => setPendingDelete({ id: conv.id, title: conv.title })}
+              onArchiveConversation={onArchiveConversation}
+            />
+          </div>
 
-                      {/* Action buttons (hover-only on desktop, always visible on touch) */}
-                      <div className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-0.5 opacity-60 group-hover:opacity-100 transition-opacity">
-                        {onArchiveConversation && (
-                          <button
-                            type="button"
-                            title="归档对话"
-                            aria-label="归档对话"
-                            onClick={(e) => { e.stopPropagation(); onArchiveConversation(conv.id, e); }}
-                            className="p-1 rounded text-muted-foreground hover:text-amber-500 hover:bg-amber-500/10 cursor-pointer"
-                          >
-                            <Archive className="h-3 w-3" />
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          title="删除对话"
-                          aria-label="删除对话"
-                          onClick={(e) => { e.stopPropagation(); setPendingDelete({ id: conv.id, title: conv.title }); }}
-                          className="p-1 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 cursor-pointer"
-                        >
-                          <Trash2 className="h-3 w-3" />
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
+          <div className="border-t border-border p-3">
+            <button
+              className="flex w-full items-center justify-center gap-2 rounded-md border border-border px-3 py-2 text-sm hover:bg-muted/20"
+              onClick={onOpenWorkspaceModal}
+            >
+              <FolderOpen className="h-4 w-4" />
+              选择工作区
+            </button>
           </div>
         </>
+      ) : (
+        <div className="flex flex-1 flex-col justify-between p-4">
+          <div className="rounded-md border border-border bg-card/40 p-4">
+            <div className="text-sm font-semibold">当前页面</div>
+            <p className="mt-2 text-xs leading-5 text-muted-foreground">
+              左侧栏只显示当前页面需要的上下文。资源和实验功能从顶栏应用宫格进入，避免主界面拥挤。
+            </p>
+          </div>
+          <button
+            className="flex items-center justify-center gap-2 rounded-md border border-border px-3 py-2 text-sm hover:bg-muted/20"
+            onClick={() => onTabChange("work")}
+          >
+            <MessageSquare className="h-4 w-4" />
+            返回工作
+          </button>
+        </div>
       )}
 
-      {/* Confirm delete modal */}
       {pendingDelete && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[1000]">
-          <div className="bg-card border border-border rounded-lg p-5 max-w-md mx-4 shadow-xl">
-            <h3 className="text-base font-semibold m-0 mb-2 text-foreground">确认删除对话?</h3>
-            <p className="text-sm text-muted-foreground mb-1 truncate">"{pendingDelete.title}"</p>
-            <p className="text-xs text-muted-foreground mb-4">删除后将无法恢复（消息记录也会被一并清除）。如想保留请使用「归档」。</p>
-            <div className="flex gap-2 justify-end">
+        <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="mx-4 max-w-md rounded-md border border-border bg-card p-5 shadow-xl">
+            <h3 className="m-0 mb-2 text-base font-semibold text-foreground">确认删除会话？</h3>
+            <p className="mb-1 truncate text-sm text-muted-foreground">"{pendingDelete.title}"</p>
+            <p className="mb-4 text-xs leading-5 text-muted-foreground">
+              删除后无法恢复。需要保留记录时，请先归档。
+            </p>
+            <div className="flex justify-end gap-2">
               <button
-                className="px-3 py-1.5 text-sm rounded-md border border-border bg-muted/10 hover:bg-muted/30 text-foreground"
+                className="rounded-md border border-border bg-muted/10 px-3 py-1.5 text-sm text-foreground hover:bg-muted/30"
                 onClick={() => setPendingDelete(null)}
               >
                 取消
               </button>
               <button
-                className="px-3 py-1.5 text-sm rounded-md bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                className="rounded-md bg-destructive px-3 py-1.5 text-sm text-destructive-foreground hover:bg-destructive/90"
                 onClick={(e) => {
-                  if (pendingDelete) {
-                    onDeleteConversation(pendingDelete.id, e as unknown as React.MouseEvent);
-                  }
+                  onDeleteConversation(pendingDelete.id, e as unknown as MouseEvent);
                   setPendingDelete(null);
                 }}
               >
@@ -237,5 +200,98 @@ export function AppSidebar({
         </div>
       )}
     </aside>
+  );
+}
+
+function ConversationSection({
+  title,
+  icon,
+  emptyText,
+  conversations,
+  currentConvId,
+  activeSessions,
+  onSelectConversation,
+  onDelete,
+  onArchiveConversation,
+}: {
+  title: string;
+  icon: ReactNode;
+  emptyText: string;
+  conversations: ConversationInfo[];
+  currentConvId: string;
+  activeSessions: string[];
+  onSelectConversation: (id: string) => void;
+  onDelete: (conv: ConversationInfo) => void;
+  onArchiveConversation?: (id: string, e: MouseEvent) => void;
+}) {
+  return (
+    <section className="min-h-0 flex-1 overflow-hidden border-b border-border last:border-b-0">
+      <div className="flex items-center gap-2 px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">
+        {icon}
+        {title}
+        <span className="ml-auto rounded bg-muted/30 px-1.5 py-0.5">{conversations.length}</span>
+      </div>
+      <div className="max-h-[calc(50vh-7rem)] overflow-y-auto px-2 pb-3">
+        {conversations.length === 0 ? (
+          <div className="rounded-md border border-dashed border-border px-3 py-5 text-center text-xs text-muted-foreground">
+            {emptyText}
+          </div>
+        ) : (
+          conversations.map((conv) => {
+            const isActive = currentConvId === conv.id;
+            const isRunning = activeSessions.includes(conv.id);
+            const label = conv.workspace_path && conv.workspace_path !== "direct"
+              ? conv.workspace_path.split(/[\\/]/).pop()
+              : conv.active_agent;
+
+            return (
+              <div
+                key={conv.id}
+                className={cn(
+                  "group relative mb-1 cursor-pointer rounded-md px-3 py-2 pr-16 transition-colors",
+                  isActive ? "bg-primary/12 text-primary" : "text-foreground hover:bg-muted/20"
+                )}
+                onClick={() => onSelectConversation(conv.id)}
+              >
+                <div className="truncate text-sm font-medium">{conv.title}</div>
+                <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
+                  {isRunning && <span className="h-1.5 w-1.5 rounded-full bg-success animate-pulse-green" />}
+                  <span className="truncate">{label}</span>
+                </div>
+
+                <div className="absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+                  {onArchiveConversation && (
+                    <button
+                      type="button"
+                      title="归档"
+                      aria-label="归档"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onArchiveConversation(conv.id, e);
+                      }}
+                      className="rounded p-1 text-muted-foreground hover:bg-warning/10 hover:text-warning"
+                    >
+                      <Archive className="h-3 w-3" />
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    title="删除"
+                    aria-label="删除"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDelete(conv);
+                    }}
+                    className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </button>
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+    </section>
   );
 }

@@ -10,7 +10,7 @@
  * All business logic lives in hooks. All rendering lives in components.
  */
 
-import { useState, useEffect, Suspense, lazy } from "react";
+import { useState, useEffect, Suspense, lazy, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 // Global shortcuts registered on Rust side (lib.rs) for reliability
@@ -31,6 +31,7 @@ import { useTheme } from "@/hooks/useTheme";
 import { useSearch } from "@/hooks/useSearch";
 import { useMcpServers } from "@/hooks/useMcpServers";
 import { useBackup } from "@/hooks/useBackup";
+import { useNavigationLayout } from "@/hooks/useNavigationLayout";
 
 // Layout (eager — always visible)
 import { AppSidebar } from "@/components/layout/AppSidebar";
@@ -51,11 +52,14 @@ import { Toaster, toast } from "@/components/ui/sonner";
 
 // Types
 import type { SettingsSubTab } from "@/types";
+import { APP_ENTRIES } from "@/lib/appRegistry";
+import { projectProtocolApi } from "@/lib/tauri-api";
 
 // ── Lazy-loaded tabs (code-split per route) ──────────
 const StatusDock = lazy(() => import("./StatusDock"));
 const QuickAssistant = lazy(() => import("./QuickAssistant").then(m => ({ default: m.QuickAssistant })));
 const DashboardTab = lazy(() => import("@/components/tabs/DashboardTab").then(m => ({ default: m.DashboardTab })));
+const WorkbenchTab = lazy(() => import("@/components/tabs/WorkbenchTab").then(m => ({ default: m.WorkbenchTab })));
 const ChatTab = lazy(() => import("@/components/tabs/ChatTab").then(m => ({ default: m.ChatTab })));
 const AgentHubTab = lazy(() => import("@/components/tabs/AgentHubTab").then(m => ({ default: m.AgentHubTab })));
 const CompareTab = lazy(() => import("@/components/tabs/CompareTab").then(m => ({ default: m.CompareTab })));
@@ -63,7 +67,12 @@ const TeamTab = lazy(() => import("@/components/tabs/TeamTab").then(m => ({ defa
 const MemoryTab = lazy(() => import("@/components/tabs/MemoryTab").then(m => ({ default: m.MemoryTab })));
 const SkillTab = lazy(() => import("@/components/tabs/SkillTab").then(m => ({ default: m.SkillTab })));
 const KnowledgeTab = lazy(() => import("@/components/tabs/KnowledgeTab").then(m => ({ default: m.KnowledgeTab })));
+const LabsTab = lazy(() => import("@/components/tabs/LabsTab").then(m => ({ default: m.LabsTab })));
 const CronTab = lazy(() => import("@/components/tabs/CronTab").then(m => ({ default: m.CronTab })));
+const ModelsTab = lazy(() => import("@/components/tabs/ModelsTab").then(m => ({ default: m.ModelsTab })));
+const SearchResourceTab = lazy(() => import("@/components/tabs/SearchResourceTab").then(m => ({ default: m.SearchResourceTab })));
+const QuickAssistantTab = lazy(() => import("@/components/tabs/QuickAssistantTab").then(m => ({ default: m.QuickAssistantTab })));
+const AssistantsTab = lazy(() => import("@/components/tabs/AssistantsTab").then(m => ({ default: m.AssistantsTab })));
 const SettingsTab = lazy(() => import("@/components/tabs/SettingsTab").then(m => ({ default: m.SettingsTab })));
 const WelcomeTour = lazy(() => import("./WelcomeTour").then(m => ({ default: m.WelcomeTour })));
 
@@ -120,15 +129,16 @@ function MainApp() {
   const search = useSearch();
   const mcpServers = useMcpServers();
   const backup = useBackup();
+  const navigation = useNavigationLayout();
 
   // ── Apply theme ──────────────────────────────────────
   useTheme(settings.themeMode);
 
   // ── Top-level UI state ────────────────────────────
-  const [activeTab, setActiveTab] = useState("dashboard");
+  const [activeTab, setActiveTab] = useState("work");
   const [tipIndex, setTipIndex] = useState(0);
   const [showTour, setShowTour] = useState(false);
-  const [settingsSubTab, setSettingsSubTab] = useState<SettingsSubTab>("platform");
+  const [settingsSubTab, setSettingsSubTab] = useState<SettingsSubTab>("system");
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   const [showHistoryFullscreen, setShowHistoryFullscreen] = useState(false);
 
@@ -142,6 +152,7 @@ function MainApp() {
     accounts.loadAccounts();
     platforms.loadActiveModels();
     selection.loadSelectionSettings();
+    navigation.loadLayout();
     checkOnboarding();
     setTipIndex(Math.floor(Math.random() * 5));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps -- mount-only init: all load functions are stable ref-less fetchers
@@ -161,7 +172,7 @@ function MainApp() {
 
   useEffect(() => {
     const unlisten = listen("omnix-navigate-settings", () => {
-      setActiveTab("settings");
+      handleTabChange("settings");
     });
     return () => { unlisten.then((fn) => fn()); };
   }, []);
@@ -184,20 +195,37 @@ function MainApp() {
 
   // ── Tab change handler ────────────────────────────
 
+  const normalizeTab = (tab: string) => {
+    if (tab === "workbench" || tab === "chat") return "work";
+    if (tab === "memory") return "memories";
+    return tab;
+  };
+
   const handleTabChange = (tab: string) => {
-    setActiveTab(tab);
-    if (tab === "cron") {
+    const nextTab = normalizeTab(tab);
+    setActiveTab(nextTab);
+    if (nextTab === "cron") {
       cron.loadCronTasks();
       cron.loadCronRuns();
     }
-    if (tab === "settings") {
+    if (nextTab === "models") {
+      platforms.loadPlatforms();
+      platforms.loadActiveModels();
+    }
+    if (nextTab === "mcp") {
+      mcpServers.loadMcpServers();
+    }
+    if (nextTab === "search") {
+      search.loadProviders();
+    }
+    if (nextTab === "settings") {
       platforms.loadPlatforms();
       accounts.loadAccounts();
       search.loadProviders();
       mcpServers.loadMcpServers();
       backup.loadBackupInfo();
     }
-    if (tab === "team" && convs.currentConvId) {
+    if (nextTab === "team" && convs.currentConvId) {
       const logs = convs.terminalLogsRef.current[convs.currentConvId] || "";
       convs.setCollabLogs(logs);
     }
@@ -259,8 +287,12 @@ function MainApp() {
     }
   };
 
-  const handleSaveWorkspaceChat = async () => {
+  const handleSaveWorkspaceChat = async (options?: { enableProjectProtocol: boolean }) => {
     try {
+      if (options?.enableProjectProtocol) {
+        await projectProtocolApi.initWorkspace(convs.workspaceFormPath, undefined, true);
+        toast.success("项目协议已初始化");
+      }
       await convs.saveWorkspaceChat();
     } catch (e) {
       toast.error("新建项目会话失败：" + e);
@@ -269,13 +301,69 @@ function MainApp() {
 
   // ── Derived state ─────────────────────────────────
 
-  const showConversations = activeTab === "chat" || activeTab === "team";
+  const entriesById = useMemo(() => new Map(APP_ENTRIES.map((entry) => [entry.id, entry])), []);
+  const pinnedEntries = useMemo(
+    () => navigation.layout.pinned.map((id) => entriesById.get(id)).filter(Boolean) as typeof APP_ENTRIES,
+    [entriesById, navigation.layout.pinned]
+  );
+  const launcherEntries = useMemo(
+    () => navigation.layout.launcher.map((id) => entriesById.get(id)).filter(Boolean) as typeof APP_ENTRIES,
+    [entriesById, navigation.layout.launcher]
+  );
+  const hiddenEntries = useMemo(
+    () => navigation.layout.hidden.map((id) => entriesById.get(id)).filter(Boolean) as typeof APP_ENTRIES,
+    [entriesById, navigation.layout.hidden]
+  );
+
+  const showConversations = activeTab === "work" || activeTab === "team";
   const showPreviewButton = !!(convs.chatWorkspace && convs.chatWorkspace !== "direct");
 
   // ── Render ────────────────────────────────────────
 
   return (
-    <div className="flex w-screen h-screen overflow-hidden">
+    <div className="flex h-screen w-screen flex-col overflow-hidden">
+      <AppHeader
+        activeTab={activeTab}
+        activeAgent={convs.activeAgent}
+        chatWorkspace={convs.chatWorkspace}
+        gatewayStatus={settings.gatewayStatus}
+        pinnedEntries={pinnedEntries}
+        launcherEntries={launcherEntries}
+        hiddenEntries={hiddenEntries}
+        themeMode={settings.themeMode}
+        showPreviewButton={showPreviewButton}
+        isPreviewOpen={preview.showPreviewPane}
+        onNavigate={handleTabChange}
+        onMoveEntry={async (id, placement) => {
+          try {
+            await navigation.moveEntry(id, placement);
+          } catch (error) {
+            toast.error("保存导航布局失败：" + error);
+          }
+        }}
+        onReorderEntry={async (id, direction) => {
+          try {
+            await navigation.reorderEntry(id, direction);
+          } catch (error) {
+            toast.error("保存导航顺序失败：" + error);
+          }
+        }}
+        onResetNavigation={async () => {
+          await navigation.resetLayout();
+          toast.success("已恢复默认导航布局");
+        }}
+        onToggleTheme={() => {
+          const modes: ("dark" | "light" | "auto")[] = ["dark", "light", "auto"];
+          const current = modes.indexOf(settings.themeMode);
+          settings.setThemeMode(modes[(current + 1) % modes.length]);
+        }}
+        onTogglePreview={() => {
+          preview.setShowPreviewPane(!preview.showPreviewPane);
+          if (!preview.showPreviewPane) preview.loadPreviewFiles();
+        }}
+      />
+
+      <div className="flex min-h-0 flex-1 overflow-hidden">
       <AppSidebar
         activeTab={activeTab}
         onTabChange={handleTabChange}
@@ -292,21 +380,76 @@ function MainApp() {
         onOpenWorkspaceModal={() => convs.setIsWorkspaceModalOpen(true)}
       />
 
-      <main className="flex flex-col flex-1 bg-background relative">
+      <main className="relative flex min-w-0 flex-1 flex-col bg-background">
+        {false && (
         <AppHeader
           activeTab={activeTab}
           activeAgent={convs.activeAgent}
           chatWorkspace={convs.chatWorkspace}
+          gatewayStatus={settings.gatewayStatus}
+          pinnedEntries={pinnedEntries}
+          launcherEntries={launcherEntries}
+          hiddenEntries={hiddenEntries}
+          themeMode={settings.themeMode}
           showPreviewButton={showPreviewButton}
           isPreviewOpen={preview.showPreviewPane}
+          onNavigate={handleTabChange}
+          onMoveEntry={async (id, placement) => {
+            try {
+              await navigation.moveEntry(id, placement);
+            } catch (error) {
+              toast.error("保存导航布局失败：" + error);
+            }
+          }}
+          onReorderEntry={async (id, direction) => {
+            try {
+              await navigation.reorderEntry(id, direction);
+            } catch (error) {
+              toast.error("保存导航顺序失败：" + error);
+            }
+          }}
+          onResetNavigation={async () => {
+            await navigation.resetLayout();
+            toast.success("已恢复默认导航布局");
+          }}
+          onToggleTheme={() => {
+            const modes: ("dark" | "light" | "auto")[] = ["dark", "light", "auto"];
+            const current = modes.indexOf(settings.themeMode);
+            settings.setThemeMode(modes[(current + 1) % modes.length]);
+          }}
           onTogglePreview={() => {
             preview.setShowPreviewPane(!preview.showPreviewPane);
             if (!preview.showPreviewPane) preview.loadPreviewFiles();
           }}
         />
 
+        )}
+
         <div className="flex flex-1 min-w-0 overflow-hidden">
           <Suspense fallback={<LazyFallback />}>
+            {activeTab === "workbench" && (
+              <WorkbenchTab
+                activeAgent={convs.activeAgent}
+                detectedAgents={convs.detectedAgents}
+                messages={convs.messages}
+                chatInput={convs.chatInput}
+                chatWorkspace={convs.chatWorkspace}
+                currentConvId={convs.currentConvId}
+                activeSessions={convs.activeSessions}
+                promptType={convs.promptType}
+                targetModel={settings.targetModel}
+                activeModels={platforms.activeModels}
+                setActiveAgent={convs.setActiveAgent}
+                setChatInput={convs.setChatInput}
+                setChatWorkspace={convs.setChatWorkspace}
+                setTargetModel={settings.setTargetModel}
+                onSendMessage={convs.sendMessage}
+                onSendStdinDirect={convs.sendStdinDirect}
+                onStopSession={convs.stopAgentSession}
+                onNavigate={handleTabChange}
+              />
+            )}
+
             {activeTab === "dashboard" && (
               <DashboardTab
                 activeSessionsCount={convs.activeSessions.length}
@@ -322,7 +465,7 @@ function MainApp() {
               />
             )}
 
-            {activeTab === "chat" && (
+            {activeTab === "work" && (
               <ChatTab
                 activeAgent={convs.activeAgent}
                 detectedAgents={convs.detectedAgents}
@@ -341,6 +484,11 @@ function MainApp() {
                 onSendMessage={convs.sendMessage}
                 onSendStdinDirect={convs.sendStdinDirect}
                 onStopSession={convs.stopAgentSession}
+                onSuggestTeam={(prompt) => {
+                  if (prompt.trim()) convs.setCollabStdin(prompt);
+                  handleTabChange("team");
+                  toast.message("已切到团队入口，队长计划仍需你确认后才会启动 Worker。");
+                }}
               />
             )}
 
@@ -355,6 +503,10 @@ function MainApp() {
                 onEditAccount={(acc) => accounts.openAccountModal(acc)}
                 onDeleteAccount={accounts.deleteAccount}
                 onSwitchAccount={handleSwitchAccount}
+                onStartWork={(name) => {
+                  convs.setActiveAgent(name);
+                  handleTabChange("work");
+                }}
               />
             )}
 
@@ -362,6 +514,203 @@ function MainApp() {
             {activeTab === "memories" && <MemoryTab />}
             {activeTab === "skills" && <SkillTab />}
             {activeTab === "knowledge" && <KnowledgeTab />}
+            {activeTab === "labs" && <LabsTab onNavigate={handleTabChange} />}
+            {activeTab === "code-analysis" && <LabsTab onNavigate={handleTabChange} />}
+            {activeTab === "models" && (
+              <ModelsTab
+                platforms={platforms.platforms}
+                selectedPlatformId={platforms.selectedPlatformId}
+                platformModels={platforms.platformModels}
+                modelTestingState={platforms.modelTestingState}
+                fetchingModels={platforms.fetchingModels}
+                onSelectPlatform={platforms.selectPlatform}
+                onTogglePlatform={platforms.togglePlatform}
+                onAddPlatform={() => platforms.openPlatformModal()}
+                onEditPlatform={(p) => platforms.openPlatformModal(p)}
+                onDeletePlatform={platforms.deletePlatform}
+                onFetchRemoteModels={platforms.fetchRemoteModels}
+                onAddModel={platforms.openModelModal}
+                onToggleModelEnabled={platforms.toggleModelEnabled}
+                onTestModel={platforms.testModel}
+                onDeleteModel={platforms.deleteModel}
+                batchTesting={platforms.batchTesting}
+                onBatchTestModels={platforms.batchTestModels}
+              />
+            )}
+            {activeTab === "search" && (
+              <SearchResourceTab
+                providers={search.providers}
+                selectedProviderId={search.selectedProviderId}
+                results={search.results}
+                query={search.searchQuery}
+                isSearching={search.isSearching}
+                onSetQuery={search.setSearchQuery}
+                onSetSelectedProviderId={search.setSelectedProviderId}
+                onSearch={search.search}
+                onAddProvider={() => search.openSearchProviderModal()}
+                onEditProvider={(provider) => search.openSearchProviderModal(provider)}
+                onDeleteProvider={search.deleteProvider}
+              />
+            )}
+            {activeTab === "quick-assistant" && (
+              <QuickAssistantTab
+                captureMode={selection.captureMode}
+                showOnCapture={selection.showOnCapture}
+                preserveClipboard={selection.preserveClipboard}
+                isCapturing={selection.isCapturing}
+                lastCapture={selection.lastCapture}
+                captureError={selection.captureError}
+                history={selection.selectionHistory}
+                preferredLang={translation.preferredLang}
+                alterLang={translation.alterLang}
+                translateModel={translation.translateModel}
+                customPrompt={translation.customPrompt}
+                autoDetect={translation.autoDetect}
+                availableModels={platforms.activeModels.map((model) => model.model_name)}
+                onSetCaptureMode={(v) => selection.saveSelectionSettings({ captureMode: v as "hybrid" | "uia_only" | "clipboard_only" })}
+                onSetShowOnCapture={(v) => selection.saveSelectionSettings({ showOnCapture: v })}
+                onSetPreserveClipboard={(v) => selection.saveSelectionSettings({ preserveClipboard: v })}
+                onTestCapture={selection.captureTextOnly}
+                onLoadHistory={selection.loadHistory}
+                onClearHistory={selection.clearHistory}
+                onSetPreferredLang={(v) => translation.saveTranslationSettings({ preferredLang: v })}
+                onSetAlterLang={(v) => translation.saveTranslationSettings({ alterLang: v })}
+                onSetTranslateModel={(v) => translation.saveTranslationSettings({ translateModel: v })}
+                onSetCustomPrompt={(v) => translation.saveTranslationSettings({ customPrompt: v })}
+                onSetAutoDetect={(v) => translation.saveTranslationSettings({ autoDetect: v })}
+              />
+            )}
+            {activeTab === "assistants" && (
+              <AssistantsTab
+                onUseTemplate={(template) => {
+                  convs.setChatInput(template.instructions);
+                  handleTabChange("work");
+                  toast.success(`已带入助手：${template.name}`);
+                }}
+              />
+            )}
+            {activeTab === "mcp" && (
+              <SettingsTab
+                settingsSubTab="mcp"
+                setSettingsSubTab={setSettingsSubTab}
+                platforms={platforms.platforms}
+                selectedPlatformId={platforms.selectedPlatformId}
+                platformModels={platforms.platformModels}
+                modelTestingState={platforms.modelTestingState}
+                fetchingModels={platforms.fetchingModels}
+                onSelectPlatform={platforms.selectPlatform}
+                onTogglePlatform={platforms.togglePlatform}
+                onAddPlatform={() => platforms.openPlatformModal()}
+                onEditPlatform={(p) => platforms.openPlatformModal(p)}
+                onDeletePlatform={platforms.deletePlatform}
+                onFetchRemoteModels={platforms.fetchRemoteModels}
+                onAddModel={platforms.openModelModal}
+                onToggleModelEnabled={platforms.toggleModelEnabled}
+                onTestModel={platforms.testModel}
+                onDeleteModel={platforms.deleteModel}
+                batchTesting={platforms.batchTesting}
+                onBatchTestModels={platforms.batchTestModels}
+                accounts={accounts.accounts}
+                onAddAccount={() => accounts.openAccountModal()}
+                onEditAccount={(acc) => accounts.openAccountModal(acc)}
+                onDeleteAccount={accounts.deleteAccount}
+                onSwitchAccount={handleSwitchAccount}
+                targetModel={settings.targetModel}
+                gpuAcceleration={settings.gpuAcceleration}
+                idleTimeout={settings.idleTimeout}
+                autoStart={settings.autoStart}
+                startToTray={settings.startToTray}
+                useWsl={settings.useWsl}
+                wslDistro={settings.wslDistro}
+                setTargetModel={settings.setTargetModel}
+                setGpuAcceleration={settings.setGpuAcceleration}
+                setIdleTimeout={settings.setIdleTimeout}
+                setAutoStart={settings.setAutoStart}
+                setStartToTray={settings.setStartToTray}
+                setUseWsl={settings.setUseWsl}
+                setWslDistro={settings.setWslDistro}
+                onSaveSettings={handleSaveSettings}
+                selectionCaptureMode={selection.captureMode}
+                selectionShowOnCapture={selection.showOnCapture}
+                selectionPreserveClipboard={selection.preserveClipboard}
+                isSelectionCapturing={selection.isCapturing}
+                lastSelectionCapture={selection.lastCapture}
+                selectionCaptureError={selection.captureError}
+                selectionHistory={selection.selectionHistory}
+                onSetSelectionCaptureMode={(v) => selection.saveSelectionSettings({ captureMode: v as "hybrid" | "uia_only" | "clipboard_only" })}
+                onSetSelectionShowOnCapture={(v) => selection.saveSelectionSettings({ showOnCapture: v })}
+                onSetSelectionPreserveClipboard={(v) => selection.saveSelectionSettings({ preserveClipboard: v })}
+                onTestSelectionCapture={selection.captureTextOnly}
+                onSaveSelectionSettings={async (updates) => {
+                  await selection.saveSelectionSettings(updates as Parameters<typeof selection.saveSelectionSettings>[0]);
+                }}
+                onLoadSelectionHistory={selection.loadHistory}
+                onDeleteSelectionHistoryItem={selection.deleteHistoryItem}
+                onClearSelectionHistory={selection.clearHistory}
+                translatePreferredLang={translation.preferredLang}
+                translateAlterLang={translation.alterLang}
+                translateModel={translation.translateModel}
+                translateAutoDetect={translation.autoDetect}
+                translateCustomPrompt={translation.customPrompt}
+                onSetTranslatePreferredLang={(v) => translation.saveTranslationSettings({ preferredLang: v })}
+                onSetTranslateAlterLang={(v) => translation.saveTranslationSettings({ alterLang: v })}
+                onSetTranslateModel={(v) => translation.saveTranslationSettings({ translateModel: v })}
+                onSetTranslateAutoDetect={(v) => translation.saveTranslationSettings({ autoDetect: v })}
+                onSetTranslateCustomPrompt={(v) => translation.saveTranslationSettings({ customPrompt: v })}
+                onSaveTranslationSettings={async (updates) => {
+                  await translation.saveTranslationSettings(updates as Parameters<typeof translation.saveTranslationSettings>[0]);
+                }}
+                themeMode={settings.themeMode}
+                onSetThemeMode={settings.setThemeMode}
+                searchProviders={search.providers}
+                searchSelectedProviderId={search.selectedProviderId}
+                searchResults={search.results}
+                searchQuery={search.searchQuery}
+                isSearching={search.isSearching}
+                onSetSearchQuery={search.setSearchQuery}
+                onSetSearchSelectedProviderId={search.setSelectedProviderId}
+                onSearch={search.search}
+                onAddSearchProvider={() => search.openSearchProviderModal()}
+                onEditSearchProvider={(provider) => search.openSearchProviderModal(provider)}
+                onDeleteSearchProvider={search.deleteProvider}
+                showSearchProviderModal={search.showSearchProviderModal}
+                editingSearchProvider={search.editingSearchProvider}
+                searchProviderForm={search.searchProviderForm}
+                onCloseSearchProviderModal={search.closeSearchProviderModal}
+                onUpdateSearchProviderForm={search.updateSearchProviderForm}
+                onSaveSearchProvider={async () => {
+                  await search.saveProvider({
+                    id: search.searchProviderForm.id,
+                    name: search.searchProviderForm.name,
+                    api_type: search.searchProviderForm.api_type,
+                    api_key: search.searchProviderForm.api_key,
+                    api_address: search.searchProviderForm.api_address,
+                    is_enabled: search.searchProviderForm.is_enabled,
+                  });
+                  search.closeSearchProviderModal();
+                }}
+                mcpServers={mcpServers.mcpServers}
+                showMcpModal={mcpServers.showMcpModal}
+                editingMcpServer={mcpServers.editingMcpServer}
+                mcpForm={mcpServers.mcpForm}
+                onOpenMcpModal={mcpServers.openMcpModal}
+                onCloseMcpModal={mcpServers.closeMcpModal}
+                onUpdateMcpForm={mcpServers.updateMcpForm}
+                onSaveMcpServer={mcpServers.saveMcpServer}
+                onDeleteMcpServer={mcpServers.deleteMcpServer}
+                backupTableInfo={backup.tableInfo}
+                backupSelectedTables={backup.selectedTables}
+                isBackupExporting={backup.isExporting}
+                isBackupImporting={backup.isImporting}
+                lastImportResult={backup.lastImportResult}
+                onLoadBackupInfo={backup.loadBackupInfo}
+                onToggleBackupTable={backup.toggleTableSelection}
+                onSelectAllBackupTables={backup.selectAllTables}
+                onDeselectAllBackupTables={backup.deselectAllTables}
+                onExportBackup={backup.exportBackup}
+                onImportBackup={backup.importBackup}
+              />
+            )}
 
             {activeTab === "team" && (
               <TeamTab
@@ -538,6 +887,7 @@ function MainApp() {
           onClose={() => preview.setShowPreviewPane(false)}
         />
       )}
+      </div>
 
       {/* Welcome Tour */}
       {showTour && (
@@ -613,7 +963,7 @@ function MainApp() {
       <CommandPalette
         open={showCommandPalette}
         onClose={() => setShowCommandPalette(false)}
-        onNavigate={(tab) => setActiveTab(tab)}
+        onNavigate={handleTabChange}
         onToggleTheme={() => {
           const modes: ("dark" | "light" | "auto")[] = ["dark", "light", "auto"];
           const current = modes.indexOf(settings.themeMode);

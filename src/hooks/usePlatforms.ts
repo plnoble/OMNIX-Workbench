@@ -298,11 +298,15 @@ export function usePlatforms(): UsePlatformsReturn {
       throw new Error("请输入模型名称");
     }
 
-    const id = `${selectedPlatformId}:${modelForm.model_name.trim()}`;
+    const modelName = modelForm.model_name.trim();
+    if (!selectedPlatformId) {
+      throw new Error("请先选择一个供应商，再添加自定义模型。");
+    }
+    const id = `${selectedPlatformId}::${encodeURIComponent(modelName)}`;
     const newModel: PlatformModel = {
       id,
       platform_id: selectedPlatformId,
-      model_name: modelForm.model_name.trim(),
+      model_name: modelName,
       has_vision: modelForm.has_vision,
       has_audio: modelForm.has_audio,
       has_reasoning: modelForm.has_reasoning,

@@ -10,7 +10,7 @@ export interface DetectedAgent {
   name: string;
   path: string;
   version: string;
-  status: "installed" | "not_found";
+  status: "installed" | "not_installed" | "not_found" | "broken";
 }
 
 /** An agent account with API credentials for model routing */
@@ -41,6 +41,159 @@ export interface ConversationMessage {
   role: "user" | "assistant" | "system";
   content: string;
   timestamp: string;
+}
+
+/** A top-level project run in the OMNIX Workbench */
+export interface WorkspaceRun {
+  id: string;
+  title: string;
+  workspace_path: string;
+  manager_agent: string;
+  status: string;
+  summary: string;
+  is_archived: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+/** A worker execution record attached to a Workbench run */
+export interface AgentRun {
+  id: string;
+  run_id: string;
+  agent_name: string;
+  task_title: string;
+  status: string;
+  session_id: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  log_excerpt: string;
+}
+
+/** Draft assignment sent to the manager plan command */
+export interface TeamAssignmentInput {
+  agent_name: string;
+  task_title: string;
+}
+
+/** A planned task owned by a worker agent */
+export interface TeamAssignment {
+  id: string;
+  agent_name: string;
+  task_title: string;
+  status: string;
+}
+
+/** Semi-automatic manager plan that must be approved before workers start */
+export interface TeamPlan {
+  run_id: string;
+  goal: string;
+  assignments: TeamAssignment[];
+  status: string;
+  created_at: string;
+  approved_at: string | null;
+}
+
+/** Visible experimental surface tracked outside the core workflow */
+export interface LabFeature {
+  id: string;
+  title: string;
+  layer: string;
+  status: string;
+  risk: string;
+  description: string;
+  is_visible: boolean;
+}
+
+/** Canonical skill package metadata for package/sync workflows */
+export interface SkillPackage {
+  id: string;
+  name: string;
+  source_type: "local" | "git" | "imported";
+  source_ref: string;
+  version: string;
+  status: string;
+  updated_at: string;
+}
+
+/** Sync target for a skill package and an external agent CLI */
+export interface SkillSyncTarget {
+  id: string;
+  skill_id: string;
+  tool: string;
+  target_path: string;
+  mode: "copy" | "symlink";
+  status: string;
+  synced_at: string | null;
+}
+
+/** Binding from a run/team/agent to shared resource-layer services */
+export interface ResourceBinding {
+  id: string;
+  owner_type: "run" | "agent" | "team" | "skill";
+  owner_id: string;
+  resource_type: "model" | "knowledge" | "memory" | "mcp" | "search";
+  resource_id: string;
+  status: string;
+}
+
+/** Where a product surface is shown in the configurable app shell */
+export type NavigationPlacement = "pinned" | "launcher" | "hidden";
+
+/** User-customizable navigation layout persisted in settings */
+export interface NavigationLayout {
+  pinned: string[];
+  launcher: string[];
+  hidden: string[];
+}
+
+/** A navigable product surface in OMNIX */
+export interface AppEntry {
+  id: string;
+  label: string;
+  title: string;
+  description: string;
+  group: "core" | "resource" | "assistant" | "labs" | "system";
+  placement: NavigationPlacement;
+  is_core?: boolean;
+  is_experimental?: boolean;
+  is_incomplete?: boolean;
+}
+
+/** Permission behavior for agent execution */
+export type PermissionPolicy = "ask_every_time" | "ask_on_risk" | "full_access";
+
+/** Work behavior independent from permission policy */
+export type WorkMode = "chat" | "plan_first" | "goal";
+
+/** Local CLI agent runtime capability and model binding summary */
+export interface AgentRuntimeProfile {
+  id: string;
+  name: string;
+  icon: string;
+  status: "installed" | "missing" | "unknown";
+  version: string;
+  executable_path: string;
+  default_model: string;
+  built_in_models: string[];
+  supports_install: boolean;
+  supports_update: boolean;
+}
+
+/** Named knowledge base containing documents */
+export interface KnowledgeBase {
+  id: string;
+  name: string;
+  description: string;
+  document_count: number;
+  embedding_status: "pending" | "in_progress" | "completed" | "failed";
+  updated_at: string;
+}
+
+/** Manual knowledge binding for ordinary single-agent chat */
+export interface ChatKnowledgeBinding {
+  conversation_id: string | null;
+  knowledge_base_ids: string[];
+  enabled: boolean;
 }
 
 /** Supported LLM provider API protocol types */

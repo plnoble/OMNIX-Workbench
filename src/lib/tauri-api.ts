@@ -41,6 +41,11 @@ import type {
   ActivityLogEntry,
   HealthCheckDetail,
   PlatformApiKey,
+  WorkspaceRun,
+  AgentRun,
+  TeamAssignmentInput,
+  TeamPlan,
+  LabFeature,
 } from "@/types";
 
 // ── Settings ──────────────────────────────────────────
@@ -49,6 +54,10 @@ export const settingsApi = {
   get: (key: string) => invoke<string | null>("get_app_setting", { key }),
   set: (key: string, value: string) => invoke("set_app_setting", { key, value }),
   syncExternalConfigs: () => invoke("sync_external_agent_configs"),
+};
+
+export const shellApi = {
+  pickDirectory: () => invoke<string | null>("pick_directory"),
 };
 
 // ── Model Platforms ───────────────────────────────────
@@ -122,6 +131,33 @@ export const ptyApi = {
 
 export const agentApi = {
   detectInstalled: () => invoke<DetectedAgent[]>("detect_installed_agents"),
+  install: (agentName: string) => invoke("install_agent_cli", { agentName }),
+  update: (agentName: string) => invoke("repair_installed_agent", { agentName }),
+};
+
+// Workbench Runs
+
+export const workbenchApi = {
+  createRun: (title: string, workspacePath: string, managerAgent: string) =>
+    invoke<WorkspaceRun>("create_workspace_run", { title, workspacePath, managerAgent }),
+  listRuns: (includeArchived?: boolean) =>
+    invoke<WorkspaceRun[]>("list_workspace_runs", { includeArchived }),
+  getRun: (runId: string) =>
+    invoke<WorkspaceRun>("get_workspace_run", { runId }),
+  proposePlan: (runId: string, goal: string, assignments: TeamAssignmentInput[]) =>
+    invoke<TeamPlan>("propose_team_plan", { runId, goal, assignments }),
+  getPlan: (runId: string) =>
+    invoke<TeamPlan>("get_team_plan", { runId }),
+  approvePlan: (runId: string) =>
+    invoke<TeamPlan>("approve_team_plan", { runId }),
+  startAgentRun: (runId: string, agentName: string, taskTitle: string, status?: string) =>
+    invoke<AgentRun>("start_agent_run", { runId, agentName, taskTitle, status }),
+  listAgentRuns: (runId: string) =>
+    invoke<AgentRun[]>("list_agent_runs", { runId }),
+};
+
+export const labsApi = {
+  listFeatures: () => invoke<LabFeature[]>("list_lab_features"),
 };
 
 // ── Cron Tasks ────────────────────────────────────────
@@ -964,6 +1000,73 @@ export const skillLibraryApi = {
     invoke<DistillRecommendation[]>("distill_from_project", { projectPath }),
 };
 
+export interface ProtocolFilePreview {
+  path: string; label: string; exists: boolean; action: string; description: string;
+}
+export interface ProtocolInitPreview {
+  workspace_path: string; project_name: string; files: ProtocolFilePreview[];
+  will_create_count: number; will_skip_count: number;
+}
+export interface ProjectProtocolStatus {
+  workspace_path: string; project_name: string; enabled: boolean; initialized: boolean;
+  run_id: string | null; last_event_at: string | null; pending_actions: number; pending_proposals: number;
+}
+export interface ProjectProtocolEvent {
+  id: string; workspace_path: string; event_type: string; summary: string;
+  details_json: string; created_at: string;
+}
+export interface ProtocolActionDraft {
+  id: string; workspace_path: string; action_type: string; title: string;
+  content: string; diff_json: string; status: string; created_at: string; applied_at: string | null;
+}
+export interface DistillationRun {
+  id: string; workspace_path: string; source_summary: string;
+  memory_count: number; proposal_count: number; status: string; created_at: string;
+}
+export interface EvolutionProposal {
+  id: string; workspace_path: string; proposal_type: string; title: string;
+  rationale: string; diff_json: string; status: string; created_at: string; applied_at: string | null;
+}
+export const projectProtocolApi = {
+  getStatus: (workspacePath: string) =>
+    invoke<ProjectProtocolStatus>("protocol_get_status", { workspacePath }),
+  previewInit: (workspacePath: string, projectName?: string) =>
+    invoke<ProtocolInitPreview>("protocol_preview_init", { workspacePath, projectName }),
+  initWorkspace: (workspacePath: string, projectName: string | undefined, enable: boolean) =>
+    invoke<ProjectProtocolStatus>("protocol_init_workspace", { workspacePath, projectName, enable }),
+  recordEvent: (workspacePath: string, eventType: string, summary: string, detailsJson?: string) =>
+    invoke<ProjectProtocolEvent>("protocol_record_event", { workspacePath, eventType, summary, detailsJson }),
+  archiveAndDistill: (workspacePath: string, summary?: string) =>
+    invoke<DistillationRun>("protocol_archive_and_distill", { workspacePath, summary }),
+  listActions: (workspacePath: string, status?: string) =>
+    invoke<ProtocolActionDraft[]>("protocol_list_actions", { workspacePath, status }),
+  applyAction: (actionId: string, approved: boolean) =>
+    invoke<ProtocolActionDraft>("protocol_apply_action", { actionId, approved }),
+  listEvolutionProposals: (workspacePath: string, status?: string) =>
+    invoke<EvolutionProposal[]>("protocol_list_evolution_proposals", { workspacePath, status }),
+  applyEvolutionProposal: (proposalId: string, approved: boolean) =>
+    invoke<EvolutionProposal>("protocol_apply_evolution_proposal", { proposalId, approved }),
+};
+
+export interface SkillSetItem {
+  id: string; skill_set_id: string; skill_id: string; order_num: number; created_at: string;
+}
+export interface SkillSet {
+  id: string; name: string; description: string; sync_targets: string[];
+  items: SkillSetItem[]; created_at: string; updated_at: string;
+}
+export const skillSetApi = {
+  create: (name: string, description: string, skillIds: string[], syncTargets: string[]) =>
+    invoke<SkillSet>("create_skill_set", { name, description, skillIds, syncTargets }),
+  list: () => invoke<SkillSet[]>("list_skill_sets"),
+  update: (skillSetId: string, name: string, description: string, skillIds: string[], syncTargets: string[]) =>
+    invoke<SkillSet>("update_skill_set", { skillSetId, name, description, skillIds, syncTargets }),
+  delete: (skillSetId: string) =>
+    invoke("delete_skill_set", { skillSetId }),
+  syncToTools: (skillSetId: string, toolIds: string[], mode = "copy", strategy = "overwrite") =>
+    invoke("sync_skill_set_to_tools", { skillSetId, toolIds, mode, strategy }),
+};
+
 // DeepSeek-GUI Inspired APIs
 export interface FileChange {
   file_path: string; change_type: string;
@@ -986,12 +1089,27 @@ export const tokenEconomyApi = {
 // Agent-Platform Bindings (CC Switch inspired)
 export interface AgentPlatformBinding {
   agent_name: string; platform_id: string; platform_name: string;
-  model_name: string | null; enabled: boolean;
+  model_name: string | null; binding_kind: "default" | "builtin" | "omnix";
+  builtin_model: string | null; enabled: boolean;
 }
 export const agentBindingApi = {
   getAll: () => invoke<AgentPlatformBinding[]>("get_agent_bindings"),
-  set: (agentName: string, platformId: string, modelName?: string) =>
-    invoke("set_agent_binding", { agentName, platformId, modelName }),
+  set: (
+    agentName: string,
+    platformId: string,
+    modelName?: string,
+    bindingKind: "builtin" | "omnix" = "omnix",
+    builtinModel?: string,
+  ) =>
+    invoke("set_agent_binding", { agentName, platformId, modelName, bindingKind, builtinModel }),
+  setBuiltin: (agentName: string, builtinModel: string) =>
+    invoke("set_agent_binding", {
+      agentName,
+      platformId: "__agent_builtin__",
+      modelName: null,
+      bindingKind: "builtin",
+      builtinModel,
+    }),
   remove: (agentName: string) =>
     invoke("remove_agent_binding", { agentName }),
   toggle: (agentName: string) =>
