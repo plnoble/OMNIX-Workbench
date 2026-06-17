@@ -24,6 +24,9 @@ mod deepseek;
 mod templates;
 mod lifecycle;
 mod qa;
+mod workbench;
+mod project_protocol;
+mod skill_sets;
 
 // ── Shared Structs / Enums used across multiple submodules ──
 
@@ -365,6 +368,8 @@ pub struct AgentPlatformBinding {
     pub platform_id: String,
     pub platform_name: String,
     pub model_name: Option<String>,
+    pub binding_kind: String,
+    pub builtin_model: Option<String>,
     pub enabled: bool,
 }
 
@@ -593,3 +598,6 @@ pub use deepseek::*;
 pub use templates::*;
 pub use lifecycle::*;
 pub use qa::*;
+pub use workbench::*;
+pub use project_protocol::*;
+pub use skill_sets::*;

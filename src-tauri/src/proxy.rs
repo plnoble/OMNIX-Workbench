@@ -1330,7 +1330,9 @@ fn resolve_model_upstream_for_agent(
             "SELECT apb.platform_id, COALESCE(apb.model_name, mp.name), mp.api_key, mp.api_address, mp.api_type
              FROM agent_platform_bindings apb
              JOIN model_platforms mp ON apb.platform_id = mp.id
-             WHERE apb.agent_name = ?1 AND apb.enabled = 1 AND mp.is_enabled = 1 AND mp.is_healthy = 1",
+             WHERE apb.agent_name = ?1 AND apb.enabled = 1
+               AND COALESCE(apb.binding_kind, 'omnix') = 'omnix'
+               AND mp.is_enabled = 1 AND mp.is_healthy = 1",
             params![agent],
             |r| Ok((
                 r.get::<_, String>(0)?,  // platform_id

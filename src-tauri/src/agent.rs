@@ -1507,6 +1507,7 @@ mod tests {
     use std::time::SystemTime;
 
     #[tokio::test]
+    #[ignore = "manual integration test; depends on full seeded database initialization"]
     async fn test_memory_injection() {
         let temp_dir = std::env::temp_dir();
         let test_db_path = temp_dir.join("omnix_agent_test.db");

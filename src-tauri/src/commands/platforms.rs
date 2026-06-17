@@ -395,7 +395,16 @@ pub fn get_active_models(
     db: State<'_, Arc<DbManager>>,
 ) -> Result<Vec<PlatformModel>, String> {
     let conn = db.get_connection().map_err(|e| e.to_string())?;
-    let sql = format!("SELECT pm.{} FROM platform_models pm JOIN model_platforms mp ON pm.platform_id = mp.id WHERE pm.is_enabled = 1 AND mp.is_enabled = 1", PM_COLUMNS.replace("id, platform_id, model_name, ", "pm.id, pm.platform_id, pm.model_name, pm."));
+    let sql = "\
+        SELECT \
+            pm.id, pm.platform_id, pm.model_name, \
+            pm.has_vision, pm.has_audio, pm.has_reasoning, pm.has_coding, \
+            pm.has_long_context, pm.has_tool_use, pm.has_embedding, pm.has_speedy, \
+            pm.is_enabled, pm.status \
+        FROM platform_models pm \
+        JOIN model_platforms mp ON pm.platform_id = mp.id \
+        WHERE pm.is_enabled = 1 AND mp.is_enabled = 1 \
+        ORDER BY mp.name, pm.model_name";
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], |row| row_to_platform_model(row)).map_err(|e| e.to_string())?;
 
@@ -432,6 +441,29 @@ fn join_url(base: &str, path: &str) -> String {
     let base_trimmed = base.trim_end_matches('/');
     let path_trimmed = path.trim_start_matches('/');
     format!("{}/{}", base_trimmed, path_trimmed)
+}
+
+fn is_volcano_address(api_address: &str) -> bool {
+    let lower = api_address.to_ascii_lowercase();
+    lower.contains("volces.com")
+        || lower.contains("volcengine")
+        || lower.contains("ark.cn-")
+        || lower.contains("ark.")
+}
+
+fn volcano_default_model_names() -> &'static [&'static str] {
+    &[
+        "doubao-seed-1.6",
+        "doubao-seed-1.6-thinking",
+        "doubao-1.5-pro-32k",
+        "doubao-1.5-pro-256k",
+        "doubao-1.5-lite-32k",
+        "doubao-pro-32k",
+        "doubao-pro-128k",
+        "doubao-lite-32k",
+        "doubao-lite-128k",
+        "doubao-embedding",
+    ]
 }
 
 /// Capability inference result — 8 bool flags + source indicator
@@ -644,6 +676,7 @@ pub async fn fetch_remote_models(
             ))
         }).map_err(|e| e.to_string())?
     };
+    let api_key = crate::crypto::decrypt(&api_key);
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(8))
@@ -653,6 +686,11 @@ pub async fn fetch_remote_models(
     let mut model_names = Vec::new();
 
     // ── Strategy: fetch models based on api_type ────────────
+    if is_volcano_address(&api_address) {
+        for name in volcano_default_model_names() {
+            model_names.push((*name).to_string());
+        }
+    } else {
     match api_type.as_str() {
         "ollama" => {
             let url = join_url(&api_address, "/api/tags");
@@ -838,12 +876,18 @@ pub async fn fetch_remote_models(
             }
         }
     }
+    }
 
     let conn = db.get_connection().map_err(|e| e.to_string())?;
     let mut imported_models = Vec::new();
 
+    if !model_names.is_empty() {
+        conn.execute("DELETE FROM platform_models WHERE platform_id = ?1", params![&platform_id])
+            .map_err(|e| e.to_string())?;
+    }
+
     for name in model_names {
-        let id = format!("{}:{}", platform_id, name);
+        let id = format!("{}::{}", platform_id, name);
         let caps = infer_capabilities(&name);
 
         let pm = PlatformModel {
@@ -959,6 +1003,7 @@ pub async fn check_model_status(
             ))
         }).map_err(|e| e.to_string())?
     };
+    let api_key = crate::crypto::decrypt(&api_key);
 
     // No API Key → skip request, return no_api_key immediately
     if api_type != "ollama" && api_key.trim().is_empty() {
@@ -1066,6 +1111,7 @@ pub async fn batch_check_models(
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
         }).map_err(|e| e.to_string())?
     };
+    let api_key = crate::crypto::decrypt(&api_key);
 
     // No API Key → mark all models as no_api_key without making requests
     if api_type != "ollama" && api_key.trim().is_empty() {

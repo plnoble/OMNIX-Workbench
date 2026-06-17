@@ -15,6 +15,8 @@ pub struct AgentPlatformBinding {
     pub platform_id: String,
     pub platform_name: String,
     pub model_name: Option<String>,
+    pub binding_kind: String,
+    pub builtin_model: Option<String>,
     pub enabled: bool,
 }
 
@@ -23,7 +25,8 @@ pub struct AgentPlatformBinding {
 pub fn get_agent_bindings(db: State<'_, Arc<DbManager>>) -> Result<Vec<AgentPlatformBinding>, String> {
     let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
     let mut stmt = conn.prepare(
-        "SELECT apb.agent_name, apb.platform_id, mp.name, apb.model_name, apb.enabled
+        "SELECT apb.agent_name, apb.platform_id, mp.name, apb.model_name,
+                COALESCE(apb.binding_kind, 'omnix'), apb.builtin_model, apb.enabled
          FROM agent_platform_bindings apb
          LEFT JOIN model_platforms mp ON apb.platform_id = mp.id
          ORDER BY apb.agent_name"
@@ -35,7 +38,9 @@ pub fn get_agent_bindings(db: State<'_, Arc<DbManager>>) -> Result<Vec<AgentPlat
             platform_id: row.get(1)?,
             platform_name: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
             model_name: row.get(3)?,
-            enabled: row.get::<_, i32>(4)? != 0,
+            binding_kind: row.get(4)?,
+            builtin_model: row.get(5)?,
+            enabled: row.get::<_, i32>(6)? != 0,
         })
     }).map_err(|e: rusqlite::Error| e.to_string())?;
 
@@ -48,13 +53,23 @@ pub fn set_agent_binding(
     agent_name: String,
     platform_id: String,
     model_name: Option<String>,
+    binding_kind: Option<String>,
+    builtin_model: Option<String>,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<(), String> {
     let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+    let kind = binding_kind.unwrap_or_else(|| "omnix".to_string());
     conn.execute(
-        "INSERT OR REPLACE INTO agent_platform_bindings (agent_name, platform_id, model_name, enabled, updated_at)
-         VALUES (?1, ?2, ?3, 1, datetime('now'))",
-        params![agent_name, platform_id, model_name],
+        "INSERT INTO agent_platform_bindings (agent_name, platform_id, model_name, binding_kind, builtin_model, enabled, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, 1, datetime('now'))
+         ON CONFLICT(agent_name) DO UPDATE SET
+            platform_id = excluded.platform_id,
+            model_name = excluded.model_name,
+            binding_kind = excluded.binding_kind,
+            builtin_model = excluded.builtin_model,
+            enabled = 1,
+            updated_at = datetime('now')",
+        params![agent_name, platform_id, model_name, kind, builtin_model],
     ).map_err(|e: rusqlite::Error| e.to_string())?;
     Ok(())
 }

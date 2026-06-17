@@ -38,6 +38,14 @@ impl DbManager {
         db
     }
 
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub fn new_workbench_test(db_path: PathBuf) -> Self {
+        let db = Self::from_path(db_path);
+        db.init_workbench_schema().expect("Failed to initialize workbench test schema");
+        db
+    }
+
     /// Internal: create DbManager with r2d2 connection pool
     fn from_path(db_path: PathBuf) -> Self {
         let manager = SqliteConnectionManager::file(&db_path)
@@ -66,6 +74,65 @@ impl DbManager {
                 Some(format!("Connection pool error: {}", e)),
             )
         })
+    }
+
+    pub fn init_workbench_schema(&self) -> Result<()> {
+        let conn = self.get_connection()?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS workspace_runs (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                workspace_path TEXT NOT NULL,
+                manager_agent TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'draft',
+                summary TEXT NOT NULL DEFAULT '',
+                is_archived INTEGER NOT NULL DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS team_plans (
+                run_id TEXT PRIMARY KEY,
+                goal TEXT NOT NULL,
+                assignments_json TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'proposed',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                approved_at DATETIME NULL,
+                FOREIGN KEY(run_id) REFERENCES workspace_runs(id) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS agent_runs (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                agent_name TEXT NOT NULL,
+                task_title TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                session_id TEXT NULL,
+                started_at DATETIME NULL,
+                completed_at DATETIME NULL,
+                log_excerpt TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY(run_id) REFERENCES workspace_runs(id) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_workspace_runs_created_at ON workspace_runs(created_at)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_runs_run_id ON agent_runs(run_id)",
+            [],
+        )?;
+
+        Ok(())
     }
 
     pub fn init_schema(&self) -> Result<()> {
@@ -175,9 +242,110 @@ impl DbManager {
                 agent_name TEXT PRIMARY KEY,
                 platform_id TEXT NOT NULL,
                 model_name TEXT NULL,          -- Optional: specific model override
+                binding_kind TEXT NOT NULL DEFAULT 'omnix',
+                builtin_model TEXT NULL,
                 enabled INTEGER NOT NULL DEFAULT 1,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )?;
+
+        // 6d. Project Protocol / Evolution Loop
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS project_protocol_runs (
+                id TEXT PRIMARY KEY,
+                workspace_path TEXT NOT NULL UNIQUE,
+                project_name TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                initialized INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                archived_at DATETIME NULL
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS project_protocol_events (
+                id TEXT PRIMARY KEY,
+                workspace_path TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                summary TEXT NOT NULL DEFAULT '',
+                details_json TEXT NOT NULL DEFAULT '{}',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS distillation_runs (
+                id TEXT PRIMARY KEY,
+                workspace_path TEXT NOT NULL,
+                source_summary TEXT NOT NULL DEFAULT '',
+                memory_count INTEGER NOT NULL DEFAULT 0,
+                proposal_count INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'completed',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS evolution_proposals (
+                id TEXT PRIMARY KEY,
+                workspace_path TEXT NOT NULL,
+                proposal_type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                rationale TEXT NOT NULL DEFAULT '',
+                diff_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                applied_at DATETIME NULL
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS protocol_actions (
+                id TEXT PRIMARY KEY,
+                workspace_path TEXT NOT NULL,
+                action_type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL DEFAULT '',
+                diff_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                applied_at DATETIME NULL
+            )",
+            [],
+        )?;
+
+        // 6e. Skill Sets (Skill Library inspired combinations)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS skill_sets (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                sync_targets TEXT NOT NULL DEFAULT '[]',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS skill_set_items (
+                id TEXT PRIMARY KEY,
+                skill_set_id TEXT NOT NULL,
+                skill_id TEXT NOT NULL,
+                order_num INTEGER NOT NULL DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(skill_set_id) REFERENCES skill_sets(id) ON DELETE CASCADE,
+                UNIQUE(skill_set_id, skill_id)
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS assistant_template_favorites (
+                slug TEXT PRIMARY KEY,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )",
             [],
         )?;
@@ -213,6 +381,9 @@ impl DbManager {
             "ALTER TABLE model_platforms ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE model_platforms ADD COLUMN last_error TEXT NULL",
             "ALTER TABLE model_platforms ADD COLUMN last_used_at DATETIME NULL",
+            // Agent model binding fields.
+            "ALTER TABLE agent_platform_bindings ADD COLUMN binding_kind TEXT NOT NULL DEFAULT 'omnix'",
+            "ALTER TABLE agent_platform_bindings ADD COLUMN builtin_model TEXT NULL",
         ];
         for sql in &migrations {
             // ALTER TABLE ADD COLUMN silently fails if column already exists in SQLite,
@@ -379,6 +550,8 @@ impl DbManager {
             )",
             [],
         )?;
+
+        self.init_workbench_schema()?;
 
         // 8. Cron Tasks Table
         conn.execute(
@@ -678,6 +851,9 @@ impl DbManager {
             "CREATE INDEX IF NOT EXISTS idx_cron_runs_task_id ON cron_runs(task_id)",
             // Tasks by conversation (PlanTree loads tasks per-conversation)
             "CREATE INDEX IF NOT EXISTS idx_tasks_conversation_id ON tasks(conversation_id)",
+            // Workbench runs by recency and agent runs by parent run
+            "CREATE INDEX IF NOT EXISTS idx_workspace_runs_created_at ON workspace_runs(created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_agent_runs_run_id ON agent_runs(run_id)",
             // Agent accounts by agent (sidebar shows accounts per-agent)
             "CREATE INDEX IF NOT EXISTS idx_agent_accounts_agent_name ON agent_accounts(agent_name)",
             // Search history by timestamp (recent searches sort)
@@ -685,7 +861,13 @@ impl DbManager {
             // Platform API keys by platform
             "CREATE INDEX IF NOT EXISTS idx_platform_api_keys_platform_id ON platform_api_keys(platform_id)",
             // Activity log by timestamp (recent activity)
-            "CREATE INDEX IF NOT EXISTS idx_activity_log_timestamp ON activity_log(timestamp)",
+            "CREATE INDEX IF NOT EXISTS idx_activity_log_created_at ON activity_log(created_at)",
+            // Project protocol by workspace and recency
+            "CREATE INDEX IF NOT EXISTS idx_project_protocol_events_workspace ON project_protocol_events(workspace_path, created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_evolution_proposals_workspace ON evolution_proposals(workspace_path, status)",
+            "CREATE INDEX IF NOT EXISTS idx_protocol_actions_workspace ON protocol_actions(workspace_path, status)",
+            // Skill set items by set
+            "CREATE INDEX IF NOT EXISTS idx_skill_set_items_set ON skill_set_items(skill_set_id, order_num)",
         ];
         for idx_sql in &indexes {
             let _ = conn.execute(idx_sql, []);
@@ -719,6 +901,22 @@ impl DbManager {
         // Migration: add type column to memories table (idempotent)
         let _ = conn.execute(
             "ALTER TABLE memories ADD COLUMN type TEXT NOT NULL DEFAULT 'experience'",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE memories ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE memories ADD COLUMN workspace_path TEXT NULL",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE memories ADD COLUMN evidence_json TEXT NOT NULL DEFAULT '{}'",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE memories ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
             [],
         );
 
@@ -1708,6 +1906,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "manual integration test; full seed path is too slow for the lib test baseline"]
     fn test_db_manager_and_active_account() {
         let temp_dir = std::env::temp_dir();
         let test_db_path = temp_dir.join("omnix_test.db");

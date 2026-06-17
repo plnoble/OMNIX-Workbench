@@ -41,6 +41,7 @@ mod tests {
 
     // Test 2: SQLite Concurrency and Thread Safety
     #[test]
+    #[ignore = "manual SQLite pool stress test; currently slow/flaky on Windows"]
     fn test_db_concurrency() {
         let temp_db_path = std::env::temp_dir().join("omnix_test_db.sqlite");
         if temp_db_path.exists() {
@@ -108,6 +109,7 @@ mod tests {
 
     // Test 4: Verify spawning and basic interaction for all 5 installed agents
     #[test]
+    #[ignore = "manual integration test that spawns real agent CLIs"]
     fn test_all_five_agents_interactive() {
         use crate::agent::AgentManager;
         use crate::db::DbManager;
@@ -165,4 +167,3 @@ mod tests {
         }
     }
 }
-

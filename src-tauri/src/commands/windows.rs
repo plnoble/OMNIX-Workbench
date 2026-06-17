@@ -1,5 +1,6 @@
 use tauri::{AppHandle, Emitter};
 use super::*;
+use std::process::Command;
 
 #[tauri::command]
 pub async fn set_compare_windows_layout(
@@ -95,6 +96,45 @@ pub fn focus_main_window(app_handle: AppHandle) -> Result<(), String> {
         let _ = win.set_focus();
     }
     Ok(())
+}
+
+#[tauri::command]
+pub fn pick_directory() -> Result<Option<String>, String> {
+    if !cfg!(target_os = "windows") {
+        return Err("Folder picker is currently implemented for Windows only.".to_string());
+    }
+
+    let script = r#"
+Add-Type -AssemblyName System.Windows.Forms
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+$dialog.Description = '选择 OMNIX 工作区文件夹'
+$dialog.ShowNewFolderButton = $true
+if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+  Write-Output $dialog.SelectedPath
+}
+"#;
+
+    let output = Command::new("powershell.exe")
+        .args(["-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-Command", script])
+        .output()
+        .map_err(|e| format!("Failed to open folder picker: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            "Folder picker failed without an error message.".to_string()
+        } else {
+            stderr
+        });
+    }
+
+    let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if selected.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(selected))
+    }
 }
 
 #[tauri::command]

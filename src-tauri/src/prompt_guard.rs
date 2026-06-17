@@ -85,7 +85,7 @@ fn get_injection_patterns() -> Vec<InjectionPattern> {
         // Data exfiltration attempts (Medium)
         InjectionPattern {
             name: "data_exfil",
-            regex: r"(?i)(reveal\s+your\s+(system|initial)\s+prompt|show\s+me\s+your\s+instructions|what\s+are\s+your\s+(rules|guidelines)|print\s+your\s+system\s+prompt|dump\s+(config|prompt))",
+            regex: r"(?i)(reveal\s+your\s+(system|initial)\s+prompt|show\s+me\s+your\s+(instructions|system\s+prompt)|what\s+are\s+your\s+(rules|guidelines)|print\s+your\s+system\s+prompt|dump\s+(config|prompt))",
             severity: InjectionSeverity::Medium,
             description: "Attempts to extract system prompt or configuration",
         },

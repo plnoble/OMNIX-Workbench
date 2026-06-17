@@ -412,6 +412,39 @@ impl ToolAdapter for CodexAdapter {
     }
 }
 
+/// OpenCode adapter — ~/.opencode/skills/<name>/SKILL.md
+pub struct OpenCodeAdapter;
+
+impl ToolAdapter for OpenCodeAdapter {
+    fn tool_id(&self) -> &str { "opencode" }
+    fn display_name(&self) -> &str { "OpenCode" }
+
+    fn is_installed(&self) -> bool {
+        which::which("opencode").is_ok()
+    }
+
+    fn skill_base_path(&self) -> Option<PathBuf> {
+        let home = dirs::home_dir()?;
+        Some(home.join(".opencode").join("skills"))
+    }
+
+    fn sync_skill(&self, skill_name: &str, content: &str, mode: &SyncMode) -> SyncResult {
+        generic_sync_skill(self, skill_name, content, mode)
+    }
+
+    fn unsync_skill(&self, skill_name: &str) -> SyncResult {
+        generic_unsync_skill(self, skill_name)
+    }
+
+    fn list_skills(&self) -> Vec<DiscoveredSkill> {
+        let base = match self.skill_base_path() {
+            Some(p) => p,
+            None => return Vec::new(),
+        };
+        scan_skill_dir(&base, self.tool_id())
+    }
+}
+
 // ─────────────────────────────────────────────
 // Adapter Registry
 // ─────────────────────────────────────────────
@@ -429,6 +462,7 @@ impl AdapterRegistry {
             Box::new(CopilotAdapter),
             Box::new(GeminiCliAdapter),
             Box::new(CodexAdapter),
+            Box::new(OpenCodeAdapter),
         ];
         Self { adapters }
     }
@@ -611,5 +645,20 @@ fn compute_file_hash(path: &PathBuf) -> String {
             format!("fnv-{:016x}", hash)
         }
         Err(_) => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AdapterRegistry;
+
+    #[test]
+    fn registry_includes_opencode_adapter_for_primary_agent_spine() {
+        let registry = AdapterRegistry::new();
+        let status = registry.tool_status_list();
+
+        assert!(status.iter().any(|tool| {
+            tool.tool_id == "opencode" && tool.display_name == "OpenCode"
+        }));
     }
 }
