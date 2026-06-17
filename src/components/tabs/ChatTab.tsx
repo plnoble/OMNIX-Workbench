@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { toast } from "sonner";
 import {
   AlertTriangle,
   Brain,
@@ -226,12 +227,19 @@ export function ChatTab({
     if (!chatInput.trim()) return;
 
     setIsSearching(webSearchEnabled || selectedKnowledgeIds.length > 0);
+    let context: string | undefined;
     try {
-      const context = await buildContext();
-      onSendMessage(event, context || undefined);
+      context = (await buildContext()) || undefined;
+    } catch (err) {
+      // Web search / knowledge retrieval failed — don't silently drop the user's
+      // message. Notify and still send without the enriched context.
+      toast.error("上下文获取失败，已忽略联网/知识库上下文发送", {
+        description: err instanceof Error ? err.message : String(err),
+      });
     } finally {
       setIsSearching(false);
     }
+    onSendMessage(event, context);
   };
 
   const openWorkspace = async () => {
@@ -512,9 +520,29 @@ function KnowledgePicker({
   onToggle: (id: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Close on outside click or Escape.
+  useEffect(() => {
+    if (!open) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!containerRef.current?.contains(event.target as Node | null)) {
+        setOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [open]);
 
   return (
-    <div className="relative">
+    <div className="relative" ref={containerRef}>
       <button
         type="button"
         className={cn(
@@ -524,6 +552,7 @@ function KnowledgePicker({
         )}
         onClick={() => setOpen((value) => !value)}
         title={disabled ? "请先配置可用的 embedding 模型" : "选择知识库"}
+        aria-expanded={open}
       >
         <Brain className="h-3.5 w-3.5" />
         知识库 {selectedIds.length > 0 ? selectedIds.length : ""}

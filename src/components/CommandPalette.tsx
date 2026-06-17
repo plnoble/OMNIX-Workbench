@@ -90,10 +90,10 @@ export function CommandPalette({ open, onClose, onNavigate, onToggleTheme }: Com
   }, [query]);
 
   useEffect(() => {
-    if (open) {
-      setQuery("");
-      setTimeout(() => inputRef.current?.focus(), 50);
-    }
+    if (!open) return;
+    setQuery("");
+    const focusTimer = setTimeout(() => inputRef.current?.focus(), 50);
+    return () => clearTimeout(focusTimer);
   }, [open]);
 
   const handleKeyDown = useCallback((event: KeyboardEvent<HTMLInputElement>) => {

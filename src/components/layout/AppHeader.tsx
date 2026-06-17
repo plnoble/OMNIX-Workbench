@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronDown,
   ChevronLeft,
@@ -78,8 +78,33 @@ export function AppHeader({
   onTogglePreview,
 }: AppHeaderProps) {
   const [launcherOpen, setLauncherOpen] = useState(false);
+  const launcherToggleRef = useRef<HTMLButtonElement>(null);
+  const launcherPanelRef = useRef<HTMLDivElement>(null);
   const activeEntry = [...pinnedEntries, ...launcherEntries, ...hiddenEntries].find((entry) => entry.id === activeTab);
   const workspaceLabel = chatWorkspace === "direct" ? "对话" : chatWorkspace.split(/[\\/]/).pop() || "工作区";
+
+  // Close the launcher on outside click or Escape.
+  useEffect(() => {
+    if (!launcherOpen) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target as Node | null;
+      if (
+        !launcherPanelRef.current?.contains(target) &&
+        !launcherToggleRef.current?.contains(target)
+      ) {
+        setLauncherOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setLauncherOpen(false);
+    };
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [launcherOpen]);
 
   const launcherGroups = useMemo(() => {
     return launcherEntries.reduce<Record<string, AppEntry[]>>((acc, entry) => {
@@ -131,6 +156,7 @@ export function AppHeader({
           ))}
 
           <button
+            ref={launcherToggleRef}
             className={cn(
               "flex h-10 w-10 shrink-0 items-center justify-center rounded-md border transition-colors",
               launcherOpen ? "border-primary/30 bg-primary/12 text-primary" : "border-border bg-card/40 hover:bg-muted/20"
@@ -138,6 +164,7 @@ export function AppHeader({
             onClick={() => setLauncherOpen((open) => !open)}
             title="应用宫格"
             aria-label="打开应用宫格"
+            aria-expanded={launcherOpen}
           >
             <Grid3X3 className="h-4 w-4" />
           </button>
@@ -173,7 +200,10 @@ export function AppHeader({
       </div>
 
       {launcherOpen && (
-        <div className="absolute left-3 right-3 top-16 z-50 max-h-[calc(100vh-5rem)] overflow-y-auto rounded-md border border-border bg-popover p-4 shadow-2xl">
+        <div
+          ref={launcherPanelRef}
+          className="absolute left-3 right-3 top-16 z-50 max-h-[calc(100vh-5rem)] overflow-y-auto rounded-md border border-border bg-popover p-4 shadow-2xl"
+        >
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
               <div className="text-sm font-semibold">应用宫格</div>

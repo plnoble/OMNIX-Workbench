@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::db::DbManager;
-use crate::sync_engine::{BatchSyncResult, ConflictStrategy, SyncEngine};
+use crate::sync_engine::{BatchSyncResult, ConflictStrategy, DetailedSyncResult, SyncEngine};
 use crate::tool_adapters::SyncMode;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,6 +38,39 @@ fn make_id(prefix: &str) -> String {
 
 fn parse_sync_targets(raw: String) -> Vec<String> {
     serde_json::from_str(&raw).unwrap_or_default()
+}
+
+/// skill_id is joined into filesystem paths by the sync engine
+/// (e.g. `<tool skills dir>/<skill_id>/SKILL.md`). Reject any value that could
+/// escape the intended directory or contain path/control characters, so a
+/// compromised frontend cannot plant a sync target outside the tool's skill dir.
+fn validate_skill_id_path_safe(skill_id: &str) -> Result<(), String> {
+    let trimmed = skill_id.trim();
+    if trimmed.is_empty() {
+        return Err("skill_id must not be empty".to_string());
+    }
+    if trimmed.len() > 256 {
+        return Err("skill_id exceeds maximum length".to_string());
+    }
+    if trimmed.chars().any(|c| c.is_control() || c == '/' || c == '\\' || c == '\0') {
+        return Err("skill_id contains invalid characters".to_string());
+    }
+    // Reject traversal segments in any form.
+    if trimmed.split(['/', '\\']).any(|seg| seg == ".." || seg == ".") {
+        return Err("skill_id must not contain path traversal components".to_string());
+    }
+    if trimmed.contains("..") {
+        return Err("skill_id must not contain path traversal components".to_string());
+    }
+    Ok(())
+}
+
+/// Validate a list of skill_ids for path safety; returns Err on the first bad id.
+fn validate_skill_ids(skill_ids: &[String]) -> Result<(), String> {
+    for id in skill_ids {
+        validate_skill_id_path_safe(id)?;
+    }
+    Ok(())
 }
 
 fn load_skill_set(db: &DbManager, skill_set_id: &str) -> Result<SkillSet, String> {
@@ -118,6 +151,7 @@ pub fn create_skill_set(
     if skill_ids.is_empty() {
         return Err("Select at least one skill".to_string());
     }
+    validate_skill_ids(&skill_ids)?;
 
     let id = make_id("skill_set");
     let targets_json = serde_json::to_string(&sync_targets).unwrap_or_else(|_| "[]".to_string());
@@ -162,6 +196,7 @@ pub fn update_skill_set(
     if skill_ids.is_empty() {
         return Err("Select at least one skill".to_string());
     }
+    validate_skill_ids(&skill_ids)?;
 
     let targets_json = serde_json::to_string(&sync_targets).unwrap_or_else(|_| "[]".to_string());
     let conn = db.get_connection().map_err(|e| e.to_string())?;
@@ -212,6 +247,30 @@ pub fn sync_skill_set_to_tools(
     let engine = SyncEngine::new(Arc::clone(&db));
     let mut results = Vec::new();
     for item in set.items {
+        // Defense-in-depth: skill_ids come from the DB, but re-check path safety
+        // right before they are joined into filesystem paths by the sync engine.
+        if let Err(err) = validate_skill_id_path_safe(&item.skill_id) {
+            let details = target_tools
+                .iter()
+                .map(|tool| DetailedSyncResult {
+                    skill_name: item.skill_id.clone(),
+                    tool_id: tool.clone(),
+                    target_path: String::new(),
+                    success: false,
+                    conflict: None,
+                    strategy_used: None,
+                    error: Some(format!("skill_id failed path-safety validation: {err}")),
+                })
+                .collect::<Vec<_>>();
+            results.push(BatchSyncResult {
+                total: target_tools.len(),
+                succeeded: 0,
+                skipped: 0,
+                failed: target_tools.len(),
+                details,
+            });
+            continue;
+        }
         results.push(engine.sync_one_to_many(&item.skill_id, &target_tools, &sync_mode, &conflict_strategy));
     }
     Ok(results)

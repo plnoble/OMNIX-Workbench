@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   Bot,
@@ -37,19 +37,23 @@ import type {
 
 const PRIMARY_AGENTS = ["Claude Code", "Codex", "Gemini CLI", "OpenCode"];
 
-const DEFAULT_ASSIGNMENTS: TeamAssignmentInput[] = [
-  { agent_name: "Claude Code", task_title: "担任队长，拆解重构步骤并守住用户确认点" },
-  { agent_name: "Codex", task_title: "实现 Workbench、Run 状态流转和验证闭环" },
-  { agent_name: "Gemini CLI", task_title: "补充架构审查、跨文件影响分析和文档整理" },
-  { agent_name: "OpenCode", task_title: "验证技能同步适配和本地工具链兼容性" },
+/** Local draft row: a TeamAssignmentInput plus a stable uid for React keys,
+ *  so removing a middle row no longer shifts keys and remounts inputs. */
+type AssignmentDraft = TeamAssignmentInput & { uid: number };
+
+const DEFAULT_ASSIGNMENTS: AssignmentDraft[] = [
+  { uid: 1, agent_name: "Claude Code", task_title: "担任队长，拆解重构步骤并守住用户确认点" },
+  { uid: 2, agent_name: "Codex", task_title: "实现 Workbench、Run 状态流转和验证闭环" },
+  { uid: 3, agent_name: "Gemini CLI", task_title: "补充架构审查、跨文件影响分析和文档整理" },
+  { uid: 4, agent_name: "OpenCode", task_title: "验证技能同步适配和本地工具链兼容性" },
 ];
 
 const RESOURCE_ITEMS = [
-  { id: "settings", label: "Models", title: "模型路由", icon: Database },
+  { id: "models", label: "Models", title: "模型路由", icon: Database },
   { id: "knowledge", label: "Knowledge", title: "知识库", icon: BookOpen },
   { id: "memories", label: "Memory", title: "长期记忆", icon: Brain },
-  { id: "settings", label: "MCP", title: "工具服务", icon: Plug },
-  { id: "settings", label: "Search", title: "联网搜索", icon: Search },
+  { id: "mcp", label: "MCP", title: "工具服务", icon: Plug },
+  { id: "search", label: "Search", title: "联网搜索", icon: Search },
 ];
 
 interface WorkbenchTabProps extends ChatTabProps {
@@ -75,8 +79,9 @@ export function WorkbenchTab(props: WorkbenchTabProps) {
   const [goal, setGoal] = useState(
     "将 OMNIX 重构为以 Agent + Team + Skill 为主轴的多 Agent 开发工作台。"
   );
-  const [assignmentDrafts, setAssignmentDrafts] = useState<TeamAssignmentInput[]>(DEFAULT_ASSIGNMENTS);
+  const [assignmentDrafts, setAssignmentDrafts] = useState<AssignmentDraft[]>(DEFAULT_ASSIGNMENTS);
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const draftUidRef = useRef(DEFAULT_ASSIGNMENTS.length);
 
   const installedAgents = useMemo(
     () => new Set(detectedAgents.filter((agent) => agent.status === "installed").map((agent) => agent.name)),
@@ -174,7 +179,9 @@ export function WorkbenchTab(props: WorkbenchTabProps) {
     const run = await ensureRun();
     if (!run) return;
 
-    const assignments = assignmentDrafts.filter((assignment) => assignment.task_title.trim());
+    const assignments = assignmentDrafts
+      .filter((assignment) => assignment.task_title.trim())
+      .map(({ uid: _uid, ...rest }) => rest);
     if (!goal.trim() || assignments.length === 0) {
       toast.error("请填写目标，并至少保留一个 Worker 任务。");
       return;
@@ -252,9 +259,10 @@ export function WorkbenchTab(props: WorkbenchTabProps) {
   }
 
   function addAssignment() {
+    draftUidRef.current += 1;
     setAssignmentDrafts((prev) => [
       ...prev,
-      { agent_name: managerOptions[0] || "Codex", task_title: "" },
+      { uid: draftUidRef.current, agent_name: managerOptions[0] || "Codex", task_title: "" },
     ]);
   }
 
@@ -350,7 +358,7 @@ export function WorkbenchTab(props: WorkbenchTabProps) {
               </div>
               <div className="divide-y divide-border">
                 {assignmentDrafts.map((assignment, index) => (
-                  <div key={`${assignment.agent_name}-${index}`} className="grid gap-2 p-3 md:grid-cols-[160px_minmax(0,1fr)_72px]">
+                  <div key={assignment.uid} className="grid gap-2 p-3 md:grid-cols-[160px_minmax(0,1fr)_72px]">
                     <select
                       value={assignment.agent_name}
                       onChange={(event) => updateAssignment(index, "agent_name", event.target.value)}

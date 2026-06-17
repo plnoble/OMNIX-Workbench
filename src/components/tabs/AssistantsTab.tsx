@@ -90,8 +90,12 @@ export function AssistantsTab({ onUseTemplate }: AssistantsTabProps) {
   };
 
   const copyTemplate = async (template: AgentTemplate) => {
-    await navigator.clipboard.writeText(template.instructions);
-    toast.success("提示词已复制");
+    try {
+      await navigator.clipboard.writeText(template.instructions);
+      toast.success("提示词已复制");
+    } catch (error) {
+      toast.error("复制失败", { description: String(error) });
+    }
   };
 
   return (

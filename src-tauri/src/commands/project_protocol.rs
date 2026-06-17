@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::db::DbManager;
+use crate::input_validation;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProtocolFilePreview {
@@ -93,7 +94,48 @@ fn make_id(prefix: &str) -> String {
     format!("{prefix}_{nanos}_{}", std::process::id())
 }
 
+/// Validate a free-form protocol event field: bounded length, no control chars.
+fn validate_event_field(value: &str, param_name: &str) -> Result<(), String> {
+    input_validation::validate_content(value, param_name)?;
+    if value.chars().any(|c| c.is_control() && c != '\n' && c != '\r' && c != '\t') {
+        return Err(format!("{} contains invalid control characters", param_name));
+    }
+    Ok(())
+}
+
+/// Validate that `details_json` (if provided) is a parseable JSON object/array, then
+/// bound its length. Rejects malformed JSON so it cannot be stored verbatim and
+/// later break consumers that trust its shape.
+fn validate_details_json(details_json: &Option<String>) -> Result<(), String> {
+    let Some(raw) = details_json else { return Ok(()) };
+    if raw.len() > 1_048_576 {
+        return Err("details_json exceeds maximum length".to_string());
+    }
+    serde_json::from_str::<serde_json::Value>(raw)
+        .map_err(|_| "details_json must be valid JSON".to_string())?;
+    Ok(())
+}
+
+/// Validate a project name: non-empty after trim, bounded length, no control chars
+/// and no path separators (it is interpolated into generated file headers).
+fn validate_project_name(project_name: &str) -> Result<(), String> {
+    let trimmed = project_name.trim();
+    if trimmed.is_empty() {
+        return Err("project_name must not be empty".to_string());
+    }
+    if trimmed.len() > 256 {
+        return Err("project_name exceeds maximum length".to_string());
+    }
+    if trimmed.chars().any(|c| c.is_control() || c == '/' || c == '\\') {
+        return Err("project_name contains invalid characters".to_string());
+    }
+    Ok(())
+}
+
 fn normalize_workspace(workspace_path: &str) -> Result<PathBuf, String> {
+    // Validate before touching the filesystem — mirrors workbench::create_workspace_run_core
+    // so a frontend-supplied system directory (e.g. C:\Windows) is rejected here too.
+    input_validation::validate_workspace_path(workspace_path, "workspace_path")?;
     let path = PathBuf::from(workspace_path);
     if !path.exists() {
         return Err(format!("Workspace does not exist: {}", workspace_path));
@@ -107,6 +149,18 @@ fn normalize_workspace(workspace_path: &str) -> Result<PathBuf, String> {
 fn default_project_name(path: &Path, project_name: Option<String>) -> String {
     project_name
         .filter(|name| !name.trim().is_empty())
+        .map(|name| {
+            // Validate a caller-supplied name; on failure fall back to the directory name
+            // rather than propagating, since this helper is also used in read-only status.
+            validate_project_name(&name)
+                .map(|_| name)
+                .unwrap_or_else(|_| {
+                    path.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("OMNIX Project")
+                        .to_string()
+                })
+        })
         .unwrap_or_else(|| {
             path.file_name()
                 .and_then(|name| name.to_str())
@@ -322,6 +376,10 @@ pub fn protocol_record_event(
     let workspace = normalize_workspace(&workspace_path)?;
     let workspace_str = workspace.to_string_lossy().to_string();
     let id = make_id("protocol_event");
+    // Validate frontend-supplied event fields before persisting.
+    input_validation::validate_name(&event_type, "event_type")?;
+    validate_event_field(&summary, "summary")?;
+    validate_details_json(&details_json)?;
     let details = details_json.unwrap_or_else(|| "{}".to_string());
     let conn = db.get_connection().map_err(|e| e.to_string())?;
     conn.execute(

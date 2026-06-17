@@ -144,26 +144,30 @@ export function AgentHubTab({
 
   const bindSavedModel = async (value: string) => {
     if (!selected) return;
-    if (value === DEFAULT_BINDING_VALUE) {
-      await agentBindingApi.remove(selected.name);
-      setBindings(await agentBindingApi.getAll());
-      toast.success("已切回 Agent 默认模型");
-      return;
-    }
+    try {
+      if (value === DEFAULT_BINDING_VALUE) {
+        await agentBindingApi.remove(selected.name);
+        setBindings(await agentBindingApi.getAll());
+        toast.success("已切回 Agent 默认模型");
+        return;
+      }
 
-    if (value.startsWith("builtin::")) {
-      const builtinModel = value.slice("builtin::".length);
-      await agentBindingApi.setBuiltin(selected.name, builtinModel);
-      setBindings(await agentBindingApi.getAll());
-      toast.success("已绑定 Agent 官方/自带模型");
-      return;
-    }
+      if (value.startsWith("builtin::")) {
+        const builtinModel = value.slice("builtin::".length);
+        await agentBindingApi.setBuiltin(selected.name, builtinModel);
+        setBindings(await agentBindingApi.getAll());
+        toast.success("已绑定 Agent 官方/自带模型");
+        return;
+      }
 
-    const option = savedModelOptions.find((item) => item.value === value);
-    if (!option) return;
-    await agentBindingApi.set(selected.name, option.platformId, option.modelName, "omnix");
-    setBindings(await agentBindingApi.getAll());
-    toast.success("模型绑定已保存");
+      const option = savedModelOptions.find((item) => item.value === value);
+      if (!option) return;
+      await agentBindingApi.set(selected.name, option.platformId, option.modelName, "omnix");
+      setBindings(await agentBindingApi.getAll());
+      toast.success("模型绑定已保存");
+    } catch (error) {
+      toast.error("模型绑定失败", { description: String(error) });
+    }
   };
 
   return (
@@ -187,13 +191,22 @@ export function AgentHubTab({
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
           {agents.map((agent) => (
-            <button
+            <div
               key={agent.name}
+              role="button"
+              tabIndex={0}
+              aria-label={`选择 ${agent.name}`}
               className={cn(
-                "min-h-56 rounded-md border bg-card/40 p-5 text-left transition-colors hover:bg-muted/20",
+                "min-h-56 cursor-pointer rounded-md border bg-card/40 p-5 text-left outline-none transition-colors hover:bg-muted/20 focus-visible:ring-2 focus-visible:ring-primary/40",
                 selectedAgent === agent.name && "border-primary/40 bg-primary/10"
               )}
               onClick={() => setSelectedAgent(agent.name)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  setSelectedAgent(agent.name);
+                }
+              }}
             >
               <div className="flex items-start justify-between gap-3">
                 <AgentMark name={agent.name} active={activeAgent === agent.name} />
@@ -236,7 +249,7 @@ export function AgentHubTab({
                   详情
                 </Button>
               </div>
-            </button>
+            </div>
           ))}
         </div>
       </section>

@@ -10,7 +10,7 @@
  * All business logic lives in hooks. All rendering lives in components.
  */
 
-import { useState, useEffect, Suspense, lazy, useMemo } from "react";
+import { useState, useEffect, useRef, Suspense, lazy, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 // Global shortcuts registered on Rust side (lib.rs) for reliability
@@ -169,13 +169,8 @@ function MainApp() {
   };
 
   // ── Listen for StatusDock navigation events ────────
-
-  useEffect(() => {
-    const unlisten = listen("omnix-navigate-settings", () => {
-      handleTabChange("settings");
-    });
-    return () => { unlisten.then((fn) => fn()); };
-  }, []);
+  // (Listener registered below, after handleTabChange is defined, via a ref so
+  //  it always calls the latest handler without re-subscribing on every render.)
 
   // ── Command Palette shortcut (Ctrl+K) ──────────────
 
@@ -230,6 +225,18 @@ function MainApp() {
       convs.setCollabLogs(logs);
     }
   };
+
+  // Keep a ref to the latest handler so the navigation listener (registered once)
+  // never calls a stale closure of handleTabChange.
+  const handleTabChangeRef = useRef(handleTabChange);
+  handleTabChangeRef.current = handleTabChange;
+
+  useEffect(() => {
+    const unlisten = listen("omnix-navigate-settings", () => {
+      handleTabChangeRef.current("settings");
+    });
+    return () => { unlisten.then((fn) => fn()); };
+  }, []);
 
   // ── Save handlers with user feedback ──────────────
 
@@ -381,50 +388,6 @@ function MainApp() {
       />
 
       <main className="relative flex min-w-0 flex-1 flex-col bg-background">
-        {false && (
-        <AppHeader
-          activeTab={activeTab}
-          activeAgent={convs.activeAgent}
-          chatWorkspace={convs.chatWorkspace}
-          gatewayStatus={settings.gatewayStatus}
-          pinnedEntries={pinnedEntries}
-          launcherEntries={launcherEntries}
-          hiddenEntries={hiddenEntries}
-          themeMode={settings.themeMode}
-          showPreviewButton={showPreviewButton}
-          isPreviewOpen={preview.showPreviewPane}
-          onNavigate={handleTabChange}
-          onMoveEntry={async (id, placement) => {
-            try {
-              await navigation.moveEntry(id, placement);
-            } catch (error) {
-              toast.error("保存导航布局失败：" + error);
-            }
-          }}
-          onReorderEntry={async (id, direction) => {
-            try {
-              await navigation.reorderEntry(id, direction);
-            } catch (error) {
-              toast.error("保存导航顺序失败：" + error);
-            }
-          }}
-          onResetNavigation={async () => {
-            await navigation.resetLayout();
-            toast.success("已恢复默认导航布局");
-          }}
-          onToggleTheme={() => {
-            const modes: ("dark" | "light" | "auto")[] = ["dark", "light", "auto"];
-            const current = modes.indexOf(settings.themeMode);
-            settings.setThemeMode(modes[(current + 1) % modes.length]);
-          }}
-          onTogglePreview={() => {
-            preview.setShowPreviewPane(!preview.showPreviewPane);
-            if (!preview.showPreviewPane) preview.loadPreviewFiles();
-          }}
-        />
-
-        )}
-
         <div className="flex flex-1 min-w-0 overflow-hidden">
           <Suspense fallback={<LazyFallback />}>
             {activeTab === "workbench" && (
