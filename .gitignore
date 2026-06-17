@@ -45,6 +45,12 @@ Thumbs.db
 ehthumbs.db
 Desktop.ini
 
+# Local debug logs
+debug.log
+
+# Claude local settings (per-machine, not shared)
+.claude/settings.local.json
+
 # Keep log/memory directories but ignore their contents if desired (or keep them versioned)
 # If we want to commit the logs to maintain project history:
 # logs/tasks/*
