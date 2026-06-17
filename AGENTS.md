@@ -29,4 +29,9 @@
 * **安全修复方案**: 在多人协作仓库中绝不能执行 git push -f。强制更新必须通过分支审批 PR，或使用 --force-with-lease 安全锁推送。
 * **相关标签**: `git,push,deploy,safety`
 
+### ❌ 坑点 4: UI 工作台壳层把所有功能堆在首页或左侧栏，导致用户不知道从何开始。
+* **危险模式/命令**: 默认入口暴露 Workbench/Runs/Plan/Resources/Labs/Settings 等多个面板；把全局功能全部塞进左侧主目录。
+* **安全修复方案**: 先确认用户进入软件后的第一动作，并让默认首屏只服务这个动作。高频核心入口放顶部横向导航，低频资源/实验功能放可配置应用宫格；左侧栏只显示当前上下文，如对话、工作区、团队会话。
+* **相关标签**: `ui,product-shell,navigation,workbench,ux`
+
 <!--- OMNIX MEMORY END --->
