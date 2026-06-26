@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <radialGradient id="bg1" cx="50%" cy="50%" r="65%">
+      <stop offset="0%" stop-color="#1e1b4b"/>
+      <stop offset="100%" stop-color="#0b0a1f"/>
+    </radialGradient>
+    <linearGradient id="strand1a" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#a78bfa"/>
+      <stop offset="100%" stop-color="#6366f1"/>
+    </linearGradient>
+    <linearGradient id="strand1b" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#22d3ee"/>
+      <stop offset="100%" stop-color="#3b82f6"/>
+    </linearGradient>
+    <linearGradient id="strand1c" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f472b6"/>
+      <stop offset="100%" stop-color="#a855f7"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg1)"/>
+  <g transform="translate(256 256)" fill="none" stroke-width="20" stroke-linecap="round">
+    <!-- three helical strands rising clockwise, expanding radius = accumulating experience -->
+    <path d="M 0 140 C 60 120, 90 60, 90 0 C 90 -70, 50 -120, 0 -140" stroke="url(#strand1a)" transform="rotate(0)"/>
+    <path d="M 0 140 C 60 120, 90 60, 90 0 C 90 -70, 50 -120, 0 -140" stroke="url(#strand1b)" transform="rotate(120)"/>
+    <path d="M 0 140 C 60 120, 90 60, 90 0 C 90 -70, 50 -120, 0 -140" stroke="url(#strand1c)" transform="rotate(240)"/>
+    <!-- inner second loop (tighter) -->
+    <path d="M 0 70 C 30 60, 45 30, 45 0 C 45 -35, 25 -60, 0 -70" stroke="url(#strand1a)" stroke-width="14" opacity="0.55" transform="rotate(60)"/>
+    <path d="M 0 70 C 30 60, 45 30, 45 0 C 45 -35, 25 -60, 0 -70" stroke="url(#strand1b)" stroke-width="14" opacity="0.55" transform="rotate(180)"/>
+    <path d="M 0 70 C 30 60, 45 30, 45 0 C 45 -35, 25 -60, 0 -70" stroke="url(#strand1c)" stroke-width="14" opacity="0.55" transform="rotate(300)"/>
+    <circle cx="0" cy="0" r="14" fill="#e0e7ff"/>
+  </g>
+</svg>

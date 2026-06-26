@@ -9,7 +9,6 @@
  *   5. Reciprocal Rank Fusion (RRF) to merge BM25 + vector results
  *   6. RAG query orchestration (retrieve → augment → generate)
  */
-
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
@@ -118,11 +117,24 @@ fn chunk_code(content: &str, config: &ChunkConfig) -> Vec<Chunk> {
 
     // Heuristic boundary patterns for function/class/impl definitions
     let boundary_prefixes = [
-        "fn ", "pub fn ", "async fn ", "pub async fn ",
-        "def ", "class ", "func ", "impl ", "pub impl ",
-        "interface ", "type ", "pub type ",
-        "enum ", "pub enum ", "struct ", "pub struct ",
-        "mod ", "pub mod ",
+        "fn ",
+        "pub fn ",
+        "async fn ",
+        "pub async fn ",
+        "def ",
+        "class ",
+        "func ",
+        "impl ",
+        "pub impl ",
+        "interface ",
+        "type ",
+        "pub type ",
+        "enum ",
+        "pub enum ",
+        "struct ",
+        "pub struct ",
+        "mod ",
+        "pub mod ",
     ];
 
     for (line_idx, line) in lines.iter().enumerate() {
@@ -221,7 +233,9 @@ fn split_by_paragraphs(
             para_start_offset = para_offsets[i];
         }
 
-        if current_content.len() + para.len() + 2 > config.max_chunk_chars && !current_content.is_empty() {
+        if current_content.len() + para.len() + 2 > config.max_chunk_chars
+            && !current_content.is_empty()
+        {
             let end = para_start_offset + current_content.len();
             chunks.push(Chunk {
                 index: chunks.len(),
@@ -262,7 +276,11 @@ fn apply_overlap(chunks: &mut Vec<Chunk>, config: &ChunkConfig) {
     }
     for i in 1..chunks.len() {
         let prev = &chunks[i - 1].content;
-        let overlap_text = prev.chars().rev().take(config.overlap_chars).collect::<String>();
+        let overlap_text = prev
+            .chars()
+            .rev()
+            .take(config.overlap_chars)
+            .collect::<String>();
         let overlap_text: String = overlap_text.chars().rev().collect();
         // Prepend overlap to current chunk
         chunks[i].content = format!("{}…\n{}", overlap_text, chunks[i].content);
@@ -293,7 +311,11 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
     }
-    let dot: f64 = a.iter().zip(b.iter()).map(|(x, y)| (*x as f64) * (*y as f64)).sum();
+    let dot: f64 = a
+        .iter()
+        .zip(b.iter())
+        .map(|(x, y)| (*x as f64) * (*y as f64))
+        .sum();
     let norm_a: f64 = a.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
     let norm_b: f64 = b.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
     if norm_a == 0.0 || norm_b == 0.0 {
@@ -316,10 +338,22 @@ pub fn resolve_embedding_platform(
     if let Some(pid) = platform_id {
         // Use specified platform
         let (api_key, api_address, api_type) = conn
-            .prepare("SELECT api_key, api_address, api_type FROM model_platforms WHERE id = ?1 AND is_enabled = 1")
+            .prepare(
+                "SELECT COALESCE(
+                    (SELECT encrypted_key FROM platform_api_keys
+                     WHERE platform_id = mp.id AND is_active = 1 AND is_enabled = 1
+                     ORDER BY priority DESC, created_at ASC LIMIT 1),
+                    mp.api_key
+                 ), mp.api_address, mp.api_type
+                 FROM model_platforms mp WHERE mp.id = ?1 AND mp.is_enabled = 1",
+            )
             .map_err(|e| e.to_string())?
             .query_row(params![pid], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
             })
             .map_err(|e| format!("Platform '{}' not found or disabled: {}", pid, e))?;
         return Ok((api_key, api_address, api_type, model_name.to_string()));
@@ -344,7 +378,12 @@ pub fn resolve_embedding_platform(
                 row.get::<_, String>(0)?, // model_name
             ))
         })
-        .map_err(|e| format!("No enabled embedding platform found for model '{}': {}", model_name, e))?;
+        .map_err(|e| {
+            format!(
+                "No enabled embedding platform found for model '{}': {}",
+                model_name, e
+            )
+        })?;
 
     Ok(result)
 }
@@ -383,18 +422,28 @@ pub async fn generate_embeddings(
                 if !api_key.trim().is_empty() {
                     req = req.header("Authorization", format!("Bearer {}", api_key.trim()));
                 }
-                let resp = req.send().await.map_err(|e| format!("Ollama embedding request failed: {}", e))?;
+                let resp = req
+                    .send()
+                    .await
+                    .map_err(|e| format!("Ollama embedding request failed: {}", e))?;
                 if !resp.status().is_success() {
                     let status = resp.status();
                     let body = resp.text().await.unwrap_or_default();
                     return Err(format!("Ollama embedding API error ({}): {}", status, body));
                 }
-                let json: serde_json::Value = resp.json().await.map_err(|e| format!("Failed to parse Ollama embedding response: {}", e))?;
+                let json: serde_json::Value = resp
+                    .json()
+                    .await
+                    .map_err(|e| format!("Failed to parse Ollama embedding response: {}", e))?;
                 let embedding = json["embedding"]
                     .as_array()
                     .ok_or("Missing 'embedding' array in Ollama response")?
                     .iter()
-                    .map(|v| v.as_f64().map(|f| f as f32).ok_or("Invalid f32 in embedding"))
+                    .map(|v| {
+                        v.as_f64()
+                            .map(|f| f as f32)
+                            .ok_or("Invalid f32 in embedding")
+                    })
                     .collect::<Result<Vec<f32>, _>>()
                     .map_err(|_| "Invalid embedding value")?;
                 all_embeddings.push(embedding);
@@ -413,25 +462,38 @@ pub async fn generate_embeddings(
                 if !api_key.trim().is_empty() {
                     req = req.header("Authorization", format!("Bearer {}", api_key.trim()));
                 }
-                let resp = req.send().await.map_err(|e| format!("Embedding request failed: {}", e))?;
+                let resp = req
+                    .send()
+                    .await
+                    .map_err(|e| format!("Embedding request failed: {}", e))?;
                 if !resp.status().is_success() {
                     let status = resp.status();
                     let body = resp.text().await.unwrap_or_default();
                     return Err(format!("Embedding API error ({}): {}", status, body));
                 }
-                let json: serde_json::Value = resp.json().await.map_err(|e| format!("Failed to parse embedding response: {}", e))?;
+                let json: serde_json::Value = resp
+                    .json()
+                    .await
+                    .map_err(|e| format!("Failed to parse embedding response: {}", e))?;
                 let data = json["data"]
                     .as_array()
                     .ok_or("Missing 'data' array in embedding response")?;
                 // Results may not be in order; sort by index
                 let mut indexed: Vec<(usize, Vec<f32>)> = Vec::new();
                 for item in data {
-                    let idx = item["index"].as_u64().ok_or("Missing 'index' in embedding data")? as usize;
+                    let idx = item["index"]
+                        .as_u64()
+                        .ok_or("Missing 'index' in embedding data")?
+                        as usize;
                     let embedding = item["embedding"]
                         .as_array()
                         .ok_or("Missing 'embedding' array in data item")?
                         .iter()
-                        .map(|v| v.as_f64().map(|f| f as f32).ok_or("Invalid f32 in embedding"))
+                        .map(|v| {
+                            v.as_f64()
+                                .map(|f| f as f32)
+                                .ok_or("Invalid f32 in embedding")
+                        })
                         .collect::<Result<Vec<f32>, _>>()
                         .map_err(|_| "Invalid embedding value")?;
                     indexed.push((idx, embedding));
@@ -454,6 +516,9 @@ pub async fn generate_embeddings(
 pub struct SearchResult {
     pub chunk_id: String,
     pub document_id: String,
+    pub document_title: String,
+    pub knowledge_base_id: String,
+    pub knowledge_base_name: String,
     pub content: String,
     pub metadata: serde_json::Value,
     pub bm25_score: Option<f64>,
@@ -558,7 +623,9 @@ pub fn rrf_fuse(
     // BM25 rankings (1-based)
     for (rank_idx, (chunk_id, score)) in bm25_results.iter().enumerate() {
         let rank = (rank_idx + 1) as u32;
-        let entry = rrf_scores.entry(chunk_id.clone()).or_insert((0.0, None, None));
+        let entry = rrf_scores
+            .entry(chunk_id.clone())
+            .or_insert((0.0, None, None));
         entry.0 += 1.0 / (k as f64 + rank as f64);
         entry.1 = Some(*score);
     }
@@ -566,7 +633,9 @@ pub fn rrf_fuse(
     // Vector rankings (1-based)
     for (rank_idx, (chunk_id, score)) in vector_results.iter().enumerate() {
         let rank = (rank_idx + 1) as u32;
-        let entry = rrf_scores.entry(chunk_id.clone()).or_insert((0.0, None, None));
+        let entry = rrf_scores
+            .entry(chunk_id.clone())
+            .or_insert((0.0, None, None));
         entry.0 += 1.0 / (k as f64 + rank as f64);
         entry.2 = Some(*score);
     }
@@ -582,16 +651,21 @@ pub fn rrf_fuse(
     results
         .into_iter()
         .enumerate()
-        .map(|(rank, (chunk_id, rrf_score, bm25_score, vector_score))| SearchResult {
-            chunk_id,
-            document_id: String::new(), // Filled by caller
-            content: String::new(),      // Filled by caller
-            metadata: serde_json::Value::Null,
-            bm25_score,
-            vector_score,
-            rrf_score,
-            rank: rank + 1,
-        })
+        .map(
+            |(rank, (chunk_id, rrf_score, bm25_score, vector_score))| SearchResult {
+                chunk_id,
+                document_id: String::new(), // Filled by caller
+                document_title: String::new(),
+                knowledge_base_id: String::new(),
+                knowledge_base_name: String::new(),
+                content: String::new(), // Filled by caller
+                metadata: serde_json::Value::Null,
+                bm25_score,
+                vector_score,
+                rrf_score,
+                rank: rank + 1,
+            },
+        )
         .collect()
 }
 
@@ -610,18 +684,49 @@ pub async fn hybrid_search(
     bm25_limit: usize,
     vector_limit: usize,
     rrf_k: u32,
+    knowledge_base_ids: Option<&[String]>,
 ) -> Result<Vec<SearchResult>, String> {
+    let allowed_chunks = if let Some(base_ids) = knowledge_base_ids.filter(|ids| !ids.is_empty()) {
+        let conn = db.get_connection().map_err(|e| e.to_string())?;
+        let placeholders = std::iter::repeat("?")
+            .take(base_ids.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT c.id FROM kb_chunks c
+             JOIN kb_documents d ON d.id = c.document_id
+             WHERE d.knowledge_base_id IN ({placeholders})"
+        );
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let params = rusqlite::params_from_iter(base_ids.iter());
+        let ids = stmt
+            .query_map(params, |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<std::collections::HashSet<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        Some(ids)
+    } else {
+        None
+    };
+
     // 1. BM25 search (synchronous SQLite)
-    let bm25_results = bm25_search(db, query, bm25_limit).unwrap_or_default();
+    let mut bm25_results = bm25_search(
+        db,
+        query,
+        if allowed_chunks.is_some() {
+            5_000
+        } else {
+            bm25_limit
+        },
+    )
+    .unwrap_or_default();
+    if let Some(allowed) = &allowed_chunks {
+        filter_ranked_results(&mut bm25_results, allowed, bm25_limit);
+    }
 
     // 2. Generate query embedding
-    let query_embeddings = generate_embeddings(
-        db,
-        vec![query.to_string()],
-        embedding_model,
-        None,
-    )
-    .await?;
+    let query_embeddings =
+        generate_embeddings(db, vec![query.to_string()], embedding_model, None).await?;
 
     let query_embedding = query_embeddings
         .into_iter()
@@ -629,7 +734,19 @@ pub async fn hybrid_search(
         .ok_or("Failed to generate query embedding")?;
 
     // 3. Vector search
-    let vector_results = vector_search(db, &query_embedding, vector_limit).unwrap_or_default();
+    let mut vector_results = vector_search(
+        db,
+        &query_embedding,
+        if allowed_chunks.is_some() {
+            usize::MAX
+        } else {
+            vector_limit
+        },
+    )
+    .unwrap_or_default();
+    if let Some(allowed) = &allowed_chunks {
+        filter_ranked_results(&mut vector_results, allowed, vector_limit);
+    }
 
     // 4. RRF fusion
     let mut results = rrf_fuse(bm25_results, vector_results, rrf_k, limit);
@@ -639,16 +756,40 @@ pub async fn hybrid_search(
     for result in &mut results {
         let chunk_id = &result.chunk_id;
         // Get chunk content + document_id
-        let (content, document_id, metadata_str): (String, String, String) = conn
-            .prepare("SELECT content, document_id, metadata FROM kb_chunks WHERE id = ?1")
+        let (content, document_id, document_title, base_id, base_name, metadata_str): (
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+        ) = conn
+            .prepare(
+                "SELECT c.content, c.document_id, d.title, d.knowledge_base_id,
+                        COALESCE(b.name, '默认知识库'), c.metadata
+                 FROM kb_chunks c
+                 JOIN kb_documents d ON d.id = c.document_id
+                 LEFT JOIN knowledge_bases b ON b.id = d.knowledge_base_id
+                 WHERE c.id = ?1",
+            )
             .map_err(|e| e.to_string())?
             .query_row(params![chunk_id], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
             })
             .map_err(|e| e.to_string())?;
 
         result.content = content;
         result.document_id = document_id;
+        result.document_title = document_title;
+        result.knowledge_base_id = base_id;
+        result.knowledge_base_name = base_name;
         result.metadata = serde_json::from_str(&metadata_str).unwrap_or(serde_json::Value::Null);
     }
 
@@ -678,15 +819,34 @@ pub async fn rag_query(
     chat_model: &str,
     top_k: usize,
     system_prompt: Option<&str>,
+    knowledge_base_ids: Option<&[String]>,
 ) -> Result<RagResponse, String> {
     // 1. Retrieve relevant chunks
-    let sources = hybrid_search(db, query, embedding_model, top_k, 20, 20, 60).await?;
+    let sources = hybrid_search(
+        db,
+        query,
+        embedding_model,
+        top_k,
+        20,
+        20,
+        60,
+        knowledge_base_ids,
+    )
+    .await?;
 
     // 2. Construct augmented prompt
     let context = sources
         .iter()
         .enumerate()
-        .map(|(i, r)| format!("[{}] {}", i + 1, r.content))
+        .map(|(i, r)| {
+            format!(
+                "[{}] 知识库：{}；文档：{}\n{}",
+                i + 1,
+                r.knowledge_base_name,
+                r.document_title,
+                r.content
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n---\n");
 
@@ -696,8 +856,7 @@ pub async fn rag_query(
     let user_message = format!("上下文：\n{}\n\n问题：{}", context, query);
 
     // 3. Resolve chat model platform
-    let (api_key, api_address, api_type, actual_model) =
-        resolve_chat_platform(db, chat_model)?;
+    let (api_key, api_address, api_type, actual_model) = resolve_chat_platform(db, chat_model)?;
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
@@ -719,7 +878,10 @@ pub async fn rag_query(
                 .header("x-api-key", api_key.trim())
                 .header("anthropic-version", "2023-06-01")
                 .header("content-type", "application/json");
-            let resp = req.send().await.map_err(|e| format!("LLM request failed: {}", e))?;
+            let resp = req
+                .send()
+                .await
+                .map_err(|e| format!("LLM request failed: {}", e))?;
             if !resp.status().is_success() {
                 let status = resp.status();
                 let body = resp.text().await.unwrap_or_default();
@@ -745,7 +907,10 @@ pub async fn rag_query(
             if !api_key.trim().is_empty() {
                 req = req.header("Authorization", format!("Bearer {}", api_key.trim()));
             }
-            let resp = req.send().await.map_err(|e| format!("LLM request failed: {}", e))?;
+            let resp = req
+                .send()
+                .await
+                .map_err(|e| format!("LLM request failed: {}", e))?;
             if !resp.status().is_success() {
                 let status = resp.status();
                 let body = resp.text().await.unwrap_or_default();
@@ -784,13 +949,23 @@ pub fn resolve_chat_platform(
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
             })
             .map_err(|e| format!("Platform '{}' not found: {}", pid, e))?;
-        return Ok((api_key, api_address, api_type, mname.to_string()));
+        return Ok((
+            crate::crypto::decrypt(&api_key),
+            api_address,
+            api_type,
+            mname.to_string(),
+        ));
     }
 
     // Search by model name
     let result = conn
         .prepare(
-            "SELECT mp.api_key, mp.api_address, mp.api_type, pm.model_name
+            "SELECT COALESCE(
+                    (SELECT encrypted_key FROM platform_api_keys
+                     WHERE platform_id = mp.id AND is_active = 1 AND is_enabled = 1
+                     ORDER BY priority DESC, created_at ASC LIMIT 1),
+                    mp.api_key
+                 ), mp.api_address, mp.api_type, pm.model_name
              FROM platform_models pm
              JOIN model_platforms mp ON pm.platform_id = mp.id
              WHERE pm.model_name = ?1 AND pm.is_enabled = 1 AND mp.is_enabled = 1
@@ -805,7 +980,45 @@ pub fn resolve_chat_platform(
                 row.get::<_, String>(3)?,
             ))
         })
-        .map_err(|e| format!("No enabled platform found for chat model '{}': {}", model_name, e))?;
+        .map_err(|e| {
+            format!(
+                "No enabled platform found for chat model '{}': {}",
+                model_name, e
+            )
+        })?;
 
-    Ok(result)
+    Ok((
+        crate::crypto::decrypt(&result.0),
+        result.1,
+        result.2,
+        result.3,
+    ))
+}
+
+fn filter_ranked_results(
+    results: &mut Vec<(String, f64)>,
+    allowed: &std::collections::HashSet<String>,
+    limit: usize,
+) {
+    results.retain(|(chunk_id, _)| allowed.contains(chunk_id));
+    results.truncate(limit);
+}
+
+#[cfg(test)]
+mod knowledge_base_filter_tests {
+    use std::collections::HashSet;
+
+    use super::filter_ranked_results;
+
+    #[test]
+    fn selected_knowledge_bases_exclude_unbound_chunks() {
+        let mut ranked = vec![
+            ("allowed-1".into(), 1.0),
+            ("foreign".into(), 0.9),
+            ("allowed-2".into(), 0.8),
+        ];
+        let allowed = HashSet::from(["allowed-1".to_string(), "allowed-2".to_string()]);
+        filter_ranked_results(&mut ranked, &allowed, 1);
+        assert_eq!(ranked, vec![("allowed-1".to_string(), 1.0)]);
+    }
 }

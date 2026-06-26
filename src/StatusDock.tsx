@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, emit } from "@tauri-apps/api/event";
 import { LogicalSize } from "@tauri-apps/api/dpi";
 import { cn } from "@/lib/utils";
+import { PRODUCT_NAME } from "@/lib/constants";
 
 type DevStatus = "idle" | "busy" | "pending" | "error";
 
@@ -149,12 +150,11 @@ export default function StatusDock() {
     >
       {/* Main Dock Card */}
       <div
-        onMouseDown={handleDragStart}
         onClick={handleCardClick}
         onContextMenu={handleContextMenu}
-        title="左键拖动 | 单击唤起主窗口 | 右键打开菜单"
-        className="flex items-center cursor-grab select-none box-border"
-        aria-label="OMNIX DevFlow 悬浮栏：拖动移动，单击唤起主窗口，右键打开菜单"
+        title="单击唤起主窗口 | 右键打开菜单"
+        className="flex items-center cursor-pointer select-none box-border"
+        aria-label={`${PRODUCT_NAME} 悬浮栏：单击唤起主窗口，右键打开菜单`}
         style={{
           width: `${DOCK_W}px`,
           height: `${DOCK_H}px`,
@@ -168,37 +168,19 @@ export default function StatusDock() {
           transition: "border-color 0.4s ease, box-shadow 0.4s ease",
         }}
       >
-        {/* Status Dot */}
-        <div className="relative shrink-0 mr-2.5" style={{ width: "12px", height: "12px" }}>
-          {cfg.shouldPulse && (
-            <div
-              className="absolute rounded-full"
-              style={{
-                inset: "-3px",
-                border: `1.5px solid ${cfg.color}`,
-                opacity: 0.5,
-                animation: `sd-pulse-ring ${cfg.pulseSpeed} infinite ease-in-out`,
-              }}
-            />
-          )}
-          <div
-            className="absolute rounded-full"
+        <div className="relative mr-2.5 h-7 w-7 shrink-0">
+          <img
+            src="/omnix-workbench-icon.png"
+            alt=""
+            aria-hidden="true"
+            className="h-7 w-7 rounded-md"
+          />
+          <span
+            className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-background"
             style={{
-              inset: 0,
               backgroundColor: cfg.color,
               boxShadow: `0 0 8px ${cfg.color}`,
               animation: cfg.shouldPulse ? `sd-pulse-dot ${cfg.pulseSpeed} infinite ease-in-out` : "none",
-            }}
-          />
-          <div
-            className="absolute rounded-full"
-            style={{
-              width: "5px",
-              height: "5px",
-              top: "3.5px",
-              left: "3.5px",
-              background: "rgba(255,255,255,0.65)",
-              zIndex: 2,
             }}
           />
         </div>
@@ -206,7 +188,7 @@ export default function StatusDock() {
         {/* Text Area */}
         <div className="flex flex-col grow min-w-0">
           <span className="text-xs font-bold text-foreground leading-tight" style={{ letterSpacing: "0.3px" }}>
-            OMNIX DevFlow
+            {PRODUCT_NAME}
           </span>
           <span
             className="text-xs font-medium leading-snug whitespace-nowrap truncate opacity-85"
@@ -220,7 +202,17 @@ export default function StatusDock() {
         </div>
 
         {/* Grip dots */}
-        <div className="flex flex-col opacity-35 ml-1.5 shrink-0" style={{ gap: "2px" }}>
+        <div
+          className="flex flex-col opacity-35 ml-1.5 shrink-0 cursor-grab p-1"
+          style={{ gap: "2px" }}
+          title="拖动悬浮栏"
+          aria-label="拖动悬浮栏"
+          onMouseDown={(event) => {
+            event.stopPropagation();
+            handleDragStart(event);
+          }}
+          onClick={(event) => event.stopPropagation()}
+        >
           {[0, 1, 2].map(row => (
             <div key={row} className="flex" style={{ gap: "2px" }}>
               <div className="rounded-full bg-white" style={{ width: "2px", height: "2px" }} />

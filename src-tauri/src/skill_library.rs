@@ -27,11 +27,14 @@ pub struct SkillMatch {
 /// Find skills that semantically match a user message.
 /// Uses keyword matching against skill name, description, and category.
 pub fn match_skills_for_message(db: &DbManager, message: &str) -> Vec<SkillMatch> {
-    let conn = match db.get_connection() { Ok(c) => c, Err(_) => return Vec::new() };
+    let conn = match db.get_connection() {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
 
-    let mut stmt = match conn.prepare(
-        "SELECT name, description, category, file_path FROM skills WHERE is_active = 1"
-    ) {
+    let mut stmt = match conn
+        .prepare("SELECT name, description, category, file_path FROM skills WHERE is_active = 1")
+    {
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };
@@ -68,7 +71,9 @@ pub fn match_skills_for_message(db: &DbManager, message: &str) -> Vec<SkillMatch
 
         // Keyword matching against description
         for word in &message_words {
-            if word.len() < 3 { continue; } // Skip short words
+            if word.len() < 3 {
+                continue;
+            } // Skip short words
 
             if desc_lower.contains(word) {
                 score += 2.0;
@@ -86,15 +91,27 @@ pub fn match_skills_for_message(db: &DbManager, message: &str) -> Vec<SkillMatch
 
         // Category-based boosting
         let boost_keywords: Vec<(&str, &str)> = vec![
-            ("bug", "调试诊断"), ("error", "调试诊断"), ("fix", "调试诊断"),
-            ("code", "研发效能"), ("review", "研发效能"), ("test", "研发效能"),
-            ("write", "文档办公"), ("doc", "文档办公"), ("translate", "文档办公"),
-            ("security", "安全"), ("deploy", "部署"), ("git", "版本控制"),
-            ("design", "设计"), ("ui", "设计"), ("api", "接口"),
+            ("bug", "调试诊断"),
+            ("error", "调试诊断"),
+            ("fix", "调试诊断"),
+            ("code", "研发效能"),
+            ("review", "研发效能"),
+            ("test", "研发效能"),
+            ("write", "文档办公"),
+            ("doc", "文档办公"),
+            ("translate", "文档办公"),
+            ("security", "安全"),
+            ("deploy", "部署"),
+            ("git", "版本控制"),
+            ("design", "设计"),
+            ("ui", "设计"),
+            ("api", "接口"),
         ];
 
         for (keyword, boost_cat) in &boost_keywords {
-            if message_lower.contains(keyword) && (cat_lower.contains(boost_cat) || desc_lower.contains(keyword)) {
+            if message_lower.contains(keyword)
+                && (cat_lower.contains(boost_cat) || desc_lower.contains(keyword))
+            {
                 score += 1.5;
             }
         }
@@ -102,7 +119,7 @@ pub fn match_skills_for_message(db: &DbManager, message: &str) -> Vec<SkillMatch
         if score >= 3.0 {
             // Read first 200 chars of skill content for preview
             let preview = std::fs::read_to_string(
-                PathBuf::from(&file_path).join(format!("{}_core.md", name))
+                PathBuf::from(&file_path).join(format!("{}_core.md", name)),
             )
             .or_else(|_| std::fs::read_to_string(PathBuf::from(&file_path).join("SKILL.md")))
             .unwrap_or_default()
@@ -131,23 +148,31 @@ pub fn build_skill_injection(matches: &[SkillMatch], db: &DbManager) -> String {
         return String::new();
     }
 
-    let conn = match db.get_connection() { Ok(c) => c, Err(_) => return String::new() };
+    let conn = match db.get_connection() {
+        Ok(c) => c,
+        Err(_) => return String::new(),
+    };
     let mut injection = String::from("\n\n<auto_injected_skills>\nThe following skills are automatically activated based on the current task:\n\n");
 
     for m in matches {
         // Read full skill content
-        let content: String = conn.query_row(
-            "SELECT file_path FROM skills WHERE name = ?1",
-            rusqlite::params![m.skill_name],
-            |r| r.get(0),
-        ).ok()
-        .and_then(|fp: String| {
-            let core = PathBuf::from(&fp).join(format!("{}_core.md", m.skill_name));
-            std::fs::read_to_string(core).ok()
-        })
-        .unwrap_or_default();
+        let content: String = conn
+            .query_row(
+                "SELECT file_path FROM skills WHERE name = ?1",
+                rusqlite::params![m.skill_name],
+                |r| r.get(0),
+            )
+            .ok()
+            .and_then(|fp: String| {
+                let core = PathBuf::from(&fp).join(format!("{}_core.md", m.skill_name));
+                std::fs::read_to_string(core).ok()
+            })
+            .unwrap_or_default();
 
-        injection.push_str(&format!("## Skill: {} (relevance: {:.1})\n{}\n\n", m.skill_name, m.relevance_score, content));
+        injection.push_str(&format!(
+            "## Skill: {} (relevance: {:.1})\n{}\n\n",
+            m.skill_name, m.relevance_score, content
+        ));
     }
 
     injection.push_str("</auto_injected_skills>\n");
@@ -191,20 +216,32 @@ pub fn generate_test_cases(skill_name: &str, skill_content: &str) -> Vec<Sandbox
 
     // Test 1: Basic usage
     cases.push(SandboxTestCase {
-        input: format!("Using the {} skill, explain your approach to a common task in your domain.", skill_name),
+        input: format!(
+            "Using the {} skill, explain your approach to a common task in your domain.",
+            skill_name
+        ),
         expected_behavior: "Should demonstrate the skill's core knowledge and workflow".into(),
     });
 
     // Test 2: Edge case
     cases.push(SandboxTestCase {
-        input: format!("Apply {} to handle an edge case or error scenario.", skill_name),
+        input: format!(
+            "Apply {} to handle an edge case or error scenario.",
+            skill_name
+        ),
         expected_behavior: "Should identify the edge case and provide a structured solution".into(),
     });
 
     // Test 3: Anti-pattern detection
-    if skill_content.contains("Anti-Pattern") || skill_content.contains("anti-pattern") || skill_content.contains("Do NOT") {
+    if skill_content.contains("Anti-Pattern")
+        || skill_content.contains("anti-pattern")
+        || skill_content.contains("Do NOT")
+    {
         cases.push(SandboxTestCase {
-            input: format!("What should you NOT do when using the {} skill?", skill_name),
+            input: format!(
+                "What should you NOT do when using the {} skill?",
+                skill_name
+            ),
             expected_behavior: "Should correctly list the anti-patterns from the skill".into(),
         });
     }
@@ -213,7 +250,12 @@ pub fn generate_test_cases(skill_name: &str, skill_content: &str) -> Vec<Sandbox
 }
 
 /// Build the auditor prompt for scoring
-pub fn build_auditor_prompt(skill_name: &str, skill_content: &str, test_input: &str, agent_response: &str) -> String {
+pub fn build_auditor_prompt(
+    skill_name: &str,
+    skill_content: &str,
+    test_input: &str,
+    agent_response: &str,
+) -> String {
     format!(
         r#"You are a strict quality auditor for AI skills. Evaluate the following response.
 
@@ -251,10 +293,10 @@ Return ONLY a JSON object:
 /// Protocol action detected in AI output
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProtocolAction {
-    pub action_type: String,  // "skill" | "memory" | "task" | "config"
-    pub target: String,       // skill ID, memory key, task title, etc.
-    pub content: String,      // payload
-    pub raw_block: String,    // original code block
+    pub action_type: String, // "skill" | "memory" | "task" | "config"
+    pub target: String,      // skill ID, memory key, task title, etc.
+    pub content: String,     // payload
+    pub raw_block: String,   // original code block
 }
 
 /// Parse protocol blocks from AI output text.
@@ -275,8 +317,10 @@ pub fn intercept_protocols(output: &str) -> Vec<ProtocolAction> {
             let lang_tag = line[3..].trim();
 
             // Check for protocol tags
-            if lang_tag.starts_with("skill:") || lang_tag.starts_with("memory:")
-                || lang_tag.starts_with("task:") || lang_tag.starts_with("config:")
+            if lang_tag.starts_with("skill:")
+                || lang_tag.starts_with("memory:")
+                || lang_tag.starts_with("task:")
+                || lang_tag.starts_with("config:")
             {
                 let action_type = lang_tag.split(':').next().unwrap_or("").to_string();
                 let target = lang_tag.split(':').nth(1).unwrap_or("").to_string();
@@ -307,10 +351,7 @@ pub fn intercept_protocols(output: &str) -> Vec<ProtocolAction> {
 }
 
 /// Execute a protocol action
-pub fn execute_protocol_action(
-    action: &ProtocolAction,
-    db: &DbManager,
-) -> Result<String, String> {
+pub fn execute_protocol_action(action: &ProtocolAction, db: &DbManager) -> Result<String, String> {
     match action.action_type.as_str() {
         "memory" => {
             // Store memory
@@ -343,13 +384,65 @@ pub fn execute_protocol_action(
 /// A skill found in an external market
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MarketSkill {
-    pub source: String,       // "github" | "anthropic" | "awesome-claude-skills"
+    pub source: String, // "github" | "anthropic" | "awesome-claude-skills"
     pub name: String,
     pub description: String,
     pub url: String,
     pub author: String,
     pub stars: Option<u32>,
     pub downloaded: bool,
+    #[serde(default)]
+    pub repo_url: String,
+    #[serde(default)]
+    pub revision: String,
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub content_sha: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketSkillPreview {
+    pub skill: MarketSkill,
+    pub content: String,
+    pub content_hash: String,
+}
+
+pub fn github_raw_url(html_url: &str) -> Option<String> {
+    let marker = "/blob/";
+    let index = html_url.find(marker)?;
+    let (repo, rest) = html_url.split_at(index);
+    Some(format!(
+        "https://raw.githubusercontent.com/{}/{}",
+        repo.trim_start_matches("https://github.com/"),
+        rest.trim_start_matches(marker)
+    ))
+}
+
+pub async fn fetch_market_skill(skill: &MarketSkill) -> Result<MarketSkillPreview, String> {
+    let raw_url = github_raw_url(&skill.url)
+        .ok_or_else(|| "市场条目不是可预览的 GitHub SKILL.md 地址".to_string())?;
+    let response = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|e| e.to_string())?
+        .get(raw_url)
+        .header("User-Agent", "OMNIX-Workbench")
+        .send()
+        .await
+        .map_err(|e| format!("下载 SKILL.md 失败: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!("下载 SKILL.md 失败: HTTP {}", response.status()));
+    }
+    let content = response.text().await.map_err(|e| e.to_string())?;
+    if content.trim().is_empty() || !content.contains('#') {
+        return Err("远程 SKILL.md 内容为空或格式无效".into());
+    }
+    Ok(MarketSkillPreview {
+        skill: skill.clone(),
+        content_hash: crate::hash::fnv1a_hash(&content),
+        content,
+    })
 }
 
 /// Search for skills across multiple sources
@@ -365,7 +458,7 @@ pub async fn search_market(query: &str) -> Result<Vec<MarketSkill>, String> {
     let github_query = format!("{} filename:SKILL.md", query);
     if let Ok(res) = client
         .get("https://api.github.com/search/code")
-        .header("User-Agent", "OMNIX-DevFlow")
+        .header("User-Agent", "OMNIX-Workbench")
         .header("Accept", "application/vnd.github.v3+json")
         .query(&[("q", &github_query), ("per_page", &"10".to_string())])
         .send()
@@ -374,17 +467,39 @@ pub async fn search_market(query: &str) -> Result<Vec<MarketSkill>, String> {
         if let Ok(body) = res.json::<serde_json::Value>().await {
             if let Some(items) = body["items"].as_array() {
                 for item in items {
-                    let name = item["name"].as_str().unwrap_or("unknown").to_string();
-                    let repo = item["repository"]["full_name"].as_str().unwrap_or("").to_string();
+                    let path = item["path"].as_str().unwrap_or("SKILL.md").to_string();
+                    let name = std::path::Path::new(&path)
+                        .parent()
+                        .and_then(|parent| parent.file_name())
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("skill")
+                        .to_string();
+                    let repo = item["repository"]["full_name"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string();
+                    let repo_url = item["repository"]["html_url"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string();
                     let url = item["html_url"].as_str().unwrap_or("").to_string();
                     results.push(MarketSkill {
                         source: "github".into(),
-                        name: name.replace(".md", ""),
+                        name,
                         description: format!("From {}", repo),
                         url,
                         author: repo.split('/').next().unwrap_or("").into(),
-                        stars: item["repository"]["stargazers_count"].as_u64().map(|v| v as u32),
+                        stars: item["repository"]["stargazers_count"]
+                            .as_u64()
+                            .map(|v| v as u32),
                         downloaded: false,
+                        repo_url,
+                        revision: item["repository"]["default_branch"]
+                            .as_str()
+                            .unwrap_or("main")
+                            .into(),
+                        path,
+                        content_sha: item["sha"].as_str().unwrap_or("").into(),
                     });
                 }
             }
@@ -394,25 +509,47 @@ pub async fn search_market(query: &str) -> Result<Vec<MarketSkill>, String> {
     // Source 2: Anthropic official skills
     if let Ok(res) = client
         .get("https://api.github.com/search/code")
-        .header("User-Agent", "OMNIX-DevFlow")
+        .header("User-Agent", "OMNIX-Workbench")
         .header("Accept", "application/vnd.github.v3+json")
-        .query(&[("q", &format!("repo:anthropics/skills {} filename:SKILL.md", query)), ("per_page", &"5".to_string())])
+        .query(&[
+            (
+                "q",
+                &format!("repo:anthropics/skills {} filename:SKILL.md", query),
+            ),
+            ("per_page", &"5".to_string()),
+        ])
         .send()
         .await
     {
         if let Ok(body) = res.json::<serde_json::Value>().await {
             if let Some(items) = body["items"].as_array() {
                 for item in items {
-                    let name = item["name"].as_str().unwrap_or("unknown").to_string();
+                    let path = item["path"].as_str().unwrap_or("SKILL.md").to_string();
+                    let name = std::path::Path::new(&path)
+                        .parent()
+                        .and_then(|p| p.file_name())
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("skill")
+                        .to_string();
                     let url = item["html_url"].as_str().unwrap_or("").to_string();
                     results.push(MarketSkill {
                         source: "anthropic".into(),
-                        name: name.replace(".md", ""),
+                        name,
                         description: "Anthropic official skill".into(),
                         url,
                         author: "anthropics".into(),
                         stars: None,
                         downloaded: false,
+                        repo_url: item["repository"]["html_url"]
+                            .as_str()
+                            .unwrap_or("https://github.com/anthropics/skills")
+                            .into(),
+                        revision: item["repository"]["default_branch"]
+                            .as_str()
+                            .unwrap_or("main")
+                            .into(),
+                        path,
+                        content_sha: item["sha"].as_str().unwrap_or("").into(),
                     });
                 }
             }
@@ -422,25 +559,50 @@ pub async fn search_market(query: &str) -> Result<Vec<MarketSkill>, String> {
     // Source 3: awesome-claude-skills
     if let Ok(res) = client
         .get("https://api.github.com/search/code")
-        .header("User-Agent", "OMNIX-DevFlow")
+        .header("User-Agent", "OMNIX-Workbench")
         .header("Accept", "application/vnd.github.v3+json")
-        .query(&[("q", &format!("repo:ComposioHQ/awesome-claude-skills {} filename:SKILL.md", query)), ("per_page", &"5".to_string())])
+        .query(&[
+            (
+                "q",
+                &format!(
+                    "repo:ComposioHQ/awesome-claude-skills {} filename:SKILL.md",
+                    query
+                ),
+            ),
+            ("per_page", &"5".to_string()),
+        ])
         .send()
         .await
     {
         if let Ok(body) = res.json::<serde_json::Value>().await {
             if let Some(items) = body["items"].as_array() {
                 for item in items {
-                    let name = item["name"].as_str().unwrap_or("unknown").to_string();
+                    let path = item["path"].as_str().unwrap_or("SKILL.md").to_string();
+                    let name = std::path::Path::new(&path)
+                        .parent()
+                        .and_then(|p| p.file_name())
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("skill")
+                        .to_string();
                     let url = item["html_url"].as_str().unwrap_or("").to_string();
                     results.push(MarketSkill {
                         source: "awesome-claude-skills".into(),
-                        name: name.replace(".md", ""),
+                        name,
                         description: "Community curated skill".into(),
                         url,
                         author: "ComposioHQ".into(),
                         stars: None,
                         downloaded: false,
+                        repo_url: item["repository"]["html_url"]
+                            .as_str()
+                            .unwrap_or("https://github.com/ComposioHQ/awesome-claude-skills")
+                            .into(),
+                        revision: item["repository"]["default_branch"]
+                            .as_str()
+                            .unwrap_or("main")
+                            .into(),
+                        path,
+                        content_sha: item["sha"].as_str().unwrap_or("").into(),
                     });
                 }
             }
@@ -486,8 +648,16 @@ pub fn distill_from_project(project_path: &str) -> Result<Vec<DistillRecommendat
             recommendations.push(DistillRecommendation {
                 suggested_name: "frontend-development".into(),
                 suggested_category: "研发效能".into(),
-                reason: "Project uses frontend framework — a frontend development skill would help".into(),
-                source_evidence: vec![format!("Found frontend deps: {}", deps.iter().filter(|d| d.contains("react") || d.contains("vue")).cloned().collect::<Vec<_>>().join(", "))],
+                reason: "Project uses frontend framework — a frontend development skill would help"
+                    .into(),
+                source_evidence: vec![format!(
+                    "Found frontend deps: {}",
+                    deps.iter()
+                        .filter(|d| d.contains("react") || d.contains("vue"))
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )],
                 confidence: 0.7,
             });
         }
@@ -500,7 +670,11 @@ pub fn distill_from_project(project_path: &str) -> Result<Vec<DistillRecommendat
                 confidence: 0.8,
             });
         }
-        if dep_str.contains("sqlx") || dep_str.contains("diesel") || dep_str.contains("rusqlite") || dep_str.contains("sea-orm") {
+        if dep_str.contains("sqlx")
+            || dep_str.contains("diesel")
+            || dep_str.contains("rusqlite")
+            || dep_str.contains("sea-orm")
+        {
             recommendations.push(DistillRecommendation {
                 suggested_name: "database-patterns".into(),
                 suggested_category: "数据".into(),
@@ -513,8 +687,11 @@ pub fn distill_from_project(project_path: &str) -> Result<Vec<DistillRecommendat
 
     // 2. Analyze Git log for common patterns
     if let Ok(output) = std::process::Command::new("git")
-        .arg("-C").arg(&root)
-        .arg("log").arg("--oneline").arg("-50")
+        .arg("-C")
+        .arg(&root)
+        .arg("log")
+        .arg("--oneline")
+        .arg("-50")
         .output()
     {
         let log = String::from_utf8_lossy(&output.stdout);
@@ -529,14 +706,20 @@ pub fn distill_from_project(project_path: &str) -> Result<Vec<DistillRecommendat
             recommendations.push(DistillRecommendation {
                 suggested_name: "debugging-workflow".into(),
                 suggested_category: "调试诊断".into(),
-                reason: format!("High fix commit count ({}) suggests a debugging skill would be valuable", fix_count),
+                reason: format!(
+                    "High fix commit count ({}) suggests a debugging skill would be valuable",
+                    fix_count
+                ),
                 source_evidence: vec![format!("{} fix commits found", fix_count)],
                 confidence: 0.6,
             });
         }
 
         if refactor_count > 3 {
-            evidence.push(format!("Git log: {} refactor commits in last 50", refactor_count));
+            evidence.push(format!(
+                "Git log: {} refactor commits in last 50",
+                refactor_count
+            ));
         }
     }
 
@@ -550,7 +733,9 @@ pub fn distill_from_project(project_path: &str) -> Result<Vec<DistillRecommendat
             recommendations.push(DistillRecommendation {
                 suggested_name: "development-logging".into(),
                 suggested_category: "研发效能".into(),
-                reason: "Project has extensive logs — a logging skill could standardize the practice".into(),
+                reason:
+                    "Project has extensive logs — a logging skill could standardize the practice"
+                        .into(),
                 source_evidence: vec![format!("{} log files found", log_files)],
                 confidence: 0.5,
             });
@@ -594,7 +779,11 @@ fn extract_dependencies(root: &PathBuf) -> Vec<String> {
             if !trimmed.starts_with('#') && !trimmed.starts_with('[') && trimmed.contains('=') {
                 if let Some(name) = trimmed.split('=').next() {
                     let name = name.trim().to_string();
-                    if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+                    if !name.is_empty()
+                        && name
+                            .chars()
+                            .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+                    {
                         deps.push(name);
                     }
                 }

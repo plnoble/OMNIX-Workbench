@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { useEffect, useRef, useState } from "react";
+import { openPath } from "@tauri-apps/plugin-opener";
 import { toast } from "sonner";
 import {
   AlertTriangle,
@@ -7,6 +7,10 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  FileCode2,
+  Folder,
+  FolderOpen,
+  GitBranch,
   Globe,
   Loader2,
   PanelRightClose,
@@ -16,26 +20,32 @@ import {
   Sparkles,
   Square,
   Users,
+  RefreshCw,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { AGENT_NAMES } from "@/lib/constants";
 import { cn } from "@/lib/utils";
-import { knowledgeApi, searchApi } from "@/lib/tauri-api";
+import { knowledgeApi, runtimeApi, searchApi, workspaceApi } from "@/lib/tauri-api";
 import type {
   ConversationMessage,
   DetectedAgent,
   EmbeddingModelInfo,
-  KbDocument,
+  KnowledgeBase,
   PermissionPolicy,
-  PlatformModel,
-  PromptType,
+  RuntimeAgentId,
+  RuntimeApprovalRequest,
+  RuntimeModelOption,
+  RuntimePermissionPolicy,
   SearchResult,
   WorkMode,
+  WorkspaceSnapshot,
 } from "@/types";
+import type { RuntimeSendConfig } from "@/hooks/useConversations";
 
 export interface ChatTabProps {
+  surface: "chat" | "work";
   activeAgent: string;
   detectedAgents: DetectedAgent[];
   messages: ConversationMessage[];
@@ -43,15 +53,14 @@ export interface ChatTabProps {
   chatWorkspace: string;
   currentConvId: string;
   activeSessions: string[];
-  promptType: PromptType;
-  targetModel: string;
-  activeModels: PlatformModel[];
+  pendingApproval: RuntimeApprovalRequest | null;
+  isAwaitingResponse?: boolean;
   setActiveAgent: (name: string) => void;
   setChatInput: (val: string) => void;
   setChatWorkspace: (val: string) => void;
-  setTargetModel: (val: string) => void;
-  onSendMessage: (e: React.FormEvent, searchContext?: string) => void;
-  onSendStdinDirect: (input: string) => void;
+  onOpenWorkspaceModal?: () => void;
+  onSendMessage: (e: React.FormEvent, config: RuntimeSendConfig, searchContext?: string) => void;
+  onRespondApproval: (approved: boolean, forSession?: boolean) => void;
   onStopSession: (id: string) => void;
   onSuggestTeam?: (prompt: string) => void;
 }
@@ -63,10 +72,15 @@ const PERMISSION_OPTIONS: Array<{ id: PermissionPolicy; label: string; desc: str
 ];
 
 const WORK_MODE_OPTIONS: Array<{ id: WorkMode; label: string; desc: string }> = [
-  { id: "chat", label: "直接执行", desc: "直接把任务交给 Agent" },
-  { id: "plan_first", label: "计划模式", desc: "先做计划，不直接操作" },
-  { id: "goal", label: "追求目标", desc: "自主且长效地推进目标" },
+  { id: "direct", label: "直接执行", desc: "按权限策略执行任务" },
+  { id: "plan", label: "计划模式", desc: "只读分析并先给出计划" },
 ];
+
+function getRuntimeAgentId(agentName: string): RuntimeAgentId | null {
+  if (agentName === "Claude Code") return "claude_code";
+  if (agentName === "Codex") return "codex";
+  return null;
+}
 
 function MessageContent({ content }: { content: string }) {
   const parts: Array<{ type: "text" | "think"; content: string }> = [];
@@ -119,6 +133,7 @@ function ThinkBlock({ content }: { content: string }) {
 }
 
 export function ChatTab({
+  surface,
   activeAgent,
   detectedAgents,
   messages,
@@ -126,45 +141,77 @@ export function ChatTab({
   chatWorkspace,
   currentConvId,
   activeSessions,
-  promptType,
-  targetModel,
-  activeModels,
+  pendingApproval,
+  isAwaitingResponse,
   setActiveAgent,
   setChatInput,
   setChatWorkspace,
-  setTargetModel,
+  onOpenWorkspaceModal,
   onSendMessage,
-  onSendStdinDirect,
+  onRespondApproval,
   onStopSession,
   onSuggestTeam,
 }: ChatTabProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [permissionPolicy, setPermissionPolicy] = useState<PermissionPolicy>("ask_on_risk");
-  const [workMode, setWorkMode] = useState<WorkMode>("chat");
+  const [workMode, setWorkMode] = useState<WorkMode>("direct");
+  const [runtimeModels, setRuntimeModels] = useState<RuntimeModelOption[]>([]);
+  const [selectedModelId, setSelectedModelId] = useState("agent_default");
+  const [fullAccessConfirmed, setFullAccessConfirmed] = useState(false);
   const [webSearchEnabled, setWebSearchEnabled] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
-  const [workspacePanelOpen, setWorkspacePanelOpen] = useState(true);
-  const [knowledgeDocs, setKnowledgeDocs] = useState<KbDocument[]>([]);
+  const [workspacePanelOpen, setWorkspacePanelOpen] = useState(
+    chatWorkspace !== "direct" && window.innerWidth >= 1000
+  );
+  const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [embeddingModels, setEmbeddingModels] = useState<EmbeddingModelInfo[]>([]);
   const [selectedKnowledgeIds, setSelectedKnowledgeIds] = useState<string[]>([]);
+  const [workspaceSnapshot, setWorkspaceSnapshot] = useState<WorkspaceSnapshot | null>(null);
+  const [workspaceLoading, setWorkspaceLoading] = useState(false);
 
-  const modelOptions = useMemo(
-    () => activeModels.map((model) => ({
-      value: `${model.platform_id}:${model.model_name}`,
-      label: `${model.model_name} · ${model.platform_id}`,
-    })),
-    [activeModels],
-  );
-  const modelValues = useMemo(() => modelOptions.map((model) => model.value), [modelOptions]);
-  const isOrphanModel = !!targetModel && !modelValues.includes(targetModel);
+  const runtimeAgentId = getRuntimeAgentId(activeAgent);
+  const selectedModel = runtimeModels.find((model) => model.id === selectedModelId)
+    ?? runtimeModels.find((model) => model.is_default && model.compatibility.selectable)
+    ?? runtimeModels.find((model) => model.compatibility.selectable);
   const isWorkspaceMode = chatWorkspace !== "direct";
+  // 工作 surface requires a workspace before any task can be sent.
+  const needsWorkspace = surface === "work" && !isWorkspaceMode;
   const isRunning = !!currentConvId && activeSessions.includes(currentConvId);
+  // OMNIX (custom) models carry a provider_name; Agent default / builtins do not.
+  const customModels = runtimeModels.filter((model) => model.provider_name);
+  const noSelectableCustomModel =
+    !!runtimeAgentId &&
+    customModels.length > 0 &&
+    !customModels.some((model) => model.compatibility.selectable);
 
   useEffect(() => {
-    if (modelOptions.length > 0 && (!targetModel || isOrphanModel)) {
-      setTargetModel(modelOptions[0].value);
+    setWorkspacePanelOpen(isWorkspaceMode && window.innerWidth >= 1000);
+  }, [isWorkspaceMode]);
+
+  useEffect(() => {
+    setFullAccessConfirmed(false);
+  }, [currentConvId, permissionPolicy]);
+
+  useEffect(() => {
+    if (!runtimeAgentId) {
+      setRuntimeModels([]);
+      return;
     }
-  }, [modelOptions, targetModel, isOrphanModel, setTargetModel]);
+    runtimeApi.getModelOptions(runtimeAgentId).then((models) => {
+      setRuntimeModels(models);
+      // On every Agent switch, pre-select that Agent's configured default
+      // (binding / global default). Don't carry over the previous Agent's
+      // selection — the shared "agent_default" option is valid for every Agent
+      // and would otherwise mask the new Agent's default.
+      const preferred =
+        models.find((model) => model.is_default && model.compatibility.selectable)
+        ?? models.find((model) => model.compatibility.selectable);
+      setSelectedModelId(preferred?.id || "");
+    }).catch((error) => {
+      setRuntimeModels([]);
+      toast.error("无法读取 Agent 模型兼容目录", { description: String(error) });
+    });
+  }, [runtimeAgentId]);
 
   useEffect(() => {
     const el = textareaRef.current;
@@ -174,13 +221,34 @@ export function ChatTab({
   }, [chatInput]);
 
   useEffect(() => {
-    knowledgeApi.listDocuments().then(setKnowledgeDocs).catch(() => setKnowledgeDocs([]));
+    knowledgeApi.listBases().then(setKnowledgeBases).catch(() => setKnowledgeBases([]));
     knowledgeApi.getEmbeddingModels().then(setEmbeddingModels).catch(() => setEmbeddingModels([]));
   }, []);
 
+  const refreshWorkspace = async () => {
+    if (!isWorkspaceMode) {
+      setWorkspaceSnapshot(null);
+      return;
+    }
+    setWorkspaceLoading(true);
+    try {
+      setWorkspaceSnapshot(await workspaceApi.snapshot(chatWorkspace));
+    } catch (error) {
+      setWorkspaceSnapshot(null);
+      toast.error("无法读取工作区", { description: String(error) });
+    } finally {
+      setWorkspaceLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void refreshWorkspace();
+    // Refresh after completed messages because an Agent turn may change files.
+  }, [chatWorkspace, messages.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const selectedPermission = PERMISSION_OPTIONS.find((item) => item.id === permissionPolicy)!;
   const selectedWorkMode = WORK_MODE_OPTIONS.find((item) => item.id === workMode)!;
-  const selectedKnowledgeDocs = knowledgeDocs.filter((doc) => selectedKnowledgeIds.includes(doc.id));
+  const selectedKnowledgeBases = knowledgeBases.filter((base) => selectedKnowledgeIds.includes(base.id));
   const selectedEmbeddingModel = embeddingModels[0]?.model_name ?? "";
 
   const handleKnowledgeToggle = (id: string) => {
@@ -205,26 +273,30 @@ export function ChatTab({
         query: chatInput,
         embeddingModel: selectedEmbeddingModel,
         limit: 8,
+        knowledgeBaseIds: selectedKnowledgeIds,
       });
       if (results.length > 0) {
-        blocks.push(formatKnowledgeContext(results, selectedKnowledgeDocs));
+        blocks.push(formatKnowledgeContext(results, selectedKnowledgeBases));
       }
     }
-
-    if (workMode === "plan_first") {
-      blocks.push("[工作模式]\n请先给出计划、风险和需要用户确认的步骤，不要直接执行文件或系统操作。");
-    }
-    if (workMode === "goal") {
-      blocks.push("[工作模式]\n请围绕用户目标持续推进，遇到关键风险或权限边界时暂停请求确认。");
-    }
-    blocks.push(`[权限模式]\n${selectedPermission.label}: ${selectedPermission.desc}`);
 
     return blocks.join("\n\n---\n\n");
   };
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!chatInput.trim()) return;
+    if (!chatInput.trim() || !runtimeAgentId || !selectedModel) return;
+    if (needsWorkspace) {
+      onOpenWorkspaceModal?.();
+      return;
+    }
+
+    let confirmed = fullAccessConfirmed;
+    if (permissionPolicy === "full_access" && !confirmed) {
+      confirmed = window.confirm("完全访问允许 Agent 在当前会话中绕过审批并修改系统可访问内容。仅在你信任任务和工作区时继续。");
+      if (!confirmed) return;
+      setFullAccessConfirmed(true);
+    }
 
     setIsSearching(webSearchEnabled || selectedKnowledgeIds.length > 0);
     let context: string | undefined;
@@ -239,7 +311,14 @@ export function ChatTab({
     } finally {
       setIsSearching(false);
     }
-    onSendMessage(event, context);
+    const permission: RuntimePermissionPolicy = permissionPolicy === "full_access"
+      ? { kind: "full_access", confirmed }
+      : { kind: permissionPolicy };
+    onSendMessage(event, {
+      model: selectedModel.selection,
+      permission,
+      workMode,
+    }, context);
   };
 
   const openWorkspace = async () => {
@@ -247,12 +326,17 @@ export function ChatTab({
       setChatWorkspace("direct");
       return;
     }
-    const normalized = chatWorkspace.replace(/\\/g, "/");
-    await openUrl(`file:///${normalized}`);
+    await openPath(chatWorkspace);
+  };
+
+  const openWorkspaceEntry = async (relativePath: string) => {
+    if (!workspaceSnapshot) return;
+    const separator = workspaceSnapshot.root_path.includes("\\") ? "\\" : "/";
+    await openPath(`${workspaceSnapshot.root_path}${separator}${relativePath.replace(/[\\/]/g, separator)}`);
   };
 
   return (
-    <div className="flex h-full flex-1 overflow-hidden bg-background">
+    <div className="relative flex h-full flex-1 overflow-hidden bg-background">
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex items-center gap-2 border-b border-border px-5 py-3">
           <AgentStrip
@@ -269,21 +353,53 @@ export function ChatTab({
             title="把当前任务转为团队计划"
           >
             <Users className="h-3.5 w-3.5" />
-            转团队
+            <span className="hidden md:inline">转团队</span>
           </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-8 w-8 p-0"
-            onClick={() => setWorkspacePanelOpen((open) => !open)}
-            title={workspacePanelOpen ? "收起工作区" : "展开工作区"}
-          >
-            {workspacePanelOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
-          </Button>
+          {surface === "work" && (
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => onOpenWorkspaceModal?.()}
+                title={isWorkspaceMode ? chatWorkspace : "选择工作区"}
+              >
+                <FolderOpen className="h-3.5 w-3.5" />
+                <span className="hidden md:inline max-w-32 truncate">
+                  {isWorkspaceMode ? chatWorkspace.split(/[\\/]/).pop() : "选择工作区"}
+                </span>
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 w-8 p-0"
+                onClick={() => setWorkspacePanelOpen((open) => !open)}
+                title={workspacePanelOpen ? "收起工作区" : "展开工作区"}
+                disabled={!isWorkspaceMode}
+              >
+                {workspacePanelOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
+              </Button>
+            </>
+          )}
         </div>
 
         <div className="flex-1 overflow-y-auto px-6 py-5">
-          {messages.length === 0 ? (
+          {messages.length === 0 && needsWorkspace ? (
+            <div className="mx-auto flex h-full max-w-md flex-col items-center justify-center gap-4 text-center">
+              <div className="flex h-14 w-14 items-center justify-center rounded-xl bg-muted/40">
+                <FolderOpen className="h-7 w-7 text-muted-foreground" />
+              </div>
+              <div>
+                <div className="text-lg font-semibold">工作模式需要一个工作区</div>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  选择一个项目文件夹，{activeAgent} 才能读写文件、查看 Git 变更并处理开发任务。只想随便聊聊？切到「对话」。
+                </p>
+              </div>
+              <Button onClick={() => onOpenWorkspaceModal?.()}>
+                <FolderOpen className="h-4 w-4" />
+                选择工作区
+              </Button>
+            </div>
+          ) : messages.length === 0 ? (
             <FirstScreen
               activeAgent={activeAgent}
               installed={detectedAgents.find((agent) => agent.name === activeAgent)?.status === "installed"}
@@ -308,12 +424,31 @@ export function ChatTab({
                   </div>
                 </div>
               ))}
-              {promptType !== "none" && <PromptCards promptType={promptType} onSendStdin={onSendStdinDirect} />}
+              {pendingApproval && (
+                <ApprovalCard
+                  approval={pendingApproval}
+                  onRespond={onRespondApproval}
+                />
+              )}
+              {isAwaitingResponse && (
+                <div className="flex justify-start">
+                  <div className="max-w-[78%] rounded-md border border-border bg-card/50 px-4 py-3 text-sm">
+                    <div className="mb-1 text-xs text-muted-foreground">{activeAgent}</div>
+                    <div className="flex items-center gap-2 text-muted-foreground">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      <span>正在启动 {activeAgent} 并等待响应…</span>
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground/70">
+                      首次启动需要初始化（可能十几秒），请稍候
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
 
-        <form onSubmit={handleSubmit} className="border-t border-border bg-background/95 p-5">
+        <form onSubmit={handleSubmit} className="shrink-0 border-t border-border bg-background/95 p-5">
           <div className="mx-auto max-w-5xl rounded-md border border-border bg-card/60 p-3 shadow-lg">
             <Textarea
               ref={textareaRef}
@@ -325,19 +460,28 @@ export function ChatTab({
                   event.currentTarget.form?.requestSubmit();
                 }
               }}
-              placeholder={`${activeAgent}，输入你要做的事情... 支持长文本、换行、@引用文件`}
+              placeholder={`${activeAgent}，输入你要做的事情...`}
               className="min-h-28 resize-none border-0 bg-transparent text-base leading-7 focus-visible:ring-0 focus-visible:ring-offset-0"
               style={{ maxHeight: "50vh" }}
             />
 
             <div className="mt-3 flex flex-wrap items-center gap-2">
               <select
-                value={modelValues.includes(targetModel) ? targetModel : modelOptions[0]?.value || ""}
-                onChange={(event) => setTargetModel(event.target.value)}
+                value={selectedModel?.id || ""}
+                onChange={(event) => setSelectedModelId(event.target.value)}
                 className="h-8 max-w-56 rounded-md border border-border bg-background px-2 text-sm"
-                disabled={modelOptions.length === 0}
+                disabled={!runtimeAgentId || runtimeModels.length === 0}
+                title={selectedModel?.compatibility.reason}
               >
-                {modelOptions.length === 0 ? <option value="">请先配置模型</option> : modelOptions.map((model) => <option key={model.value} value={model.value}>{model.label}</option>)}
+                {!runtimeAgentId ? (
+                  <option value="">待适配</option>
+                ) : runtimeModels.length === 0 ? (
+                  <option value="">读取模型中...</option>
+                ) : runtimeModels.map((model) => (
+                  <option key={model.id} value={model.id} disabled={!model.compatibility.selectable}>
+                    {model.label}{model.compatibility.selectable ? "" : ` · 不可用：${model.compatibility.reason}`}
+                  </option>
+                ))}
               </select>
 
               <select
@@ -362,7 +506,7 @@ export function ChatTab({
 
               {!isWorkspaceMode && (
                 <KnowledgePicker
-                  documents={knowledgeDocs}
+                  knowledgeBases={knowledgeBases}
                   selectedIds={selectedKnowledgeIds}
                   disabled={!selectedEmbeddingModel}
                   onToggle={handleKnowledgeToggle}
@@ -382,10 +526,10 @@ export function ChatTab({
               </button>
 
               <div className="ml-auto flex items-center gap-2">
-                {isOrphanModel && modelOptions.length > 0 && (
+                {selectedModel && selectedModel.compatibility.level !== "native" && (
                   <span className="flex items-center gap-1 text-xs text-warning">
                     <AlertTriangle className="h-3.5 w-3.5" />
-                    已切换可用模型
+                    {selectedModel.compatibility.level === "gateway" ? "OMNIX 网关" : selectedModel.compatibility.reason}
                   </span>
                 )}
                 {isRunning && (
@@ -394,18 +538,28 @@ export function ChatTab({
                     停止
                   </Button>
                 )}
-                <Button type="submit" disabled={isSearching || !chatInput.trim()}>
+                <Button type="submit" disabled={isSearching || !chatInput.trim() || !runtimeAgentId || !selectedModel?.compatibility.selectable || needsWorkspace}>
                   {isSearching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                   发送
                 </Button>
               </div>
             </div>
+            {noSelectableCustomModel && (
+              <p className="mt-2 flex items-start gap-1.5 text-xs text-warning">
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <span>
+                  {activeAgent === "Codex"
+                    ? "Codex 只能使用 OpenAI 协议供应商。当前已启用的供应商不兼容（例如 Anthropic 类型仅 Claude Code 可用）。请在「模型」中启用或新增一个 OpenAI 类型供应商，OMNIX 网关会自动把 Codex 的请求翻译过去。"
+                    : `${activeAgent} 暂无可用的自定义模型，请在「模型」中启用一个兼容的供应商，或使用 Agent 官方默认。`}
+                </span>
+              </p>
+            )}
           </div>
         </form>
       </div>
 
       {workspacePanelOpen && (
-        <aside className="hidden w-72 shrink-0 border-l border-border bg-card/30 xl:flex xl:flex-col 2xl:w-80">
+        <aside className="absolute inset-y-0 right-0 z-30 flex w-[min(22rem,88vw)] shrink-0 flex-col border-l border-border bg-background shadow-xl min-[1600px]:static min-[1600px]:w-72 min-[1600px]:bg-card/30 min-[1600px]:shadow-none min-[1800px]:w-80">
           <div className="flex items-center justify-between border-b border-border p-4">
             <div>
               <div className="text-base font-semibold">工作区</div>
@@ -425,11 +579,64 @@ export function ChatTab({
 
           <div className="flex-1 overflow-y-auto p-4">
             {isWorkspaceMode ? (
-              <div className="space-y-4">
-                <InfoBlock label="分支" value="等待 Git 状态接入" />
-                <InfoBlock label="最近变更" value="Agent 修改文件后会在这里集中显示。" />
-                <InfoBlock label="文件" value="后续接入文件树和点击打开文件。" />
-              </div>
+              workspaceLoading && !workspaceSnapshot ? (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  读取工作区
+                </div>
+              ) : workspaceSnapshot ? (
+                <div className="space-y-5">
+                  <section>
+                    <div className="mb-2 flex items-center justify-between text-xs font-semibold text-muted-foreground">
+                      <span className="flex items-center gap-1.5"><GitBranch className="h-3.5 w-3.5" />分支</span>
+                      <button className="rounded p-1 hover:bg-muted/30" onClick={() => void refreshWorkspace()} title="刷新工作区">
+                        <RefreshCw className={cn("h-3.5 w-3.5", workspaceLoading && "animate-spin")} />
+                      </button>
+                    </div>
+                    <div className="truncate text-sm">{workspaceSnapshot.branch || "非 Git 工作区"}</div>
+                  </section>
+
+                  <section>
+                    <div className="mb-2 text-xs font-semibold text-muted-foreground">变更 {workspaceSnapshot.changes.length}</div>
+                    <div className="max-h-40 space-y-1 overflow-y-auto">
+                      {workspaceSnapshot.changes.length === 0 ? (
+                        <div className="text-xs text-muted-foreground">工作区干净</div>
+                      ) : workspaceSnapshot.changes.map((change) => (
+                        <button
+                          key={`${change.status}:${change.path}`}
+                          className="flex w-full min-w-0 items-center gap-2 rounded px-1.5 py-1 text-left text-xs hover:bg-muted/25"
+                          onClick={() => void openWorkspaceEntry(change.path)}
+                          title={change.path}
+                        >
+                          <span className="w-6 shrink-0 font-mono text-warning">{change.status || "M"}</span>
+                          <span className="truncate">{change.path}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+
+                  <section>
+                    <div className="mb-2 text-xs font-semibold text-muted-foreground">文件</div>
+                    <div className="max-h-[48vh] overflow-y-auto">
+                      {workspaceSnapshot.files.map((entry) => (
+                        <button
+                          key={entry.path}
+                          className="flex w-full min-w-0 items-center gap-1.5 rounded py-1 pr-1 text-left text-xs hover:bg-muted/25"
+                          style={{ paddingLeft: `${entry.depth * 12 + 4}px` }}
+                          onClick={() => void openWorkspaceEntry(entry.path)}
+                          title={entry.path}
+                        >
+                          {entry.is_dir ? <Folder className="h-3.5 w-3.5 shrink-0 text-warning" /> : <FileCode2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+                          <span className="truncate">{entry.name}</span>
+                        </button>
+                      ))}
+                      {workspaceSnapshot.truncated && <div className="mt-2 text-xs text-muted-foreground">仅显示前 600 项</div>}
+                    </div>
+                  </section>
+                </div>
+              ) : (
+                <div className="text-sm text-destructive">工作区不可访问</div>
+              )
             ) : (
               <div className="rounded-md border border-dashed border-border p-4 text-sm text-muted-foreground">
                 普通对话不绑定工作区。需要开发项目时，从左侧选择工作区或创建工作会话。
@@ -452,7 +659,7 @@ function AgentStrip({
   onSelectAgent: (name: string) => void;
 }) {
   return (
-    <div className="flex min-w-0 items-center gap-2 overflow-x-auto">
+    <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto">
       {AGENT_NAMES.map((name) => {
         const agent = detectedAgents.find((item) => item.name === name);
         const installed = agent?.status === "installed";
@@ -478,12 +685,12 @@ function AgentStrip({
 
 function FirstScreen({ activeAgent, installed, onPrompt }: { activeAgent: string; installed: boolean; onPrompt: (prompt: string) => void }) {
   return (
-    <div className="mx-auto flex h-full max-w-4xl flex-col items-center justify-center px-6 text-center">
-      <div className="mb-5 flex h-16 w-16 items-center justify-center rounded-md border border-border bg-card/70">
+    <div className="first-screen mx-auto flex min-h-full max-w-4xl flex-col items-center justify-center px-6 py-6 text-center">
+      <div className="first-screen-icon mb-5 flex h-16 w-16 items-center justify-center rounded-md border border-border bg-card/70">
         <Sparkles className="h-8 w-8 text-primary" />
       </div>
-      <h2 className="m-0 text-3xl font-semibold">今天让 {activeAgent} 做什么？</h2>
-      <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">
+      <h2 className="first-screen-title m-0 text-3xl font-semibold">今天让 {activeAgent} 做什么？</h2>
+      <p className="first-screen-description mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">
         先选择 Agent，再直接输入任务。复杂任务可以转团队；普通问答可以手动接入知识库。
       </p>
       {!installed && (
@@ -492,7 +699,7 @@ function FirstScreen({ activeAgent, installed, onPrompt }: { activeAgent: string
           当前 Agent 未检测到，仍可先整理任务，稍后到智能体页安装或配置。
         </div>
       )}
-      <div className="mt-7 grid w-full grid-cols-1 gap-2 md:grid-cols-3">
+      <div className="first-screen-suggestions mt-7 grid w-full grid-cols-1 gap-2 md:grid-cols-3">
         {[
           ["盘点项目结构", "读取当前工作区，给我总结项目结构、关键模块和下一步重构建议。"],
           ["修复一个问题", "帮我定位并修复一个具体 bug，先说明原因，再给出最小改动。"],
@@ -509,12 +716,12 @@ function FirstScreen({ activeAgent, installed, onPrompt }: { activeAgent: string
 }
 
 function KnowledgePicker({
-  documents,
+  knowledgeBases,
   selectedIds,
   disabled,
   onToggle,
 }: {
-  documents: KbDocument[];
+  knowledgeBases: KnowledgeBase[];
   selectedIds: string[];
   disabled: boolean;
   onToggle: (id: string) => void;
@@ -566,23 +773,23 @@ function KnowledgePicker({
           </p>
           {disabled ? (
             <div className="rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground">没有可用 embedding 模型。</div>
-          ) : documents.length === 0 ? (
-            <div className="rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground">还没有知识库文档。</div>
+          ) : knowledgeBases.length === 0 ? (
+            <div className="rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground">还没有知识库。</div>
           ) : (
             <div className="max-h-64 overflow-y-auto">
-              {documents.map((doc) => (
+              {knowledgeBases.map((base) => (
                 <button
-                  key={doc.id}
+                  key={base.id}
                   type="button"
                   className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-muted/20"
-                  onClick={() => onToggle(doc.id)}
+                  onClick={() => onToggle(base.id)}
                 >
-                  <span className={cn("flex h-4 w-4 items-center justify-center rounded border", selectedIds.includes(doc.id) ? "border-primary bg-primary/20 text-primary" : "border-border")}>
-                    {selectedIds.includes(doc.id) && <Check className="h-3 w-3" />}
+                  <span className={cn("flex h-4 w-4 items-center justify-center rounded border", selectedIds.includes(base.id) ? "border-primary bg-primary/20 text-primary" : "border-border")}>
+                    {selectedIds.includes(base.id) && <Check className="h-3 w-3" />}
                   </span>
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm">{doc.title}</span>
-                    <span className="block text-xs text-muted-foreground">{doc.chunk_count} chunks · {doc.embedding_status}</span>
+                    <span className="block truncate text-sm">{base.name}</span>
+                    <span className="block text-xs text-muted-foreground">{base.document_count} 个文档</span>
                   </span>
                 </button>
               ))}
@@ -594,58 +801,39 @@ function KnowledgePicker({
   );
 }
 
-function formatKnowledgeContext(results: SearchResult[], selectedDocs: KbDocument[]) {
-  const docNames = selectedDocs.map((doc) => doc.title).join(", ") || "已选择知识库";
+function formatKnowledgeContext(results: SearchResult[], selectedBases: KnowledgeBase[]) {
+  const baseNames = selectedBases.map((base) => base.name).join(", ") || "已选择知识库";
   return [
-    `[知识库检索结果: ${docNames}]`,
-    ...results.map((result, index) => `[${index + 1}] ${result.content}\nsource=${result.document_id}`),
+    `[知识库检索结果: ${baseNames}]`,
+    ...results.map((result, index) =>
+      `[${index + 1}] ${result.content}\n来源：${result.knowledge_base_name} / ${result.document_title}`
+    ),
   ].join("\n\n");
 }
 
-function InfoBlock({ label, value }: { label: string; value: string }) {
+function ApprovalCard({
+  approval,
+  onRespond,
+}: {
+  approval: RuntimeApprovalRequest;
+  onRespond: (approved: boolean, forSession?: boolean) => void;
+}) {
   return (
-    <div className="rounded-md border border-border bg-background/40 p-3">
-      <div className="text-xs font-semibold text-muted-foreground">{label}</div>
-      <div className="mt-2 text-sm leading-6">{value}</div>
-    </div>
-  );
-}
-
-function PromptCards({ promptType, onSendStdin }: { promptType: PromptType; onSendStdin: (input: string) => void }) {
-  if (promptType === "trust") {
-    return (
-      <div className="mx-auto max-w-xl rounded-md border border-success/30 bg-success/10 p-4">
-        <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-success">
-          <Shield className="h-4 w-4" />
-          安全确认
-        </div>
-        <p className="mb-3 text-xs leading-5 text-muted-foreground">Agent 正在请求信任当前目录或继续执行。请确认后再放行。</p>
-        <div className="flex gap-2">
-          <Button size="sm" onClick={() => onSendStdin("1\n")}>确认</Button>
-          <Button size="sm" variant="outline" onClick={() => onSendStdin("2\n")}>拒绝</Button>
-        </div>
+    <div className="mx-auto w-full max-w-2xl rounded-md border border-warning/35 bg-warning/8 p-4">
+      <div className="flex items-center gap-2 text-sm font-semibold">
+        <Shield className="h-4 w-4 text-warning" />
+        请求审批
       </div>
-    );
-  }
-
-  if (promptType === "update") {
-    return (
-      <div className="mx-auto max-w-xl rounded-md border border-info/30 bg-info/10 p-4">
-        <div className="mb-2 text-sm font-semibold text-info">检测到 CLI 更新提示</div>
-        <div className="flex gap-2">
-          <Button size="sm" onClick={() => onSendStdin("\r")}>确认更新</Button>
-          <Button size="sm" variant="outline" onClick={() => onSendStdin("\x1b")}>跳过</Button>
-        </div>
+      <div className="mt-3 break-words text-sm leading-6">{approval.title}</div>
+      <details className="mt-2 text-xs text-muted-foreground">
+        <summary className="cursor-pointer">查看请求详情</summary>
+        <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all rounded bg-background/60 p-2">{approval.detail}</pre>
+      </details>
+      <div className="mt-4 flex flex-wrap justify-end gap-2">
+        <Button variant="outline" size="sm" onClick={() => onRespond(false)}>拒绝</Button>
+        <Button variant="outline" size="sm" onClick={() => onRespond(true, true)}>本会话允许</Button>
+        <Button size="sm" onClick={() => onRespond(true)}>允许一次</Button>
       </div>
-    );
-  }
-
-  return (
-    <div className="mx-auto flex max-w-xl flex-wrap justify-center gap-2 rounded-md border border-border bg-card/50 p-3">
-      <Button variant="outline" size="sm" onClick={() => onSendStdin("\t")}>Tab</Button>
-      <Button variant="outline" size="sm" onClick={() => onSendStdin(" ")}>空格</Button>
-      <Button size="sm" onClick={() => onSendStdin("\r")}>确认</Button>
-      <Button variant="outline" size="sm" onClick={() => onSendStdin("\x1b")}>Esc</Button>
     </div>
   );
 }

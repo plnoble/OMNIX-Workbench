@@ -1,6 +1,6 @@
 {
   "decision_id": "DEC-014",
-  "topic": "OMNIX DevFlow Contextual Onboarding, Micro-help Tooltips, and Interactive Tips Deck",
+  "topic": "OMNIX Workbench Contextual Onboarding, Micro-help Tooltips, and Interactive Tips Deck",
   "context": "We agreed on designing a comprehensive system of interactive help guides, micro-tooltips, and randomized tip widgets to ensure all hidden features and advanced engineering tricks (like memory distillation or idle reaping) are easily discoverable by the user.",
   "options_considered": [
     "Rely solely on external documentation (README/Wiki) for explanation of features.",

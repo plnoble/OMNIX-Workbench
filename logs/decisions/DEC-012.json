@@ -1,7 +1,7 @@
 {
   "decision_id": "DEC-012",
-  "topic": "OMNIX DevFlow Value-added Optimizations: Hybrid Retrieval, Incremental Linting, Lazy Topological Scanning, and Spotlight Overlays",
-  "context": "With no more reference repositories left, we finalized the implementation plan and designed four high-value optimizations to elevate the user experience of OMNIX DevFlow.",
+  "topic": "OMNIX Workbench Value-added Optimizations: Hybrid Retrieval, Incremental Linting, Lazy Topological Scanning, and Spotlight Overlays",
+  "context": "With no more reference repositories left, we finalized the implementation plan and designed four high-value optimizations to elevate the user experience of OMNIX Workbench.",
   "options_considered": [
     "Proceed with the basic feature set mapped directly from reference libraries without further enhancements.",
     "Propose and specify 4 key optimization mechanisms: 1. Hybrid Code Search (LibSQL FTS5 BM25 + Vector RRF); 2. Incremental AI Code Review Linting on Diff; 3. Incremental Tree-sitter hash fingerprinting + Lazy LLM Semantic summaries; 4. Tauri Spotlight clipboard overlay to prevent development context switching."

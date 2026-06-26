@@ -8,7 +8,7 @@
 import { useState, useCallback, useEffect } from "react";
 import { knowledgeApi } from "@/lib/tauri-api";
 import type {
-  KbDocument, KbChunk, SearchResult,
+  KnowledgeBase, KbDocument, KbChunk, SearchResult,
   EmbeddingModelInfo,
 } from "@/types";
 
@@ -40,11 +40,13 @@ export interface RagMessage {
 
 export interface UseKnowledgeBaseReturn {
   // Data
+  knowledgeBases: KnowledgeBase[];
   documents: KbDocument[];
   chunks: KbChunk[];
   embeddingModels: EmbeddingModelInfo[];
 
   // Selection
+  selectedBaseId: string;
   selectedDocId: string | null;
   selectedChunkId: string | null;
 
@@ -73,11 +75,15 @@ export interface UseKnowledgeBaseReturn {
 
   // Actions — Data loading
   loadDocuments: () => Promise<void>;
+  loadKnowledgeBases: () => Promise<void>;
   loadChunks: (docId: string) => Promise<void>;
   loadEmbeddingModels: () => Promise<void>;
 
   // Actions — Selection
   selectDocument: (id: string | null) => void;
+  selectKnowledgeBase: (id: string) => void;
+  createKnowledgeBase: (name: string, description?: string) => Promise<void>;
+  deleteKnowledgeBase: (id: string) => Promise<void>;
   selectChunk: (id: string | null) => void;
 
   // Actions — Import
@@ -110,11 +116,13 @@ export interface UseKnowledgeBaseReturn {
 
 export function useKnowledgeBase(): UseKnowledgeBaseReturn {
   // Data state
+  const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [documents, setDocuments] = useState<KbDocument[]>([]);
   const [chunks, setChunks] = useState<KbChunk[]>([]);
   const [embeddingModels, setEmbeddingModels] = useState<EmbeddingModelInfo[]>([]);
 
   // Selection state
+  const [selectedBaseId, setSelectedBaseId] = useState("default");
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
   const [selectedChunkId, setSelectedChunkId] = useState<string | null>(null);
 
@@ -143,14 +151,26 @@ export function useKnowledgeBase(): UseKnowledgeBaseReturn {
 
   // ── Data loading ────────────────────────────────────
 
+  const loadKnowledgeBases = useCallback(async () => {
+    try {
+      const bases = await knowledgeApi.listBases();
+      setKnowledgeBases(bases);
+      setSelectedBaseId((current) =>
+        bases.some((base) => base.id === current) ? current : bases[0]?.id || "default"
+      );
+    } catch (e) {
+      console.error("[useKnowledgeBase] Failed to load knowledge bases:", e);
+    }
+  }, []);
+
   const loadDocuments = useCallback(async () => {
     try {
-      const docs = await knowledgeApi.listDocuments();
+      const docs = await knowledgeApi.listDocuments(selectedBaseId);
       setDocuments(docs);
     } catch (e) {
       console.error("[useKnowledgeBase] Failed to load documents:", e);
     }
-  }, []);
+  }, [selectedBaseId]);
 
   const loadChunks = useCallback(async (docId: string) => {
     try {
@@ -178,9 +198,10 @@ export function useKnowledgeBase(): UseKnowledgeBaseReturn {
 
   // Auto-load on mount
   useEffect(() => {
+    loadKnowledgeBases();
     loadDocuments();
     loadEmbeddingModels();
-  }, [loadDocuments, loadEmbeddingModels]);
+  }, [loadKnowledgeBases, loadDocuments, loadEmbeddingModels]);
 
   // Load chunks when document selection changes
   useEffect(() => {
@@ -199,6 +220,27 @@ export function useKnowledgeBase(): UseKnowledgeBaseReturn {
     if (id) setActiveSubTab("chunks");
   }, []);
 
+  const selectKnowledgeBase = useCallback((id: string) => {
+    setSelectedBaseId(id);
+    setSelectedDocId(null);
+    setSelectedChunkId(null);
+    setChunks([]);
+    setSearchResults([]);
+    setRagMessages([]);
+  }, []);
+
+  const createKnowledgeBase = useCallback(async (name: string, description = "") => {
+    const created = await knowledgeApi.createBase(name, description);
+    await loadKnowledgeBases();
+    setSelectedBaseId(created.id);
+  }, [loadKnowledgeBases]);
+
+  const deleteKnowledgeBase = useCallback(async (id: string) => {
+    await knowledgeApi.deleteBase(id);
+    if (selectedBaseId === id) setSelectedBaseId("default");
+    await loadKnowledgeBases();
+  }, [loadKnowledgeBases, selectedBaseId]);
+
   const selectChunk = useCallback((id: string | null) => {
     setSelectedChunkId(id);
   }, []);
@@ -216,6 +258,7 @@ export function useKnowledgeBase(): UseKnowledgeBaseReturn {
     setIsImporting(true);
     try {
       await knowledgeApi.importDocument({
+        knowledgeBaseId: selectedBaseId,
         title: importForm.title.trim(),
         sourcePath: importForm.sourcePath || "manual_input",
         fileType: importForm.fileType,
@@ -227,29 +270,32 @@ export function useKnowledgeBase(): UseKnowledgeBaseReturn {
     } finally {
       setIsImporting(false);
     }
-  }, [importForm, loadDocuments]);
+      await loadKnowledgeBases();
+  }, [importForm, loadDocuments, loadKnowledgeBases, selectedBaseId]);
 
   const importFile = useCallback(async (filePath: string) => {
     setIsImporting(true);
     try {
-      await knowledgeApi.importFile({ filePath });
+      await knowledgeApi.importFile({ filePath, knowledgeBaseId: selectedBaseId });
       setShowImportForm(false);
       await loadDocuments();
     } finally {
       setIsImporting(false);
     }
-  }, [loadDocuments]);
+      await loadKnowledgeBases();
+  }, [loadDocuments, loadKnowledgeBases, selectedBaseId]);
 
   const importDirectory = useCallback(async (dirPath: string, extensions?: string) => {
     setIsImporting(true);
     try {
-      await knowledgeApi.importDirectory({ directoryPath: dirPath, extensions });
+      await knowledgeApi.importDirectory({ directoryPath: dirPath, extensions, knowledgeBaseId: selectedBaseId });
       setShowImportForm(false);
       await loadDocuments();
     } finally {
       setIsImporting(false);
     }
-  }, [loadDocuments]);
+      await loadKnowledgeBases();
+  }, [loadDocuments, loadKnowledgeBases, selectedBaseId]);
 
   const deleteDocument = useCallback(async (id: string) => {
     try {
@@ -259,11 +305,12 @@ export function useKnowledgeBase(): UseKnowledgeBaseReturn {
         setChunks([]);
       }
       await loadDocuments();
+      await loadKnowledgeBases();
     } catch (e) {
       console.error("[useKnowledgeBase] Failed to delete document:", e);
       throw e; // re-throw so callers can show user feedback
     }
-  }, [selectedDocId, loadDocuments]);
+  }, [selectedDocId, loadDocuments, loadKnowledgeBases]);
 
   // ── Embedding ───────────────────────────────────────
 
@@ -325,12 +372,13 @@ export function useKnowledgeBase(): UseKnowledgeBaseReturn {
         query: searchQuery.trim(),
         embeddingModel: selectedEmbedModel,
         limit: 10,
+        knowledgeBaseIds: [selectedBaseId],
       });
       setSearchResults(results);
     } finally {
       setIsSearching(false);
     }
-  }, [searchQuery, selectedEmbedModel]);
+  }, [searchQuery, selectedEmbedModel, selectedBaseId]);
 
   // ── RAG ─────────────────────────────────────────────
 
@@ -349,6 +397,7 @@ export function useKnowledgeBase(): UseKnowledgeBaseReturn {
         embeddingModel: selectedEmbedModel,
         chatModel: ragChatModel || "deepseek-chat",
         topK: 5,
+        knowledgeBaseIds: [selectedBaseId],
       });
       setRagMessages(prev => [...prev, {
         role: "assistant",
@@ -360,21 +409,21 @@ export function useKnowledgeBase(): UseKnowledgeBaseReturn {
     } finally {
       setIsRagLoading(false);
     }
-  }, [ragQuery, selectedEmbedModel, ragChatModel]);
+  }, [ragQuery, selectedEmbedModel, ragChatModel, selectedBaseId]);
 
   // ── Return ──────────────────────────────────────────
 
   return {
-    documents, chunks, embeddingModels,
-    selectedDocId, selectedChunkId,
+    knowledgeBases, documents, chunks, embeddingModels,
+    selectedBaseId, selectedDocId, selectedChunkId,
     selectedEmbedModel, isEmbedding,
     searchQuery, searchResults, isSearching,
     ragQuery, ragChatModel, ragMessages, isRagLoading,
     showImportForm, isImporting, importForm,
     activeSubTab,
 
-    loadDocuments, loadChunks, loadEmbeddingModels,
-    selectDocument, selectChunk,
+    loadDocuments, loadKnowledgeBases, loadChunks, loadEmbeddingModels,
+    selectDocument, selectKnowledgeBase, createKnowledgeBase, deleteKnowledgeBase, selectChunk,
     importDocument, importFile, importDirectory, deleteDocument, setShowImportForm, updateImportForm,
     generateEmbeddings, batchEmbedAll, setSelectedEmbedModel,
     hybridSearch, setSearchQuery,

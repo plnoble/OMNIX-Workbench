@@ -1,5 +1,5 @@
 /**
- * OMNIX DevFlow — Typed Tauri IPC API Wrapper
+ * OMNIX Workbench - Typed Tauri IPC API Wrapper
  *
  * A thin typed layer over invoke() calls. Provides:
  * - Single source of truth for all Tauri command names
@@ -19,6 +19,7 @@ import type {
   CronTask,
   CronRun,
   RemoteAccessInfo,
+  KnowledgeBase,
   KbDocument,
   KbChunk,
   SearchResult,
@@ -45,7 +46,17 @@ import type {
   AgentRun,
   TeamAssignmentInput,
   TeamPlan,
+  TeamRunDetail,
   LabFeature,
+  AgentSessionRecord,
+  RuntimeAgentCatalogEntry,
+  RuntimeAgentId,
+  RuntimeEvent,
+  RuntimeModelOption,
+  RuntimeModelSelection,
+  RuntimePermissionPolicy,
+  WorkMode,
+  WorkspaceSnapshot,
 } from "@/types";
 
 // ── Settings ──────────────────────────────────────────
@@ -58,6 +69,7 @@ export const settingsApi = {
 
 export const shellApi = {
   pickDirectory: () => invoke<string | null>("pick_directory"),
+  pickFile: () => invoke<string | null>("pick_file"),
 };
 
 // ── Model Platforms ───────────────────────────────────
@@ -80,6 +92,30 @@ export const modelApi = {
   checkStatus: (modelId: string) => invoke<HealthCheckDetail>("check_model_status", { modelId }),
   batchCheck: (platformId: string) => invoke<PlatformModel[]>("batch_check_models", { platformId }),
   reinferCapabilities: (opts: { modelId?: string; platformId?: string }) => invoke<number>("reinfer_model_capabilities", opts),
+};
+
+export interface DistillationCandidate {
+  id: string;
+  conversation_id: string;
+  workspace_path: string;
+  candidate_type: "memory" | "skill" | "protocol";
+  title: string;
+  summary: string;
+  payload_json: string;
+  evidence_json: string;
+  model_id: string;
+  status: "pending" | "approved" | "rejected";
+  created_at: string;
+  reviewed_at: string | null;
+}
+
+export const distillationApi = {
+  generate: (conversationId: string, modelId: string) =>
+    invoke<DistillationCandidate[]>("distill_conversation_to_inbox", { conversationId, modelId }),
+  list: (status: "pending" | "approved" | "rejected" | "all" = "pending") =>
+    invoke<DistillationCandidate[]>("list_distillation_inbox", { status }),
+  review: (candidateId: string, approved: boolean) =>
+    invoke<DistillationCandidate>("review_distillation_candidate", { candidateId, approved }),
 };
 
 // ── Platform API Keys (multi-key, encrypted) ──────────
@@ -127,6 +163,39 @@ export const ptyApi = {
   stop: (sessionId: string) => invoke("stop_agent_session", { sessionId }),
 };
 
+export const runtimeApi = {
+  getAgentCatalog: () => invoke<RuntimeAgentCatalogEntry[]>("runtime_get_agent_catalog"),
+  getModelOptions: (agent: RuntimeAgentId) =>
+    invoke<RuntimeModelOption[]>("runtime_get_model_options", { agent }),
+  startSession: (request: {
+    conversation_id: string;
+    agent: RuntimeAgentId;
+    workspace_path: string;
+    model: RuntimeModelSelection;
+    permission: RuntimePermissionPolicy;
+    work_mode: WorkMode;
+  }) => invoke<AgentSessionRecord>("runtime_start_session", { request }),
+  sendMessage: (sessionId: string, prompt: string, displayText?: string) =>
+    invoke("runtime_send_message", { sessionId, prompt, displayText }),
+  respondApproval: (params: {
+    sessionId: string;
+    requestId: string;
+    approved: boolean;
+    forSession: boolean;
+    approvalMethod: string;
+    requestedPermissions?: unknown;
+  }) => invoke("runtime_respond_approval", params),
+  stopSession: (sessionId: string) => invoke("runtime_stop_session", { sessionId }),
+  resumeSession: (sessionId: string) =>
+    invoke<AgentSessionRecord>("runtime_resume_session", { sessionId }),
+  getSession: (sessionId: string) =>
+    invoke<AgentSessionRecord>("runtime_get_session", { sessionId }),
+  getEvents: (sessionId: string) =>
+    invoke<RuntimeEvent[]>("runtime_get_events", { sessionId }),
+  listConversationSessions: (conversationId: string) =>
+    invoke<AgentSessionRecord[]>("runtime_list_conversation_sessions", { conversationId }),
+};
+
 // ── Agent Detection ───────────────────────────────────
 
 export const agentApi = {
@@ -135,9 +204,9 @@ export const agentApi = {
   update: (agentName: string) => invoke("repair_installed_agent", { agentName }),
 };
 
-// Workbench Runs
+// Team and workspace runs
 
-export const workbenchApi = {
+export const teamRunApi = {
   createRun: (title: string, workspacePath: string, managerAgent: string) =>
     invoke<WorkspaceRun>("create_workspace_run", { title, workspacePath, managerAgent }),
   listRuns: (includeArchived?: boolean) =>
@@ -154,6 +223,18 @@ export const workbenchApi = {
     invoke<AgentRun>("start_agent_run", { runId, agentName, taskTitle, status }),
   listAgentRuns: (runId: string) =>
     invoke<AgentRun[]>("list_agent_runs", { runId }),
+  generatePlan: (goal: string, workspacePath: string, managerAgent: string) =>
+    invoke<TeamRunDetail>("team_generate_plan", { goal, workspacePath, managerAgent }),
+  getDetail: (runId: string) =>
+    invoke<TeamRunDetail>("team_get_run_detail", { runId }),
+  startApproved: (runId: string, concurrency = 2) =>
+    invoke<TeamRunDetail>("team_start_approved_run", { runId, concurrency }),
+  stop: (runId: string) =>
+    invoke<TeamRunDetail>("team_stop_run", { runId }),
+  retryWorker: (workerId: string) =>
+    invoke<TeamRunDetail>("team_retry_worker", { workerId }),
+  respondWorkerApproval: (workerId: string, requestId: string, approved: boolean, requestedPermissions?: unknown) =>
+    invoke<TeamRunDetail>("team_respond_worker_approval", { workerId, requestId, approved, requestedPermissions }),
 };
 
 export const labsApi = {
@@ -186,6 +267,11 @@ export const previewApi = {
     invoke<string>("get_workspace_git_diff", { workspacePath }),
 };
 
+export const workspaceApi = {
+  snapshot: (workspacePath: string) =>
+    invoke<WorkspaceSnapshot>("get_workspace_snapshot", { workspacePath }),
+};
+
 // ── Environment Diagnostics ───────────────────────────
 
 export const diagnosticsApi = {
@@ -202,20 +288,27 @@ export const remoteApi = {
 // ── Knowledge Base ─────────────────────────────────────
 
 export const knowledgeApi = {
-  listDocuments: () => invoke<KbDocument[]>("kb_list_documents"),
-  importDocument: (params: { title: string; sourcePath: string; fileType: string; content: string; chunkConfig?: ChunkConfig }) =>
+  listBases: () => invoke<KnowledgeBase[]>("kb_list_bases"),
+  createBase: (name: string, description = "") =>
+    invoke<KnowledgeBase>("kb_create_base", { name, description }),
+  updateBase: (knowledgeBaseId: string, name: string, description = "") =>
+    invoke("kb_update_base", { knowledgeBaseId, name, description }),
+  deleteBase: (knowledgeBaseId: string) => invoke("kb_delete_base", { knowledgeBaseId }),
+  listDocuments: (knowledgeBaseId?: string) =>
+    invoke<KbDocument[]>("kb_list_documents", { knowledgeBaseId }),
+  importDocument: (params: { knowledgeBaseId?: string; title: string; sourcePath: string; fileType: string; content: string; chunkConfig?: ChunkConfig }) =>
     invoke<KbDocument>("kb_import_document", params),
-  importFile: (params: { filePath: string; chunkConfig?: ChunkConfig }) =>
+  importFile: (params: { filePath: string; knowledgeBaseId?: string; chunkConfig?: ChunkConfig }) =>
     invoke<KbDocument>("kb_import_file", params),
-  importDirectory: (params: { directoryPath: string; extensions?: string }) =>
+  importDirectory: (params: { directoryPath: string; extensions?: string; knowledgeBaseId?: string }) =>
     invoke<KbDocument[]>("kb_import_directory", params),
   deleteDocument: (documentId: string) => invoke("kb_delete_document", { documentId }),
   getChunks: (documentId: string) => invoke<KbChunk[]>("kb_get_chunks", { documentId }),
   generateEmbeddings: (params: { documentId: string; modelName: string }) =>
     invoke<EmbeddingProgress>("kb_generate_embeddings", params),
-  hybridSearch: (params: { query: string; embeddingModel: string; limit?: number }) =>
+  hybridSearch: (params: { query: string; embeddingModel: string; limit?: number; knowledgeBaseIds?: string[] }) =>
     invoke<SearchResult[]>("kb_hybrid_search", params),
-  ragQuery: (params: { query: string; embeddingModel: string; chatModel: string; topK?: number }) =>
+  ragQuery: (params: { query: string; embeddingModel: string; chatModel: string; topK?: number; knowledgeBaseIds?: string[] }) =>
     invoke<RagResponse>("kb_rag_query", params),
   getEmbeddingModels: () => invoke<EmbeddingModelInfo[]>("kb_get_embedding_models"),
 };
@@ -280,6 +373,17 @@ export const mcpApi = {
   delete: (id: string) => invoke("delete_mcp_server", { id }),
 };
 
+// ── MCP sync to Agent native config (AionUi / cc-switch inspired) ──
+export interface McpSyncReport { agent: string; synced: string[]; skipped: string[]; backup_path: string | null; }
+export interface AgentMcpState { agent: string; config_path: string; config_exists: boolean; server_names: string[]; }
+export const mcpSyncApi = {
+  getAgentStates: () => invoke<AgentMcpState[]>("mcp_get_agent_states"),
+  syncToAgents: (agents: string[], serverIds: string[]) =>
+    invoke<McpSyncReport[]>("mcp_sync_to_agents", { agents, serverIds }),
+  removeFromAgent: (agent: string, serverName: string) =>
+    invoke<string | null>("mcp_remove_from_agent", { agent, serverName }),
+};
+
 // ── Data Backup ─────────────────────────────────────────
 
 export const backupApi = {
@@ -309,6 +413,8 @@ export const activityApi = {
 // ── Skill Sync (P1 — DEC-018) ─────────────────────────
 
 export interface ToolStatus {
+  verification: "verified" | "experimental";
+  verification_note: string;
   tool_id: string;
   display_name: string;
   is_installed: boolean;
@@ -974,12 +1080,17 @@ export interface ProtocolAction { action_type: string; target: string; content: 
 export interface MarketSkill {
   source: string; name: string; description: string; url: string;
   author: string; stars: number | null; downloaded: boolean;
+  repo_url: string; revision: string; path: string; content_sha: string;
 }
+export interface MarketSkillPreview { skill: MarketSkill; content: string; content_hash: string; }
 export interface DistillRecommendation {
   suggested_name: string; suggested_category: string; reason: string;
   source_evidence: string[]; confidence: number;
 }
 export const skillLibraryApi = {
+  /** Create a local skill from generated/edited content */
+  create: (name: string, description: string, profile: string, dependencies: string[], content: string) =>
+    invoke<void>("create_skill", { name, description, profile, dependencies, content }),
   /** Find skills matching a message (semantic injection) */
   matchForInjection: (message: string) =>
     invoke<SkillMatch[]>("match_skills_for_injection", { message }),
@@ -995,6 +1106,10 @@ export const skillLibraryApi = {
   /** Search external skill markets */
   searchMarket: (query: string) =>
     invoke<MarketSkill[]>("search_skill_market", { query }),
+  previewMarket: (skill: MarketSkill) =>
+    invoke<MarketSkillPreview>("preview_market_skill", { skill }),
+  importMarket: (skill: MarketSkill, overwrite = false) =>
+    invoke<string>("import_market_skill", { skill, overwrite }),
   /** Distill skills from project history */
   distill: (projectPath: string) =>
     invoke<DistillRecommendation[]>("distill_from_project", { projectPath }),

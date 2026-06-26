@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg3" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1c1917"/>
+      <stop offset="100%" stop-color="#0c0a09"/>
+    </linearGradient>
+    <linearGradient id="strand3a" x1="0%" y1="100%" x2="0%" y2="0%">
+      <stop offset="0%" stop-color="#f59e0b"/>
+      <stop offset="100%" stop-color="#fbbf24"/>
+    </linearGradient>
+    <linearGradient id="strand3b" x1="0%" y1="100%" x2="0%" y2="0%">
+      <stop offset="0%" stop-color="#8b5cf6"/>
+      <stop offset="100%" stop-color="#a78bfa"/>
+    </linearGradient>
+    <linearGradient id="strand3c" x1="0%" y1="100%" x2="0%" y2="0%">
+      <stop offset="0%" stop-color="#06b6d4"/>
+      <stop offset="100%" stop-color="#22d3ee"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg3)"/>
+  <g transform="translate(256 256)" fill="none" stroke-linecap="round">
+    <!-- three strands as rising nested arcs (DNA double-helix vibe, tri-strand), warm accent -->
+    <g stroke-width="26">
+      <path stroke="url(#strand3a)" d="M -120 120 C -60 60, -80 -40, 0 -60 C 80 -40, 60 60, 120 120" transform="rotate(0)"/>
+      <path stroke="url(#strand3b)" d="M -120 120 C -60 60, -80 -40, 0 -60 C 80 -40, 60 60, 120 120" transform="rotate(120)"/>
+      <path stroke="url(#strand3c)" d="M -120 120 C -60 60, -80 -40, 0 -60 C 80 -40, 60 60, 120 120" transform="rotate(240)"/>
+    </g>
+    <!-- rungs connecting strands = distilled knowledge links -->
+    <g stroke="#52525b" stroke-width="6" opacity="0.7">
+      <line x1="0" y1="-60" x2="0" y2="-150" transform="rotate(0)"/>
+      <line x1="0" y1="-60" x2="0" y2="-150" transform="rotate(120)"/>
+      <line x1="0" y1="-60" x2="0" y2="-150" transform="rotate(240)"/>
+    </g>
+    <!-- ascending tip dots = each generation stronger -->
+    <circle cx="0" cy="-150" r="12" fill="#fde68a" transform="rotate(0)"/>
+    <circle cx="0" cy="-150" r="12" fill="#ddd6fe" transform="rotate(120)"/>
+    <circle cx="0" cy="-150" r="12" fill="#a5f3fc" transform="rotate(240)"/>
+    <circle cx="0" cy="0" r="16" fill="#fafaf9"/>
+  </g>
+</svg>

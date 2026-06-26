@@ -1,32 +1,37 @@
-// OMNIX DevFlow — Commands Module
+// OMNIX Workbench - Commands Module
 // This mod.rs re-exports all command functions from submodules,
 // keeping the `commands::*` namespace unchanged for lib.rs.
 
-mod settings;
-mod agents;
-mod skills;
 mod accounts;
-mod memories;
-mod conversations;
-mod platforms;
-mod knowledge;
-mod selection;
-mod search;
-mod cron;
-mod windows;
-mod odysseus;
-mod zcf;
-mod skill_sync;
-mod skill_library;
-mod cc_switch;
+mod agents;
 mod aionui;
+mod cc_switch;
+mod conversations;
+mod cron;
 mod deepseek;
-mod templates;
+mod distillation;
+mod knowledge;
 mod lifecycle;
-mod qa;
-mod workbench;
+mod mcp_sync;
+mod memories;
+mod odysseus;
+mod platforms;
 mod project_protocol;
+mod qa;
+mod runs;
+mod runtime;
+mod search;
+mod selection;
+mod settings;
+mod skill_library;
 mod skill_sets;
+mod skill_sync;
+mod skills;
+mod team_runtime;
+mod templates;
+mod windows;
+mod workspace;
+mod zcf;
 
 // ── Shared Structs / Enums used across multiple submodules ──
 
@@ -56,10 +61,13 @@ pub struct Skill {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillFusionResult {
+    pub draft_id: String,
     pub name: String,
     pub description: String,
     pub fused_code: String,
     pub explanation: String,
+    pub conflicts: Vec<String>,
+    pub status: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -490,8 +498,11 @@ pub struct ChecklistItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillAuditResult {
-    pub skill_name: String, pub score: u32, pub issues: Vec<String>,
-    pub suggestion: String, pub auto_fixed: bool,
+    pub skill_name: String,
+    pub score: u32,
+    pub issues: Vec<String>,
+    pub suggestion: String,
+    pub auto_fixed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -576,28 +587,33 @@ pub struct GcResult {
 
 // ── Re-export all command functions from submodules ──
 
-pub use settings::*;
-pub use agents::*;
-pub use skills::*;
 pub use accounts::*;
-pub use memories::*;
-pub use conversations::*;
-pub use platforms::*;
-pub use knowledge::*;
-pub use selection::*;
-pub use search::*;
-pub use cron::*;
-pub use windows::*;
-pub use odysseus::*;
-pub use zcf::*;
-pub use skill_sync::*;
-pub use skill_library::*;
-pub use cc_switch::*;
+pub use agents::*;
 pub use aionui::*;
+pub use cc_switch::*;
+pub use conversations::*;
+pub use cron::*;
 pub use deepseek::*;
-pub use templates::*;
+pub use distillation::*;
+pub use knowledge::*;
 pub use lifecycle::*;
-pub use qa::*;
-pub use workbench::*;
+pub use mcp_sync::*;
+pub use memories::*;
+pub use odysseus::*;
+pub use platforms::*;
 pub use project_protocol::*;
+pub use qa::*;
+pub use runs::*;
+pub use runtime::*;
+pub use search::*;
+pub use selection::*;
+pub use settings::*;
+pub use skill_library::*;
 pub use skill_sets::*;
+pub use skill_sync::*;
+pub use skills::*;
+pub use team_runtime::*;
+pub use templates::*;
+pub use windows::*;
+pub use workspace::*;
+pub use zcf::*;

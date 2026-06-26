@@ -128,10 +128,23 @@ export function AppHeader({
           onClick={() => onNavigate("work")}
           title="回到工作"
         >
-          <span className={cn("h-2 w-2 rounded-full", statusClass)} />
-          <div className="min-w-0">
+          <span className="relative h-7 w-7 shrink-0">
+            <img
+              src="/omnix-workbench-icon.png"
+              alt=""
+              aria-hidden="true"
+              className="h-7 w-7 rounded-md"
+            />
+            <span
+              className={cn(
+                "absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-background",
+                statusClass
+              )}
+            />
+          </span>
+          <div className="hidden min-w-0 min-[1500px]:block">
             <div className="truncate text-sm font-semibold">OMNIX</div>
-            <div className="truncate text-[11px] text-muted-foreground">
+            <div className="hidden truncate text-[11px] text-muted-foreground min-[1120px]:block">
               {workspaceLabel} · {activeAgent}
             </div>
           </div>
@@ -142,16 +155,17 @@ export function AppHeader({
             <button
               key={entry.id}
               className={cn(
-                "flex h-9 shrink-0 items-center gap-2 rounded-md border px-3 text-sm transition-colors",
+                "flex h-9 shrink-0 items-center gap-2 rounded-md border px-2 text-sm transition-colors min-[1500px]:px-3",
                 activeTab === entry.id
                   ? "border-primary/30 bg-primary/12 text-primary"
                   : "border-transparent text-muted-foreground hover:bg-muted/20 hover:text-foreground"
               )}
               onClick={() => onNavigate(entry.id)}
               title={entry.description}
+              aria-label={entry.label}
             >
               <AppIcon id={entry.id} />
-              <span>{entry.label}</span>
+              <span className="hidden min-[1500px]:inline">{entry.label}</span>
             </button>
           ))}
 
@@ -170,7 +184,7 @@ export function AppHeader({
           </button>
         </nav>
 
-        <div className="hidden min-w-0 items-center gap-2 lg:flex">
+        <div className="hidden min-w-0 items-center gap-2 min-[1600px]:flex">
           {activeEntry && (
             <div className="max-w-64 truncate text-right">
               <div className="truncate text-sm font-medium">{activeEntry.title}</div>

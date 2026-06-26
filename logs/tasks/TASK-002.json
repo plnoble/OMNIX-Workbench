@@ -1,6 +1,6 @@
 {
   "task_id": "TASK-002",
-  "title": "OMNIX DevFlow 前端架构重构 & UI 重设计",
+  "title": "OMNIX Workbench 前端架构重构 & UI 重设计",
   "goal": "将 2445 行 App.tsx 单组件拆解为 ~25 个模块化文件，引入 Tailwind CSS + shadcn/ui 替代内联样式和手写 CSS，提升代码可维护性和界面专业度",
   "owner": "Claude",
   "status": "IN_PROGRESS",

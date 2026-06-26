@@ -1,5 +1,5 @@
 /**
- * OMNIX DevFlow — Shared Type Definitions
+ * OMNIX Workbench - Shared Type Definitions
  *
  * All domain interfaces extracted from the monolithic App.tsx.
  * Each type maps to a Tauri backend command's request/response shape.
@@ -43,7 +43,7 @@ export interface ConversationMessage {
   timestamp: string;
 }
 
-/** A top-level project run in the OMNIX Workbench */
+/** A top-level workspace or team run */
 export interface WorkspaceRun {
   id: string;
   title: string;
@@ -56,7 +56,7 @@ export interface WorkspaceRun {
   updated_at: string;
 }
 
-/** A worker execution record attached to a Workbench run */
+/** A worker execution record attached to a workspace run */
 export interface AgentRun {
   id: string;
   run_id: string;
@@ -67,12 +67,22 @@ export interface AgentRun {
   started_at: string | null;
   completed_at: string | null;
   log_excerpt: string;
+  assignment_id: string;
+  dependencies: string[];
+  acceptance_criteria: string[];
+  retry_count: number;
+  max_retries: number;
+  result_summary: string;
+  validation_status: string;
 }
 
 /** Draft assignment sent to the manager plan command */
 export interface TeamAssignmentInput {
   agent_name: string;
   task_title: string;
+  depends_on?: string[];
+  acceptance_criteria?: string[];
+  max_retries?: number;
 }
 
 /** A planned task owned by a worker agent */
@@ -81,6 +91,9 @@ export interface TeamAssignment {
   agent_name: string;
   task_title: string;
   status: string;
+  depends_on: string[];
+  acceptance_criteria: string[];
+  max_retries: number;
 }
 
 /** Semi-automatic manager plan that must be approved before workers start */
@@ -91,6 +104,12 @@ export interface TeamPlan {
   status: string;
   created_at: string;
   approved_at: string | null;
+}
+
+export interface TeamRunDetail {
+  run: WorkspaceRun;
+  plan: TeamPlan | null;
+  workers: AgentRun[];
 }
 
 /** Visible experimental surface tracked outside the core workflow */
@@ -163,7 +182,126 @@ export interface AppEntry {
 export type PermissionPolicy = "ask_every_time" | "ask_on_risk" | "full_access";
 
 /** Work behavior independent from permission policy */
-export type WorkMode = "chat" | "plan_first" | "goal";
+export type WorkMode = "direct" | "plan";
+
+export type RuntimeAgentId = "claude_code" | "codex";
+
+export type RuntimeModelSelection =
+  | { kind: "agent_default" }
+  | { kind: "builtin"; model_name: string }
+  | { kind: "omnix"; platform_id: string; model_name: string };
+
+export type RuntimePermissionPolicy =
+  | { kind: "ask_every_time" }
+  | { kind: "ask_on_risk" }
+  | { kind: "full_access"; confirmed: boolean };
+
+export type ModelCompatibilityLevel = "native" | "gateway" | "unsupported" | "unhealthy";
+
+export interface RuntimeModelOption {
+  id: string;
+  label: string;
+  provider_name: string | null;
+  provider_type: ProviderType | null;
+  model_name: string | null;
+  health_status: string;
+  selection: RuntimeModelSelection;
+  compatibility: {
+    level: ModelCompatibilityLevel;
+    selectable: boolean;
+    reason: string;
+  };
+  /** The option the Work page should pre-select (Agent binding or global default). */
+  is_default: boolean;
+}
+
+export type AgentSessionStatus =
+  | "created"
+  | "starting"
+  | "running"
+  | "awaiting_approval"
+  | "stopping"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export interface AgentSessionRecord {
+  id: string;
+  config: {
+    conversation_id: string;
+    agent: RuntimeAgentId;
+    executable_path: string;
+    workspace_path: string;
+    model: RuntimeModelSelection;
+    permission: RuntimePermissionPolicy;
+    work_mode: WorkMode;
+  };
+  status: AgentSessionStatus;
+  external_session_id: string | null;
+  external_turn_id: string | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export type RuntimeEventKind =
+  | "session_started"
+  | "user_message"
+  | "assistant_delta"
+  | "assistant_message"
+  | "plan"
+  | "tool_started"
+  | "tool_completed"
+  | "approval_requested"
+  | "turn_completed"
+  | "error"
+  | "raw_log";
+
+export interface RuntimeEvent {
+  kind: RuntimeEventKind;
+  text: string | null;
+  external_session_id: string | null;
+  external_turn_id: string | null;
+  item_id: string | null;
+  request_id: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface RuntimeSessionEvent {
+  session_id: string;
+  event: RuntimeEvent;
+}
+
+export interface RuntimeApprovalRequest {
+  session_id: string;
+  request_id: string;
+  approval_method: string;
+  requested_permissions: unknown | null;
+  title: string;
+  detail: string;
+}
+
+export interface RuntimeAgentCatalogEntry {
+  id: string;
+  name: string;
+  status: string;
+  runtime_status: "supported" | "pending";
+  installation_source: "system" | "managed" | null;
+  executable_path: string | null;
+  version: string | null;
+  supports_structured_events: boolean;
+  supports_resume: boolean;
+  detail: string;
+}
+
+export interface WorkspaceSnapshot {
+  root_path: string;
+  root_name: string;
+  branch: string | null;
+  changes: Array<{ status: string; path: string }>;
+  files: Array<{ path: string; name: string; is_dir: boolean; depth: number }>;
+  truncated: boolean;
+}
 
 /** Local CLI agent runtime capability and model binding summary */
 export interface AgentRuntimeProfile {
@@ -301,6 +439,10 @@ export interface PlatformApiKey {
   label: string;
   masked_key: string;
   is_active: boolean;
+  last_status: "unknown" | "success" | "error";
+  last_error: string | null;
+  latency_ms: number | null;
+  last_checked_at: string | null;
   created_at: string;
 }
 
@@ -309,9 +451,19 @@ export type SettingsSubTab = "platform" | "system" | "mcp" | "backup";
 
 // ── Knowledge Base Types ────────────────────────────────
 
+export interface KnowledgeBase {
+  id: string;
+  name: string;
+  description: string;
+  document_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
 /** A document in the Knowledge Base */
 export interface KbDocument {
   id: string;
+  knowledge_base_id: string;
   title: string;
   source_path: string;
   file_type: string;
@@ -340,6 +492,9 @@ export interface KbChunk {
 export interface SearchResult {
   chunk_id: string;
   document_id: string;
+  document_title: string;
+  knowledge_base_id: string;
+  knowledge_base_name: string;
   content: string;
   metadata: Record<string, unknown>;
   bm25_score: number | null;

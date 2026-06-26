@@ -155,3 +155,128 @@ Open issues:
 
 - Need elevated PowerShell to run `npm.cmd run repair:msi-env`.
 - Need rerun `npm.cmd run tauri:build:msi` after repair and confirm a current-date formal MSI exists.
+
+### 2026-06-23 - Pre-delivery gate for product naming migration
+
+| Category | Status | Evidence | Notes |
+| --- | --- | --- | --- |
+| Security and privacy | Pass | Database remains at `~/.omnix/omnix.db`; no credential or network behavior changed. | Tauri identifier changed, but the database path is identifier-independent. |
+| Data, API, and consistency | Pass | Canonical naming is recorded in `AGENTS.md`; package, crate, Tauri, UI, docs, and artifact metadata agree. | Stable MSI upgrade code is preserved. |
+| Code quality and maintainability | Pass | Removed unreachable `WorkbenchTab`; renamed backend feature bucket to neutral `runs`; retired-name source scan is clean. | Existing Rust dead-code warnings remain baseline debt. |
+| Testing and verification | Pass | TypeScript, Vite build, Cargo check, UTF-8 JSON parse, diff check, MSI, and NSIS builds passed. | Sandboxed MSI reproduced the known ICE access boundary; approved non-sandbox validation passed. |
+| Frontend, accessibility, and UX | Pass | Compact UI brand remains `OMNIX`; formal product surfaces use `OMNIX Workbench`. | No layout behavior changed beyond removal of an unreachable page. |
+| Operations, dependencies, and release | Pass | New MSI, NSIS, and exe artifacts exist with current timestamps and correct names. | Repository name remains historical infrastructure until explicitly renamed. |
+
+Open issues:
+
+- Application icon is not finalized; `.omx/icon-candidates/` is intentionally preserved for the next branding decision.
+
+### 2026-06-23 - Pre-delivery gate for provisional E1 icon rollout
+
+| Category | Status | Evidence | Notes |
+| --- | --- | --- | --- |
+| Security and privacy | N/A | Branding assets and build metadata only. | No user data, credentials, or network behavior changed. |
+| Data, API, and consistency | Pass | One RGBA master generated all Tauri variants; web and in-app surfaces use `/omnix-workbench-icon.png`. | E1 is explicitly provisional. |
+| Code quality and maintainability | Pass | `build.rs` tracks icon/config inputs; NSIS icon paths are explicit. | Prevents stale Windows resource reuse. |
+| Testing and verification | Warn | TypeScript, Vite, NSIS, alpha checks, and direct PE extraction passed. | Validated MSI rebuild is pending non-sandbox approval. |
+| Frontend, accessibility, and UX | Pass | Decorative brand images use empty alt text and fixed dimensions; status remains visible as an overlay. | Manual desktop viewing is still useful at different display scales. |
+| Operations, dependencies, and release | Warn | Release exe and NSIS embed E1; 53 Tauri icon files generated. | Current MSI predates E1 and must not ship as the icon-updated package. |
+
+Open issues:
+
+- Rebuild and verify MSI through the approved non-sandbox WiX path when available.
+
+### 2026-06-24 - E1 MSI closure gate
+
+| Category | Status | Evidence | Notes |
+| --- | --- | --- | --- |
+| Security and privacy | N/A | Packaging verification only. | No user data or credentials changed. |
+| Data, API, and consistency | Pass | MSI product name and upgrade code match the naming contract. | Existing upgrade continuity is preserved. |
+| Code quality and maintainability | Pass | Icon inputs are tracked by `build.rs`; MSI uses the generated E1 icon set. | Future icon replacements trigger Windows resource rebuilds. |
+| Testing and verification | Pass | Standard WiX build exit 0; `dark.exe` extraction and PE/icon comparison passed. | No suppressed-validation artifact was used. |
+| Frontend, accessibility, and UX | N/A | No additional UI change in this closure step. | Prior favicon/header/status-dock verification remains applicable. |
+| Operations, dependencies, and release | Pass | Current MSI is 11,825,152 bytes with timestamp 2026-06-24 08:47:51. | MSI, NSIS, and release exe now all correspond to E1. |
+
+Open issues:
+
+- E1 remains a provisional brand decision pending future user confirmation.
+
+### 2026-06-24 - Pre-change gate for single-Agent real-gap milestone
+
+| Category | Status | Evidence | Notes |
+| --- | --- | --- | --- |
+| Security and privacy | Warn | Scope includes API-key routing, process arguments, approvals, workspace files, and full-access mode. | Never log decrypted keys; full access is per-session and explicitly confirmed. |
+| Data, API, and consistency | Warn | Existing `conversations`, `messages`, bindings, provider/key tables, and known mock IDs were inspected. | Use idempotent migrations and preserve user model/key data. |
+| Code quality and maintainability | Warn | `git status --short` shows extensive pre-existing changes; runtime currently spans hooks, PTY manager, proxy, and large command modules. | Keep edits scoped and do not revert naming/icon/packaging work. |
+| Testing and verification | Pass | Baseline commands passed; TDD sequence and adapter/session tests are defined in `current.md`. | Each new runtime behavior begins with a failing test. |
+| Frontend, accessibility, and UX | Warn | Work UI is the primary affected surface; current workspace panel and Team simulation contain placeholder behavior. | Preserve the clean first screen and add explicit loading/error/unsupported states. |
+| Operations, dependencies, and release | Warn | Real CLI install/update and Windows packages are in scope. | Prefer system CLI, isolate managed installs, preserve MSI identity and E1 resources. |
+
+Open issues:
+
+- Codex app-server is version-sensitive; detect capabilities and fail visibly when unavailable.
+- Live model/Agent smoke tests may require user credentials or network access; deterministic fake-executable tests remain mandatory.
+
+### 2026-06-24 - Single-Agent real-gap implementation gate
+
+| Category | Status | Evidence | Notes |
+| --- | --- | --- | --- |
+| Security and privacy | Pass | API keys remain encrypted at rest, are decrypted only for requests, are never emitted in runtime events, and full access requires per-session confirmation. | Primary Key plus failover attempts record status/latency/error only. |
+| Data, API, and consistency | Pass | Idempotent session/event/message/key migrations; exact mock-ID cleanup; model compatibility and precedence covered by tests. | Existing provider, key, conversation, and skill data are preserved. |
+| Code quality and maintainability | Pass | Structured `runtime/` and session gateway are active; unused provider/middleware abstractions and Team simulator were removed. | `cargo check` warnings reduced from 126 to 89; remaining warnings are known legacy debt. |
+| Testing and verification | Pass | TypeScript, Vite build, Cargo check, and all lib tests passed: 60 passed, 0 failed, 4 ignored. Real CLI version checks and Codex app-server initialize passed. | No paid/live model turn was sent. |
+| Frontend, accessibility, and UX | Warn | Work is chat-first, incompatible models expose reasons, approvals are structured, ordinary chat hides the workspace panel, and Team is truthfully pending. | Automated light/dark and width screenshots were blocked by host execution/browser policy. |
+| Operations, dependencies, and release | Warn | Product metadata, E1 icons, MSI identity, and packaging scripts remain intact. | Fresh MSI/NSIS/release exe could not be generated because the required execution approval was rejected before build start. |
+
+Open issues:
+
+- Run a fresh full Tauri bundle as soon as non-sandbox execution approval is available; do not distribute the pre-runtime artifacts as this milestone.
+- Complete native desktop visual checks at 1024, 1280, and 1365 widths in both themes.
+- User acceptance of real Claude/Codex turns is required before starting Skills/distillation.
+
+### 2026-06-24 - Full real-gap pre-package gate
+
+| Category | Status | Evidence | Notes |
+| --- | --- | --- | --- |
+| Security and privacy | Pass | Runtime keys remain encrypted; Quick Assistant blacklists both manual and auto capture; full access stays session-scoped. | No secrets appear in logs or artifacts. |
+| Data, API, and consistency | Pass | Named Knowledge bindings, evidence-backed distillation inbox, real Team states, Worker retry/cancel behavior, and model compatibility are persisted and covered by focused tests. | SQLite migrations remain idempotent and existing providers/keys are preserved. |
+| Code quality and maintainability | Pass | Work, Team, Skills, Knowledge, memory/distillation, runtime, and model gateway use active domain APIs rather than mock UI. | `cargo check` warnings are 90 versus the 126-warning baseline; remaining items are legacy debt. |
+| Testing and verification | Pass | `npm.cmd run build`, `cargo check`, and `cargo test --lib` passed. | One parallel Vite gate failed transiently; the isolated canonical build passed and the race is recorded. |
+| Frontend, accessibility, and UX | Warn | Compact header/sidebar, overlay workspace panel, monitor-fit sizing, and a guarded native/reported-width correction are implemented. | Final DPI-aware native screenshot still required at this gate. |
+| Operations, dependencies, and release | Warn | A standard validated MSI/NSIS/release bundle succeeded before the last visual adjustment. | Final bundle and Desktop document copy still required at this gate. |
+
+Open issues:
+
+- Closed by the 2026-06-25 final package gate below.
+
+### 2026-06-25 - Final real-gap package gate
+
+| Category | Status | Evidence | Notes |
+| --- | --- | --- | --- |
+| Security and privacy | Pass | Keys stay encrypted, full access is session-scoped, Quick Assistant uses blacklist checks, and no temporary frontend zoom capability remains. | No secrets are present in release records. |
+| Data, API, and consistency | Pass | Idempotent schema, persisted Agent/Team/Skill/Knowledge/distillation states, explicit compatibility, and primary-key failover tests. | Existing user providers and keys are preserved. |
+| Code quality and maintainability | Pass | Active runtime/domain APIs replace mock paths; protocol records and user docs are current. | 90 legacy warnings remain, down from 126. |
+| Testing and verification | Pass | TypeScript, Vite, Cargo check, and Rust library tests pass: 70 passed, 0 failed, 4 ignored. | Online turns require the user's credentials and network. |
+| Frontend, accessibility, and UX | Pass | DPI-aware full-window and 640x520 logical minimum-window release captures show complete, non-overlapping controls. | Short-height welcome state preserves every actionable control. |
+| Operations, dependencies, and release | Pass | Normal WiX MSI and NSIS build passed; hashes and fresh timestamps recorded; six delivery files copied to Desktop. | MSI, NSIS, release exe, test plan, manual, and manifest delivered. |
+
+Open issues:
+
+- User acceptance with real Claude Code/Codex credentials.
+- Gemini CLI/OpenCode structured runtime, goal pursuit, and unverified sync targets remain explicit future work or Labs.
+
+### 2026-06-25 - Pre-delivery gate for borrowing roadmap P1+P2 and acceptance UX
+
+| Category | Status | Evidence | Notes |
+| --- | --- | --- | --- |
+| Security and privacy | Pass | The responses bridge forwards only translated request/response bodies; API keys stay in the gateway's existing encrypted resolution and are not logged. | No new secret surfaces; provider presets prefill only public endpoints. |
+| Data, API, and consistency | Pass | New `default_model` setting reuses the generic `settings` table; resolution order Agent binding → global default → Agent default is unit-tested; `target_model` vs `default_model` separation documented in decisions. | Default stored as `platform_id:model_name`; `split_once(':')` keeps colon-bearing model names intact. |
+| Code quality and maintainability | Pass | `responses_bridge.rs` is isolated with pure-function unit tests; ChatTab surface/selection logic and sidebar filtering follow existing patterns. | Provider-preset apply-path and per-agent manual selection memory deferred. |
+| Testing and verification | Pass | `cargo test --lib` 76 passed / 4 ignored; `cargo check` 90 legacy warnings; `npx.cmd tsc --noEmit` and `npm.cmd run build` pass. Bridge response shape validated end-to-end against the real `codex app-server`. | Live use of a real Chat-Completions provider with Codex still needs the user's key. |
+| Frontend, accessibility, and UX | Pass | Added: Codex no-model hint, 对话/工作 split with workspace-required CTA, tab preload, first-token waiting indicator, model-center ☆ default + capability/health, portaled delete dialog, clarified setting names. | Hot-reloaded and accepted by the user across several rounds. |
+| Operations, dependencies, and release | Warn | Frontend-only + isolated Rust module; no dependency changes. | These changes are not yet in a fresh MSI/NSIS package; a rebuild is required before redistribution. |
+
+Open issues:
+
+- P3 (MCP sync), P4 (Team board), P5 (assistants/Skills/remote) are planned but not implemented.
+- A fresh Windows package has not been rebuilt since P1; current Desktop artifacts predate P1/P2.

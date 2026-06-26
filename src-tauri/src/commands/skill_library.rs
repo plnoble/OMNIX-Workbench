@@ -1,9 +1,12 @@
-use tauri::State;
-use std::sync::Arc;
-use std::path::PathBuf;
-use rusqlite::params;
 use crate::db::DbManager;
-use crate::skill_library::{SkillMatch, SandboxResult, ProtocolAction, MarketSkill, DistillRecommendation};
+use crate::skill_library::{
+    DistillRecommendation, MarketSkill, MarketSkillPreview, ProtocolAction, SandboxResult,
+    SkillMatch,
+};
+use rusqlite::params;
+use std::path::PathBuf;
+use std::sync::Arc;
+use tauri::State;
 
 /// 1. Semantic Skill Auto-Injection — find skills matching a message
 #[tauri::command]
@@ -20,31 +23,36 @@ pub async fn test_skill_sandbox(
     skill_name: String,
     db: State<'_, std::sync::Arc<DbManager>>,
 ) -> Result<SandboxResult, String> {
-    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+    let conn = db
+        .get_connection()
+        .map_err(|e: rusqlite::Error| e.to_string())?;
 
     // Read skill content
-    let file_path: String = conn.query_row(
-        "SELECT file_path FROM skills WHERE name = ?1",
-        params![skill_name],
-        |r| r.get(0),
-    ).map_err(|e| format!("Skill not found: {}", e))?;
+    let file_path: String = conn
+        .query_row(
+            "SELECT file_path FROM skills WHERE name = ?1",
+            params![skill_name],
+            |r| r.get(0),
+        )
+        .map_err(|e| format!("Skill not found: {}", e))?;
 
     let core_path = PathBuf::from(&file_path).join(format!("{}_core.md", skill_name));
-    let skill_content = std::fs::read_to_string(&core_path)
-        .map_err(|e| format!("Failed to read skill: {}", e))?;
+    let skill_content =
+        std::fs::read_to_string(&core_path).map_err(|e| format!("Failed to read skill: {}", e))?;
 
     // Generate test cases
     let test_cases = crate::skill_library::generate_test_cases(&skill_name, &skill_content);
 
     // For now, return the test structure without actual LLM calls
-    let scores = test_cases.iter().map(|tc| {
-        crate::skill_library::TestCaseScore {
+    let scores = test_cases
+        .iter()
+        .map(|tc| crate::skill_library::TestCaseScore {
             input: tc.input.clone(),
             agent_response: "(Sandbox test requires LLM connection)".into(),
             auditor_score: 0,
             auditor_feedback: "Test not executed — connect an LLM provider first".into(),
-        }
-    }).collect::<Vec<_>>();
+        })
+        .collect::<Vec<_>>();
 
     Ok(SandboxResult {
         skill_name,
@@ -75,6 +83,87 @@ pub fn execute_protocol(
 #[tauri::command]
 pub async fn search_skill_market(query: String) -> Result<Vec<MarketSkill>, String> {
     crate::skill_library::search_market(&query).await
+}
+
+#[tauri::command]
+pub async fn preview_market_skill(skill: MarketSkill) -> Result<MarketSkillPreview, String> {
+    crate::skill_library::fetch_market_skill(&skill).await
+}
+
+#[tauri::command]
+pub async fn import_market_skill(
+    skill: MarketSkill,
+    overwrite: Option<bool>,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<String, String> {
+    let preview = crate::skill_library::fetch_market_skill(&skill).await?;
+    let safe_name = skill
+        .name
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('_')
+        .to_string();
+    if safe_name.is_empty() {
+        return Err("市场技能名称无效".into());
+    }
+
+    let conn = db.get_connection().map_err(|e| e.to_string())?;
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM skills WHERE name = ?1",
+            params![safe_name],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if exists > 0 && !overwrite.unwrap_or(false) {
+        return Err(format!("技能 {safe_name} 已存在，请明确选择覆盖"));
+    }
+
+    let home = dirs::home_dir().ok_or_else(|| "无法确定用户目录".to_string())?;
+    let central_dir = home.join(".omnix").join("skills").join(&safe_name);
+    std::fs::create_dir_all(&central_dir).map_err(|e| e.to_string())?;
+    for file_name in [
+        "SKILL.md".to_string(),
+        format!("{safe_name}_core.md"),
+        format!("{safe_name}_minimal.md"),
+        format!("{safe_name}_comprehensive.md"),
+    ] {
+        std::fs::write(central_dir.join(file_name), &preview.content)
+            .map_err(|e| format!("写入技能失败: {e}"))?;
+    }
+
+    let description = crate::skill_frontmatter::parse_frontmatter(&preview.content)
+        .0
+        .description
+        .unwrap_or_else(|| skill.description.clone());
+    let central_path = central_dir.to_string_lossy().to_string();
+    conn.execute(
+        "INSERT OR REPLACE INTO skills
+         (name, description, file_path, profile, is_active, dependencies, source_type,
+          source_ref, source_revision, central_path, content_hash)
+         VALUES (?1, ?2, ?3, 'Core', 1, '[]', 'market', ?4, ?5, ?3, ?6)",
+        params![
+            safe_name,
+            description,
+            central_path,
+            skill.repo_url,
+            if skill.content_sha.is_empty() {
+                skill.revision
+            } else {
+                skill.content_sha
+            },
+            preview.content_hash,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(safe_name)
 }
 
 /// 5. Experience Distillation — analyze project and recommend skills

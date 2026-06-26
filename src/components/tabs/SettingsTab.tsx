@@ -16,14 +16,14 @@ import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
 import {
   Plus, Edit, Trash2, RefreshCw, Eye, Brain, Mic, Code,
-  Maximize2, Wrench, Layers, Zap, Activity,
+  Maximize2, Wrench, Layers, Zap, Activity, Star,
   Save, Plug, Settings, MousePointerClick,
   Languages, ArrowRightLeft, Search, Server, Database, Download, Upload,
   ExternalLink, Store, Key, FileText,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/sonner";
-import { modelApi } from "@/lib/tauri-api";
+import { modelApi, settingsApi, mcpSyncApi, type AgentMcpState } from "@/lib/tauri-api";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { BUILTIN_LANGUAGES } from "@/lib/translate-constants";
 import type { ModelPlatform, PlatformModel, AgentAccount, ModelTestState, SettingsSubTab, SelectionHistoryEntry, SearchProvider, WebSearchResult, McpServer, BackupTableInfo, ImportResult } from "@/types";
@@ -188,7 +188,8 @@ export function SettingsTab(props: SettingsTabProps) {
     <div className="flex flex-col h-full overflow-hidden flex-1">
       {/* Top horizontal Tab bar */}
       <div className="flex items-center gap-1 px-5 pt-4 pb-2 border-b border-border bg-[rgba(10,10,14,0.1)]">
-        {SETTINGS_TABS.filter((tab) => tab.id !== "platform").map((tab) => (
+        {/* platform → focused 模型中心; mcp → focused MCP page. Settings keeps only system + backup. */}
+        {SETTINGS_TABS.filter((tab) => tab.id !== "platform" && tab.id !== "mcp").map((tab) => (
           <button
             key={tab.id}
             onClick={() => props.setSettingsSubTab(tab.id)}
@@ -238,6 +239,25 @@ export function PlatformSubTab({
   onBatchTestModels,
 }: PlatformSubTabProps) {
   const selectedPlatform = platforms.find((p) => p.id === selectedPlatformId);
+
+  // Global default model (Cherry-style hierarchy: global default → Agent binding → session).
+  // Stored as "platform_id:model_name" and used by the runtime when an Agent has no binding.
+  const [defaultModelKey, setDefaultModelKey] = useState<string>("");
+  useEffect(() => {
+    settingsApi.get("default_model").then((value) => setDefaultModelKey(value || "")).catch(() => {});
+  }, []);
+  const modelKey = (model: PlatformModel) => `${model.platform_id}:${model.model_name}`;
+  const setAsDefaultModel = async (model: PlatformModel) => {
+    const key = modelKey(model);
+    const next = defaultModelKey === key ? "" : key;
+    try {
+      await settingsApi.set("default_model", next);
+      setDefaultModelKey(next);
+      toast.success(next ? `已设为 Agent 默认模型：${model.model_name}` : "已取消 Agent 默认模型");
+    } catch (error) {
+      toast.error("设置默认模型失败", { description: String(error) });
+    }
+  };
 
   return (
     <div className="flex h-full gap-0">
@@ -327,8 +347,18 @@ export function PlatformSubTab({
 
             {/* Models List */}
             <Card className="flex-1 flex flex-col overflow-hidden">
-              <div className="flex justify-between items-center mb-3">
-                <span className="text-sm font-semibold">模型列表</span>
+              <div className="flex flex-wrap justify-between items-center gap-2 mb-3">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-semibold">模型列表</span>
+                  {defaultModelKey ? (
+                    <Badge variant="outline" className="gap-1 text-xs">
+                      <Star className="h-3 w-3 fill-amber-400 text-amber-400" />
+                      Agent 默认：{defaultModelKey.split(":").slice(1).join(":")}
+                    </Badge>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">未设 Agent 默认模型（点 ☆ 设置）</span>
+                  )}
+                </div>
                 <Button size="sm" variant="outline" onClick={onAddModel}>
                   <Plus className="h-3 w-3" /> 自定义模型
                 </Button>
@@ -358,6 +388,32 @@ export function PlatformSubTab({
                         </div>
 
                         <div className="flex items-center gap-3 shrink-0">
+                          {/* Default-model star */}
+                          <button
+                            onClick={() => setAsDefaultModel(model)}
+                            disabled={!model.is_enabled}
+                            title={
+                              !model.is_enabled
+                                ? "请先启用该模型"
+                                : defaultModelKey === modelKey(model)
+                                ? "Agent 默认模型（点击取消）"
+                                : "设为 Agent 默认模型（Codex/Claude 未单独绑定时使用）"
+                            }
+                            className={cn(
+                              "p-0.5 inline-flex",
+                              model.is_enabled ? "cursor-pointer" : "cursor-not-allowed opacity-30"
+                            )}
+                          >
+                            <Star
+                              className={cn(
+                                "h-3.5 w-3.5",
+                                defaultModelKey === modelKey(model)
+                                  ? "fill-amber-400 text-amber-400"
+                                  : "text-muted-foreground"
+                              )}
+                            />
+                          </button>
+
                           {/* Capability Icons (read-only — auto-detected) */}
                           <div className="flex gap-0.5">
                             {([
@@ -587,7 +643,7 @@ function SystemSubTab({
         <CardContent className="p-5 flex flex-col gap-3">
           <div className="space-y-3">
             <div className="space-y-1.5">
-              <Label>默认大模型</Label>
+              <Label>内置功能默认模型</Label>
               <select
                 className="w-full border border-border rounded-md px-3 py-2 text-sm bg-background"
                 value={targetModel}
@@ -599,7 +655,8 @@ function SystemSubTab({
                 ))}
               </select>
               <span className="text-xs text-muted-foreground">
-                用于翻译、语言检测等内置功能的默认模型。模型列表从「大模型平台」已配置的模型中获取。
+                供 OMNIX 自身的内置功能使用（划词翻译、语言检测、知识库问答等），与 Agent 对话无关。
+                Agent（Codex/Claude）默认模型请到「模型中心」用 ☆ 设置。
               </span>
             </div>
           </div>
@@ -1061,7 +1118,7 @@ function SystemSubTab({
 
 // ── MCP Servers Sub-Tab ─────────────────────────────────
 
-function McpSubTab({
+export function McpSubTab({
   mcpServers,
   onOpenMcpModal,
   onDeleteMcpServer,
@@ -1072,11 +1129,50 @@ function McpSubTab({
   onUpdateMcpForm,
   onSaveMcpServer,
 }: SettingsTabProps) {
+  const [agentStates, setAgentStates] = useState<AgentMcpState[]>([]);
+  const [syncBusy, setSyncBusy] = useState("");
+  const loadAgentStates = () => mcpSyncApi.getAgentStates().then(setAgentStates).catch(() => {});
+  useEffect(() => { loadAgentStates(); }, []);
+
+  const agentLabel = (agent: string) => (agent === "claude_code" ? "Claude" : "Codex");
+  const isSynced = (serverName: string, agent: string) =>
+    agentStates.find((state) => state.agent === agent)?.server_names.includes(serverName) ?? false;
+
+  const syncServer = async (server: McpServer) => {
+    setSyncBusy(server.id);
+    try {
+      const reports = await mcpSyncApi.syncToAgents(["claude_code", "codex"], [server.id]);
+      await loadAgentStates();
+      const skipped = reports.flatMap((report) => report.skipped);
+      toast.success(`已同步「${server.name}」到 Claude / Codex${skipped.length ? `（部分跳过：${skipped.join("；")}）` : ""}`);
+    } catch (error) {
+      toast.error(`同步失败：${error}`);
+    } finally {
+      setSyncBusy("");
+    }
+  };
+
+  const unsyncServer = async (server: McpServer, agent: string) => {
+    setSyncBusy(server.id);
+    try {
+      await mcpSyncApi.removeFromAgent(agent, server.name);
+      await loadAgentStates();
+      toast.success(`已从 ${agentLabel(agent)} 撤销「${server.name}」`);
+    } catch (error) {
+      toast.error(`撤销失败：${error}`);
+    } finally {
+      setSyncBusy("");
+    }
+  };
+
   return (
     <div className="flex flex-col gap-4 max-w-4xl mx-auto">
       <Card>
         <CardHeader className="flex-row justify-between items-center mb-4">
-          <CardTitle className="text-sm">🔌 MCP 服务器管理</CardTitle>
+          <div>
+            <CardTitle className="text-sm">🔌 MCP 服务器管理</CardTitle>
+            <p className="mt-1 text-xs text-muted-foreground">配一次，点「同步」即可写入 Claude Code 和 Codex 的原生配置（写前自动备份，可单独撤销）。</p>
+          </div>
           <Button size="sm" variant="outline" onClick={() => onOpenMcpModal()}>
             <Plus className="h-3 w-3" /> 新增
           </Button>
@@ -1109,7 +1205,28 @@ function McpSubTab({
                       </span>
                     )}
                   </div>
-                  <div className="flex gap-1.5">
+                  <div className="flex items-center gap-1.5">
+                    {["claude_code", "codex"].map((agent) => {
+                      const synced = isSynced(srv.name, agent);
+                      return (
+                        <button
+                          key={agent}
+                          onClick={() => synced && unsyncServer(srv, agent)}
+                          disabled={syncBusy === srv.id || !synced}
+                          title={synced ? `已同步到 ${agentLabel(agent)}（点击撤销）` : `未同步到 ${agentLabel(agent)}`}
+                          className={cn(
+                            "rounded border px-1.5 py-0.5 text-[10px]",
+                            synced ? "border-success/40 text-success" : "border-border text-muted-foreground opacity-60",
+                            synced && "cursor-pointer hover:bg-success/10"
+                          )}
+                        >
+                          {agentLabel(agent)} {synced ? "✓" : "—"}
+                        </button>
+                      );
+                    })}
+                    <Button size="sm" variant="outline" disabled={syncBusy === srv.id} onClick={() => syncServer(srv)} title="同步到 Claude Code 和 Codex">
+                      <Plug className="h-3 w-3" /> 同步
+                    </Button>
                     <Badge variant={srv.is_enabled ? "default" : "secondary"}>
                       {srv.is_enabled ? "启用" : "禁用"}
                     </Badge>

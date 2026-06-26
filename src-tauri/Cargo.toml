@@ -1,8 +1,8 @@
 [package]
-name = "omnix-app"
-version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+name = "omnix-workbench"
+version = "0.2.0"
+description = "Multi-Agent development and collaboration workbench"
+authors = ["OMNIX Workbench Contributors"]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -11,7 +11,7 @@ edition = "2021"
 # The `_lib` suffix may seem redundant but it is necessary
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
-name = "omnix_app_lib"
+name = "omnix_workbench_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -34,6 +34,7 @@ tower-http = { version = "0.5", features = ["cors"] }
 dirs = "5"
 which = "6"
 zip = "2"
+toml_edit = "0.22"
 futures = "0.3"
 chrono = "0.4"
 portable-pty = "0.8"
@@ -56,5 +57,4 @@ regex = "1"
 whoami = "1"
 log = "0.4"
 env_logger = "0.11"
-
 

@@ -10,6 +10,7 @@
  */
 
 import { useKnowledgeBase } from "@/hooks/useKnowledgeBase";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -18,10 +19,11 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "@/components/ui/sonner";
 import { cn } from "@/lib/utils";
+import { shellApi } from "@/lib/tauri-api";
 import {
   BookOpen, Search, Upload, Trash2, FileText, Code, Hash,
   Sparkles, Loader2, MessageSquare, Send,
-  ChevronRight, File, Brain, Zap, FolderOpen,
+  ChevronRight, File, Brain, Zap, FolderOpen, FolderPlus,
 } from "lucide-react";
 
 // ── Status Badge ────────────────────────────────────────
@@ -49,6 +51,8 @@ function FileTypeIcon({ fileType }: { fileType: string }) {
 
 export function KnowledgeHub() {
   const kb = useKnowledgeBase();
+  const [showBaseForm, setShowBaseForm] = useState(false);
+  const [newBaseName, setNewBaseName] = useState("");
 
   // ── Import handler ──────────────────────────────────
 
@@ -62,11 +66,10 @@ export function KnowledgeHub() {
   };
 
   const handleImportFile = async () => {
-    // Prompt for file path — no external dialog dependency needed
-    const filePath = window.prompt("输入文件路径（如 D:/docs/readme.md）:");
-    if (!filePath?.trim()) return;
+    const filePath = await shellApi.pickFile();
+    if (!filePath) return;
     try {
-      await kb.importFile(filePath.trim());
+      await kb.importFile(filePath);
       toast.success("文件导入成功！");
     } catch (e) {
       toast.error(String(e));
@@ -74,10 +77,10 @@ export function KnowledgeHub() {
   };
 
   const handleImportDirectory = async () => {
-    const dirPath = window.prompt("输入目录路径（将导入 md/txt/rs/py/js/ts 文件）:");
-    if (!dirPath?.trim()) return;
+    const dirPath = await shellApi.pickDirectory();
+    if (!dirPath) return;
     try {
-      await kb.importDirectory(dirPath.trim());
+      await kb.importDirectory(dirPath);
       toast.success("目录导入完成！");
     } catch (e) {
       toast.error(String(e));
@@ -90,6 +93,27 @@ export function KnowledgeHub() {
       toast.success("文档已删除");
     } catch (e) {
       toast.error("删除失败：" + e);
+    }
+  };
+
+  const handleCreateBase = async () => {
+    if (!newBaseName.trim()) return;
+    try {
+      await kb.createKnowledgeBase(newBaseName.trim());
+      setNewBaseName("");
+      setShowBaseForm(false);
+      toast.success("知识库已创建");
+    } catch (error) {
+      toast.error(String(error));
+    }
+  };
+
+  const handleDeleteBase = async () => {
+    try {
+      await kb.deleteKnowledgeBase(kb.selectedBaseId);
+      toast.success("知识库已删除");
+    } catch (error) {
+      toast.error(String(error));
     }
   };
 
@@ -143,7 +167,7 @@ export function KnowledgeHub() {
         <div className="p-3 border-b border-border flex items-center justify-between">
           <h3 className="text-sm font-semibold text-foreground flex items-center gap-1.5">
             <BookOpen className="h-4 w-4 text-cyan-400" />
-            文档库
+            知识库
           </h3>
           <div className="flex items-center gap-0.5">
             <Button
@@ -176,6 +200,52 @@ export function KnowledgeHub() {
               <FolderOpen className="h-3.5 w-3.5" />
             </Button>
           </div>
+        </div>
+
+        <div className="border-b border-border p-2">
+          <div className="flex items-center gap-1">
+            <select
+              value={kb.selectedBaseId}
+              onChange={(event) => kb.selectKnowledgeBase(event.target.value)}
+              className="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2 text-xs"
+            >
+              {kb.knowledgeBases.map((base) => (
+                <option key={base.id} value={base.id}>{base.name} ({base.document_count})</option>
+              ))}
+            </select>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-8 w-8 p-0"
+              onClick={() => setShowBaseForm((show) => !show)}
+              title="新建知识库"
+            >
+              <FolderPlus className="h-4 w-4" />
+            </Button>
+            {kb.selectedBaseId !== "default" && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-8 w-8 p-0 text-destructive"
+                onClick={handleDeleteBase}
+                title="删除当前知识库"
+              >
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            )}
+          </div>
+          {showBaseForm && (
+            <div className="mt-2 flex items-center gap-1">
+              <Input
+                value={newBaseName}
+                onChange={(event) => setNewBaseName(event.target.value)}
+                onKeyDown={(event) => event.key === "Enter" && void handleCreateBase()}
+                placeholder="知识库名称"
+                className="h-8 text-xs"
+              />
+              <Button size="sm" className="h-8" onClick={handleCreateBase}>创建</Button>
+            </div>
+          )}
         </div>
 
         {/* Import Form */}
@@ -425,7 +495,9 @@ export function KnowledgeHub() {
                         </Badge>
                       </div>
                       <p className="text-xs text-muted-foreground line-clamp-3">{result.content}</p>
-                      <p className="text-xs text-muted-foreground mt-1">文档: {result.document_id}</p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {result.knowledge_base_name} / {result.document_title}
+                      </p>
                     </CardContent>
                   </Card>
                 ))}
@@ -466,7 +538,7 @@ export function KnowledgeHub() {
                         <div className="mt-1 space-y-1">
                           {msg.sources.map((s, j) => (
                             <p key={j} className="text-xs text-muted-foreground line-clamp-2">
-                              [{j + 1}] {s.content.slice(0, 100)}…
+                              [{j + 1}] {s.knowledge_base_name} / {s.document_title}: {s.content.slice(0, 100)}…
                             </p>
                           ))}
                         </div>

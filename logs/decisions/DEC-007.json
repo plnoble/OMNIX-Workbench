@@ -1,6 +1,6 @@
 {
   "decision_id": "DEC-007",
-  "topic": "OMNIX DevFlow System Capabilities, Agent Hub Diagnostics, Cron Remote, and Floating Status Dock",
+  "topic": "OMNIX Workbench System Capabilities, Agent Hub Diagnostics, Cron Remote, and Floating Status Dock",
   "context": "We aligned on the full features borrowed from DevAgent TUI to build a robust development agent orchestrator, detailing versioning/repairs, automation, web access, visual feedback, and resource cleanup.",
   "options_considered": [
     "Build a barebones CLI wrapping terminal tool without background execution, diagnostics, or visual overlays.",

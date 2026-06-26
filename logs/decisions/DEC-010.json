@@ -1,7 +1,7 @@
 {
   "decision_id": "DEC-010",
   "topic": "OMNIX Evolutionary Skill Engine, Interactive Prompt Bootstrap, and Anti-Failure Persistent Memory",
-  "context": "We researched the sixth reference library, the local 'Skill Library' project, to detail the self-evolving agent workflow, memory distillation, and skills fusion sandbox for OMNIX DevFlow.",
+  "context": "We researched the sixth reference library, the local 'Skill Library' project, to detail the self-evolving agent workflow, memory distillation, and skills fusion sandbox for OMNIX Workbench.",
   "options_considered": [
     "Run external CLI agents with basic system prompts, allowing automatic execution without confirmation, and no mechanism to learn from past errors.",
     "Implement: 1. Strict Interactive Prompt Bootstrap (never run automatically, prompt preview always requires manual confirm); 2. Enforced Agent Guidelines & Guardrails; 3. Self-evolving Skill Engine with D3.js topological view, Split Diff comparison, and a Public Skill Market; 4. Anti-Failure Persistent Memory Bank (ai-memory.json) which injects history lessons into CLIs (via CLAUDE.md/instructions) and offers post-task Experience Distillation."

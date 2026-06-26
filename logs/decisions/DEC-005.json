@@ -1,7 +1,7 @@
 {
   "decision_id": "DEC-005",
   "topic": "Unified Provider Registry, System Tray Switcher, and Atomic Configuration Writing",
-  "context": "We are designing the core configuration management layer, the system tray interaction, and the multi-CLI hot-switching mechanics for OMNIX DevFlow.",
+  "context": "We are designing the core configuration management layer, the system tray interaction, and the multi-CLI hot-switching mechanics for OMNIX Workbench.",
   "options_considered": [
     "Write configuration files directly to user home directories on demand, using generic text replacement.",
     "Implement a robust SQLite-backed configuration registry with: (1) 50+ pre-configured provider templates, (2) an Atomic Writing Service (temp file + rename swap) to prevent corruption, (3) a system tray native menu listener for background profile switching, and (4) bidirectional MCP/Skill syncing across active CLI configuration files."

@@ -1,5 +1,5 @@
 /**
- * OMNIX DevFlow — Main Application Orchestrator
+ * OMNIX Workbench - Main Application Orchestrator
  *
  * This file is the thin orchestration layer that:
  * 1. Instantiates all custom hooks
@@ -24,7 +24,6 @@ import { useCron } from "@/hooks/useCron";
 import { usePreview } from "@/hooks/usePreview";
 import { useDiagnostics } from "@/hooks/useDiagnostics";
 import { useRemoteAccess } from "@/hooks/useRemoteAccess";
-import { useResizer } from "@/hooks/useResizer";
 import { useSelection } from "@/hooks/useSelection";
 import { useTranslation } from "@/hooks/useTranslation";
 import { useTheme } from "@/hooks/useTheme";
@@ -59,7 +58,6 @@ import { projectProtocolApi } from "@/lib/tauri-api";
 const StatusDock = lazy(() => import("./StatusDock"));
 const QuickAssistant = lazy(() => import("./QuickAssistant").then(m => ({ default: m.QuickAssistant })));
 const DashboardTab = lazy(() => import("@/components/tabs/DashboardTab").then(m => ({ default: m.DashboardTab })));
-const WorkbenchTab = lazy(() => import("@/components/tabs/WorkbenchTab").then(m => ({ default: m.WorkbenchTab })));
 const ChatTab = lazy(() => import("@/components/tabs/ChatTab").then(m => ({ default: m.ChatTab })));
 const AgentHubTab = lazy(() => import("@/components/tabs/AgentHubTab").then(m => ({ default: m.AgentHubTab })));
 const CompareTab = lazy(() => import("@/components/tabs/CompareTab").then(m => ({ default: m.CompareTab })));
@@ -70,6 +68,7 @@ const KnowledgeTab = lazy(() => import("@/components/tabs/KnowledgeTab").then(m 
 const LabsTab = lazy(() => import("@/components/tabs/LabsTab").then(m => ({ default: m.LabsTab })));
 const CronTab = lazy(() => import("@/components/tabs/CronTab").then(m => ({ default: m.CronTab })));
 const ModelsTab = lazy(() => import("@/components/tabs/ModelsTab").then(m => ({ default: m.ModelsTab })));
+const McpTab = lazy(() => import("@/components/tabs/McpTab").then(m => ({ default: m.McpTab })));
 const SearchResourceTab = lazy(() => import("@/components/tabs/SearchResourceTab").then(m => ({ default: m.SearchResourceTab })));
 const QuickAssistantTab = lazy(() => import("@/components/tabs/QuickAssistantTab").then(m => ({ default: m.QuickAssistantTab })));
 const AssistantsTab = lazy(() => import("@/components/tabs/AssistantsTab").then(m => ({ default: m.AssistantsTab })));
@@ -123,7 +122,6 @@ function MainApp() {
   const preview = usePreview(convs.chatWorkspace);
   const diagnostics = useDiagnostics();
   const remote = useRemoteAccess();
-  const resizer = useResizer();
   const selection = useSelection();
   const translation = useTranslation();
   const search = useSearch();
@@ -135,7 +133,7 @@ function MainApp() {
   useTheme(settings.themeMode);
 
   // ── Top-level UI state ────────────────────────────
-  const [activeTab, setActiveTab] = useState("work");
+  const [activeTab, setActiveTab] = useState("chat");
   const [tipIndex, setTipIndex] = useState(0);
   const [showTour, setShowTour] = useState(false);
   const [settingsSubTab, setSettingsSubTab] = useState<SettingsSubTab>("system");
@@ -156,6 +154,33 @@ function MainApp() {
     checkOnboarding();
     setTipIndex(Math.floor(Math.random() * 5));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps -- mount-only init: all load functions are stable ref-less fetchers
+
+  // Warm lazy tab chunks during idle time so switching tabs doesn't flash a loader.
+  useEffect(() => {
+    const warm = () => {
+      void import("@/components/tabs/ChatTab");
+      void import("@/components/tabs/AgentHubTab");
+      void import("@/components/tabs/ModelsTab");
+      void import("@/components/tabs/McpTab");
+      void import("@/components/tabs/TeamTab");
+      void import("@/components/tabs/SkillTab");
+      void import("@/components/tabs/KnowledgeTab");
+      void import("@/components/tabs/MemoryTab");
+      void import("@/components/tabs/SettingsTab");
+      void import("@/components/tabs/DashboardTab");
+      void import("@/components/tabs/CompareTab");
+      void import("@/components/tabs/CronTab");
+      void import("@/components/tabs/AssistantsTab");
+      void import("@/components/tabs/SearchResourceTab");
+      void import("@/components/tabs/LabsTab");
+    };
+    const ric = (window as unknown as { requestIdleCallback?: (cb: () => void) => number }).requestIdleCallback;
+    const id = ric ? ric(warm) : window.setTimeout(warm, 1500);
+    return () => {
+      const cancel = (window as unknown as { cancelIdleCallback?: (id: number) => void }).cancelIdleCallback;
+      if (cancel) cancel(id); else clearTimeout(id);
+    };
+  }, []);
 
   const checkOnboarding = async () => {
     try {
@@ -191,7 +216,7 @@ function MainApp() {
   // ── Tab change handler ────────────────────────────
 
   const normalizeTab = (tab: string) => {
-    if (tab === "workbench" || tab === "chat") return "work";
+    if (tab === "workbench") return "work";
     if (tab === "memory") return "memories";
     return tab;
   };
@@ -199,6 +224,9 @@ function MainApp() {
   const handleTabChange = (tab: string) => {
     const nextTab = normalizeTab(tab);
     setActiveTab(nextTab);
+    if (nextTab === "chat" || nextTab === "work") {
+      convs.enterSurface(nextTab);
+    }
     if (nextTab === "cron") {
       cron.loadCronTasks();
       cron.loadCronRuns();
@@ -322,7 +350,7 @@ function MainApp() {
     [entriesById, navigation.layout.hidden]
   );
 
-  const showConversations = activeTab === "work" || activeTab === "team";
+  const showConversations = activeTab === "chat" || activeTab === "work" || activeTab === "team";
   const showPreviewButton = !!(convs.chatWorkspace && convs.chatWorkspace !== "direct");
 
   // ── Render ────────────────────────────────────────
@@ -377,6 +405,7 @@ function MainApp() {
         gatewayStatus={settings.gatewayStatus}
         showConversations={showConversations}
         conversations={convs.conversations}
+        activeAgent={convs.activeAgent}
         currentConvId={convs.currentConvId}
         activeSessions={convs.activeSessions}
         onSelectConversation={convs.selectConversation}
@@ -390,29 +419,6 @@ function MainApp() {
       <main className="relative flex min-w-0 flex-1 flex-col bg-background">
         <div className="flex flex-1 min-w-0 overflow-hidden">
           <Suspense fallback={<LazyFallback />}>
-            {activeTab === "workbench" && (
-              <WorkbenchTab
-                activeAgent={convs.activeAgent}
-                detectedAgents={convs.detectedAgents}
-                messages={convs.messages}
-                chatInput={convs.chatInput}
-                chatWorkspace={convs.chatWorkspace}
-                currentConvId={convs.currentConvId}
-                activeSessions={convs.activeSessions}
-                promptType={convs.promptType}
-                targetModel={settings.targetModel}
-                activeModels={platforms.activeModels}
-                setActiveAgent={convs.setActiveAgent}
-                setChatInput={convs.setChatInput}
-                setChatWorkspace={convs.setChatWorkspace}
-                setTargetModel={settings.setTargetModel}
-                onSendMessage={convs.sendMessage}
-                onSendStdinDirect={convs.sendStdinDirect}
-                onStopSession={convs.stopAgentSession}
-                onNavigate={handleTabChange}
-              />
-            )}
-
             {activeTab === "dashboard" && (
               <DashboardTab
                 activeSessionsCount={convs.activeSessions.length}
@@ -428,8 +434,9 @@ function MainApp() {
               />
             )}
 
-            {activeTab === "work" && (
+            {(activeTab === "chat" || activeTab === "work") && (
               <ChatTab
+                surface={activeTab}
                 activeAgent={convs.activeAgent}
                 detectedAgents={convs.detectedAgents}
                 messages={convs.messages}
@@ -437,15 +444,14 @@ function MainApp() {
                 chatWorkspace={convs.chatWorkspace}
                 currentConvId={convs.currentConvId}
                 activeSessions={convs.activeSessions}
-                promptType={convs.promptType}
-                targetModel={settings.targetModel}
-                activeModels={platforms.activeModels}
-                setActiveAgent={convs.setActiveAgent}
+                pendingApproval={convs.pendingApproval}
+                isAwaitingResponse={!!convs.currentConvId && convs.startingConversations.includes(convs.currentConvId)}
+                setActiveAgent={convs.selectAgent}
                 setChatInput={convs.setChatInput}
                 setChatWorkspace={convs.setChatWorkspace}
-                setTargetModel={settings.setTargetModel}
+                onOpenWorkspaceModal={() => convs.setIsWorkspaceModalOpen(true)}
                 onSendMessage={convs.sendMessage}
-                onSendStdinDirect={convs.sendStdinDirect}
+                onRespondApproval={convs.respondToApproval}
                 onStopSession={convs.stopAgentSession}
                 onSuggestTeam={(prompt) => {
                   if (prompt.trim()) convs.setCollabStdin(prompt);
@@ -461,13 +467,13 @@ function MainApp() {
                 activeAgent={convs.activeAgent}
                 accounts={accounts.accounts}
                 activeModels={platforms.activeModels}
-                onSwitchAgent={convs.setActiveAgent}
+                onSwitchAgent={convs.selectAgent}
                 onAddAccount={() => accounts.openAccountModal()}
                 onEditAccount={(acc) => accounts.openAccountModal(acc)}
                 onDeleteAccount={accounts.deleteAccount}
                 onSwitchAccount={handleSwitchAccount}
                 onStartWork={(name) => {
-                  convs.setActiveAgent(name);
+                  convs.selectAgent(name);
                   handleTabChange("work");
                 }}
               />
@@ -520,6 +526,8 @@ function MainApp() {
                 captureMode={selection.captureMode}
                 showOnCapture={selection.showOnCapture}
                 preserveClipboard={selection.preserveClipboard}
+                autoCaptureEnabled={selection.autoCaptureEnabled}
+                blacklist={selection.blacklist}
                 isCapturing={selection.isCapturing}
                 lastCapture={selection.lastCapture}
                 captureError={selection.captureError}
@@ -529,10 +537,12 @@ function MainApp() {
                 translateModel={translation.translateModel}
                 customPrompt={translation.customPrompt}
                 autoDetect={translation.autoDetect}
-                availableModels={platforms.activeModels.map((model) => model.model_name)}
+                availableModels={platforms.activeModels.map((model) => `${model.platform_id}:${model.model_name}`)}
                 onSetCaptureMode={(v) => selection.saveSelectionSettings({ captureMode: v as "hybrid" | "uia_only" | "clipboard_only" })}
                 onSetShowOnCapture={(v) => selection.saveSelectionSettings({ showOnCapture: v })}
                 onSetPreserveClipboard={(v) => selection.saveSelectionSettings({ preserveClipboard: v })}
+                onSetAutoCaptureEnabled={(v) => selection.saveSelectionSettings({ autoCaptureEnabled: v })}
+                onSetBlacklist={(v) => selection.saveSelectionSettings({ blacklist: v })}
                 onTestCapture={selection.captureTextOnly}
                 onLoadHistory={selection.loadHistory}
                 onClearHistory={selection.clearHistory}
@@ -553,7 +563,7 @@ function MainApp() {
               />
             )}
             {activeTab === "mcp" && (
-              <SettingsTab
+              <McpTab
                 settingsSubTab="mcp"
                 setSettingsSubTab={setSettingsSubTab}
                 platforms={platforms.platforms}
@@ -677,21 +687,11 @@ function MainApp() {
 
             {activeTab === "team" && (
               <TeamTab
-                currentConvId={convs.currentConvId}
-                conversations={convs.conversations}
                 activeAgent={convs.activeAgent}
                 detectedAgents={convs.detectedAgents}
-                activeSessions={convs.activeSessions}
-                collabLogs={convs.collabLogs}
                 collabStdin={convs.collabStdin}
-                rightPaneWidth={resizer.rightPaneWidth}
-                onSelectConversation={convs.selectConversation}
                 setActiveAgent={convs.setActiveAgent}
                 setCollabStdin={convs.setCollabStdin}
-                onStartSession={() => convs.startAgentSession(convs.currentConvId)}
-                onStopSession={convs.stopAgentSession}
-                onSendStdinDirect={convs.sendStdinDirect}
-                startResizing={resizer.startResizing}
               />
             )}
 

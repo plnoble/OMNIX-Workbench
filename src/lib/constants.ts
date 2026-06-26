@@ -1,6 +1,12 @@
 /**
- * OMNIX DevFlow — Application Constants
+ * OMNIX Workbench - Application Constants
  */
+
+/** Canonical product naming. Keep these aligned with AGENTS.md and Tauri metadata. */
+export const PRODUCT_NAME = "OMNIX Workbench";
+export const PRODUCT_SHORT_NAME = "OMNIX";
+export const PRODUCT_DESCRIPTOR_ZH = "多 Agent 开发与协作工作台";
+export const PRODUCT_PACKAGE_SLUG = "omnix-workbench";
 
 /** Developer tips shown on the Dashboard */
 export const OMNIX_TIPS = [

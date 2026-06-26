@@ -69,3 +69,11 @@ Use this file to collect lessons that may become future global skills, project r
 - Evidence: OMNIX `tauri build` produced a current release exe but failed at WiX `light.exe`; the formal MSI in `bundle/msi` was stale, while `diagnostic-sval.msi` proved WiX linking works when validation is bypassed.
 - Proposed form: script + release checklist.
 - Promotion threshold: Promote after one more Windows MSI packaging issue or after adding timestamp enforcement to release scripts.
+
+### 2026-06-25 - DPI-aware Tauri native visual QA
+
+- Trigger: A Windows desktop app appears clipped, oversized, or inconsistent under 125%-200% display scaling, especially when evidence comes from PowerShell or Win32 screenshots.
+- Reusable lesson: The capture process is part of the measurement chain. Call `SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)` before `EnumWindows`, `GetWindowRect`, `SetWindowPos`, `CopyFromScreen`, or `PrintWindow`; compare in-process Tauri `inner_size` with Win32 `GetClientRect` before changing WebView zoom. Capture both the default and minimum logical window.
+- Evidence: A DPI-unaware process reported about 1293 pixels for a client that both in-process APIs reported as 2560 pixels. PMv2 capture produced the complete 2586x1655 window and prevented a false WebView regression diagnosis.
+- Proposed form: checked-in PowerShell script plus desktop visual QA checklist.
+- Promotion threshold: Implement immediately for the next Windows release; promote globally after reuse in one other Tauri/Electron/WebView desktop project.

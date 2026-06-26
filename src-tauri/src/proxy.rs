@@ -8,17 +8,16 @@ use axum::{
 };
 use futures::StreamExt;
 use reqwest::Client;
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use tokio::sync::oneshot;
 use tower_http::cors::CorsLayer;
-use rusqlite::params;
 
 use crate::db::DbManager;
-use log::warn;
 
 // Define sharing state
 pub struct ProxyState {
@@ -127,11 +126,20 @@ impl ProxyServer {
         Self { shutdown_tx: None }
     }
 
-    pub fn start(&mut self, db: Arc<DbManager>, agent_manager: Arc<crate::agent::AgentManager>, port: u16) {
+    pub fn start(
+        &mut self,
+        db: Arc<DbManager>,
+        agent_manager: Arc<crate::agent::AgentManager>,
+        port: u16,
+    ) {
         let (tx, rx) = oneshot::channel::<()>();
         self.shutdown_tx = Some(tx);
 
-        let use_wsl = db.get_setting("use_wsl").unwrap_or(None).unwrap_or_else(|| "false".to_string()) == "true";
+        let use_wsl = db
+            .get_setting("use_wsl")
+            .unwrap_or(None)
+            .unwrap_or_else(|| "false".to_string())
+            == "true";
         let bind_ip = if use_wsl {
             [0, 0, 0, 0]
         } else {
@@ -143,9 +151,15 @@ impl ProxyServer {
         let cors_layer = if use_wsl {
             CorsLayer::new()
                 .allow_origin([
-                    "http://localhost:1420".parse::<axum::http::HeaderValue>().expect("valid localhost URL"),
-                    "http://127.0.0.1:1420".parse::<axum::http::HeaderValue>().expect("valid 127.0.0.1 URL"),
-                    "tauri://localhost".parse::<axum::http::HeaderValue>().expect("valid tauri scheme"),
+                    "http://localhost:1420"
+                        .parse::<axum::http::HeaderValue>()
+                        .expect("valid localhost URL"),
+                    "http://127.0.0.1:1420"
+                        .parse::<axum::http::HeaderValue>()
+                        .expect("valid 127.0.0.1 URL"),
+                    "tauri://localhost"
+                        .parse::<axum::http::HeaderValue>()
+                        .expect("valid tauri scheme"),
                 ])
                 .allow_methods(tower_http::cors::Any)
                 .allow_headers(tower_http::cors::Any)
@@ -171,31 +185,55 @@ impl ProxyServer {
             .route("/v1/messages", post(handle_messages))
             .route("/v1/chat/completions", post(handle_openai_forward))
             .route("/v1/embeddings", post(handle_embeddings))
-            .route("/agent/:agent_name/v1/messages", post(handle_messages_for_agent))
-            .route("/agent/:agent_name/v1/chat/completions", post(handle_openai_forward_for_agent))
+            .route(
+                "/agent/:agent_name/v1/messages",
+                post(handle_messages_for_agent),
+            )
+            .route(
+                "/agent/:agent_name/v1/chat/completions",
+                post(handle_openai_forward_for_agent),
+            )
+            .route(
+                "/session/:session_key/v1/messages",
+                post(handle_messages_for_session),
+            )
+            .route(
+                "/session/:session_key/v1/responses",
+                post(handle_responses_for_session),
+            )
             .route("/remote", axum::routing::get(serve_remote_html))
             .route("/api/remote/status", axum::routing::get(get_remote_status))
-            .route("/api/remote/approve", axum::routing::post(post_remote_approve))
-            .route("/api/remote/cron_trigger", axum::routing::post(post_remote_cron_trigger))
+            .route(
+                "/api/remote/approve",
+                axum::routing::post(post_remote_approve),
+            )
+            .route(
+                "/api/remote/cron_trigger",
+                axum::routing::post(post_remote_cron_trigger),
+            )
             .route("/health", axum::routing::get(handle_health))
             .layer(cors_layer)
             .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024)) // 10MB request body limit
             .with_state(state);
 
-        println!("Starting OMNIX DevFlow HTTP Proxy on {}", addr);
+        println!("Starting OMNIX Workbench HTTP Proxy on {}", addr);
 
         tauri::async_runtime::handle().spawn(async move {
             let listener = match tokio::net::TcpListener::bind(addr).await {
                 Ok(l) => l,
                 Err(e) => {
-                    log::warn!("OMNIX Proxy: Failed to bind to {}: {}. Port may be in use.", addr, e);
+                    log::warn!(
+                        "OMNIX Proxy: Failed to bind to {}: {}. Port may be in use.",
+                        addr,
+                        e
+                    );
                     return;
                 }
             };
             if let Err(e) = axum::serve(listener, app)
                 .with_graceful_shutdown(async move {
                     let _ = rx.await;
-                    println!("OMNIX DevFlow HTTP Proxy shutting down gracefully...");
+                    println!("OMNIX Workbench HTTP Proxy shutting down gracefully...");
                 })
                 .await
             {
@@ -219,7 +257,7 @@ async fn handle_messages_for_agent(
     Json(payload): Json<AnthropicRequest>,
 ) -> impl IntoResponse {
     let agent_name_decoded = agent_name.replace('_', " ");
-    handle_messages_impl(state, Some(agent_name_decoded), headers, payload).await
+    handle_messages_impl(state, Some(agent_name_decoded), None, headers, payload).await
 }
 
 async fn handle_messages(
@@ -227,49 +265,91 @@ async fn handle_messages(
     headers: axum::http::HeaderMap,
     Json(payload): Json<AnthropicRequest>,
 ) -> impl IntoResponse {
-    handle_messages_impl(state, None, headers, payload).await
+    handle_messages_impl(state, None, None, headers, payload).await
+}
+
+async fn handle_messages_for_session(
+    State(state): State<Arc<ProxyState>>,
+    axum::extract::Path(session_key): axum::extract::Path<String>,
+    headers: axum::http::HeaderMap,
+    Json(payload): Json<AnthropicRequest>,
+) -> Response {
+    handle_messages_impl(state, None, Some(session_key), headers, payload).await
 }
 
 async fn handle_messages_impl(
     state: Arc<ProxyState>,
     agent_name_opt: Option<String>,
+    session_key: Option<String>,
     headers: axum::http::HeaderMap,
     payload: AnthropicRequest,
-) -> impl IntoResponse {
+) -> Response {
     // Concurrency limiting (New API/Sub2API inspired)
     let _permit = match state.concurrency_semaphore.try_acquire() {
         Ok(p) => p,
         Err(_) => {
-            return (StatusCode::TOO_MANY_REQUESTS, "Too many concurrent requests. Please retry later.").into_response();
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                "Too many concurrent requests. Please retry later.",
+            )
+                .into_response();
         }
     };
 
     let start_time = std::time::Instant::now();
 
     // Preserve agent_name before consuming agent_name_opt
-    let agent_name_for_routing = agent_name_opt.clone().unwrap_or_else(|| "Claude Code".to_string());
+    let agent_name_for_routing = agent_name_opt
+        .clone()
+        .unwrap_or_else(|| "Claude Code".to_string());
 
-    let target_account_id = headers.get("x-omnix-account-id")
+    let session_upstream = match session_key.as_deref() {
+        Some(key) => match resolve_session_model_upstream(&state.db, key) {
+            Ok(upstream) => Some(upstream),
+            Err(error) => {
+                return (StatusCode::BAD_REQUEST, error).into_response();
+            }
+        },
+        None => None,
+    };
+    let key_health = session_upstream.as_ref().map(|upstream| KeyHealthContext {
+        db: Arc::clone(&state.db),
+        key_ids: upstream.key_ids.clone(),
+    });
+
+    let target_account_id = headers
+        .get("x-omnix-account-id")
         .and_then(|v| v.to_str().ok().map(|s| s.to_string()));
 
-    let active_acc = if let Some(ref acc_id) = target_account_id {
+    let active_acc = if session_upstream.is_some() {
+        None
+    } else if let Some(ref acc_id) = target_account_id {
         state.db.get_account_by_id(acc_id).unwrap_or(None)
     } else {
         let agent_name = agent_name_opt.unwrap_or_else(|| "Claude Code".to_string());
-        state.db.get_active_account_for_agent(&agent_name).unwrap_or(None)
+        state
+            .db
+            .get_active_account_for_agent(&agent_name)
+            .unwrap_or(None)
     };
 
-    let target_model_name = if let Some(ref acc) = active_acc {
+    let target_model_name = if let Some(ref upstream) = session_upstream {
+        upstream.model_name.clone()
+    } else if let Some(ref acc) = active_acc {
         acc.target_model.clone()
     } else {
-        state.db.get_setting("target_model").unwrap_or(None).unwrap_or_else(|| "deepseek-chat".to_string())
+        state
+            .db
+            .get_setting("target_model")
+            .unwrap_or(None)
+            .unwrap_or_else(|| "deepseek-chat".to_string())
     };
 
     let mut resolved_model = target_model_name.clone();
     if resolved_model == "Auto" {
         let (need_vis, need_reas, need_cod, need_spd) = classify_anthropic_capabilities(&payload);
         println!("OMNIX Router: Classification result -> Need Vision: {}, Reasoning: {}, Coding: {}, Speedy: {}", need_vis, need_reas, need_cod, need_spd);
-        
+
         if let Ok(active_models) = state.db.get_connection().and_then(|conn| {
             let mut stmt = conn.prepare(
                 "SELECT pm.model_name, pm.platform_id, pm.has_vision, pm.has_reasoning, pm.has_coding, mp.api_key, mp.api_address, mp.api_type
@@ -327,56 +407,86 @@ async fn handle_messages_impl(
         }
     }
 
-    let (api_key_raw, api_host, api_type, actual_model_name) = match resolve_model_upstream_for_agent(&state.db, &resolved_model, Some(&agent_name_for_routing)) {
-        Ok(res) => res,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to resolve model upstream: {}", e),
-            ).into_response();
+    let (api_host, api_type, actual_model_name, keys) = if let Some(upstream) = session_upstream {
+        (
+            upstream.api_address,
+            upstream.api_type,
+            upstream.model_name,
+            upstream.keys,
+        )
+    } else {
+        match resolve_model_upstream_for_agent(
+            &state.db,
+            &resolved_model,
+            Some(&agent_name_for_routing),
+        ) {
+            Ok((api_key_raw, api_host, api_type, actual_model_name)) => (
+                api_host,
+                api_type,
+                actual_model_name,
+                api_key_raw
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|key| !key.is_empty())
+                    .map(str::to_string)
+                    .collect(),
+            ),
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Failed to resolve model upstream: {}", e),
+                )
+                    .into_response();
+            }
         }
     };
 
-    let keys: Vec<&str> = api_key_raw.split(',').map(|k| k.trim()).filter(|k| !k.is_empty()).collect();
     if keys.is_empty() && api_type != "ollama" {
         return (
             StatusCode::UNAUTHORIZED,
             "API Key is not configured for this model platform.",
-        ).into_response();
+        )
+            .into_response();
     }
-    let api_key = if keys.is_empty() { "" } else { keys[state.request_counter.fetch_add(1, Ordering::Relaxed) % keys.len()] };
-
     let request_model = payload.model.clone();
 
     if api_type == "anthropic" {
         let mut native_req = payload;
         native_req.model = actual_model_name;
-        
+
         let upstream_url = join_url(&api_host, "/v1/messages");
         let is_stream = native_req.stream.unwrap_or(false);
-        
-        println!("OMNIX Proxy (Anthropic Route Native): Forwarding to {} (stream={})", upstream_url, is_stream);
-        
-        let mut req_builder = state.http_client.post(&upstream_url)
+
+        println!(
+            "OMNIX Proxy (Anthropic Route Native): Forwarding to {} (stream={})",
+            upstream_url, is_stream
+        );
+
+        let req_builder = state
+            .http_client
+            .post(&upstream_url)
             .header("Content-Type", "application/json")
             .header("anthropic-version", "2023-06-01")
             .json(&native_req);
-            
-        if !api_key.is_empty() {
-            req_builder = req_builder.header("x-api-key", api_key);
-        }
-        
-        let upstream_res = match req_builder.send().await {
+
+        let upstream_res = match send_with_key_failover(
+            req_builder,
+            &keys,
+            ApiKeyHeader::Anthropic,
+            key_health.clone(),
+        )
+        .await
+        {
             Ok(res) => res,
-            Err(e) => return (StatusCode::BAD_GATEWAY, format!("Upstream failed: {}", e)).into_response(),
+            Err(e) => return (StatusCode::BAD_GATEWAY, e).into_response(),
         };
-        
+
         let status = upstream_res.status();
         if !status.is_success() {
             let err_body = upstream_res.text().await.unwrap_or_default();
             return (status, err_body).into_response();
         }
-        
+
         // Log request (non-blocking, uses spawn_blocking for sync DB I/O)
         let log_db = state.db.clone();
         let log_model = resolved_model.clone();
@@ -385,30 +495,57 @@ async fn handle_messages_impl(
         let log_is_err = !status.is_success();
         let evt_db = state.db.clone();
         tokio::task::spawn_blocking(move || {
-            log_request(&log_db, &log_model, Some("anthropic"), 0, 0, log_latency, log_status, is_stream, log_is_err, None, None, "proxy");
+            log_request(
+                &log_db,
+                &log_model,
+                Some("anthropic"),
+                0,
+                0,
+                log_latency,
+                log_status,
+                is_stream,
+                log_is_err,
+                None,
+                None,
+                "proxy",
+            );
             // Emit message_sent event for event bus
             crate::event_bus::emit_event(&evt_db, crate::event_bus::EventType::MessageSent);
         });
 
         if is_stream {
-            let stream = upstream_res.bytes_stream().map(|r| r.map_err(|e| axum::Error::new(e)));
+            let stream = upstream_res
+                .bytes_stream()
+                .map(|r| r.map_err(|e| axum::Error::new(e)));
             Response::builder()
                 .status(StatusCode::OK)
                 .header("Content-Type", "text/event-stream")
                 .header("Cache-Control", "no-cache")
                 .header("Connection", "keep-alive")
                 .body(Body::from_stream(stream))
-                .unwrap_or_else(|_| Response::builder().status(StatusCode::INTERNAL_SERVER_ERROR).body(Body::empty()).unwrap())
+                .unwrap_or_else(|_| {
+                    Response::builder()
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .body(Body::empty())
+                        .unwrap()
+                })
         } else {
             let bytes = match upstream_res.bytes().await {
                 Ok(b) => b,
-                Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+                Err(e) => {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+                }
             };
             Response::builder()
                 .status(StatusCode::OK)
                 .header("Content-Type", "application/json")
                 .body(Body::from(bytes))
-                .unwrap_or_else(|_| Response::builder().status(StatusCode::INTERNAL_SERVER_ERROR).body(Body::empty()).unwrap())
+                .unwrap_or_else(|_| {
+                    Response::builder()
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .body(Body::empty())
+                        .unwrap()
+                })
         }
     } else {
         // Translate to OpenAI format (For OpenAI or Ollama)
@@ -441,19 +578,27 @@ async fn handle_messages_impl(
         };
 
         let is_stream = payload.stream.unwrap_or(false);
-        println!("OMNIX Proxy (Claude Route to OpenAI): Forwarding to {} (stream={})", upstream_url, is_stream);
-        
-        let mut req_builder = state.http_client.post(&upstream_url)
+        println!(
+            "OMNIX Proxy (Claude Route to OpenAI): Forwarding to {} (stream={})",
+            upstream_url, is_stream
+        );
+
+        let req_builder = state
+            .http_client
+            .post(&upstream_url)
             .header("Content-Type", "application/json")
             .json(&openai_req);
-            
-        if !api_key.is_empty() {
-            req_builder = req_builder.header("Authorization", format!("Bearer {}", api_key));
-        }
 
-        let upstream_res = match req_builder.send().await {
+        let upstream_res = match send_with_key_failover(
+            req_builder,
+            &keys,
+            ApiKeyHeader::Bearer,
+            key_health.clone(),
+        )
+        .await
+        {
             Ok(res) => res,
-            Err(e) => return (StatusCode::BAD_GATEWAY, format!("Upstream request failed: {}", e)).into_response(),
+            Err(e) => return (StatusCode::BAD_GATEWAY, e).into_response(),
         };
 
         let status = upstream_res.status();
@@ -465,46 +610,51 @@ async fn handle_messages_impl(
         if is_stream {
             let stream = upstream_res.bytes_stream();
             let mut buffer_bytes = Vec::new();
-            
-            let anthropic_stream = stream.map(move |result| {
-                match result {
-                    Ok(bytes) => {
-                        buffer_bytes.extend_from_slice(&bytes);
-                        let mut output_bytes = Vec::new();
-                        
-                        while let Some(pos) = buffer_bytes.iter().position(|&b| b == b'\n') {
-                            let line_bytes = &buffer_bytes[..pos];
-                            let line = String::from_utf8_lossy(line_bytes).trim().to_string();
-                            buffer_bytes.drain(..pos + 1);
-                            
-                            if line.starts_with("data: ") {
-                                let data_content = &line[6..];
-                                if data_content == "[DONE]" {
-                                    output_bytes.extend_from_slice(b"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n");
-                                    break;
-                                }
-                                if let Ok(chunk_json) = serde_json::from_str::<OpenAIStreamChunk>(data_content) {
-                                    if let Some(choice) = chunk_json.choices.first() {
-                                        if let Some(delta_text) = &choice.delta.content {
-                                            let anthropic_event = serde_json::json!({
-                                                "type": "content_block_delta",
-                                                "index": 0,
-                                                "delta": {
-                                                    "type": "text_delta",
-                                                    "text": delta_text
-                                                }
-                                            });
-                                            let formatted_line = format!("event: content_block_delta\ndata: {}\n\n", anthropic_event.to_string());
-                                            output_bytes.extend_from_slice(formatted_line.as_bytes());
-                                        }
+
+            let anthropic_stream = stream.map(move |result| match result {
+                Ok(bytes) => {
+                    buffer_bytes.extend_from_slice(&bytes);
+                    let mut output_bytes = Vec::new();
+
+                    while let Some(pos) = buffer_bytes.iter().position(|&b| b == b'\n') {
+                        let line_bytes = &buffer_bytes[..pos];
+                        let line = String::from_utf8_lossy(line_bytes).trim().to_string();
+                        buffer_bytes.drain(..pos + 1);
+
+                        if line.starts_with("data: ") {
+                            let data_content = &line[6..];
+                            if data_content == "[DONE]" {
+                                output_bytes.extend_from_slice(
+                                    b"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+                                );
+                                break;
+                            }
+                            if let Ok(chunk_json) =
+                                serde_json::from_str::<OpenAIStreamChunk>(data_content)
+                            {
+                                if let Some(choice) = chunk_json.choices.first() {
+                                    if let Some(delta_text) = &choice.delta.content {
+                                        let anthropic_event = serde_json::json!({
+                                            "type": "content_block_delta",
+                                            "index": 0,
+                                            "delta": {
+                                                "type": "text_delta",
+                                                "text": delta_text
+                                            }
+                                        });
+                                        let formatted_line = format!(
+                                            "event: content_block_delta\ndata: {}\n\n",
+                                            anthropic_event.to_string()
+                                        );
+                                        output_bytes.extend_from_slice(formatted_line.as_bytes());
                                     }
                                 }
                             }
                         }
-                        Ok::<_, axum::Error>(axum::body::Bytes::from(output_bytes))
                     }
-                    Err(e) => Err(axum::Error::new(e)),
+                    Ok::<_, axum::Error>(axum::body::Bytes::from(output_bytes))
                 }
+                Err(e) => Err(axum::Error::new(e)),
             });
 
             Response::builder()
@@ -513,7 +663,12 @@ async fn handle_messages_impl(
                 .header("Cache-Control", "no-cache")
                 .header("Connection", "keep-alive")
                 .body(Body::from_stream(anthropic_stream))
-                .unwrap_or_else(|_| Response::builder().status(StatusCode::INTERNAL_SERVER_ERROR).body(Body::empty()).unwrap())
+                .unwrap_or_else(|_| {
+                    Response::builder()
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .body(Body::empty())
+                        .unwrap()
+                })
         } else {
             #[derive(Debug, Deserialize)]
             struct OpenAIChoiceNonStream {
@@ -526,7 +681,9 @@ async fn handle_messages_impl(
 
             let res_bytes = match upstream_res.bytes().await {
                 Ok(b) => b,
-                Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+                Err(e) => {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+                }
             };
 
             // Log request (non-blocking, uses spawn_blocking for sync DB I/O)
@@ -534,7 +691,20 @@ async fn handle_messages_impl(
             let log_model = resolved_model.clone();
             let log_latency = start_time.elapsed().as_millis() as i64;
             tokio::task::spawn_blocking(move || {
-                log_request(&log_db, &log_model, Some("openai"), 0, 0, log_latency, 200, false, false, None, None, "proxy");
+                log_request(
+                    &log_db,
+                    &log_model,
+                    Some("openai"),
+                    0,
+                    0,
+                    log_latency,
+                    200,
+                    false,
+                    false,
+                    None,
+                    None,
+                    "proxy",
+                );
             });
 
             if let Ok(openai_res) = serde_json::from_slice::<OpenAIResponse>(&res_bytes) {
@@ -561,7 +731,328 @@ async fn handle_messages_impl(
                     return Json(anthropic_res).into_response();
                 }
             }
-            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to parse OpenAI response.").into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to parse OpenAI response.",
+            )
+                .into_response()
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ApiKeyHeader {
+    Anthropic,
+    Bearer,
+}
+
+#[derive(Clone)]
+struct KeyHealthContext {
+    db: Arc<DbManager>,
+    key_ids: Vec<Option<String>>,
+}
+
+fn record_key_health(
+    context: &KeyHealthContext,
+    index: usize,
+    status: &str,
+    error: Option<&str>,
+    latency_ms: i64,
+) {
+    let Some(Some(key_id)) = context.key_ids.get(index) else {
+        return;
+    };
+    if let Ok(conn) = context.db.get_connection() {
+        let _ = conn.execute(
+            "UPDATE platform_api_keys
+             SET last_status = ?1, last_error = ?2, latency_ms = ?3,
+                 last_checked_at = datetime('now')
+             WHERE id = ?4",
+            params![status, error, latency_ms, key_id],
+        );
+    }
+}
+
+async fn send_with_key_failover(
+    request: reqwest::RequestBuilder,
+    keys: &[String],
+    header: ApiKeyHeader,
+    health: Option<KeyHealthContext>,
+) -> Result<reqwest::Response, String> {
+    let attempts: Vec<Option<&str>> = if keys.is_empty() {
+        vec![None]
+    } else {
+        keys.iter().map(|key| Some(key.as_str())).collect()
+    };
+    let mut last_error = None;
+    for (index, key) in attempts.iter().enumerate() {
+        let started_at = std::time::Instant::now();
+        let mut attempt = request
+            .try_clone()
+            .ok_or_else(|| "Unable to clone upstream request for key failover".to_string())?;
+        if let Some(key) = key {
+            attempt = match header {
+                ApiKeyHeader::Anthropic => attempt.header("x-api-key", *key),
+                ApiKeyHeader::Bearer => attempt.header("Authorization", format!("Bearer {key}")),
+            };
+        }
+        match attempt.send().await {
+            Ok(response) => {
+                let status = response.status();
+                let latency_ms = started_at.elapsed().as_millis() as i64;
+                let can_retry = matches!(
+                    status.as_u16(),
+                    401 | 403 | 408 | 409 | 425 | 429 | 500 | 502 | 503 | 504
+                );
+                if let Some(context) = health.as_ref() {
+                    if status.is_success() {
+                        record_key_health(context, index, "success", None, latency_ms);
+                    } else {
+                        let message = format!("HTTP {status}");
+                        record_key_health(context, index, "error", Some(&message), latency_ms);
+                    }
+                }
+                if can_retry && index + 1 < attempts.len() {
+                    last_error = Some(format!("upstream returned {status}"));
+                    continue;
+                }
+                return Ok(response);
+            }
+            Err(error) if index + 1 < attempts.len() => {
+                if let Some(context) = health.as_ref() {
+                    record_key_health(
+                        context,
+                        index,
+                        "error",
+                        Some(&error.to_string()),
+                        started_at.elapsed().as_millis() as i64,
+                    );
+                }
+                last_error = Some(format!("upstream network error: {error}"));
+            }
+            Err(error) => {
+                if let Some(context) = health.as_ref() {
+                    record_key_health(
+                        context,
+                        index,
+                        "error",
+                        Some(&error.to_string()),
+                        started_at.elapsed().as_millis() as i64,
+                    );
+                }
+                return Err(format!("Upstream request failed: {error}"));
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| "No upstream API key attempt was made".into()))
+}
+
+async fn handle_responses_for_session(
+    State(state): State<Arc<ProxyState>>,
+    axum::extract::Path(session_key): axum::extract::Path<String>,
+    Json(mut payload): Json<Value>,
+) -> Response {
+    let _permit = match state.concurrency_semaphore.try_acquire() {
+        Ok(permit) => permit,
+        Err(_) => {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                "Too many concurrent requests. Please retry later.",
+            )
+                .into_response();
+        }
+    };
+    let upstream = match resolve_session_model_upstream(&state.db, &session_key) {
+        Ok(upstream) => upstream,
+        Err(error) => return (StatusCode::BAD_REQUEST, error).into_response(),
+    };
+    let health = KeyHealthContext {
+        db: Arc::clone(&state.db),
+        key_ids: upstream.key_ids.clone(),
+    };
+
+    if upstream.api_type == "openai-response" {
+        // Provider speaks the Responses API natively: forward verbatim.
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("model".into(), Value::String(upstream.model_name.clone()));
+        }
+        let upstream_url = join_url(&upstream.api_address, "/responses");
+        let request = state
+            .http_client
+            .post(upstream_url)
+            .header("Content-Type", "application/json")
+            .json(&payload);
+        let response = match send_with_key_failover(
+            request,
+            &upstream.keys,
+            ApiKeyHeader::Bearer,
+            Some(health),
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(error) => return (StatusCode::BAD_GATEWAY, error).into_response(),
+        };
+        return forward_event_stream(response);
+    }
+
+    // Provider only speaks Chat Completions: translate Responses <-> Chat so
+    // Codex can use any model the user configured (DeepSeek, Volcano, etc.).
+    let chat_body =
+        crate::responses_bridge::responses_request_to_chat(&payload, &upstream.model_name);
+    let upstream_url = join_url(&upstream.api_address, "/chat/completions");
+    let request = state
+        .http_client
+        .post(upstream_url)
+        .header("Content-Type", "application/json")
+        .json(&chat_body);
+    let response =
+        match send_with_key_failover(request, &upstream.keys, ApiKeyHeader::Bearer, Some(health))
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => return (StatusCode::BAD_GATEWAY, error).into_response(),
+        };
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return (status, body).into_response();
+    }
+    let response_id = format!("resp_{}", chrono::Utc::now().timestamp_micros());
+    let is_sse = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(|content_type| content_type.contains("event-stream"))
+        .unwrap_or(false);
+    if is_sse {
+        translated_responses_stream(response, response_id)
+    } else {
+        // Upstream ignored `stream`: translate the whole completion at once.
+        let completion = response
+            .json::<Value>()
+            .await
+            .unwrap_or_else(|_| serde_json::json!({}));
+        let mut translator =
+            crate::responses_bridge::ResponsesStreamTranslator::new(response_id);
+        let body = translator.translate_full(&completion).concat();
+        Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "text/event-stream")
+            .body(Body::from(body))
+            .unwrap_or_else(|_| {
+                Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(Body::empty())
+                    .expect("static response")
+            })
+    }
+}
+
+/// Forward an upstream SSE response stream verbatim (native Responses provider).
+fn forward_event_stream(response: reqwest::Response) -> Response {
+    let status = response.status();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("text/event-stream")
+        .to_string();
+    let stream = response
+        .bytes_stream()
+        .map(|item| item.map_err(axum::Error::new));
+    Response::builder()
+        .status(status)
+        .header("Content-Type", content_type)
+        .body(Body::from_stream(stream))
+        .unwrap_or_else(|_| {
+            Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Body::empty())
+                .expect("static response")
+        })
+}
+
+/// Translate an upstream Chat Completions SSE stream into Responses SSE events.
+fn translated_responses_stream(response: reqwest::Response, response_id: String) -> Response {
+    let status = response.status();
+    let upstream = response.bytes_stream().boxed();
+    let translator = crate::responses_bridge::ResponsesStreamTranslator::new(response_id);
+    let init = (
+        upstream,
+        String::new(),
+        translator,
+        std::collections::VecDeque::<String>::new(),
+        false, // upstream_done
+        false, // finished
+    );
+    let stream = futures::stream::unfold(
+        init,
+        |(mut upstream, mut buf, mut translator, mut queue, mut upstream_done, mut finished)| async move {
+            loop {
+                if let Some(chunk) = queue.pop_front() {
+                    return Some((
+                        Ok::<_, std::io::Error>(chunk),
+                        (upstream, buf, translator, queue, upstream_done, finished),
+                    ));
+                }
+                if finished {
+                    return None;
+                }
+                if upstream_done {
+                    for event in translator.finish() {
+                        queue.push_back(event);
+                    }
+                    finished = true;
+                    continue;
+                }
+                match upstream.next().await {
+                    Some(Ok(bytes)) => {
+                        buf.push_str(&String::from_utf8_lossy(&bytes));
+                        drain_chat_sse_lines(&mut buf, &mut translator, &mut queue);
+                    }
+                    Some(Err(_)) | None => {
+                        upstream_done = true;
+                    }
+                }
+            }
+        },
+    );
+    Response::builder()
+        .status(status)
+        .header("Content-Type", "text/event-stream")
+        .header("Cache-Control", "no-cache")
+        .body(Body::from_stream(stream))
+        .unwrap_or_else(|_| {
+            Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Body::empty())
+                .expect("static response")
+        })
+}
+
+/// Pull complete `data:` SSE lines out of the buffer and feed parsed Chat
+/// Completions chunks to the translator, queueing the emitted Responses events.
+fn drain_chat_sse_lines(
+    buf: &mut String,
+    translator: &mut crate::responses_bridge::ResponsesStreamTranslator,
+    queue: &mut std::collections::VecDeque<String>,
+) {
+    while let Some(pos) = buf.find('\n') {
+        let line = buf[..pos].trim_end_matches('\r').to_string();
+        buf.drain(..=pos);
+        let trimmed = line.trim();
+        let Some(rest) = trimmed.strip_prefix("data:") else {
+            continue;
+        };
+        let data = rest.trim();
+        if data.is_empty() || data == "[DONE]" {
+            continue;
+        }
+        if let Ok(chunk) = serde_json::from_str::<Value>(data) {
+            for event in translator.push_chunk(&chunk) {
+                queue.push_back(event);
+            }
         }
     }
 }
@@ -595,28 +1086,42 @@ async fn handle_openai_forward_impl(
     let _permit = match state.concurrency_semaphore.try_acquire() {
         Ok(p) => p,
         Err(_) => {
-            return (StatusCode::TOO_MANY_REQUESTS, "Too many concurrent requests. Please retry later.").into_response();
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                "Too many concurrent requests. Please retry later.",
+            )
+                .into_response();
         }
     };
 
-    let agent_name_for_routing = agent_name_opt.clone().unwrap_or_else(|| "Codex".to_string());
+    let agent_name_for_routing = agent_name_opt
+        .clone()
+        .unwrap_or_else(|| "Codex".to_string());
 
     let start_time = std::time::Instant::now();
     let mut payload = payload;
-    let target_account_id = headers.get("x-omnix-account-id")
+    let target_account_id = headers
+        .get("x-omnix-account-id")
         .and_then(|v| v.to_str().ok().map(|s| s.to_string()));
 
     let active_acc = if let Some(ref acc_id) = target_account_id {
         state.db.get_account_by_id(acc_id).unwrap_or(None)
     } else {
         let agent_name = agent_name_opt.unwrap_or_else(|| "Codex".to_string());
-        state.db.get_active_account_for_agent(&agent_name).unwrap_or(None)
+        state
+            .db
+            .get_active_account_for_agent(&agent_name)
+            .unwrap_or(None)
     };
 
     let target_model_name = if let Some(ref acc) = active_acc {
         acc.target_model.clone()
     } else {
-        state.db.get_setting("target_model").unwrap_or(None).unwrap_or_else(|| "deepseek-chat".to_string())
+        state
+            .db
+            .get_setting("target_model")
+            .unwrap_or(None)
+            .unwrap_or_else(|| "deepseek-chat".to_string())
     };
 
     let mut resolved_model = target_model_name.clone();
@@ -640,7 +1145,7 @@ async fn handle_openai_forward_impl(
 
         let (need_vis, need_reas, need_cod, need_spd) = classify_request_capabilities(&messages);
         println!("OMNIX OpenAI Router: Classification result -> Need Vision: {}, Reasoning: {}, Coding: {}, Speedy: {}", need_vis, need_reas, need_cod, need_spd);
-        
+
         if let Ok(active_models) = state.db.get_connection().and_then(|conn| {
             let mut stmt = conn.prepare(
                 "SELECT pm.model_name, pm.platform_id, pm.has_vision, pm.has_reasoning, pm.has_coding, mp.api_key, mp.api_address, mp.api_type
@@ -698,28 +1203,46 @@ async fn handle_openai_forward_impl(
         }
     }
 
-    let (api_key_raw, api_host, api_type, actual_model_name) = match resolve_model_upstream_for_agent(&state.db, &resolved_model, Some(&agent_name_for_routing)) {
-        Ok(res) => res,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to resolve model upstream: {}", e),
-            ).into_response();
-        }
-    };
+    let (api_key_raw, api_host, api_type, actual_model_name) =
+        match resolve_model_upstream_for_agent(
+            &state.db,
+            &resolved_model,
+            Some(&agent_name_for_routing),
+        ) {
+            Ok(res) => res,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Failed to resolve model upstream: {}", e),
+                )
+                    .into_response();
+            }
+        };
 
-    let keys: Vec<&str> = api_key_raw.split(',').map(|k| k.trim()).filter(|k| !k.is_empty()).collect();
+    let keys: Vec<&str> = api_key_raw
+        .split(',')
+        .map(|k| k.trim())
+        .filter(|k| !k.is_empty())
+        .collect();
     if keys.is_empty() && api_type != "ollama" {
         return (
             StatusCode::UNAUTHORIZED,
             "API Key is not configured for this model platform.",
-        ).into_response();
+        )
+            .into_response();
     }
-    let api_key = if keys.is_empty() { "" } else { keys[state.request_counter.fetch_add(1, Ordering::Relaxed) % keys.len()] };
+    let api_key = if keys.is_empty() {
+        ""
+    } else {
+        keys[state.request_counter.fetch_add(1, Ordering::Relaxed) % keys.len()]
+    };
 
     if api_type != "anthropic" {
         if let Some(payload_obj) = payload.as_object_mut() {
-            payload_obj.insert("model".to_string(), serde_json::Value::String(actual_model_name.clone()));
+            payload_obj.insert(
+                "model".to_string(),
+                serde_json::Value::String(actual_model_name.clone()),
+            );
         }
 
         let upstream_url = if api_type == "ollama" {
@@ -728,17 +1251,28 @@ async fn handle_openai_forward_impl(
             join_url(&api_host, "/chat/completions")
         };
 
-        let is_stream = headers.get("accept").and_then(|v| v.to_str().ok()).map(|s| s.contains("text/event-stream")).unwrap_or(false)
-            || payload.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
+        let is_stream = headers
+            .get("accept")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.contains("text/event-stream"))
+            .unwrap_or(false)
+            || payload
+                .get("stream")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
 
-        println!("OMNIX Proxy (OpenAI Route): Forwarding request to {} (stream={})", upstream_url, is_stream);
+        println!(
+            "OMNIX Proxy (OpenAI Route): Forwarding request to {} (stream={})",
+            upstream_url, is_stream
+        );
 
         // ── Prompt Injection Guard (Odysseus) ──
         if let Some(msgs) = payload.get("messages").and_then(|m| m.as_array()) {
             if let Some(last_msg) = msgs.last() {
                 if last_msg.get("role").and_then(|r| r.as_str()) == Some("user") {
                     if let Some(content) = last_msg.get("content").and_then(|c| c.as_str()) {
-                        let (wrapped, scan_result) = crate::prompt_guard::scan_and_wrap(content, "user_message");
+                        let (wrapped, scan_result) =
+                            crate::prompt_guard::scan_and_wrap(content, "user_message");
                         if scan_result.risk_score > 0.7 {
                             log::warn!("[omnix::proxy] High injection risk ({:.0}%) in user message — {} pattern(s): {:?}",
                                 scan_result.risk_score * 100.0,
@@ -748,10 +1282,15 @@ async fn handle_openai_forward_impl(
                         }
                         if wrapped != content {
                             if let Some(obj) = payload.as_object_mut() {
-                                if let Some(msgs_arr) = obj.get_mut("messages").and_then(|m| m.as_array_mut()) {
+                                if let Some(msgs_arr) =
+                                    obj.get_mut("messages").and_then(|m| m.as_array_mut())
+                                {
                                     if let Some(last) = msgs_arr.last_mut() {
                                         if let Some(last_obj) = last.as_object_mut() {
-                                            last_obj.insert("content".to_string(), serde_json::Value::String(wrapped));
+                                            last_obj.insert(
+                                                "content".to_string(),
+                                                serde_json::Value::String(wrapped),
+                                            );
                                         }
                                     }
                                 }
@@ -762,7 +1301,9 @@ async fn handle_openai_forward_impl(
             }
         }
 
-        let mut req_builder = state.http_client.post(&upstream_url)
+        let mut req_builder = state
+            .http_client
+            .post(&upstream_url)
             .header("Content-Type", "application/json")
             .json(&payload);
 
@@ -772,7 +1313,10 @@ async fn handle_openai_forward_impl(
 
         let upstream_res = match req_builder.send().await {
             Ok(res) => {
-                println!("OMNIX Proxy (OpenAI Route): Upstream returned status {}", res.status());
+                println!(
+                    "OMNIX Proxy (OpenAI Route): Upstream returned status {}",
+                    res.status()
+                );
                 res
             }
             Err(e) => {
@@ -788,7 +1332,11 @@ async fn handle_openai_forward_impl(
         let status = upstream_res.status();
         if !status.is_success() {
             let err_body = upstream_res.text().await.unwrap_or_default();
-            log::warn!("OMNIX Proxy (OpenAI Route): Upstream non-success payload (status {}): {}", status, err_body);
+            log::warn!(
+                "OMNIX Proxy (OpenAI Route): Upstream non-success payload (status {}): {}",
+                status,
+                err_body
+            );
             return (status, err_body).into_response();
         }
 
@@ -799,29 +1347,56 @@ async fn handle_openai_forward_impl(
         let log_status = status.as_u16() as i32;
         let log_is_err = !status.is_success();
         tokio::task::spawn_blocking(move || {
-            log_request(&log_db, &log_model, Some("openai"), 0, 0, log_latency, log_status, is_stream, log_is_err, None, None, "proxy");
+            log_request(
+                &log_db,
+                &log_model,
+                Some("openai"),
+                0,
+                0,
+                log_latency,
+                log_status,
+                is_stream,
+                log_is_err,
+                None,
+                None,
+                "proxy",
+            );
         });
 
         if is_stream {
-            let stream = upstream_res.bytes_stream().map(|r| r.map_err(|e| axum::Error::new(e)));
+            let stream = upstream_res
+                .bytes_stream()
+                .map(|r| r.map_err(|e| axum::Error::new(e)));
             Response::builder()
                 .status(StatusCode::OK)
                 .header("Content-Type", "text/event-stream")
                 .header("Cache-Control", "no-cache")
                 .header("Connection", "keep-alive")
                 .body(Body::from_stream(stream))
-                .unwrap_or_else(|_| Response::builder().status(StatusCode::INTERNAL_SERVER_ERROR).body(Body::empty()).unwrap())
+                .unwrap_or_else(|_| {
+                    Response::builder()
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .body(Body::empty())
+                        .unwrap()
+                })
                 .into_response()
         } else {
             let bytes = match upstream_res.bytes().await {
                 Ok(b) => b,
-                Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+                Err(e) => {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+                }
             };
             Response::builder()
                 .status(StatusCode::OK)
                 .header("Content-Type", "application/json")
                 .body(Body::from(bytes))
-                .unwrap_or_else(|_| Response::builder().status(StatusCode::INTERNAL_SERVER_ERROR).body(Body::empty()).unwrap())
+                .unwrap_or_else(|_| {
+                    Response::builder()
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .body(Body::empty())
+                        .unwrap()
+                })
                 .into_response()
         }
     } else {
@@ -841,7 +1416,13 @@ async fn handle_openai_forward_impl(
 
         let openai_req: OpenAIRequestPayload = match serde_json::from_value(payload) {
             Ok(req) => req,
-            Err(e) => return (StatusCode::BAD_REQUEST, format!("Invalid OpenAI request: {}", e)).into_response(),
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    format!("Invalid OpenAI request: {}", e),
+                )
+                    .into_response()
+            }
         };
 
         let mut system_prompt = None;
@@ -870,22 +1451,29 @@ async fn handle_openai_forward_impl(
         let upstream_url = join_url(&api_host, "/v1/messages");
         let is_stream = native_req.stream.unwrap_or(false);
 
-        println!("OMNIX Proxy (OpenAI to Anthropic Route): Forwarding request to {} (stream={})", upstream_url, is_stream);
+        println!(
+            "OMNIX Proxy (OpenAI to Anthropic Route): Forwarding request to {} (stream={})",
+            upstream_url, is_stream
+        );
 
-        let mut req_builder = state.http_client.post(&upstream_url)
+        let mut req_builder = state
+            .http_client
+            .post(&upstream_url)
             .header("Content-Type", "application/json")
             .header("anthropic-version", "2023-06-01")
             .json(&native_req);
-            
+
         if !api_key.is_empty() {
             req_builder = req_builder.header("x-api-key", api_key);
         }
 
         let upstream_res = match req_builder.send().await {
             Ok(res) => res,
-            Err(e) => return (StatusCode::BAD_GATEWAY, format!("Upstream failed: {}", e)).into_response(),
+            Err(e) => {
+                return (StatusCode::BAD_GATEWAY, format!("Upstream failed: {}", e)).into_response()
+            }
         };
-        
+
         let status = upstream_res.status();
         if !status.is_success() {
             let err_body = upstream_res.text().await.unwrap_or_default();
@@ -902,19 +1490,23 @@ async fn handle_openai_forward_impl(
                 id: String,
                 content: Vec<AnthropicContentBlock>,
             }
-            
+
             let res_bytes = match upstream_res.bytes().await {
                 Ok(b) => b,
-                Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+                Err(e) => {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+                }
             };
-            
+
             match serde_json::from_slice::<AnthropicResponse>(&res_bytes) {
                 Ok(anthropic_res) => {
-                    let text = anthropic_res.content.iter()
+                    let text = anthropic_res
+                        .content
+                        .iter()
                         .map(|b| b.text.as_str())
                         .collect::<Vec<&str>>()
                         .join("\n");
-                        
+
                     let openai_res = serde_json::json!({
                         "id": format!("chatcmpl-{}", anthropic_res.id),
                         "object": "chat.completion",
@@ -933,87 +1525,89 @@ async fn handle_openai_forward_impl(
                     });
                     Json(openai_res).into_response()
                 }
-                Err(_) => {
-                    (StatusCode::INTERNAL_SERVER_ERROR, "Failed to parse Anthropic response").into_response()
-                }
+                Err(_) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to parse Anthropic response",
+                )
+                    .into_response(),
             }
         } else {
             let stream = upstream_res.bytes_stream();
             let mut buffer_bytes = Vec::new();
             let model_for_chunk = resolved_model.clone();
-            
-            let openai_stream = stream.map(move |result| {
-                match result {
-                    Ok(bytes) => {
-                        buffer_bytes.extend_from_slice(&bytes);
-                        let mut output_bytes = Vec::new();
-                        
-                        while let Some(pos) = buffer_bytes.iter().position(|&b| b == b'\n') {
-                            let line_bytes = &buffer_bytes[..pos];
-                            let line = String::from_utf8_lossy(line_bytes).trim().to_string();
-                            buffer_bytes.drain(..pos + 1);
-                            
-                            if line.starts_with("data: ") {
-                                let data_content = &line[6..];
-                                
-                                #[derive(Debug, Deserialize)]
-                                #[serde(tag = "type")]
-                                enum AnthropicStreamEvent {
-                                    #[serde(rename = "message_start")]
-                                    MessageStart,
-                                    #[serde(rename = "content_block_start")]
-                                    ContentBlockStart,
-                                    #[serde(rename = "content_block_delta")]
-                                    ContentBlockDelta {
-                                        delta: AnthropicDelta,
-                                    },
-                                    #[serde(rename = "content_block_stop")]
-                                    ContentBlockStop,
-                                    #[serde(rename = "message_delta")]
-                                    MessageDelta,
-                                    #[serde(rename = "message_stop")]
-                                    MessageStop,
-                                    #[serde(other)]
-                                    Other,
-                                }
-                                
-                                #[derive(Debug, Deserialize)]
-                                struct AnthropicDelta {
-                                    text: String,
-                                }
-                                
-                                if let Ok(event) = serde_json::from_str::<AnthropicStreamEvent>(data_content) {
-                                    match event {
-                                        AnthropicStreamEvent::ContentBlockDelta { delta } => {
-                                            let chunk = serde_json::json!({
-                                                "id": "chatcmpl-stream",
-                                                "object": "chat.completion.chunk",
-                                                "created": 0,
-                                                "model": model_for_chunk,
-                                                "choices": [
-                                                    {
-                                                        "index": 0,
-                                                        "delta": {
-                                                            "content": delta.text
-                                                        },
-                                                        "finish_reason": null
-                                                    }
-                                                ]
-                                            });
-                                            output_bytes.extend_from_slice(format!("data: {}\n\n", chunk.to_string()).as_bytes());
-                                        }
-                                        AnthropicStreamEvent::MessageStop => {
-                                            output_bytes.extend_from_slice(b"data: [DONE]\n\n");
-                                        }
-                                        _ => {}
+
+            let openai_stream = stream.map(move |result| match result {
+                Ok(bytes) => {
+                    buffer_bytes.extend_from_slice(&bytes);
+                    let mut output_bytes = Vec::new();
+
+                    while let Some(pos) = buffer_bytes.iter().position(|&b| b == b'\n') {
+                        let line_bytes = &buffer_bytes[..pos];
+                        let line = String::from_utf8_lossy(line_bytes).trim().to_string();
+                        buffer_bytes.drain(..pos + 1);
+
+                        if line.starts_with("data: ") {
+                            let data_content = &line[6..];
+
+                            #[derive(Debug, Deserialize)]
+                            #[serde(tag = "type")]
+                            enum AnthropicStreamEvent {
+                                #[serde(rename = "message_start")]
+                                MessageStart,
+                                #[serde(rename = "content_block_start")]
+                                ContentBlockStart,
+                                #[serde(rename = "content_block_delta")]
+                                ContentBlockDelta { delta: AnthropicDelta },
+                                #[serde(rename = "content_block_stop")]
+                                ContentBlockStop,
+                                #[serde(rename = "message_delta")]
+                                MessageDelta,
+                                #[serde(rename = "message_stop")]
+                                MessageStop,
+                                #[serde(other)]
+                                Other,
+                            }
+
+                            #[derive(Debug, Deserialize)]
+                            struct AnthropicDelta {
+                                text: String,
+                            }
+
+                            if let Ok(event) =
+                                serde_json::from_str::<AnthropicStreamEvent>(data_content)
+                            {
+                                match event {
+                                    AnthropicStreamEvent::ContentBlockDelta { delta } => {
+                                        let chunk = serde_json::json!({
+                                            "id": "chatcmpl-stream",
+                                            "object": "chat.completion.chunk",
+                                            "created": 0,
+                                            "model": model_for_chunk,
+                                            "choices": [
+                                                {
+                                                    "index": 0,
+                                                    "delta": {
+                                                        "content": delta.text
+                                                    },
+                                                    "finish_reason": null
+                                                }
+                                            ]
+                                        });
+                                        output_bytes.extend_from_slice(
+                                            format!("data: {}\n\n", chunk.to_string()).as_bytes(),
+                                        );
                                     }
+                                    AnthropicStreamEvent::MessageStop => {
+                                        output_bytes.extend_from_slice(b"data: [DONE]\n\n");
+                                    }
+                                    _ => {}
                                 }
                             }
                         }
-                        Ok::<_, axum::Error>(axum::body::Bytes::from(output_bytes))
                     }
-                    Err(e) => Err(axum::Error::new(e)),
+                    Ok::<_, axum::Error>(axum::body::Bytes::from(output_bytes))
                 }
+                Err(e) => Err(axum::Error::new(e)),
             });
 
             Response::builder()
@@ -1022,7 +1616,12 @@ async fn handle_openai_forward_impl(
                 .header("Cache-Control", "no-cache")
                 .header("Connection", "keep-alive")
                 .body(Body::from_stream(openai_stream))
-                .unwrap_or_else(|_| Response::builder().status(StatusCode::INTERNAL_SERVER_ERROR).body(Body::empty()).unwrap())
+                .unwrap_or_else(|_| {
+                    Response::builder()
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .body(Body::empty())
+                        .unwrap()
+                })
                 .into_response()
         }
     }
@@ -1035,12 +1634,15 @@ async fn serve_remote_html(
     State(state): State<Arc<ProxyState>>,
 ) -> impl IntoResponse {
     let token = params.get("token").cloned().unwrap_or_default();
-    let expected_token = state.db.get_setting("remote_token")
+    let expected_token = state
+        .db
+        .get_setting("remote_token")
         .unwrap_or(None)
         .unwrap_or_default();
 
     if token.is_empty() || token != expected_token {
-        return axum::response::Html("<h1>401 Unauthorized - Invalid Access Token</h1>").into_response();
+        return axum::response::Html("<h1>401 Unauthorized - Invalid Access Token</h1>")
+            .into_response();
     }
 
     let html = include_str!("remote_dashboard.html");
@@ -1072,7 +1674,9 @@ async fn get_remote_status(
     State(state): State<Arc<ProxyState>>,
 ) -> impl IntoResponse {
     let token = params.get("token").cloned().unwrap_or_default();
-    let expected_token = state.db.get_setting("remote_token")
+    let expected_token = state
+        .db
+        .get_setting("remote_token")
         .unwrap_or(None)
         .unwrap_or_default();
 
@@ -1087,11 +1691,12 @@ async fn get_remote_status(
         if let Ok(conn) = state.db.get_connection() {
             if let Ok(mut stmt) = conn.prepare(
                 "SELECT id, conversation_id, title, status, order_num, dependencies 
-                 FROM tasks WHERE conversation_id = ?1 ORDER BY order_num ASC"
+                 FROM tasks WHERE conversation_id = ?1 ORDER BY order_num ASC",
             ) {
                 let rows = stmt.query_map(params![session_id], |row| {
                     let deps_str: String = row.get(5)?;
-                    let dependencies: Vec<String> = serde_json::from_str(&deps_str).unwrap_or_default();
+                    let dependencies: Vec<String> =
+                        serde_json::from_str(&deps_str).unwrap_or_default();
                     Ok(crate::commands::DbTask {
                         id: row.get(0)?,
                         conversation_id: row.get(1)?,
@@ -1110,9 +1715,9 @@ async fn get_remote_status(
 
     let mut cron_tasks = Vec::new();
     if let Ok(conn) = state.db.get_connection() {
-        if let Ok(mut stmt) = conn.prepare(
-            "SELECT id, title, schedule, agent_name, is_active, last_run FROM cron_tasks"
-        ) {
+        if let Ok(mut stmt) = conn
+            .prepare("SELECT id, title, schedule, agent_name, is_active, last_run FROM cron_tasks")
+        {
             let rows = stmt.query_map([], |row| {
                 let is_active_int: i32 = row.get(4)?;
                 Ok(CronTaskInfo {
@@ -1130,8 +1735,16 @@ async fn get_remote_status(
         }
     }
 
-    let api_host = state.db.get_setting("api_host").unwrap_or(None).unwrap_or_default();
-    let target_model = state.db.get_setting("target_model").unwrap_or(None).unwrap_or_default();
+    let api_host = state
+        .db
+        .get_setting("api_host")
+        .unwrap_or(None)
+        .unwrap_or_default();
+    let target_model = state
+        .db
+        .get_setting("target_model")
+        .unwrap_or(None)
+        .unwrap_or_default();
 
     Json(RemoteStatus {
         api_host,
@@ -1139,7 +1752,8 @@ async fn get_remote_status(
         active_sessions,
         tasks,
         cron_tasks,
-    }).into_response()
+    })
+    .into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -1154,7 +1768,9 @@ async fn post_remote_approve(
     Json(body): Json<ApprovePayload>,
 ) -> impl IntoResponse {
     let token = params.get("token").cloned().unwrap_or_default();
-    let expected_token = state.db.get_setting("remote_token")
+    let expected_token = state
+        .db
+        .get_setting("remote_token")
         .unwrap_or(None)
         .unwrap_or_default();
 
@@ -1162,7 +1778,10 @@ async fn post_remote_approve(
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
-    match state.agent_manager.send_stdin(&body.session_id, body.input.clone()) {
+    match state
+        .agent_manager
+        .send_stdin(&body.session_id, body.input.clone())
+    {
         Ok(_) => (StatusCode::OK, "Success").into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, format!("Failed: {}", e)).into_response(),
     }
@@ -1179,7 +1798,9 @@ async fn post_remote_cron_trigger(
     Json(body): Json<CronTriggerPayload>,
 ) -> impl IntoResponse {
     let token = params.get("token").cloned().unwrap_or_default();
-    let expected_token = state.db.get_setting("remote_token")
+    let expected_token = state
+        .db
+        .get_setting("remote_token")
         .unwrap_or(None)
         .unwrap_or_default();
 
@@ -1190,11 +1811,13 @@ async fn post_remote_cron_trigger(
     let db = Arc::clone(&state.db);
     let conn_res = db.get_connection();
     if let Ok(conn) = conn_res {
-        let mut stmt = match conn.prepare("SELECT id, title, agent_name, args, workspace_dir FROM cron_tasks WHERE id = ?1") {
+        let mut stmt = match conn.prepare(
+            "SELECT id, title, agent_name, args, workspace_dir FROM cron_tasks WHERE id = ?1",
+        ) {
             Ok(s) => s,
             Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "DB Error").into_response(),
         };
-        
+
         let row_res = stmt.query_row(params![body.task_id], |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -1207,7 +1830,8 @@ async fn post_remote_cron_trigger(
 
         if let Ok((id, _title, agent_name, args_str, workspace_dir)) = row_res {
             tauri::async_runtime::handle().spawn(async move {
-                let _ = crate::agent::run_cron_task(db, id, agent_name, args_str, workspace_dir).await;
+                let _ =
+                    crate::agent::run_cron_task(db, id, agent_name, args_str, workspace_dir).await;
             });
             return (StatusCode::OK, "Task triggered").into_response();
         }
@@ -1218,7 +1842,6 @@ async fn post_remote_cron_trigger(
 
 // --- Dynamic Capability Routing Helpers ---
 
-
 fn classify_request_capabilities(messages: &[OpenAIRequestMessage]) -> (bool, bool, bool, bool) {
     let mut need_vision = false;
     let mut need_reasoning = false;
@@ -1226,35 +1849,39 @@ fn classify_request_capabilities(messages: &[OpenAIRequestMessage]) -> (bool, bo
 
     for msg in messages {
         let content_lower = msg.content.to_lowercase();
-        if content_lower.contains("data:image/") || content_lower.contains("[image]") || content_lower.contains("图片") || content_lower.contains("图像") {
+        if content_lower.contains("data:image/")
+            || content_lower.contains("[image]")
+            || content_lower.contains("图片")
+            || content_lower.contains("图像")
+        {
             need_vision = true;
         }
-        if content_lower.contains("prove") 
-            || content_lower.contains("proof") 
-            || content_lower.contains("math") 
-            || content_lower.contains("算法") 
-            || content_lower.contains("algorithm") 
-            || content_lower.contains("deadlock") 
-            || content_lower.contains("死锁") 
+        if content_lower.contains("prove")
+            || content_lower.contains("proof")
+            || content_lower.contains("math")
+            || content_lower.contains("算法")
+            || content_lower.contains("algorithm")
+            || content_lower.contains("deadlock")
+            || content_lower.contains("死锁")
             || content_lower.contains("性能优化")
             || content_lower.contains("explain step-by-step")
-            || content_lower.contains("思维链") 
+            || content_lower.contains("思维链")
         {
             need_reasoning = true;
         }
-        if content_lower.contains("```") 
-            || content_lower.contains("code") 
-            || content_lower.contains("代码") 
-            || content_lower.contains("write a") 
-            || content_lower.contains("refactor") 
-            || content_lower.contains("重构") 
-            || content_lower.contains("implement") 
-            || content_lower.contains("编写") 
-            || content_lower.contains(".rs") 
-            || content_lower.contains(".tsx") 
-            || content_lower.contains(".ts") 
-            || content_lower.contains(".js") 
-            || content_lower.contains(".py") 
+        if content_lower.contains("```")
+            || content_lower.contains("code")
+            || content_lower.contains("代码")
+            || content_lower.contains("write a")
+            || content_lower.contains("refactor")
+            || content_lower.contains("重构")
+            || content_lower.contains("implement")
+            || content_lower.contains("编写")
+            || content_lower.contains(".rs")
+            || content_lower.contains(".tsx")
+            || content_lower.contains(".ts")
+            || content_lower.contains(".js")
+            || content_lower.contains(".py")
         {
             need_coding = true;
         }
@@ -1274,40 +1901,143 @@ fn classify_anthropic_capabilities(payload: &AnthropicRequest) -> (bool, bool, b
     for msg in &payload.messages {
         let content_str = msg.content.to_string_content();
         let content_lower = content_str.to_lowercase();
-        if content_lower.contains("image") || content_lower.contains("图片") || content_lower.contains("图像") {
+        if content_lower.contains("image")
+            || content_lower.contains("图片")
+            || content_lower.contains("图像")
+        {
             need_vision = true;
         }
-        if content_lower.contains("prove") 
-            || content_lower.contains("proof") 
-            || content_lower.contains("math") 
-            || content_lower.contains("算法") 
-            || content_lower.contains("algorithm") 
-            || content_lower.contains("deadlock") 
-            || content_lower.contains("死锁") 
+        if content_lower.contains("prove")
+            || content_lower.contains("proof")
+            || content_lower.contains("math")
+            || content_lower.contains("算法")
+            || content_lower.contains("algorithm")
+            || content_lower.contains("deadlock")
+            || content_lower.contains("死锁")
             || content_lower.contains("性能优化")
-            || content_lower.contains("思维链") 
+            || content_lower.contains("思维链")
         {
             need_reasoning = true;
         }
-        if content_lower.contains("```") 
-            || content_lower.contains("code") 
-            || content_lower.contains("代码") 
-            || content_lower.contains("write a") 
-            || content_lower.contains("refactor") 
-            || content_lower.contains("重构") 
-            || content_lower.contains("implement") 
-            || content_lower.contains("编写") 
+        if content_lower.contains("```")
+            || content_lower.contains("code")
+            || content_lower.contains("代码")
+            || content_lower.contains("write a")
+            || content_lower.contains("refactor")
+            || content_lower.contains("重构")
+            || content_lower.contains("implement")
+            || content_lower.contains("编写")
         {
             need_coding = true;
         }
     }
 
-    let total_len: usize = payload.messages.iter().map(|m| m.content.to_string_content().len()).sum();
+    let total_len: usize = payload
+        .messages
+        .iter()
+        .map(|m| m.content.to_string_content().len())
+        .sum();
     let need_speedy = !need_reasoning && !need_vision && total_len < 300;
 
     (need_vision, need_reasoning, need_coding, need_speedy)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SessionUpstream {
+    platform_id: String,
+    model_name: String,
+    api_address: String,
+    api_type: String,
+    keys: Vec<String>,
+    key_ids: Vec<Option<String>>,
+}
+
+fn resolve_session_model_upstream(
+    db: &DbManager,
+    session_key: &str,
+) -> Result<SessionUpstream, String> {
+    let conn = db.get_connection().map_err(|error| error.to_string())?;
+    let model_json: Option<String> = conn
+        .query_row(
+            "SELECT model_json
+             FROM agent_sessions
+             WHERE id = ?1 OR conversation_id = ?1
+             ORDER BY CASE WHEN id = ?1 THEN 0 ELSE 1 END, created_at DESC
+             LIMIT 1",
+            params![session_key],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let selection: crate::runtime::ModelSelection = serde_json::from_str(
+        &model_json.ok_or_else(|| format!("Agent session not found: {session_key}"))?,
+    )
+    .map_err(|error| error.to_string())?;
+    let (platform_id, model_name) = match selection {
+        crate::runtime::ModelSelection::Omnix {
+            platform_id,
+            model_name,
+        } => (platform_id, model_name),
+        _ => return Err("该会话没有选择 OMNIX 模型，不应进入会话网关".into()),
+    };
+    let platform: Option<(String, String, String)> = conn
+        .query_row(
+            "SELECT api_key, api_address, api_type
+             FROM model_platforms
+             WHERE id = ?1 AND is_enabled = 1",
+            params![platform_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let (legacy_key, api_address, api_type) =
+        platform.ok_or_else(|| format!("Model platform is disabled or missing: {platform_id}"))?;
+
+    let mut keys = Vec::new();
+    let mut key_ids = Vec::new();
+    if let Ok(mut statement) = conn.prepare(
+        "SELECT id, encrypted_key
+         FROM platform_api_keys
+         WHERE platform_id = ?1
+         ORDER BY is_active DESC, created_at ASC",
+    ) {
+        if let Ok(rows) = statement.query_map(params![platform_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        }) {
+            for (id, encrypted) in rows.flatten() {
+                let key = crate::crypto::decrypt(&encrypted);
+                if !key.trim().is_empty() && !keys.contains(&key) {
+                    keys.push(key);
+                    key_ids.push(Some(id));
+                }
+            }
+        }
+    }
+    if keys.is_empty() {
+        for encrypted in legacy_key
+            .split(',')
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+        {
+            let key = crate::crypto::decrypt(encrypted);
+            if !key.trim().is_empty() && !keys.contains(&key) {
+                keys.push(key);
+                key_ids.push(None);
+            }
+        }
+    }
+    if keys.is_empty() && api_type != "ollama" {
+        return Err(format!("Model platform has no API key: {platform_id}"));
+    }
+    Ok(SessionUpstream {
+        platform_id,
+        model_name,
+        api_address,
+        api_type,
+        keys,
+        key_ids,
+    })
+}
 
 fn resolve_model_upstream(
     db: &DbManager,
@@ -1358,13 +2088,15 @@ fn resolve_model_upstream_for_agent(
             "SELECT api_key, api_address, api_type FROM model_platforms WHERE id = ?1 AND is_enabled = 1"
         ).map_err(|e| e.to_string())?;
 
-        let platform_opt = stmt.query_row(params![platform_id], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        }).ok();
+        let platform_opt = stmt
+            .query_row(params![platform_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .ok();
 
         // Decrypt API key if encrypted
         let platform_opt = platform_opt.map(|(k, a, t)| (crate::crypto::decrypt(&k), a, t));
@@ -1377,26 +2109,28 @@ fn resolve_model_upstream_for_agent(
     // 2. Weighted selection from matching platforms (New API/Sub2API inspired)
     //    Find all platforms that serve this model, ordered by priority DESC, weight DESC
     //    Only consider healthy and enabled platforms
-    let mut stmt = conn.prepare(
-        "SELECT mp.id, mp.api_key, mp.api_address, mp.api_type, mp.weight, mp.priority,
+    let mut stmt = conn
+        .prepare(
+            "SELECT mp.id, mp.api_key, mp.api_address, mp.api_type, mp.weight, mp.priority,
                 pm.model_name, mp.consecutive_failures
          FROM platform_models pm
          JOIN model_platforms mp ON pm.platform_id = mp.id
          WHERE pm.model_name = ?1 AND pm.is_enabled = 1 AND mp.is_enabled = 1 AND mp.is_healthy = 1
-         ORDER BY mp.priority DESC, mp.weight DESC"
-    ).map_err(|e| e.to_string())?;
+         ORDER BY mp.priority DESC, mp.weight DESC",
+        )
+        .map_err(|e| e.to_string())?;
 
     let candidates: Vec<(String, String, String, String, String, i32, String, i32)> = stmt
         .query_map(params![target_model_name], |row| {
             Ok((
-                row.get::<_, String>(0)?,  // platform_id
-                row.get::<_, String>(1)?,  // api_key
-                row.get::<_, String>(2)?,  // api_address
-                row.get::<_, String>(3)?,  // api_type
-                row.get::<_, String>(4)?,  // weight (stored as TEXT in some configs)
-                row.get::<_, i32>(5)?,     // priority
-                row.get::<_, String>(6)?,  // model_name
-                row.get::<_, i32>(7)?,     // consecutive_failures
+                row.get::<_, String>(0)?, // platform_id
+                row.get::<_, String>(1)?, // api_key
+                row.get::<_, String>(2)?, // api_address
+                row.get::<_, String>(3)?, // api_type
+                row.get::<_, String>(4)?, // weight (stored as TEXT in some configs)
+                row.get::<_, i32>(5)?,    // priority
+                row.get::<_, String>(6)?, // model_name
+                row.get::<_, i32>(7)?,    // consecutive_failures
             ))
         })
         .map_err(|e| e.to_string())?
@@ -1408,14 +2142,16 @@ fn resolve_model_upstream_for_agent(
         // Higher priority platforms are always preferred.
         // Within same priority, select based on weight (proportional).
         let highest_priority = candidates[0].5;
-        let same_priority: Vec<_> = candidates.iter()
+        let same_priority: Vec<_> = candidates
+            .iter()
             .filter(|c| c.5 == highest_priority)
             .collect();
 
         // Calculate total weight for same-priority candidates
-        let total_weight: i32 = same_priority.iter().map(|c| {
-            c.4.parse::<i32>().unwrap_or(1).max(1)
-        }).sum();
+        let total_weight: i32 = same_priority
+            .iter()
+            .map(|c| c.4.parse::<i32>().unwrap_or(1).max(1))
+            .sum();
 
         // Weighted selection using a simple counter (no DB query needed)
         // Use FNV hash of target model name as deterministic seed to spread picks
@@ -1438,7 +2174,12 @@ fn resolve_model_upstream_for_agent(
                     "UPDATE model_platforms SET last_used_at = datetime('now') WHERE id = ?1",
                     params![candidate.0],
                 );
-                return Ok((candidate.1.clone(), candidate.2.clone(), candidate.3.clone(), candidate.6.clone()));
+                return Ok((
+                    candidate.1.clone(),
+                    candidate.2.clone(),
+                    candidate.3.clone(),
+                    candidate.6.clone(),
+                ));
             }
         }
 
@@ -1452,17 +2193,24 @@ fn resolve_model_upstream_for_agent(
         "SELECT api_key, api_address, api_type, name FROM model_platforms WHERE is_enabled = 1 AND is_healthy = 1 ORDER BY priority DESC, weight DESC LIMIT 1"
     ).map_err(|e| e.to_string())?;
 
-    let fallback_opt = stmt.query_row([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-            row.get::<_, String>(3)?,
-        ))
-    }).ok();
+    let fallback_opt = stmt
+        .query_row([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .ok();
 
     if let Some((api_key, api_address, api_type, _name)) = fallback_opt {
-        return Ok((api_key, api_address, api_type, target_model_name.to_string()));
+        return Ok((
+            api_key,
+            api_address,
+            api_type,
+            target_model_name.to_string(),
+        ));
     }
 
     Err("No active model platforms configured in database.".to_string())
@@ -1477,16 +2225,15 @@ fn join_url(base: &str, path: &str) -> String {
 // ── Health Endpoint (New API/Sub2API inspired) ────────
 
 /// GET /health — Returns proxy status and platform summary (single query)
-async fn handle_health(
-    State(state): State<Arc<ProxyState>>,
-) -> impl IntoResponse {
+async fn handle_health(State(state): State<Arc<ProxyState>>) -> impl IntoResponse {
     let conn = match state.db.get_connection() {
         Ok(c) => c,
         Err(_) => {
             return Json(serde_json::json!({
                 "status": "error",
                 "message": "Database connection failed"
-            })).into_response();
+            }))
+            .into_response();
         }
     };
 
@@ -1530,7 +2277,8 @@ async fn handle_health(
             "total": stats.get("total_requests").copied().unwrap_or(0),
             "today": stats.get("requests_today").copied().unwrap_or(0),
         }
-    })).into_response()
+    }))
+    .into_response()
 }
 
 // ── Platform Health Tracking (New API/Sub2API inspired) ──
@@ -1620,7 +2368,11 @@ async fn handle_embeddings(
     let model_name = match payload.get("model").and_then(|m| m.as_str()) {
         Some(m) => m.to_string(),
         None => {
-            return (StatusCode::BAD_REQUEST, "Missing 'model' field in request body").into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                "Missing 'model' field in request body",
+            )
+                .into_response();
         }
     };
 
@@ -1629,7 +2381,11 @@ async fn handle_embeddings(
         match resolve_model_upstream(&state.db, &model_name) {
             Ok(res) => res,
             Err(e) => {
-                return (StatusCode::NOT_FOUND, format!("Model resolution failed: {}", e)).into_response();
+                return (
+                    StatusCode::NOT_FOUND,
+                    format!("Model resolution failed: {}", e),
+                )
+                    .into_response();
             }
         };
 
@@ -1653,7 +2409,8 @@ async fn handle_embeddings(
             if let Some(input) = obj.remove("input") {
                 let prompt = match input {
                     Value::String(s) => s,
-                    Value::Array(arr) => arr.first()
+                    Value::Array(arr) => arr
+                        .first()
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string(),
@@ -1665,7 +2422,10 @@ async fn handle_embeddings(
     }
 
     // Forward the request
-    let mut req = state.http_client.post(&upstream_url).json(&forwarded_payload);
+    let mut req = state
+        .http_client
+        .post(&upstream_url)
+        .json(&forwarded_payload);
     if !api_key.trim().is_empty() {
         req = req.header("Authorization", format!("Bearer {}", api_key.trim()));
     }
@@ -1676,14 +2436,95 @@ async fn handle_embeddings(
             let body = match resp.bytes().await {
                 Ok(b) => b,
                 Err(e) => {
-                    return (StatusCode::BAD_GATEWAY, format!("Failed to read upstream response: {}", e)).into_response();
+                    return (
+                        StatusCode::BAD_GATEWAY,
+                        format!("Failed to read upstream response: {}", e),
+                    )
+                        .into_response();
                 }
             };
             // Return the upstream response as-is
             (status, body.to_vec()).into_response()
         }
-        Err(e) => {
-            (StatusCode::BAD_GATEWAY, format!("Upstream request failed: {}", e)).into_response()
-        }
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            format!("Upstream request failed: {}", e),
+        )
+            .into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::db::DbManager;
+    use crate::runtime::{
+        create_agent_session_record, AgentId, AgentSessionConfig, ModelSelection, PermissionPolicy,
+        WorkMode,
+    };
+
+    use super::resolve_session_model_upstream;
+
+    #[test]
+    fn session_upstream_uses_bound_platform_and_primary_key_first() {
+        let db_path = std::env::temp_dir().join(format!(
+            "omnix_session_gateway_{}.sqlite",
+            chrono::Utc::now().timestamp_micros()
+        ));
+        let db = DbManager::new_runtime_test(db_path.clone());
+        let conn = db.get_connection().expect("db connection");
+        conn.execute_batch(
+            "CREATE TABLE model_platforms (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL, api_type TEXT NOT NULL,
+                api_key TEXT NOT NULL DEFAULT '', api_address TEXT NOT NULL DEFAULT '',
+                is_enabled INTEGER NOT NULL DEFAULT 1
+            );
+            CREATE TABLE platform_models (
+                id TEXT PRIMARY KEY, platform_id TEXT NOT NULL, model_name TEXT NOT NULL,
+                is_enabled INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'success'
+            );
+            CREATE TABLE platform_api_keys (
+                id TEXT PRIMARY KEY, platform_id TEXT NOT NULL, encrypted_key TEXT NOT NULL,
+                label TEXT DEFAULT '', is_active INTEGER DEFAULT 0,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+            INSERT INTO conversations (id, title, workspace_path, active_agent)
+                VALUES ('conv-gateway', 'Gateway', 'D:/work/project', 'Claude Code');
+            INSERT INTO model_platforms (id, name, api_type, api_address)
+                VALUES ('volcano', 'Volcano', 'openai-compatible', 'https://example.test/api');
+            INSERT INTO platform_models (id, platform_id, model_name)
+                VALUES ('volcano:doubao', 'volcano', 'doubao-code');
+            INSERT INTO platform_api_keys (id, platform_id, encrypted_key, is_active, created_at)
+                VALUES ('backup', 'volcano', 'backup-key', 0, '2026-01-01'),
+                       ('primary', 'volcano', 'primary-key', 1, '2026-01-02');",
+        )
+        .expect("gateway fixture");
+        drop(conn);
+        create_agent_session_record(
+            &db,
+            "session-gateway",
+            &AgentSessionConfig {
+                conversation_id: "conv-gateway".into(),
+                agent: AgentId::ClaudeCode,
+                executable_path: "claude.cmd".into(),
+                workspace_path: "D:/work/project".into(),
+                model: ModelSelection::Omnix {
+                    platform_id: "volcano".into(),
+                    model_name: "doubao-code".into(),
+                },
+                permission: PermissionPolicy::AskOnRisk,
+                work_mode: WorkMode::Direct,
+            },
+        )
+        .expect("session fixture");
+
+        let upstream =
+            resolve_session_model_upstream(&db, "session-gateway").expect("session upstream");
+        assert_eq!(upstream.platform_id, "volcano");
+        assert_eq!(upstream.model_name, "doubao-code");
+        assert_eq!(upstream.api_type, "openai-compatible");
+        assert_eq!(upstream.keys, vec!["primary-key", "backup-key"]);
+
+        drop(db);
+        let _ = std::fs::remove_file(db_path);
     }
 }

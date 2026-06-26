@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    omnix_app_lib::run()
+    omnix_workbench_lib::run()
 }

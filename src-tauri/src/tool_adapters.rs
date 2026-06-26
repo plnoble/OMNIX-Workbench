@@ -80,6 +80,11 @@ pub trait ToolAdapter: Send + Sync {
     /// Human-readable display name (e.g., "Claude Code")
     fn display_name(&self) -> &str;
 
+    /// Whether OMNIX has verified this tool's current skill layout end to end.
+    fn verification_status(&self) -> (&'static str, &'static str) {
+        ("experimental", "目录适配尚未完成端到端验证")
+    }
+
     /// Whether this tool is installed on the system
     fn is_installed(&self) -> bool;
 
@@ -104,8 +109,15 @@ pub trait ToolAdapter: Send + Sync {
 pub struct ClaudeCodeAdapter;
 
 impl ToolAdapter for ClaudeCodeAdapter {
-    fn tool_id(&self) -> &str { "claude_code" }
-    fn display_name(&self) -> &str { "Claude Code" }
+    fn tool_id(&self) -> &str {
+        "claude_code"
+    }
+    fn display_name(&self) -> &str {
+        "Claude Code"
+    }
+    fn verification_status(&self) -> (&'static str, &'static str) {
+        ("verified", "已验证 ~/.claude/skills/<name>/SKILL.md")
+    }
 
     fn is_installed(&self) -> bool {
         which::which("claude").is_ok()
@@ -119,12 +131,14 @@ impl ToolAdapter for ClaudeCodeAdapter {
     fn sync_skill(&self, skill_name: &str, content: &str, mode: &SyncMode) -> SyncResult {
         let base = match self.skill_base_path() {
             Some(p) => p,
-            None => return SyncResult {
-                tool: self.tool_id().to_string(),
-                target_path: String::new(),
-                success: false,
-                error: Some("Cannot determine home directory".to_string()),
-            },
+            None => {
+                return SyncResult {
+                    tool: self.tool_id().to_string(),
+                    target_path: String::new(),
+                    success: false,
+                    error: Some("Cannot determine home directory".to_string()),
+                }
+            }
         };
 
         let target_dir = base.join(skill_name);
@@ -155,7 +169,12 @@ impl ToolAdapter for ClaudeCodeAdapter {
                 // For symlink mode, we write the content to a central path first,
                 // then create a symlink from the tool's skill dir to that central path.
                 let central_path = dirs::home_dir()
-                    .map(|h| h.join(".omnix").join("skills").join(skill_name).join("SKILL.md"))
+                    .map(|h| {
+                        h.join(".omnix")
+                            .join("skills")
+                            .join(skill_name)
+                            .join("SKILL.md")
+                    })
                     .unwrap_or_else(|| target_file.clone());
 
                 // Ensure central path exists with the content
@@ -199,7 +218,10 @@ impl ToolAdapter for ClaudeCodeAdapter {
                                 tool: self.tool_id().to_string(),
                                 target_path: target_file.to_string_lossy().to_string(),
                                 success: false,
-                                error: Some(format!("Symlink failed, copy fallback failed: {} / {}", e, e2)),
+                                error: Some(format!(
+                                    "Symlink failed, copy fallback failed: {} / {}",
+                                    e, e2
+                                )),
                             };
                         }
                     }
@@ -218,12 +240,14 @@ impl ToolAdapter for ClaudeCodeAdapter {
     fn unsync_skill(&self, skill_name: &str) -> SyncResult {
         let base = match self.skill_base_path() {
             Some(p) => p,
-            None => return SyncResult {
-                tool: self.tool_id().to_string(),
-                target_path: String::new(),
-                success: false,
-                error: Some("Cannot determine home directory".to_string()),
-            },
+            None => {
+                return SyncResult {
+                    tool: self.tool_id().to_string(),
+                    target_path: String::new(),
+                    success: false,
+                    error: Some("Cannot determine home directory".to_string()),
+                }
+            }
         };
 
         let target_dir = base.join(skill_name);
@@ -260,14 +284,20 @@ impl ToolAdapter for ClaudeCodeAdapter {
 pub struct CursorAdapter;
 
 impl ToolAdapter for CursorAdapter {
-    fn tool_id(&self) -> &str { "cursor" }
-    fn display_name(&self) -> &str { "Cursor" }
+    fn tool_id(&self) -> &str {
+        "cursor"
+    }
+    fn display_name(&self) -> &str {
+        "Cursor"
+    }
 
     fn is_installed(&self) -> bool {
         // Check common Cursor installation paths on Windows
         let local_app_data = std::env::var("LOCALAPPDATA").unwrap_or_default();
         if !local_app_data.is_empty() {
-            let cursor_path = PathBuf::from(&local_app_data).join("Programs").join("cursor");
+            let cursor_path = PathBuf::from(&local_app_data)
+                .join("Programs")
+                .join("cursor");
             if cursor_path.exists() {
                 return true;
             }
@@ -302,8 +332,12 @@ impl ToolAdapter for CursorAdapter {
 pub struct CopilotAdapter;
 
 impl ToolAdapter for CopilotAdapter {
-    fn tool_id(&self) -> &str { "copilot" }
-    fn display_name(&self) -> &str { "GitHub Copilot" }
+    fn tool_id(&self) -> &str {
+        "copilot"
+    }
+    fn display_name(&self) -> &str {
+        "GitHub Copilot"
+    }
 
     fn is_installed(&self) -> bool {
         // Copilot is a VS Code extension, check VS Code extensions dir
@@ -350,8 +384,12 @@ impl ToolAdapter for CopilotAdapter {
 pub struct GeminiCliAdapter;
 
 impl ToolAdapter for GeminiCliAdapter {
-    fn tool_id(&self) -> &str { "gemini_cli" }
-    fn display_name(&self) -> &str { "Gemini CLI" }
+    fn tool_id(&self) -> &str {
+        "gemini_cli"
+    }
+    fn display_name(&self) -> &str {
+        "Gemini CLI"
+    }
 
     fn is_installed(&self) -> bool {
         which::which("gemini").is_ok()
@@ -383,8 +421,15 @@ impl ToolAdapter for GeminiCliAdapter {
 pub struct CodexAdapter;
 
 impl ToolAdapter for CodexAdapter {
-    fn tool_id(&self) -> &str { "codex" }
-    fn display_name(&self) -> &str { "Codex" }
+    fn tool_id(&self) -> &str {
+        "codex"
+    }
+    fn display_name(&self) -> &str {
+        "Codex"
+    }
+    fn verification_status(&self) -> (&'static str, &'static str) {
+        ("verified", "已验证 ~/.codex/skills/<name>/SKILL.md")
+    }
 
     fn is_installed(&self) -> bool {
         which::which("codex").is_ok()
@@ -416,8 +461,12 @@ impl ToolAdapter for CodexAdapter {
 pub struct OpenCodeAdapter;
 
 impl ToolAdapter for OpenCodeAdapter {
-    fn tool_id(&self) -> &str { "opencode" }
-    fn display_name(&self) -> &str { "OpenCode" }
+    fn tool_id(&self) -> &str {
+        "opencode"
+    }
+    fn display_name(&self) -> &str {
+        "OpenCode"
+    }
 
     fn is_installed(&self) -> bool {
         which::which("opencode").is_ok()
@@ -485,20 +534,28 @@ impl AdapterRegistry {
 
     /// Get all tool status info for frontend display
     pub fn tool_status_list(&self) -> Vec<ToolStatus> {
-        self.adapters.iter().map(|a| ToolStatus {
-            tool_id: a.tool_id().to_string(),
-            display_name: a.display_name().to_string(),
-            is_installed: a.is_installed(),
-            skill_base_path: a.skill_base_path()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_default(),
-        }).collect()
+        self.adapters
+            .iter()
+            .map(|a| ToolStatus {
+                verification: a.verification_status().0.to_string(),
+                verification_note: a.verification_status().1.to_string(),
+                tool_id: a.tool_id().to_string(),
+                display_name: a.display_name().to_string(),
+                is_installed: a.is_installed(),
+                skill_base_path: a
+                    .skill_base_path()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+            })
+            .collect()
     }
 }
 
 /// Tool status info returned to frontend
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolStatus {
+    pub verification: String,
+    pub verification_note: String,
     pub tool_id: String,
     pub display_name: String,
     pub is_installed: bool,
@@ -510,15 +567,22 @@ pub struct ToolStatus {
 // ─────────────────────────────────────────────
 
 /// Generic sync implementation shared by adapters with standard skill directory layout
-fn generic_sync_skill(adapter: &dyn ToolAdapter, skill_name: &str, content: &str, mode: &SyncMode) -> SyncResult {
+fn generic_sync_skill(
+    adapter: &dyn ToolAdapter,
+    skill_name: &str,
+    content: &str,
+    mode: &SyncMode,
+) -> SyncResult {
     let base = match adapter.skill_base_path() {
         Some(p) => p,
-        None => return SyncResult {
-            tool: adapter.tool_id().to_string(),
-            target_path: String::new(),
-            success: false,
-            error: Some("Cannot determine skill base path".to_string()),
-        },
+        None => {
+            return SyncResult {
+                tool: adapter.tool_id().to_string(),
+                target_path: String::new(),
+                success: false,
+                error: Some("Cannot determine skill base path".to_string()),
+            }
+        }
     };
 
     let target_dir = base.join(skill_name);
@@ -551,7 +615,10 @@ fn generic_sync_skill(adapter: &dyn ToolAdapter, skill_name: &str, content: &str
                     tool: adapter.tool_id().to_string(),
                     target_path: target_file.to_string_lossy().to_string(),
                     success: false,
-                    error: Some(format!("Symlink not supported on Windows, copy failed: {}", e)),
+                    error: Some(format!(
+                        "Symlink not supported on Windows, copy failed: {}",
+                        e
+                    )),
                 };
             }
         }
@@ -569,12 +636,14 @@ fn generic_sync_skill(adapter: &dyn ToolAdapter, skill_name: &str, content: &str
 fn generic_unsync_skill(adapter: &dyn ToolAdapter, skill_name: &str) -> SyncResult {
     let base = match adapter.skill_base_path() {
         Some(p) => p,
-        None => return SyncResult {
-            tool: adapter.tool_id().to_string(),
-            target_path: String::new(),
-            success: false,
-            error: Some("Cannot determine skill base path".to_string()),
-        },
+        None => {
+            return SyncResult {
+                tool: adapter.tool_id().to_string(),
+                target_path: String::new(),
+                success: false,
+                error: Some("Cannot determine skill base path".to_string()),
+            }
+        }
     };
 
     let target_dir = base.join(skill_name);
@@ -585,7 +654,7 @@ fn generic_unsync_skill(adapter: &dyn ToolAdapter, skill_name: &str) -> SyncResu
                 target_path: target_dir.to_string_lossy().to_string(),
                 success: false,
                 error: Some(format!("Failed to remove: {}", e)),
-                };
+            };
         }
     }
 
@@ -657,8 +726,8 @@ mod tests {
         let registry = AdapterRegistry::new();
         let status = registry.tool_status_list();
 
-        assert!(status.iter().any(|tool| {
-            tool.tool_id == "opencode" && tool.display_name == "OpenCode"
-        }));
+        assert!(status
+            .iter()
+            .any(|tool| { tool.tool_id == "opencode" && tool.display_name == "OpenCode" }));
     }
 }

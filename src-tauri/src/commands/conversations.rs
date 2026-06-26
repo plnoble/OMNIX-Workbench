@@ -1,10 +1,10 @@
-use tauri::State;
-use std::sync::Arc;
-use std::path::PathBuf;
-use rusqlite::params;
+use super::*;
 use crate::db::DbManager;
 use crate::input_validation;
-use super::*;
+use rusqlite::params;
+use std::path::PathBuf;
+use std::sync::Arc;
+use tauri::State;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConversationInfo {
@@ -21,21 +21,25 @@ pub fn get_all_conversations(
 ) -> Result<Vec<ConversationInfo>, String> {
     let conn = db.get_connection().map_err(|e| e.to_string())?;
     // Exclude archived conversations from the main list — they show in a separate view
-    let mut stmt = conn.prepare(
-        "SELECT id, title, workspace_path, active_agent, created_at
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, title, workspace_path, active_agent, created_at
          FROM conversations
          WHERE COALESCE(is_archived, 0) = 0
-         ORDER BY created_at DESC"
-    ).map_err(|e| e.to_string())?;
-    let rows = stmt.query_map([], |row| {
-        Ok(ConversationInfo {
-            id: row.get(0)?,
-            title: row.get(1)?,
-            workspace_path: row.get(2)?,
-            active_agent: row.get(3)?,
-            created_at: row.get(4)?,
+         ORDER BY created_at DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(ConversationInfo {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                workspace_path: row.get(2)?,
+                active_agent: row.get(3)?,
+                created_at: row.get(4)?,
+            })
         })
-    }).map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?;
 
     let mut result = Vec::new();
     for r in rows {
@@ -51,21 +55,25 @@ pub fn get_archived_conversations(
     db: State<'_, Arc<DbManager>>,
 ) -> Result<Vec<ConversationInfo>, String> {
     let conn = db.get_connection().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare(
-        "SELECT id, title, workspace_path, active_agent, created_at
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, title, workspace_path, active_agent, created_at
          FROM conversations
          WHERE COALESCE(is_archived, 0) = 1
-         ORDER BY created_at DESC"
-    ).map_err(|e| e.to_string())?;
-    let rows = stmt.query_map([], |row| {
-        Ok(ConversationInfo {
-            id: row.get(0)?,
-            title: row.get(1)?,
-            workspace_path: row.get(2)?,
-            active_agent: row.get(3)?,
-            created_at: row.get(4)?,
+         ORDER BY created_at DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(ConversationInfo {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                workspace_path: row.get(2)?,
+                active_agent: row.get(3)?,
+                created_at: row.get(4)?,
+            })
         })
-    }).map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?;
 
     let mut result = Vec::new();
     for r in rows {
@@ -86,7 +94,8 @@ pub fn archive_conversation(
     conn.execute(
         "UPDATE conversations SET is_archived = 1 WHERE id = ?1",
         params![conversation_id],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -100,10 +109,10 @@ pub fn unarchive_conversation(
     conn.execute(
         "UPDATE conversations SET is_archived = 0 WHERE id = ?1",
         params![conversation_id],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageInfo {
@@ -123,15 +132,17 @@ pub fn get_conversation_messages(
     let conn = db.get_connection().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare("SELECT id, conversation_id, role, content, timestamp FROM messages WHERE conversation_id = ?1 ORDER BY timestamp ASC")
         .map_err(|e| e.to_string())?;
-    let rows = stmt.query_map(params![conversation_id], |row| {
-        Ok(MessageInfo {
-            id: row.get(0)?,
-            conversation_id: row.get(1)?,
-            role: row.get(2)?,
-            content: row.get(3)?,
-            timestamp: row.get(4)?,
+    let rows = stmt
+        .query_map(params![conversation_id], |row| {
+            Ok(MessageInfo {
+                id: row.get(0)?,
+                conversation_id: row.get(1)?,
+                role: row.get(2)?,
+                content: row.get(3)?,
+                timestamp: row.get(4)?,
+            })
         })
-    }).map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?;
 
     let mut result = Vec::new();
     for r in rows {
@@ -187,11 +198,15 @@ pub fn delete_conversation(
 ) -> Result<(), String> {
     input_validation::validate_id(&conversation_id, "conversation_id")?;
     let conn = db.get_connection().map_err(|e| e.to_string())?;
-    let _ = conn.execute("DELETE FROM messages WHERE conversation_id = ?1", params![conversation_id]);
+    let _ = conn.execute(
+        "DELETE FROM messages WHERE conversation_id = ?1",
+        params![conversation_id],
+    );
     conn.execute(
         "DELETE FROM conversations WHERE id = ?1",
         params![conversation_id],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -214,18 +229,20 @@ pub fn get_conversation_tasks(
     let conn = db.get_connection().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare("SELECT id, conversation_id, title, status, order_num, dependencies FROM tasks WHERE conversation_id = ?1 ORDER BY order_num ASC")
         .map_err(|e| e.to_string())?;
-    let rows = stmt.query_map(params![conversation_id], |row| {
-        let deps_str: String = row.get(5)?;
-        let dependencies: Vec<String> = serde_json::from_str(&deps_str).unwrap_or_default();
-        Ok(DbTask {
-            id: row.get(0)?,
-            conversation_id: row.get(1)?,
-            title: row.get(2)?,
-            status: row.get(3)?,
-            order_num: row.get(4)?,
-            dependencies,
+    let rows = stmt
+        .query_map(params![conversation_id], |row| {
+            let deps_str: String = row.get(5)?;
+            let dependencies: Vec<String> = serde_json::from_str(&deps_str).unwrap_or_default();
+            Ok(DbTask {
+                id: row.get(0)?,
+                conversation_id: row.get(1)?,
+                title: row.get(2)?,
+                status: row.get(3)?,
+                order_num: row.get(4)?,
+                dependencies,
+            })
         })
-    }).map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?;
 
     let mut result = Vec::new();
     for r in rows {
@@ -234,124 +251,6 @@ pub fn get_conversation_tasks(
         }
     }
     Ok(result)
-}
-
-#[tauri::command]
-pub fn simulate_team_task_dispatch(
-    conversation_id: String,
-    leader: String,
-    teammate: String,
-    db: State<'_, Arc<DbManager>>,
-) -> Result<(), String> {
-    let conn = db.get_connection().map_err(|e| e.to_string())?;
-
-    // Clear existing tasks
-    conn.execute(
-        "DELETE FROM tasks WHERE conversation_id = ?1",
-        params![conversation_id],
-    ).map_err(|e| e.to_string())?;
-
-    // Seed 4 mock tasks
-    let mock_tasks = vec![
-        ("task_1", format!("[Leader: {}] 分析工作空间结构并确定研发目标", leader), "done", 0),
-        ("task_2", format!("[Teammate: {}] 读取核心文件与 PlanTree 逻辑 (Mailbox 任务)", teammate), "done", 1),
-        ("task_3", format!("[Teammate: {}] 实施新的 PlanTree 视图组件 (开发中)", teammate), "in_progress", 2),
-        ("task_4", format!("[Leader: {}] 执行测试套件并完成验证", leader), "todo", 3),
-    ];
-
-    for (id, title, status, order_num) in mock_tasks {
-        conn.execute(
-            "INSERT INTO tasks (id, conversation_id, title, status, order_num, dependencies)
-             VALUES (?1, ?2, ?3, ?4, ?5, '[]')",
-            params![id, conversation_id, title, status, order_num],
-        ).map_err(|e| e.to_string())?;
-    }
-
-    // Set up mailbox directory
-    let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("C:\\Users\\87953"));
-    let mut mailbox_dir = home_dir.clone();
-    mailbox_dir.push(".omnix");
-    mailbox_dir.push("mailbox");
-    let _ = std::fs::create_dir_all(&mailbox_dir);
-
-    // Write a sample message envelope to the mailbox for demonstration
-    let msg_file = mailbox_dir.join("task_3_dispatch.msg.json");
-    let payload = serde_json::json!({
-        "sender": leader,
-        "receiver": teammate,
-        "command": "implement_component",
-        "params": {
-            "component": "PlanTree.tsx",
-            "workspace": "d:/Agent/Project/OMNIX-Development Tools"
-        },
-        "status": "in_progress",
-        "timestamp": "2026-06-03T23:20:50Z"
-    });
-
-    std::fs::write(&msg_file, payload.to_string())
-        .map_err(|e| format!("Failed to write mailbox simulation packet: {}", e))?;
-
-    // Spawn an async background task to simulate progress stepping over time (from 2/4 -> 3/4 -> 4/4)
-    let db_cloned = db.inner().clone();
-    let conversation_id_cloned = conversation_id.clone();
-    let leader_cloned = leader.clone();
-    let teammate_cloned = teammate.clone();
-    let mailbox_dir_cloned = mailbox_dir.clone();
-
-    tauri::async_runtime::spawn(async move {
-        // Step 1: Wait 2.5 seconds, complete task 3, and mark task 4 as in_progress
-        tokio::time::sleep(tokio::time::Duration::from_millis(2500)).await;
-        if let Ok(conn) = db_cloned.get_connection() {
-            let _ = conn.execute(
-                "UPDATE tasks SET status = 'done' WHERE id = 'task_3' AND conversation_id = ?1",
-                params![conversation_id_cloned],
-            );
-            let _ = conn.execute(
-                "UPDATE tasks SET status = 'in_progress' WHERE id = 'task_4' AND conversation_id = ?1",
-                params![conversation_id_cloned],
-            );
-            
-            // Dispatch a teammate response msg to mailbox
-            let msg_file = mailbox_dir_cloned.join("task_3_completed.msg.json");
-            let payload = serde_json::json!({
-                "sender": teammate_cloned,
-                "receiver": leader_cloned,
-                "command": "component_completed",
-                "params": {
-                    "component": "PlanTree.tsx",
-                    "status": "success"
-                },
-                "status": "done",
-                "timestamp": "2026-06-03T23:21:10Z"
-            });
-            let _ = std::fs::write(&msg_file, payload.to_string());
-        }
-
-        // Step 2: Wait another 2.5 seconds, complete task 4
-        tokio::time::sleep(tokio::time::Duration::from_millis(2500)).await;
-        if let Ok(conn) = db_cloned.get_connection() {
-            let _ = conn.execute(
-                "UPDATE tasks SET status = 'done' WHERE id = 'task_4' AND conversation_id = ?1",
-                params![conversation_id_cloned],
-            );
-            
-            // Dispatch final completion packet
-            let msg_file = mailbox_dir_cloned.join("all_done.msg.json");
-            let payload = serde_json::json!({
-                "sender": leader_cloned,
-                "receiver": "system",
-                "command": "integration_tests_completed",
-                "params": {
-                    "result": "all green"
-                },
-                "status": "done",
-                "timestamp": "2026-06-03T23:21:40Z"
-            });
-            let _ = std::fs::write(&msg_file, payload.to_string());
-        }
-    });
-
-    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -371,7 +270,7 @@ pub fn get_mailbox_messages() -> Result<Vec<MailboxMessage>, String> {
     let mut mailbox_dir = home_dir.clone();
     mailbox_dir.push(".omnix");
     mailbox_dir.push("mailbox");
-    
+
     if !mailbox_dir.exists() {
         return Ok(Vec::new());
     }
@@ -383,14 +282,18 @@ pub fn get_mailbox_messages() -> Result<Vec<MailboxMessage>, String> {
             if path.is_file() && path.extension().map_or(false, |ext| ext == "json") {
                 if let Ok(content) = std::fs::read_to_string(&path) {
                     if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&content) {
-                        let filename = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                        let filename = path
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string();
                         let sender = msg["sender"].as_str().unwrap_or("Unknown").to_string();
                         let receiver = msg["receiver"].as_str().unwrap_or("Unknown").to_string();
                         let command = msg["command"].as_str().unwrap_or("Unknown").to_string();
                         let params = msg["params"].clone();
                         let status = msg["status"].as_str().unwrap_or("pending").to_string();
                         let timestamp = msg["timestamp"].as_str().unwrap_or("").to_string();
-                        
+
                         msgs.push(MailboxMessage {
                             filename,
                             sender,
@@ -405,7 +308,7 @@ pub fn get_mailbox_messages() -> Result<Vec<MailboxMessage>, String> {
             }
         }
     }
-    
+
     msgs.sort_by(|a, b| b.filename.cmp(&a.filename));
     Ok(msgs)
 }
@@ -456,16 +359,20 @@ pub struct CronRun {
 }
 
 #[tauri::command]
-pub fn get_remote_access_info(
-    db: State<'_, Arc<DbManager>>,
-) -> Result<RemoteAccessInfo, String> {
+pub fn get_remote_access_info(db: State<'_, Arc<DbManager>>) -> Result<RemoteAccessInfo, String> {
     let local_ip = get_local_ip().unwrap_or_else(|| "127.0.0.1".to_string());
-    let port_str = db.get_setting("proxy_port").unwrap_or(None).unwrap_or_else(|| "1421".to_string());
+    let port_str = db
+        .get_setting("proxy_port")
+        .unwrap_or(None)
+        .unwrap_or_else(|| "1421".to_string());
     let port = port_str.parse::<u16>().unwrap_or(1421);
-    let token = db.get_setting("remote_token").unwrap_or(None).unwrap_or_default();
-    
+    let token = db
+        .get_setting("remote_token")
+        .unwrap_or(None)
+        .unwrap_or_default();
+
     let connection_url = format!("http://{}:{}/remote?token={}", local_ip, port, token);
-    
+
     Ok(RemoteAccessInfo {
         local_ip,
         port,
@@ -480,4 +387,3 @@ fn get_local_ip() -> Option<String> {
     socket.connect("8.8.8.8:80").ok()?;
     socket.local_addr().ok().map(|addr| addr.ip().to_string())
 }
-

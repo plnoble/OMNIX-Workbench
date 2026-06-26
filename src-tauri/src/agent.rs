@@ -1,19 +1,19 @@
+use chrono::{DateTime, Datelike, Local, TimeZone, Timelike};
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
-use rusqlite::params;
-use chrono::{DateTime, Local, Datelike, TimeZone, Timelike};
 
 use crate::db::DbManager;
-use log::warn;
+use crate::runtime::{managed_install_command, AgentId};
 
 fn current_time_ms() -> u64 {
     std::time::SystemTime::now()
@@ -26,7 +26,11 @@ fn resolve_sandbox_path(path_str: &str) -> PathBuf {
     let normalized = path_str.replace('\\', "/");
     if normalized.starts_with("~/") || normalized == "~" {
         if let Some(home) = dirs::home_dir() {
-            let sub = if normalized == "~" { "" } else { &normalized[2..] };
+            let sub = if normalized == "~" {
+                ""
+            } else {
+                &normalized[2..]
+            };
             if sub.is_empty() {
                 home
             } else {
@@ -38,6 +42,62 @@ fn resolve_sandbox_path(path_str: &str) -> PathBuf {
     } else {
         PathBuf::from(path_str)
     }
+}
+
+fn agent_slug(agent_name: &str) -> &'static str {
+    match agent_name {
+        "Claude Code" => "claude-code",
+        "Codex" => "codex",
+        "Gemini CLI" => "gemini-cli",
+        "OpenCode" => "opencode",
+        "Qwen Code" => "qwen-code",
+        "GitHub Copilot CLI" => "github-copilot-cli",
+        "Google Antigravity" => "antigravity",
+        _ => "custom-agent",
+    }
+}
+
+fn managed_agent_root(db: &DbManager, agent_name: &str) -> PathBuf {
+    let key = format!("sandbox_dir_{}", agent_name);
+    if let Some(path) = db.get_setting(&key).ok().flatten() {
+        return resolve_sandbox_path(&path);
+    }
+    let base = db
+        .get_setting("sandbox_dir")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "~/.omnix/agents".into());
+    resolve_sandbox_path(&base).join(agent_slug(agent_name))
+}
+
+fn executable_in_managed_root(root: &Path, bin_name: &str) -> Option<String> {
+    let executable = root
+        .join("node_modules")
+        .join(".bin")
+        .join(if cfg!(windows) {
+            format!("{bin_name}.cmd")
+        } else {
+            bin_name.to_string()
+        });
+    executable
+        .exists()
+        .then(|| executable.to_string_lossy().to_string())
+}
+
+fn prefer_windows_command_shim(path: PathBuf) -> PathBuf {
+    if !cfg!(windows) {
+        return path;
+    }
+
+    let extension = path.extension().and_then(|value| value.to_str());
+    if extension.is_none() || extension.is_some_and(|value| value.eq_ignore_ascii_case("ps1")) {
+        let command_shim = path.with_extension("cmd");
+        if command_shim.is_file() {
+            return command_shim;
+        }
+    }
+
+    path
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,7 +156,6 @@ impl AgentManager {
         }
     }
 
-
     pub fn start_services(&self) {
         self.start_idle_reaper();
         self.start_cron_scheduler();
@@ -115,10 +174,13 @@ impl AgentManager {
             ("OpenCode", "opencode"),
         ];
 
-        let sandbox_dir_str = self.db.get_setting("sandbox_dir").unwrap_or(None)
+        let sandbox_dir_str = self
+            .db
+            .get_setting("sandbox_dir")
+            .unwrap_or(None)
             .unwrap_or_else(|| "~/.omnix/agents".to_string());
         let sandbox_dir = resolve_sandbox_path(&sandbox_dir_str);
-        
+
         // Setup local sandbox search paths
         let mut local_bin_dir = sandbox_dir;
         local_bin_dir.push("node_modules");
@@ -196,7 +258,9 @@ impl AgentManager {
                 "primaryColor": "green"
             });
             let _ = fs::write(config_file, tos_bypass_json.to_string());
-            println!("Pre-seeded Claude Code configuration to bypass initial TOS interactive prompt.");
+            println!(
+                "Pre-seeded Claude Code configuration to bypass initial TOS interactive prompt."
+            );
         }
     }
 }
@@ -204,22 +268,22 @@ impl AgentManager {
 fn generate_uuid_from_seed(seed: &str) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
-    
+
     let mut h1 = DefaultHasher::new();
     seed.hash(&mut h1);
     let v1 = h1.finish();
-    
+
     let mut h2 = DefaultHasher::new();
     (seed.to_string() + "_extra").hash(&mut h2);
     let v2 = h2.finish();
-    
+
     let b1 = (v1 >> 32) as u32;
     let b2 = (v1 & 0xffff_ffff) as u32;
     let b3 = (v2 >> 32) as u32;
     let b4 = (v2 & 0xffff_ffff) as u32;
-    
+
     let s = format!("{:08x}{:08x}{:08x}{:08x}", b1, b2, b3, b4);
-    
+
     format!(
         "{}-{}-{}-8{}-{}",
         &s[0..8],
@@ -255,14 +319,14 @@ impl AgentManager {
 
             // Generate deterministic UUID for Claude Code session
             let claude_uuid = generate_uuid_from_seed(&session_id);
-            
+
             // Check if this session has been initialized before
             let mut session_exists = false;
             if let Some(home_dir) = dirs::home_dir() {
                 let mut projects_dir = home_dir;
                 projects_dir.push(".claude");
                 projects_dir.push("projects");
-                
+
                 if projects_dir.exists() {
                     if let Ok(entries) = fs::read_dir(&projects_dir) {
                         for entry in entries.flatten() {
@@ -289,7 +353,8 @@ impl AgentManager {
         }
 
         let resolved_workspace = if workspace_dir == "direct" || workspace_dir.trim().is_empty() {
-            dirs::home_dir().unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+            dirs::home_dir()
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
         } else {
             resolve_sandbox_path(&workspace_dir)
         };
@@ -316,32 +381,48 @@ impl AgentManager {
         let _ = self.inject_workspace_memories(&resolved_workspace_str, &agent_name);
 
         // Configure environment variables (supporting WSL cross-boundary translation or local loopback)
-        let use_wsl = self.db.get_setting("use_wsl").unwrap_or(None).unwrap_or_else(|| "false".to_string()) == "true";
-        let wsl_distro = self.db.get_setting("wsl_distro").unwrap_or(None).unwrap_or_else(|| "Ubuntu".to_string());
-        let proxy_port = self.db.get_setting("proxy_port").unwrap_or(None).unwrap_or_else(|| "1421".to_string());
+        let use_wsl = self
+            .db
+            .get_setting("use_wsl")
+            .unwrap_or(None)
+            .unwrap_or_else(|| "false".to_string())
+            == "true";
+        let wsl_distro = self
+            .db
+            .get_setting("wsl_distro")
+            .unwrap_or(None)
+            .unwrap_or_else(|| "Ubuntu".to_string());
+        let proxy_port = self
+            .db
+            .get_setting("proxy_port")
+            .unwrap_or(None)
+            .unwrap_or_else(|| "1421".to_string());
 
         // Try using PTY system
-        let pty_system = std::panic::catch_unwind(|| {
-            portable_pty::native_pty_system()
-        })
-        .map_err(|_| "PTY 系统在初始化时崩溃".to_string())?;
+        let pty_system = std::panic::catch_unwind(|| portable_pty::native_pty_system())
+            .map_err(|_| "PTY 系统在初始化时崩溃".to_string())?;
 
-        let pty_pair = pty_system.openpty(portable_pty::PtySize {
-            rows: 24,
-            cols: 80,
-            pixel_width: 0,
-            pixel_height: 0,
-        }).map_err(|e| format!("无法创建虚拟终端 (PTY) 会话: {}", e))?;
+        let pty_pair = pty_system
+            .openpty(portable_pty::PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| format!("无法创建虚拟终端 (PTY) 会话: {}", e))?;
 
         let cmd_builder = if use_wsl {
             let mut c = portable_pty::CommandBuilder::new("wsl.exe");
-            let args_escaped: Vec<String> = args.iter().map(|a| {
-                if a.contains(' ') || a.contains('"') || a.contains('\'') {
-                    format!("'{}'", a.replace("'", "'\\''"))
-                } else {
-                    a.clone()
-                }
-            }).collect();
+            let args_escaped: Vec<String> = args
+                .iter()
+                .map(|a| {
+                    if a.contains(' ') || a.contains('"') || a.contains('\'') {
+                        format!("'{}'", a.replace("'", "'\\''"))
+                    } else {
+                        a.clone()
+                    }
+                })
+                .collect();
             let command_str = format!("{} {}", exe_path, args_escaped.join(" "));
             let sh_command = format!(
                 "HOST_IP=$(ip route | grep default | awk '{{print $3}}'); \
@@ -351,19 +432,28 @@ impl AgentManager {
                  export DISABLE_UPDATES=1; \
                  export DISABLE_AUTOUPDATER=1; \
                  {}",
-                proxy_port, agent_name.replace(' ', "_"), command_str
+                proxy_port,
+                agent_name.replace(' ', "_"),
+                command_str
             );
             c.args(&["-d", &wsl_distro, "--", "sh", "-c", &sh_command]);
             c
         } else {
-            let local_proxy_url = format!("http://localhost:{}/agent/{}", proxy_port, agent_name.replace(' ', "_"));
-            
+            let local_proxy_url = format!(
+                "http://localhost:{}/agent/{}",
+                proxy_port,
+                agent_name.replace(' ', "_")
+            );
+
             // On Windows, non-.exe files (like .cmd, .bat, or script wrappers without extension)
             // cannot be executed directly by CreateProcess via portable-pty. They must be wrapped in cmd.exe /c.
             let mut is_script = false;
             if cfg!(windows) {
                 let path_lower = exe_path.to_lowercase();
-                if path_lower.ends_with(".cmd") || path_lower.ends_with(".bat") || !path_lower.ends_with(".exe") {
+                if path_lower.ends_with(".cmd")
+                    || path_lower.ends_with(".bat")
+                    || !path_lower.ends_with(".exe")
+                {
                     is_script = true;
                 }
             }
@@ -403,8 +493,14 @@ impl AgentManager {
         let last_activity = Arc::new(AtomicU64::new(current_time_ms()));
 
         let child_shared = if let Some((pty_pair, child)) = spawned_pty {
-            let writer = pty_pair.master.take_writer().map_err(|e| format!("Failed to get pty master writer: {}", e))?;
-            let reader = pty_pair.master.try_clone_reader().map_err(|e| format!("Failed to clone pty master reader: {}", e))?;
+            let writer = pty_pair
+                .master
+                .take_writer()
+                .map_err(|e| format!("Failed to get pty master writer: {}", e))?;
+            let reader = pty_pair
+                .master
+                .try_clone_reader()
+                .map_err(|e| format!("Failed to clone pty master reader: {}", e))?;
 
             // 1. Thread for handling writing to PTY stdin
             let last_activity_stdin = Arc::clone(&last_activity);
@@ -417,11 +513,18 @@ impl AgentManager {
                     // which causes it to enter multi-line edit mode instead of executing the command.
                     // We normalize all newlines in PTY stdin to Carriage Returns ('\r') to ensure execution.
                     let normalized_msg = msg.replace("\r\n", "\r").replace('\n', "\r");
-                    println!("OMNIX PTY (Session {}): Writing stdin -> {:?}", session_id_stdin, normalized_msg);
+                    println!(
+                        "OMNIX PTY (Session {}): Writing stdin -> {:?}",
+                        session_id_stdin, normalized_msg
+                    );
                     last_activity_stdin.store(current_time_ms(), Ordering::Relaxed);
                     let res = tokio::task::spawn_blocking(move || {
-                        writer.write_all(normalized_msg.as_bytes()).and_then(|_| writer.flush()).map(|_| writer)
-                    }).await;
+                        writer
+                            .write_all(normalized_msg.as_bytes())
+                            .and_then(|_| writer.flush())
+                            .map(|_| writer)
+                    })
+                    .await;
                     match res {
                         Ok(Ok(w)) => {
                             writer = w;
@@ -461,7 +564,10 @@ impl AgentManager {
                     // Strip ANSI escape codes
                     let clean_bytes = strip_ansi_escapes::strip(&bytes);
                     let clean_str = String::from_utf8_lossy(&clean_bytes);
-                    println!("OMNIX PTY (Session {}): Read stdout -> {:?}", session_id_for_stdout, clean_str);
+                    println!(
+                        "OMNIX PTY (Session {}): Read stdout -> {:?}",
+                        session_id_for_stdout, clean_str
+                    );
                     let _ = stdout_tx_clone.send(format!("STDOUT: {}", clean_str)).await;
 
                     line_accumulator.push_str(&clean_str);
@@ -475,7 +581,10 @@ impl AgentManager {
                                 if req.method == "task/plan" {
                                     let conn = db_clone.get_connection();
                                     if let Ok(conn) = conn {
-                                        let _ = conn.execute("DELETE FROM tasks WHERE conversation_id = ?1", params![session_id_for_stdout]);
+                                        let _ = conn.execute(
+                                            "DELETE FROM tasks WHERE conversation_id = ?1",
+                                            params![session_id_for_stdout],
+                                        );
                                         for (i, t) in req.params.tasks.iter().enumerate() {
                                             let _ = conn.execute(
                                                 "INSERT INTO tasks (id, conversation_id, title, status, order_num)
@@ -484,7 +593,8 @@ impl AgentManager {
                                             );
                                         }
                                     }
-                                    let _ = stdout_tx_clone.send(format!("ACP: {}\n", trimmed)).await;
+                                    let _ =
+                                        stdout_tx_clone.send(format!("ACP: {}\n", trimmed)).await;
                                 }
                             }
                         }
@@ -496,20 +606,35 @@ impl AgentManager {
         } else {
             // Fallback: spawn command using traditional piped Stdio
             if exe_path.contains("codex") {
-                if !args.iter().any(|arg| arg == "exec" || arg == "e" || arg == "review" || arg == "login" || arg == "logout" || arg == "mcp" || arg == "help" || arg == "--help" || arg == "--version" || arg == "-V" || arg == "-h") {
+                if !args.iter().any(|arg| {
+                    arg == "exec"
+                        || arg == "e"
+                        || arg == "review"
+                        || arg == "login"
+                        || arg == "logout"
+                        || arg == "mcp"
+                        || arg == "help"
+                        || arg == "--help"
+                        || arg == "--version"
+                        || arg == "-V"
+                        || arg == "-h"
+                }) {
                     args.insert(0, "exec".to_string());
                 }
             }
 
             let mut cmd = if use_wsl {
                 let mut c = Command::new("wsl.exe");
-                let args_escaped: Vec<String> = args.iter().map(|a| {
-                    if a.contains(' ') || a.contains('"') || a.contains('\'') {
-                        format!("'{}'", a.replace("'", "'\\''"))
-                    } else {
-                        a.clone()
-                    }
-                }).collect();
+                let args_escaped: Vec<String> = args
+                    .iter()
+                    .map(|a| {
+                        if a.contains(' ') || a.contains('"') || a.contains('\'') {
+                            format!("'{}'", a.replace("'", "'\\''"))
+                        } else {
+                            a.clone()
+                        }
+                    })
+                    .collect();
                 let command_str = format!("{} {}", exe_path, args_escaped.join(" "));
                 let sh_command = format!(
                     "HOST_IP=$(ip route | grep default | awk '{{print $3}}'); \
@@ -519,12 +644,18 @@ impl AgentManager {
                      export DISABLE_UPDATES=1; \
                      export DISABLE_AUTOUPDATER=1; \
                      {}",
-                    proxy_port, agent_name.replace(' ', "_"), command_str
+                    proxy_port,
+                    agent_name.replace(' ', "_"),
+                    command_str
                 );
                 c.args(&["-d", &wsl_distro, "--", "sh", "-c", &sh_command]);
                 c
             } else {
-                let local_proxy_url = format!("http://localhost:{}/agent/{}", proxy_port, agent_name.replace(' ', "_"));
+                let local_proxy_url = format!(
+                    "http://localhost:{}/agent/{}",
+                    proxy_port,
+                    agent_name.replace(' ', "_")
+                );
                 let mut c = Command::new(&exe_path);
                 c.args(args)
                     .env("ANTHROPIC_BASE_URL", &local_proxy_url)
@@ -542,7 +673,10 @@ impl AgentManager {
 
             let mut child = match cmd.spawn() {
                 Ok(c) => {
-                    log::warn!("OMNIX spawn_agent: Successfully spawned fallback process with PID {:?}", c.id());
+                    log::warn!(
+                        "OMNIX spawn_agent: Successfully spawned fallback process with PID {:?}",
+                        c.id()
+                    );
                     c
                 }
                 Err(e) => {
@@ -551,9 +685,18 @@ impl AgentManager {
                 }
             };
 
-            let stdin = child.stdin.take().ok_or_else(|| "Failed to open stdin stream".to_string())?;
-            let stdout = child.stdout.take().ok_or_else(|| "Failed to open stdout stream".to_string())?;
-            let stderr = child.stderr.take().ok_or_else(|| "Failed to open stderr stream".to_string())?;
+            let stdin = child
+                .stdin
+                .take()
+                .ok_or_else(|| "Failed to open stdin stream".to_string())?;
+            let stdout = child
+                .stdout
+                .take()
+                .ok_or_else(|| "Failed to open stdout stream".to_string())?;
+            let stderr = child
+                .stderr
+                .take()
+                .ok_or_else(|| "Failed to open stderr stream".to_string())?;
 
             let last_activity_stdin = Arc::clone(&last_activity);
             tauri::async_runtime::spawn(async move {
@@ -561,7 +704,10 @@ impl AgentManager {
                 while let Some(msg) = stdin_rx.recv().await {
                     last_activity_stdin.store(current_time_ms(), Ordering::Relaxed);
                     if let Err(e) = writer.write_all(msg.as_bytes()).await {
-                        log::warn!("OMNIX spawn_agent: Failed to write to fallback stdin: {}", e);
+                        log::warn!(
+                            "OMNIX spawn_agent: Failed to write to fallback stdin: {}",
+                            e
+                        );
                         break;
                     }
                     if let Err(e) = writer.flush().await {
@@ -598,7 +744,10 @@ impl AgentManager {
                                 if req.method == "task/plan" {
                                     let conn = db_clone.get_connection();
                                     if let Ok(conn) = conn {
-                                        let _ = conn.execute("DELETE FROM tasks WHERE conversation_id = ?1", params![session_id_for_stdout]);
+                                        let _ = conn.execute(
+                                            "DELETE FROM tasks WHERE conversation_id = ?1",
+                                            params![session_id_for_stdout],
+                                        );
                                         for (i, t) in req.params.tasks.iter().enumerate() {
                                             let _ = conn.execute(
                                                 "INSERT INTO tasks (id, conversation_id, title, status, order_num)
@@ -607,7 +756,8 @@ impl AgentManager {
                                             );
                                         }
                                     }
-                                    let _ = stdout_tx_clone.send(format!("ACP: {}\n", trimmed)).await;
+                                    let _ =
+                                        stdout_tx_clone.send(format!("ACP: {}\n", trimmed)).await;
                                 }
                             }
                         }
@@ -657,13 +807,19 @@ impl AgentManager {
                 match &mut *child_lock {
                     AgentChild::Standard(c) => {
                         if let Ok(Some(status)) = c.try_wait() {
-                            println!("Subprocess for session {} exited with status {:?}", session_id_for_wait, status);
+                            println!(
+                                "Subprocess for session {} exited with status {:?}",
+                                session_id_for_wait, status
+                            );
                             break;
                         }
                     }
                     AgentChild::Pty { child, .. } => {
                         if let Ok(Some(status)) = child.try_wait() {
-                            println!("PTY Subprocess for session {} exited with status {:?}", session_id_for_wait, status);
+                            println!(
+                                "PTY Subprocess for session {} exited with status {:?}",
+                                session_id_for_wait, status
+                            );
                             break;
                         }
                     }
@@ -679,90 +835,102 @@ impl AgentManager {
     }
 
     pub async fn install_agent(&self, agent_name: &str) -> Result<(), String> {
-        if agent_name == "Codex" || agent_name == "Qwen Code" {
-            let bin_name = if agent_name == "Codex" { "codex" } else { "qwen-code" };
-            let sandbox_dir_str = self.db.get_setting("sandbox_dir").unwrap_or(None)
-                .unwrap_or_else(|| "~/.omnix/agents".to_string());
-            let sandbox_dir = resolve_sandbox_path(&sandbox_dir_str);
-            
-            let mut bin_dir = sandbox_dir.clone();
-            bin_dir.push("node_modules");
-            bin_dir.push(".bin");
-            let _ = fs::create_dir_all(&bin_dir);
-            
-            if cfg!(windows) {
-                let script_path = bin_dir.join(format!("{}.cmd", bin_name));
-                let script_content = format!(
-                    "@echo off\r\nif \"%1\"==\"--version\" (\r\n  echo 0.1.0\r\n) else (\r\n  echo OMNIX {} Mock CLI\r\n)",
-                    agent_name
-                );
-                let _ = fs::write(&script_path, script_content);
-            } else {
-                let script_path = bin_dir.join(bin_name);
-                let script_content = format!(
-                    "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  echo \"0.1.0\"\nelse\n  echo \"OMNIX {} Mock CLI\"\nfi\n",
-                    agent_name
-                );
-                let _ = fs::write(&script_path, script_content);
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let mut perms = fs::metadata(&script_path).unwrap().permissions();
-                    perms.set_mode(0o755);
-                    let _ = fs::set_permissions(&script_path, perms);
-                }
-            }
-            return Ok(());
+        if agent_name == "Qwen Code" {
+            return Err("Qwen Code managed installation is not supported yet; OMNIX will not create a mock CLI".into());
         }
 
         if agent_name == "Google Antigravity" {
             let mut cmd = if cfg!(windows) {
                 let mut c = Command::new("powershell");
-                c.args(&["-Command", "irm https://antigravity.google/cli/install.ps1 | iex"]);
+                c.args(&[
+                    "-Command",
+                    "irm https://antigravity.google/cli/install.ps1 | iex",
+                ]);
                 c
             } else {
                 let mut c = Command::new("sh");
-                c.args(&["-c", "curl -fsSL https://antigravity.google/cli/install.sh | bash"]);
+                c.args(&[
+                    "-c",
+                    "curl -fsSL https://antigravity.google/cli/install.sh | bash",
+                ]);
                 c
             };
             cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-            let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn Antigravity installer: {}", e))?;
-            let status = child.wait().await.map_err(|e| format!("Antigravity installer run error: {}", e))?;
+            let mut child = cmd
+                .spawn()
+                .map_err(|e| format!("Failed to spawn Antigravity installer: {}", e))?;
+            let status = child
+                .wait()
+                .await
+                .map_err(|e| format!("Antigravity installer run error: {}", e))?;
             if status.success() {
                 return Ok(());
             } else {
-                return Err(format!("Antigravity installer failed with code {:?}", status.code()));
+                return Err(format!(
+                    "Antigravity installer failed with code {:?}",
+                    status.code()
+                ));
             }
         }
 
+        let core_agent = match agent_name {
+            "Claude Code" => Some(AgentId::ClaudeCode),
+            "Codex" => Some(AgentId::Codex),
+            _ => None,
+        };
         let package = match agent_name {
-            "Claude Code" => "@anthropic-ai/claude-code@latest",
             "Gemini CLI" => "@google/gemini-cli@latest",
             "GitHub Copilot CLI" => "@github/copilot-cli@latest",
             "OpenCode" => "opencode-ai@latest",
-            _ => return Err(format!("Unsupported agent CLI auto-install: {}", agent_name)),
+            _ if core_agent.is_some() => "",
+            _ => {
+                return Err(format!(
+                    "Unsupported agent CLI auto-install: {}",
+                    agent_name
+                ))
+            }
         };
 
-        let sandbox_key = format!("sandbox_dir_{}", agent_name);
-        let sandbox_dir_str = self.db.get_setting(&sandbox_key).unwrap_or(None)
-            .or_else(|| self.db.get_setting("sandbox_dir").unwrap_or(None))
-            .unwrap_or_else(|| "~/.omnix/agents".to_string());
-        let sandbox_dir = resolve_sandbox_path(&sandbox_dir_str);
+        let sandbox_dir = managed_agent_root(&self.db, agent_name);
 
         // Ensure directory exists
         let _ = fs::create_dir_all(&sandbox_dir);
         let sandbox_str = sandbox_dir.to_string_lossy().to_string();
 
-        println!("Installing agent {} in sandbox prefix {}", agent_name, sandbox_str);
+        println!(
+            "Installing agent {} in sandbox prefix {}",
+            agent_name, sandbox_str
+        );
 
-        // Run npm install --prefix <sandbox> <package>
-        let mut cmd = Command::new(if cfg!(windows) { "npm.cmd" } else { "npm" });
-        cmd.args(&["install", "--prefix", &sandbox_str, package])
+        let install_command = if let Some(agent) = core_agent {
+            managed_install_command(agent, &sandbox_str)
+        } else {
+            crate::runtime::ManagedInstallCommand {
+                program: if cfg!(windows) {
+                    "npm.cmd".into()
+                } else {
+                    "npm".into()
+                },
+                args: vec![
+                    "install".into(),
+                    "--prefix".into(),
+                    sandbox_str.clone(),
+                    package.into(),
+                ],
+            }
+        };
+        let mut cmd = Command::new(&install_command.program);
+        cmd.args(&install_command.args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        let mut child = cmd.spawn().map_err(|e| format!("Failed to run npm command: {}", e))?;
-        let status = child.wait().await.map_err(|e| format!("Npm install process error: {}", e))?;
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("Failed to run npm command: {}", e))?;
+        let status = child
+            .wait()
+            .await
+            .map_err(|e| format!("Npm install process error: {}", e))?;
 
         if status.success() {
             if agent_name == "Claude Code" {
@@ -770,18 +938,17 @@ impl AgentManager {
             }
             Ok(())
         } else {
-            Err(format!("Npm install failed with status exit code {:?}", status.code()))
+            Err(format!(
+                "Npm install failed with status exit code {:?}",
+                status.code()
+            ))
         }
     }
 
     pub async fn repair_agent_cli(&self, agent_name: &str) -> Result<(), String> {
         // 1. Clean npm lockfiles inside the sandbox
         if agent_name == "Claude Code" || agent_name == "GitHub Copilot CLI" {
-            let sandbox_key = format!("sandbox_dir_{}", agent_name);
-            let sandbox_dir_str = self.db.get_setting(&sandbox_key).unwrap_or(None)
-                .or_else(|| self.db.get_setting("sandbox_dir").unwrap_or(None))
-                .unwrap_or_else(|| "~/.omnix/agents".to_string());
-            let sandbox_dir = resolve_sandbox_path(&sandbox_dir_str);
+            let sandbox_dir = managed_agent_root(&self.db, agent_name);
 
             let mut lock_file = sandbox_dir.clone();
             lock_file.push("package-lock.json");
@@ -812,17 +979,24 @@ impl AgentManager {
         claude_code_config.push("claude-code");
         claude_code_config.push("config.json");
 
-        if claude_code_config.parent().map(|p| p.exists()).unwrap_or(false) {
+        if claude_code_config
+            .parent()
+            .map(|p| p.exists())
+            .unwrap_or(false)
+        {
             let mut val = if claude_code_config.exists() {
                 let content = fs::read_to_string(&claude_code_config).unwrap_or_default();
                 serde_json::from_str::<serde_json::Value>(&content).unwrap_or(serde_json::json!({}))
             } else {
                 serde_json::json!({})
             };
-            
+
             if let Some(obj) = val.as_object_mut() {
                 obj.insert("tosAccepted".to_string(), serde_json::Value::Bool(true));
-                obj.insert("analyticsConsent".to_string(), serde_json::Value::String("opt-out".to_string()));
+                obj.insert(
+                    "analyticsConsent".to_string(),
+                    serde_json::Value::String("opt-out".to_string()),
+                );
             }
             self.atomic_write_config(&claude_code_config, &val.to_string())?;
         }
@@ -832,7 +1006,7 @@ impl AgentManager {
         claude_desktop_dir.push("AppData");
         claude_desktop_dir.push("Roaming");
         claude_desktop_dir.push("Claude");
-        
+
         let mut claude_desktop_config = claude_desktop_dir.clone();
         claude_desktop_config.push("claude_desktop_config.json");
 
@@ -845,11 +1019,13 @@ impl AgentManager {
             };
 
             if let Some(obj) = val.as_object_mut() {
-                let mut mcp_servers = obj.remove("mcpServers").unwrap_or_else(|| serde_json::json!({}));
+                let mut mcp_servers = obj
+                    .remove("mcpServers")
+                    .unwrap_or_else(|| serde_json::json!({}));
                 if mcp_servers.as_object().is_none() {
                     mcp_servers = serde_json::json!({});
                 }
-                
+
                 // Inject custom MCP server settings pointing to OMNIX
                 obj.insert("mcpServers".to_string(), mcp_servers);
             }
@@ -862,18 +1038,18 @@ impl AgentManager {
     }
 
     pub async fn uninstall_agent(&self, agent_name: &str) -> Result<(), String> {
-        let sandbox_key = format!("sandbox_dir_{}", agent_name);
-        let sandbox_dir_str = self.db.get_setting(&sandbox_key).unwrap_or(None)
-            .or_else(|| self.db.get_setting("sandbox_dir").unwrap_or(None))
-            .unwrap_or_else(|| "~/.omnix/agents".to_string());
-        let sandbox_dir = resolve_sandbox_path(&sandbox_dir_str);
+        let sandbox_dir = managed_agent_root(&self.db, agent_name);
 
         if agent_name == "Codex" || agent_name == "Qwen Code" {
-            let bin_name = if agent_name == "Codex" { "codex" } else { "qwen-code" };
+            let bin_name = if agent_name == "Codex" {
+                "codex"
+            } else {
+                "qwen-code"
+            };
             let mut bin_dir = sandbox_dir.clone();
             bin_dir.push("node_modules");
             bin_dir.push(".bin");
-            
+
             let bin_file = bin_dir.join(bin_name);
             let cmd_file = bin_dir.join(format!("{}.cmd", bin_name));
             let _ = fs::remove_file(&bin_file);
@@ -918,7 +1094,7 @@ impl AgentManager {
             let mut bin_dir = sandbox_dir.clone();
             bin_dir.push("node_modules");
             bin_dir.push(".bin");
-            
+
             if !bin_name.is_empty() {
                 let _ = fs::remove_file(bin_dir.join(bin_name));
                 let _ = fs::remove_file(bin_dir.join(format!("{}.cmd", bin_name)));
@@ -931,9 +1107,10 @@ impl AgentManager {
     fn atomic_write_config(&self, file_path: &Path, content: &str) -> Result<(), String> {
         let mut tmp_path = file_path.to_path_buf();
         tmp_path.set_extension("tmp");
-        
+
         fs::write(&tmp_path, content).map_err(|e| format!("Failed to write tmp file: {}", e))?;
-        fs::rename(&tmp_path, file_path).map_err(|e| format!("Failed to atomically replace config file: {}", e))?;
+        fs::rename(&tmp_path, file_path)
+            .map_err(|e| format!("Failed to atomically replace config file: {}", e))?;
         Ok(())
     }
 
@@ -960,13 +1137,19 @@ impl AgentManager {
                         }
                     }
                 });
-                println!("Forcefully terminated agent process for session: {}", session_id);
+                println!(
+                    "Forcefully terminated agent process for session: {}",
+                    session_id
+                );
             }
         }
     }
 
     pub fn send_stdin(&self, session_id: &str, text: String) -> Result<(), String> {
-        let procs = self.active_processes.lock().map_err(|_| "Failed to lock active processes map".to_string())?;
+        let procs = self
+            .active_processes
+            .lock()
+            .map_err(|_| "Failed to lock active processes map".to_string())?;
         if let Some(proc) = procs.get(session_id) {
             let tx = proc.stdin_tx.clone();
             tauri::async_runtime::spawn(async move {
@@ -974,7 +1157,10 @@ impl AgentManager {
             });
             Ok(())
         } else {
-            Err(format!("No active agent session found with ID {}", session_id))
+            Err(format!(
+                "No active agent session found with ID {}",
+                session_id
+            ))
         }
     }
 
@@ -1028,31 +1214,41 @@ impl AgentManager {
         });
     }
 
-    fn inject_workspace_memories(&self, workspace_dir: &str, agent_name: &str) -> Result<(), String> {
+    fn inject_workspace_memories(
+        &self,
+        workspace_dir: &str,
+        agent_name: &str,
+    ) -> Result<(), String> {
         let conn = self.db.get_connection().map_err(|e| e.to_string())?;
         // Only inject experience-type memories (not preferences — those are queried on demand)
         let mut stmt = conn.prepare(
             "SELECT incident_desc, code_pattern, remediation, keywords FROM memories WHERE type = 'experience' ORDER BY created_at DESC"
         ).map_err(|e| e.to_string())?;
-        let rows = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-            ))
-        }).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
 
         let mut memories_md = String::new();
         memories_md.push_str("\n<!--- OMNIX MEMORY START --->\n");
         memories_md.push_str("## 🧠 OMNIX Anti-Failure Guidelines & Memory Bank\n");
-        memories_md.push_str("以下是历史项目踩坑事故记录与规约，请在此工作区内严加防范，避免重犯相同错误：\n\n");
+        memories_md.push_str(
+            "以下是历史项目踩坑事故记录与规约，请在此工作区内严加防范，避免重犯相同错误：\n\n",
+        );
 
         // Cap at 20 memories to avoid context bloat
         const MAX_MEMORIES: usize = 20;
         let mut count = 0;
         for r in rows {
-            if count >= MAX_MEMORIES { break; }
+            if count >= MAX_MEMORIES {
+                break;
+            }
             if let Ok((desc, pattern, remediation, keywords)) = r {
                 count += 1;
                 memories_md.push_str(&format!("### ❌ 坑点 {}: {}\n", count, desc));
@@ -1074,17 +1270,18 @@ impl AgentManager {
 
         // Determine which context files to write based on agent type.
         // Each AI agent reads its own project-level instruction file.
-        let context_files: Vec<&str> = if agent_name.contains("Claude") || agent_name.contains("claude") {
-            vec!["CLAUDE.md"]
-        } else if agent_name.contains("Gemini") || agent_name.contains("gemini") {
-            vec!["GEMINI.md"]
-        } else if agent_name.contains("Codex") || agent_name.contains("codex") {
-            vec!["AGENTS.md"]
-        } else if agent_name.contains("Copilot") || agent_name.contains("copilot") {
-            vec![".github/copilot-instructions.md"]
-        } else {
-            vec!["CLAUDE.md", "GEMINI.md", "AGENTS.md"]
-        };
+        let context_files: Vec<&str> =
+            if agent_name.contains("Claude") || agent_name.contains("claude") {
+                vec!["CLAUDE.md"]
+            } else if agent_name.contains("Gemini") || agent_name.contains("gemini") {
+                vec!["GEMINI.md"]
+            } else if agent_name.contains("Codex") || agent_name.contains("codex") {
+                vec!["AGENTS.md"]
+            } else if agent_name.contains("Copilot") || agent_name.contains("copilot") {
+                vec![".github/copilot-instructions.md"]
+            } else {
+                vec!["CLAUDE.md", "GEMINI.md", "AGENTS.md"]
+            };
 
         for filename in &context_files {
             let file_path = workspace_path.join(filename);
@@ -1096,7 +1293,10 @@ impl AgentManager {
 
             if file_path.exists() {
                 if let Ok(mut content) = fs::read_to_string(&file_path) {
-                    if let (Some(start_idx), Some(end_idx)) = (content.find("<!--- OMNIX MEMORY START --->"), content.find("<!--- OMNIX MEMORY END --->")) {
+                    if let (Some(start_idx), Some(end_idx)) = (
+                        content.find("<!--- OMNIX MEMORY START --->"),
+                        content.find("<!--- OMNIX MEMORY END --->"),
+                    ) {
                         let end_block_len = "<!--- OMNIX MEMORY END --->\n".len();
                         let actual_end = if end_idx + end_block_len <= content.len() {
                             end_idx + end_block_len
@@ -1131,7 +1331,7 @@ impl AgentManager {
             ("Google Antigravity", "agy"),
             ("OpenCode", "opencode"),
         ];
-        
+
         let bin_name = agent_names.iter().find(|(dn, _)| dn == &display_name)?.1;
 
         if bin_name == "agy" {
@@ -1146,7 +1346,12 @@ impl AgentManager {
                 }
             } else {
                 if let Some(home) = dirs::home_dir() {
-                    let p = home.join(".local").join("share").join("agy").join("bin").join("agy");
+                    let p = home
+                        .join(".local")
+                        .join("share")
+                        .join("agy")
+                        .join("bin")
+                        .join("agy");
                     if p.exists() {
                         agy_path = Some(p.to_string_lossy().to_string());
                     }
@@ -1157,48 +1362,51 @@ impl AgentManager {
             }
         }
 
-        let sandbox_key = format!("sandbox_dir_{}", display_name);
-        let sandbox_dir_str = db.and_then(|d| d.get_setting(&sandbox_key).ok().flatten())
-            .or_else(|| db.and_then(|d| d.get_setting("sandbox_dir").ok().flatten()))
-            .unwrap_or_else(|| "~/.omnix/agents".to_string());
-        let sandbox_dir = resolve_sandbox_path(&sandbox_dir_str);
-        
-        let mut local_bin_dir = sandbox_dir;
-        local_bin_dir.push("node_modules");
-        local_bin_dir.push(".bin");
-
-        let mut local_exe = local_bin_dir.clone();
-        local_exe.push(if cfg!(windows) { format!("{}.cmd", bin_name) } else { bin_name.to_string() });
-        
-        if local_exe.exists() {
-            Some(local_exe.to_string_lossy().to_string())
-        } else if let Ok(path) = which::which(bin_name) {
-            Some(path.to_string_lossy().to_string())
-        } else {
-            None
+        // A user-managed system CLI is authoritative. OMNIX never silently
+        // replaces it with an isolated copy.
+        if let Ok(path) = which::which(bin_name) {
+            return Some(
+                prefer_windows_command_shim(path)
+                    .to_string_lossy()
+                    .to_string(),
+            );
         }
+
+        let managed_root = db
+            .map(|database| managed_agent_root(database, display_name))
+            .unwrap_or_else(|| {
+                resolve_sandbox_path(&format!("~/.omnix/agents/{}", agent_slug(display_name)))
+            });
+        if let Some(path) = executable_in_managed_root(&managed_root, bin_name) {
+            return Some(path);
+        }
+
+        // Compatibility lookup for installations created by older OMNIX builds.
+        let legacy_root = db
+            .and_then(|database| database.get_setting("sandbox_dir").ok().flatten())
+            .map(|path| resolve_sandbox_path(&path))
+            .unwrap_or_else(|| resolve_sandbox_path("~/.omnix/agents"));
+        executable_in_managed_root(&legacy_root, bin_name)
     }
-
-
 
     fn start_cron_scheduler(&self) {
         let db = Arc::clone(&self.db);
-        
+
         tauri::async_runtime::handle().spawn(async move {
             loop {
                 // Check schedules every 10 seconds
                 tokio::time::sleep(Duration::from_secs(10)).await;
-                
+
                 let conn_res = db.get_connection();
                 if let Ok(conn) = conn_res {
                     let mut stmt = match conn.prepare(
                         "SELECT id, title, schedule, agent_name, args, workspace_dir, last_run 
-                         FROM cron_tasks WHERE is_active = 1"
+                         FROM cron_tasks WHERE is_active = 1",
                     ) {
                         Ok(s) => s,
                         Err(_) => continue,
                     };
-                    
+
                     let rows = stmt.query_map([], |row| {
                         let last_run_str: Option<String> = row.get(6)?;
                         let last_run = last_run_str.and_then(|s| {
@@ -1207,7 +1415,7 @@ impl AgentManager {
                                 .ok()
                                 .and_then(|ndt| chrono::Local.from_local_datetime(&ndt).single())
                         });
-                        
+
                         Ok((
                             row.get::<_, String>(0)?,
                             row.get::<_, String>(1)?,
@@ -1218,17 +1426,32 @@ impl AgentManager {
                             last_run,
                         ))
                     });
-                    
+
                     if let Ok(rows) = rows {
                         for r in rows.flatten() {
-                            let (id, title, schedule, agent_name, args_str, workspace_dir, last_run) = r;
-                            
+                            let (
+                                id,
+                                title,
+                                schedule,
+                                agent_name,
+                                args_str,
+                                workspace_dir,
+                                last_run,
+                            ) = r;
+
                             if match_schedule(&schedule, last_run) {
                                 println!("Cron Scheduler: Triggering task '{}' ({})", title, id);
-                                
+
                                 let db_clone = Arc::clone(&db);
                                 tauri::async_runtime::spawn(async move {
-                                    let _ = run_cron_task(db_clone, id, agent_name, args_str, workspace_dir).await;
+                                    let _ = run_cron_task(
+                                        db_clone,
+                                        id,
+                                        agent_name,
+                                        args_str,
+                                        workspace_dir,
+                                    )
+                                    .await;
                                 });
                             }
                         }
@@ -1239,9 +1462,35 @@ impl AgentManager {
     }
 }
 
+#[cfg(test)]
+mod agent_path_tests {
+    use super::prefer_windows_command_shim;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_npm_cli_prefers_cmd_over_extensionless_or_powershell_shims() {
+        let root = std::env::temp_dir().join(format!(
+            "omnix_agent_shim_{}",
+            chrono::Utc::now().timestamp_micros()
+        ));
+        std::fs::create_dir_all(&root).expect("temporary shim directory");
+        let extensionless = root.join("codex");
+        let powershell = root.join("codex.ps1");
+        let command = root.join("codex.cmd");
+        std::fs::write(&extensionless, "node codex.js").expect("extensionless shim");
+        std::fs::write(&powershell, "node codex.js").expect("PowerShell shim");
+        std::fs::write(&command, "@node codex.js").expect("command shim");
+
+        assert_eq!(prefer_windows_command_shim(extensionless), command);
+        assert_eq!(prefer_windows_command_shim(powershell), command);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
 fn match_schedule(schedule: &str, last_run: Option<DateTime<Local>>) -> bool {
     let now = Local::now();
-    
+
     if let Some(lr) = last_run {
         if (now - lr).num_seconds() < 55 {
             return false; // Prevent double trigger in the same minute
@@ -1252,7 +1501,10 @@ fn match_schedule(schedule: &str, last_run: Option<DateTime<Local>>) -> bool {
 
     // 1. Natural Language: "every X minutes"
     if schedule.starts_with("every ") && schedule.ends_with(" minutes") {
-        if let Some(num_str) = schedule.strip_prefix("every ").and_then(|s| s.strip_suffix(" minutes")) {
+        if let Some(num_str) = schedule
+            .strip_prefix("every ")
+            .and_then(|s| s.strip_suffix(" minutes"))
+        {
             if let Ok(minutes) = num_str.trim().parse::<i64>() {
                 if let Some(lr) = last_run {
                     return (now - lr).num_minutes() >= minutes;
@@ -1265,7 +1517,10 @@ fn match_schedule(schedule: &str, last_run: Option<DateTime<Local>>) -> bool {
 
     // 2. Natural Language: "every X hours"
     if schedule.starts_with("every ") && schedule.ends_with(" hours") {
-        if let Some(num_str) = schedule.strip_prefix("every ").and_then(|s| s.strip_suffix(" hours")) {
+        if let Some(num_str) = schedule
+            .strip_prefix("every ")
+            .and_then(|s| s.strip_suffix(" hours"))
+        {
             if let Ok(hours) = num_str.trim().parse::<i64>() {
                 if let Some(lr) = last_run {
                     return (now - lr).num_hours() >= hours;
@@ -1350,7 +1605,7 @@ pub(crate) async fn run_cron_task(
 
     let args: Vec<String> = serde_json::from_str(&args_str).unwrap_or_default();
     let run_id = format!("run_{}_{}", task_id, Local::now().format("%Y%m%d_%H%M%S"));
-    
+
     let home_dir = dirs::home_dir().expect("Failed to determine home directory");
     let mut log_dir = home_dir.clone();
     log_dir.push(".omnix");
@@ -1373,19 +1628,32 @@ pub(crate) async fn run_cron_task(
         );
     }
 
-    let use_wsl = db.get_setting("use_wsl").unwrap_or(None).unwrap_or_else(|| "false".to_string()) == "true";
-    let wsl_distro = db.get_setting("wsl_distro").unwrap_or(None).unwrap_or_else(|| "Ubuntu".to_string());
-    let proxy_port = db.get_setting("proxy_port").unwrap_or(None).unwrap_or_else(|| "1421".to_string());
+    let use_wsl = db
+        .get_setting("use_wsl")
+        .unwrap_or(None)
+        .unwrap_or_else(|| "false".to_string())
+        == "true";
+    let wsl_distro = db
+        .get_setting("wsl_distro")
+        .unwrap_or(None)
+        .unwrap_or_else(|| "Ubuntu".to_string());
+    let proxy_port = db
+        .get_setting("proxy_port")
+        .unwrap_or(None)
+        .unwrap_or_else(|| "1421".to_string());
 
     let mut cmd = if use_wsl {
         let mut c = Command::new("wsl.exe");
-        let args_escaped: Vec<String> = args.iter().map(|a| {
-            if a.contains(' ') || a.contains('"') || a.contains('\'') {
-                format!("'{}'", a.replace("'", "'\\''"))
-            } else {
-                a.clone()
-            }
-        }).collect();
+        let args_escaped: Vec<String> = args
+            .iter()
+            .map(|a| {
+                if a.contains(' ') || a.contains('"') || a.contains('\'') {
+                    format!("'{}'", a.replace("'", "'\\''"))
+                } else {
+                    a.clone()
+                }
+            })
+            .collect();
         let command_str = format!("{} {}", exe_path, args_escaped.join(" "));
         let sh_command = format!(
             "HOST_IP=$(ip route | grep default | awk '{{print $3}}'); \
@@ -1394,12 +1662,18 @@ pub(crate) async fn run_cron_task(
              export DISABLE_UPDATES=1; \
              export DISABLE_AUTOUPDATER=1; \
              {}",
-            proxy_port, agent_name.replace(' ', "_"), command_str
+            proxy_port,
+            agent_name.replace(' ', "_"),
+            command_str
         );
         c.args(&["-d", &wsl_distro, "--", "sh", "-c", &sh_command]);
         c
     } else {
-        let local_proxy_url = format!("http://localhost:{}/agent/{}", proxy_port, agent_name.replace(' ', "_"));
+        let local_proxy_url = format!(
+            "http://localhost:{}/agent/{}",
+            proxy_port,
+            agent_name.replace(' ', "_")
+        );
         let mut c = Command::new(&exe_path);
         c.args(args)
             .env("ANTHROPIC_BASE_URL", &local_proxy_url)
@@ -1491,7 +1765,11 @@ async fn log_cron_run_status(db: &DbManager, run_id: &str, status: &str) {
 }
 
 async fn log_cron_run_failure(db: &DbManager, task_id: &str, err_msg: &str) {
-    let run_id = format!("run_err_{}_{}", task_id, Local::now().format("%Y%m%d_%H%M%S"));
+    let run_id = format!(
+        "run_err_{}_{}",
+        task_id,
+        Local::now().format("%Y%m%d_%H%M%S")
+    );
     if let Ok(conn) = db.get_connection() {
         let _ = conn.execute(
             "INSERT INTO cron_runs (id, task_id, status, log_path, started_at, finished_at)
@@ -1527,7 +1805,9 @@ mod tests {
         fs::create_dir_all(&test_workspace).unwrap();
 
         // Run injection
-        manager.inject_workspace_memories(&test_workspace.to_string_lossy(), "Claude Code").unwrap();
+        manager
+            .inject_workspace_memories(&test_workspace.to_string_lossy(), "Claude Code")
+            .unwrap();
 
         // Verify files exist
         let claude_md = test_workspace.join("CLAUDE.md");
@@ -1549,5 +1829,3 @@ mod tests {
         }
     }
 }
-
-

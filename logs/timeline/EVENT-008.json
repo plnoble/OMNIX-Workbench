@@ -2,7 +2,7 @@
   "event_id": "EVENT-008",
   "event_type": "TASK_STARTED",
   "agent": "Claude",
-  "summary": "开始 TASK-002: OMNIX DevFlow 前端架构重构 & UI 重设计。已创建 DEC-015 (Tailwind+shadcn 选型) 和 DEC-016 (自定义Hooks状态管理)。",
+  "summary": "开始 TASK-002: OMNIX Workbench 前端架构重构 & UI 重设计。已创建 DEC-015 (Tailwind+shadcn 选型) 和 DEC-016 (自定义Hooks状态管理)。",
   "related_entities": [
     "TASK-002",
     "DEC-015",

@@ -1,36 +1,80 @@
-mod db;
-mod proxy;
 mod agent;
-mod knowledge;
-mod selection;
-mod tool_adapters;
-mod sync_engine;
 mod agent_templates;
-mod skill_frontmatter;
-mod proxy_middleware;
-mod model_provider;
-mod prompt_guard;
-mod event_bus;
-mod crypto;
-mod model_knowledge;
 mod backup;
-mod code_graph;
-mod skill_library;
-mod token_economy;
 mod circuit_breaker;
-mod skill_dag;
+mod code_graph;
+mod commands;
+mod crypto;
+mod db;
+mod event_bus;
 mod hash;
 mod input_validation;
-mod commands;
+mod knowledge;
+mod model_knowledge;
+mod prompt_guard;
+mod proxy;
+mod responses_bridge;
+mod runtime;
+mod runtime_manager;
+mod selection;
+mod skill_dag;
+mod skill_frontmatter;
+mod skill_library;
+mod sync_engine;
+mod token_economy;
+mod tool_adapters;
 
 #[cfg(test)]
 mod tests;
 
 use std::sync::Arc;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
-use log::warn;
+fn fitted_main_window_size(logical_width: f64, logical_height: f64) -> (f64, f64, f64, f64) {
+    let width = (logical_width * 0.92).min(1280.0);
+    let height = (logical_height * 0.88).min(800.0);
+    let min_width = width.min(640.0);
+    let min_height = height.min(520.0);
+    (width, height, min_width, min_height)
+}
+
+fn webview_zoom_correction(reported_width: u32, native_width: u32) -> Option<f64> {
+    if reported_width == 0 || native_width == 0 {
+        return None;
+    }
+    let ratio = native_width as f64 / reported_width as f64;
+    (ratio < 0.8).then(|| ratio.clamp(0.5, 1.0))
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct NativeRect {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+
+#[cfg(windows)]
+#[link(name = "user32")]
+extern "system" {
+    fn GetClientRect(window: isize, rect: *mut NativeRect) -> i32;
+}
+
+#[cfg(windows)]
+fn native_client_width<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> Option<u32> {
+    let hwnd = window.hwnd().ok()?;
+    let mut rect = NativeRect {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    let success = unsafe { GetClientRect(hwnd.0 as isize, &mut rect) };
+    (success != 0 && rect.right > rect.left).then_some((rect.right - rect.left) as u32)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 0. Initialize logging
@@ -40,24 +84,28 @@ pub fn run() {
 
     // 1. Initialize SQLite Database Schema
     let db = Arc::new(db::DbManager::new());
-    
+
     // 2. Initialize Agent Subprocess watchdog Manager
     let agent_manager = Arc::new(agent::AgentManager::new(Arc::clone(&db)));
-    
+    let runtime_manager = Arc::new(runtime_manager::RuntimeManager::new(Arc::clone(&db)));
+
     // 3. Resolve port and launch background HTTP translation proxy
     // The proxy port is an internal constant — users configure API keys/addresses
     // per-platform in the Model Hub, not here.
     let port: u16 = 1421;
-    
+
     let proxy_server = proxy::ProxyServer::new();
     let proxy_state = std::sync::Mutex::new(proxy_server);
 
     // Parse QA shortcut for toggle handler.
     // Selection shortcut removed — auto-capture is the only trigger mode now.
-    let qa_shortcut_str = db.get_setting("quick_assistant_shortcut").unwrap_or(None)
+    let qa_shortcut_str = db
+        .get_setting("quick_assistant_shortcut")
+        .unwrap_or(None)
         .unwrap_or_else(|| "Ctrl+Shift+Space".to_string());
 
-    let qa_id: Option<u32> = qa_shortcut_str.parse::<tauri_plugin_global_shortcut::Shortcut>()
+    let qa_id: Option<u32> = qa_shortcut_str
+        .parse::<tauri_plugin_global_shortcut::Shortcut>()
         .map(|s| s.id())
         .ok();
 
@@ -103,14 +151,56 @@ pub fn run() {
             // Share references globally as Tauri App State
             app.manage(Arc::clone(&db));
             app.manage(Arc::clone(&agent_manager));
+            app.manage(Arc::clone(&runtime_manager));
             app.manage(proxy_state);
+
+            let mut runtime_events = runtime_manager.subscribe();
+            let runtime_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                while let Ok(envelope) = runtime_events.recv().await {
+                    let _ = runtime_app.emit("agent-session-event", envelope);
+                }
+            });
 
             // Start background tasks once the Tokio runtime is fully initialized by Tauri
             agent_manager.start_services();
 
-            // Enforce minimum window size (belt-and-suspenders with tauri.conf.json)
+            // Fit the initial logical size to the current monitor. Windows can otherwise
+            // clamp a 1280x800 window at high DPI while WebView keeps the oversized layout.
             if let Some(main) = app.get_webview_window("main") {
-                let _ = main.set_min_size(Some(tauri::LogicalSize::new(1024.0, 680.0)));
+                if let Ok(Some(monitor)) = main.current_monitor() {
+                    let scale = monitor.scale_factor();
+                    let monitor_size = monitor.size();
+                    let logical_width = monitor_size.width as f64 / scale;
+                    let logical_height = monitor_size.height as f64 / scale;
+                    let (width, height, min_width, min_height) =
+                        fitted_main_window_size(logical_width, logical_height);
+                    let _ = main.set_min_size(Some(tauri::LogicalSize::new(min_width, min_height)));
+                    let _ = main.set_size(tauri::LogicalSize::new(width, height));
+                    let _ = main.center();
+                } else {
+                    let _ = main.set_min_size(Some(tauri::LogicalSize::new(640.0, 520.0)));
+                }
+
+                #[cfg(windows)]
+                if let (Ok(reported_size), Some(native_width)) =
+                    (main.inner_size(), native_client_width(&main))
+                {
+                    if let Some(zoom) =
+                        webview_zoom_correction(reported_size.width, native_width)
+                    {
+                        if let Err(error) = main.set_zoom(zoom) {
+                            log::warn!("Unable to correct WebView DPI mapping: {error}");
+                        } else {
+                            log::info!(
+                                "Corrected WebView DPI mapping: reported={} native={} zoom={:.2}",
+                                reported_size.width,
+                                native_width,
+                                zoom
+                            );
+                        }
+                    }
+                }
             }
 
             // Register global shortcuts after the event loop starts.
@@ -128,7 +218,11 @@ pub fn run() {
                     let gs = app_handle.global_shortcut();
 
                     if let Err(e) = gs.register(qa_str.as_str()) {
-                        log::warn!("[Shortcut] Failed to register QA shortcut '{}': {}", qa_str, e);
+                        log::warn!(
+                            "[Shortcut] Failed to register QA shortcut '{}': {}",
+                            qa_str,
+                            e
+                        );
                     } else {
                         log::warn!("[Shortcut] Registered QA shortcut: {}", qa_str);
                     }
@@ -139,7 +233,7 @@ pub fn run() {
             let _status_dock = tauri::WebviewWindowBuilder::new(
                 app,
                 "status-dock",
-                tauri::WebviewUrl::App("/?window=status-dock".into())
+                tauri::WebviewUrl::App("/?window=status-dock".into()),
             )
             .title("OMNIX Status Dock")
             .inner_size(200.0, 48.0)
@@ -154,7 +248,7 @@ pub fn run() {
             let _qa = tauri::WebviewWindowBuilder::new(
                 app,
                 "quick-assistant",
-                tauri::WebviewUrl::App("/?window=quick-assistant".into())
+                tauri::WebviewUrl::App("/?window=quick-assistant".into()),
             )
             .title("OMNIX Quick Assistant")
             .inner_size(420.0, 520.0)
@@ -179,6 +273,12 @@ pub fn run() {
             commands::approve_team_plan,
             commands::start_agent_run,
             commands::list_agent_runs,
+            commands::team_generate_plan,
+            commands::team_get_run_detail,
+            commands::team_start_approved_run,
+            commands::team_stop_run,
+            commands::team_retry_worker,
+            commands::team_respond_worker_approval,
             commands::list_lab_features,
             commands::protocol_get_status,
             commands::protocol_preview_init,
@@ -190,6 +290,16 @@ pub fn run() {
             commands::protocol_list_evolution_proposals,
             commands::protocol_apply_evolution_proposal,
             commands::detect_installed_agents,
+            commands::runtime_get_agent_catalog,
+            commands::runtime_get_model_options,
+            commands::runtime_start_session,
+            commands::runtime_send_message,
+            commands::runtime_respond_approval,
+            commands::runtime_stop_session,
+            commands::runtime_resume_session,
+            commands::runtime_get_session,
+            commands::runtime_get_events,
+            commands::runtime_list_conversation_sessions,
             commands::start_agent_session,
             commands::send_agent_stdin,
             commands::stop_agent_session,
@@ -204,6 +314,8 @@ pub fn run() {
             commands::update_skill_profile,
             commands::fuse_skills_api,
             commands::create_skill,
+            commands::apply_skill_fusion_draft,
+            commands::reject_skill_fusion_draft,
             commands::create_skill_set,
             commands::list_skill_sets,
             commands::update_skill_set,
@@ -218,10 +330,11 @@ pub fn run() {
             commands::get_all_memories,
             commands::create_memory,
             commands::delete_memory,
-            commands::distill_session_memory,
+            commands::distill_conversation_to_inbox,
+            commands::list_distillation_inbox,
+            commands::review_distillation_candidate,
             commands::get_all_conversations,
             commands::get_conversation_tasks,
-            commands::simulate_team_task_dispatch,
             commands::get_mailbox_messages,
             commands::get_remote_access_info,
             commands::get_all_models_metadata,
@@ -239,6 +352,7 @@ pub fn run() {
             commands::eval_compare_window,
             commands::focus_main_window,
             commands::pick_directory,
+            commands::pick_file,
             commands::toggle_status_dock,
             commands::get_model_platforms,
             commands::save_model_platform,
@@ -269,8 +383,13 @@ pub fn run() {
             commands::read_file_content_utf8,
             commands::read_file_as_base64,
             commands::get_workspace_git_diff,
+            commands::get_workspace_snapshot,
             commands::run_env_diagnostics,
             commands::repair_env_tool,
+            commands::kb_list_bases,
+            commands::kb_create_base,
+            commands::kb_update_base,
+            commands::kb_delete_base,
             commands::kb_list_documents,
             commands::kb_import_document,
             commands::kb_delete_document,
@@ -426,6 +545,10 @@ pub fn run() {
             // MCP Presets (ZCF inspired)
             commands::get_mcp_presets,
             commands::apply_mcp_preset,
+            // MCP sync to Agent native config (AionUi / cc-switch inspired)
+            commands::mcp_sync_to_agents,
+            commands::mcp_remove_from_agent,
+            commands::mcp_get_agent_states,
             // Output Styles (ZCF inspired)
             commands::get_output_styles,
             commands::get_output_style_prompt,
@@ -440,6 +563,8 @@ pub fn run() {
             commands::intercept_protocols,
             commands::execute_protocol,
             commands::search_skill_market,
+            commands::preview_market_skill,
+            commands::import_market_skill,
             commands::distill_from_project,
             // DeepSeek-GUI inspired features
             commands::compress_tool_result,
@@ -496,7 +621,11 @@ pub fn run() {
 
     app.run(move |app_handle, event| {
         match event {
-            tauri::RunEvent::WindowEvent { label, event: win_event, .. } => {
+            tauri::RunEvent::WindowEvent {
+                label,
+                event: win_event,
+                ..
+            } => {
                 // When the main window is closed, also close the status-dock and exit
                 if label == "main" {
                     if let tauri::WindowEvent::CloseRequested { .. } = win_event {
@@ -509,13 +638,47 @@ pub fn run() {
                         }
                     }
                 }
-            },
+            }
             tauri::RunEvent::Exit => {
-                let state: tauri::State<'_, std::sync::Mutex<proxy::ProxyServer>> = app_handle.state();
+                let state: tauri::State<'_, std::sync::Mutex<proxy::ProxyServer>> =
+                    app_handle.state();
                 let mut server = state.lock().expect("Failed to lock proxy server mutex");
                 server.stop();
-            },
+            }
             _ => {}
         }
     });
+}
+
+#[cfg(test)]
+mod window_layout_tests {
+    use super::{fitted_main_window_size, webview_zoom_correction};
+
+    #[test]
+    fn high_dpi_logical_monitor_does_not_receive_oversized_window() {
+        let (width, height, min_width, min_height) = fitted_main_window_size(768.0, 432.0);
+        assert!(width <= 768.0);
+        assert!(height <= 432.0);
+        assert!(min_width <= width);
+        assert!(min_height <= height);
+    }
+
+    #[test]
+    fn large_monitor_keeps_product_default_ceiling() {
+        let (width, height, _, _) = fitted_main_window_size(2560.0, 1440.0);
+        assert_eq!(width, 1280.0);
+        assert_eq!(height, 800.0);
+    }
+
+    #[test]
+    fn mismatched_native_window_receives_zoom_correction() {
+        assert_eq!(webview_zoom_correction(2560, 1280), Some(0.5));
+        assert_eq!(webview_zoom_correction(1920, 1280), Some(2.0 / 3.0));
+    }
+
+    #[test]
+    fn matching_native_window_keeps_default_zoom() {
+        assert_eq!(webview_zoom_correction(1280, 1280), None);
+        assert_eq!(webview_zoom_correction(0, 1280), None);
+    }
 }

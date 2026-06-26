@@ -16,10 +16,10 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { AGENT_NAMES } from "@/lib/constants";
-import { agentApi, agentBindingApi } from "@/lib/tauri-api";
+import { agentApi, agentBindingApi, runtimeApi } from "@/lib/tauri-api";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/sonner";
-import type { AgentAccount, DetectedAgent, PlatformModel } from "@/types";
+import type { AgentAccount, DetectedAgent, PlatformModel, RuntimeAgentCatalogEntry } from "@/types";
 import type { AgentPlatformBinding } from "@/lib/tauri-api";
 
 interface AgentHubTabProps {
@@ -38,8 +38,8 @@ interface AgentHubTabProps {
 const BUILTIN_MODELS: Record<string, string[]> = {
   "OpenCode": ["opencode/free", "opencode/auto"],
   "Gemini CLI": ["gemini-cli/default"],
-  "Codex": ["codex/default"],
-  "Claude Code": ["claude-code/default"],
+  "Codex": ["gpt-5-codex"],
+  "Claude Code": ["sonnet", "opus", "haiku"],
 };
 
 const FEATURED_AGENTS = ["Claude Code", "Codex", "Gemini CLI", "OpenCode"];
@@ -82,6 +82,7 @@ export function AgentHubTab({
   const [bindings, setBindings] = useState<AgentPlatformBinding[]>([]);
   const [selectedAgent, setSelectedAgent] = useState(activeAgent || FEATURED_AGENTS[0]);
   const [busyAgent, setBusyAgent] = useState<string | null>(null);
+  const [runtimeCatalog, setRuntimeCatalog] = useState<RuntimeAgentCatalogEntry[]>([]);
 
   useEffect(() => {
     setLocalAgents(detectedAgents);
@@ -89,6 +90,7 @@ export function AgentHubTab({
 
   useEffect(() => {
     agentBindingApi.getAll().then(setBindings).catch(() => setBindings([]));
+    runtimeApi.getAgentCatalog().then(setRuntimeCatalog).catch(() => setRuntimeCatalog([]));
   }, []);
 
   const agents = useMemo(() => {
@@ -96,6 +98,7 @@ export function AgentHubTab({
     return names.map((name) => {
       const detected = localAgents.find((agent) => agent.name === name);
       const binding = bindings.find((item) => item.agent_name === name);
+      const runtime = runtimeCatalog.find((item) => item.name === name);
       const agentAccounts = accounts.filter((account) => account.agent_name === name || account.agent_name === name.toLowerCase());
       return {
         name,
@@ -104,9 +107,10 @@ export function AgentHubTab({
         accounts: agentAccounts,
         installed: detected?.status === "installed",
         currentModel: getBindingLabel(name, binding),
+        runtime,
       };
     });
-  }, [accounts, bindings, localAgents]);
+  }, [accounts, bindings, localAgents, runtimeCatalog]);
 
   const selected = agents.find((agent) => agent.name === selectedAgent) ?? agents[0];
   const savedModelOptions = activeModels.map((model) => ({
@@ -123,16 +127,19 @@ export function AgentHubTab({
       if (action === "detect") {
         const list = await agentApi.detectInstalled();
         setLocalAgents(list);
+        setRuntimeCatalog(await runtimeApi.getAgentCatalog());
         toast.success("检测完成");
       } else if (action === "install") {
         await agentApi.install(agentName);
         const list = await agentApi.detectInstalled();
         setLocalAgents(list);
+        setRuntimeCatalog(await runtimeApi.getAgentCatalog());
         toast.success(`${agentName} 安装完成`);
       } else {
         await agentApi.update(agentName);
         const list = await agentApi.detectInstalled();
         setLocalAgents(list);
+        setRuntimeCatalog(await runtimeApi.getAgentCatalog());
         toast.success(`${agentName} 已更新`);
       }
     } catch (error) {
@@ -210,13 +217,15 @@ export function AgentHubTab({
             >
               <div className="flex items-start justify-between gap-3">
                 <AgentMark name={agent.name} active={activeAgent === agent.name} />
-                <Badge variant={agent.installed ? "success" : "secondary"}>
-                  {agent.installed ? "已检测" : "未安装"}
+                <Badge variant={agent.runtime?.runtime_status === "supported" && agent.installed ? "success" : "secondary"}>
+                  {agent.runtime?.runtime_status === "pending" ? "待适配" : agent.installed ? "已检测" : "未安装"}
                 </Badge>
               </div>
               <div className="mt-5 text-xl font-semibold">{agent.name}</div>
               <div className="mt-2 text-sm text-muted-foreground">
-                {agent.installed ? `版本 ${agent.detected?.version || "未知"}` : "需要安装对应 CLI 后才能启动"}
+                {agent.installed
+                  ? `${agent.runtime?.installation_source === "managed" ? "OMNIX 托管" : "系统安装"} · ${agent.detected?.version || "版本未知"}`
+                  : "需要安装对应 CLI 后才能启动"}
               </div>
               <div className="mt-4 rounded-md border border-border bg-background/50 p-3">
                 <div className="text-xs text-muted-foreground">当前模型</div>
@@ -231,7 +240,7 @@ export function AgentHubTab({
                     onSwitchAgent(agent.name);
                     onStartWork?.(agent.name);
                   }}
-                  disabled={!agent.installed}
+                  disabled={!agent.installed || agent.runtime?.runtime_status !== "supported"}
                 >
                   <Play className="h-3.5 w-3.5" />
                   开始工作
@@ -273,6 +282,8 @@ export function AgentHubTab({
             <div className="space-y-4">
               <InfoRow label="状态" value={selected.installed ? "已检测到本地 CLI" : "未检测到本地 CLI"} ok={selected.installed} />
               <InfoRow label="版本" value={selected.detected?.version || "未知"} />
+              <InfoRow label="来源" value={selected.runtime?.installation_source === "managed" ? "OMNIX 托管安装" : selected.installed ? "系统安装" : "未安装"} />
+              <InfoRow label="运行适配" value={selected.runtime?.runtime_status === "supported" ? "结构化协议已接入" : "待适配，不会显示为可运行"} ok={selected.runtime?.runtime_status === "supported"} />
               <InfoRow label="路径" value={selected.detected?.path || "未找到"} />
 
               <div className="rounded-md border border-border bg-background/50 p-4">
@@ -291,7 +302,7 @@ export function AgentHubTab({
                   ))}
                 </select>
                 <p className="mt-2 text-xs leading-5 text-muted-foreground">
-                  已保存模型会走 OMNIX 供应商配置。Agent 自带模型用于 OpenCode 等内置免费模型场景。
+                  Agent 默认沿用 CLI 自己的配置；Agent 官方模型由 CLI 直连；OMNIX 模型使用模型中心中已启用的供应商。运行时仍会检查协议兼容性。
                 </p>
               </div>
 
@@ -313,7 +324,7 @@ export function AgentHubTab({
                     onSwitchAgent(selected.name);
                     onStartWork?.(selected.name);
                   }}
-                  disabled={!selected.installed}
+                  disabled={!selected.installed || selected.runtime?.runtime_status !== "supported"}
                 >
                   <Play className="h-4 w-4" />
                   开始

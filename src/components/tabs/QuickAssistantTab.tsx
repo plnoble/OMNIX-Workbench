@@ -11,6 +11,8 @@ interface QuickAssistantTabProps {
   captureMode: string;
   showOnCapture: boolean;
   preserveClipboard: boolean;
+  autoCaptureEnabled: boolean;
+  blacklist: string[];
   isCapturing: boolean;
   lastCapture: string | null;
   captureError: string | null;
@@ -24,6 +26,8 @@ interface QuickAssistantTabProps {
   onSetCaptureMode: (value: string) => void;
   onSetShowOnCapture: (value: boolean) => void;
   onSetPreserveClipboard: (value: boolean) => void;
+  onSetAutoCaptureEnabled: (value: boolean) => void;
+  onSetBlacklist: (value: string[]) => void;
   onTestCapture: () => Promise<string | null>;
   onLoadHistory: () => Promise<void>;
   onClearHistory: () => Promise<void>;
@@ -38,6 +42,8 @@ export function QuickAssistantTab({
   captureMode,
   showOnCapture,
   preserveClipboard,
+  autoCaptureEnabled,
+  blacklist,
   isCapturing,
   lastCapture,
   captureError,
@@ -51,6 +57,8 @@ export function QuickAssistantTab({
   onSetCaptureMode,
   onSetShowOnCapture,
   onSetPreserveClipboard,
+  onSetAutoCaptureEnabled,
+  onSetBlacklist,
   onTestCapture,
   onLoadHistory,
   onClearHistory,
@@ -121,6 +129,18 @@ export function QuickAssistantTab({
                 <span className="text-sm">尽量保留原剪贴板</span>
                 <Switch checked={preserveClipboard} onCheckedChange={onSetPreserveClipboard} />
               </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-sm">自动监听划词</span>
+                <Switch checked={autoCaptureEnabled} onCheckedChange={onSetAutoCaptureEnabled} />
+              </div>
+              <label className="block">
+                <span className="mb-1 block text-xs text-muted-foreground">应用黑名单（每行一个进程或窗口关键词）</span>
+                <Textarea
+                  value={blacklist.join("\n")}
+                  onChange={(event) => onSetBlacklist(event.target.value.split(/\r?\n/))}
+                  className="min-h-24 text-xs"
+                />
+              </label>
               <Button onClick={testCapture} disabled={testing || isCapturing}>
                 {testing || isCapturing ? "捕获中" : "测试捕获"}
               </Button>

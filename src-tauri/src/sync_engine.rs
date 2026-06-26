@@ -11,7 +11,6 @@ use std::sync::Arc;
 
 use crate::db::DbManager;
 use crate::tool_adapters::{AdapterRegistry, SyncMode};
-use log::warn;
 
 // ─────────────────────────────────────────────
 // Conflict Detection
@@ -160,11 +159,7 @@ impl SyncEngine {
     }
 
     /// Check for conflicts before syncing
-    pub fn check_conflicts(
-        &self,
-        skill_name: &str,
-        tool_ids: &[String],
-    ) -> Vec<ConflictInfo> {
+    pub fn check_conflicts(&self, skill_name: &str, tool_ids: &[String]) -> Vec<ConflictInfo> {
         let (_content, source_hash) = match self.read_skill_content(skill_name) {
             Ok(r) => r,
             Err(_) => return Vec::new(),
@@ -212,40 +207,52 @@ impl SyncEngine {
     ) -> DetailedSyncResult {
         let adapter = match self.registry.get(tool_id) {
             Some(a) => a,
-            None => return DetailedSyncResult {
-                skill_name: skill_name.to_string(),
-                tool_id: tool_id.to_string(),
-                target_path: String::new(),
-                success: false,
-                conflict: None,
-                strategy_used: None,
-                error: Some(format!("Unknown tool: {}", tool_id)),
-            },
+            None => {
+                return DetailedSyncResult {
+                    skill_name: skill_name.to_string(),
+                    tool_id: tool_id.to_string(),
+                    target_path: String::new(),
+                    success: false,
+                    conflict: None,
+                    strategy_used: None,
+                    error: Some(format!("Unknown tool: {}", tool_id)),
+                }
+            }
         };
 
         // Read source content
         let (content, source_hash) = match self.read_skill_content(skill_name) {
             Ok(r) => r,
-            Err(e) => return DetailedSyncResult {
-                skill_name: skill_name.to_string(),
-                tool_id: tool_id.to_string(),
-                target_path: String::new(),
-                success: false,
-                conflict: None,
-                strategy_used: None,
-                error: Some(e),
-            },
+            Err(e) => {
+                return DetailedSyncResult {
+                    skill_name: skill_name.to_string(),
+                    tool_id: tool_id.to_string(),
+                    target_path: String::new(),
+                    success: false,
+                    conflict: None,
+                    strategy_used: None,
+                    error: Some(e),
+                }
+            }
         };
 
         // Check for conflict
-        let target_path = adapter.skill_base_path()
-            .map(|p| p.join(skill_name).join("SKILL.md").to_string_lossy().to_string())
+        let target_path = adapter
+            .skill_base_path()
+            .map(|p| {
+                p.join(skill_name)
+                    .join("SKILL.md")
+                    .to_string_lossy()
+                    .to_string()
+            })
             .unwrap_or_default();
 
         let target_file = PathBuf::from(&target_path);
         let exists = target_file.exists();
         let existing_hash = if exists {
-            fs::read_to_string(&target_file).ok().map(|c| compute_content_hash(&c))
+            fs::read_to_string(&target_file)
+                .ok()
+                .map(|c| compute_content_hash(&c))
         } else {
             None
         };
@@ -282,7 +289,14 @@ impl SyncEngine {
         if exists && !is_identical {
             match strategy {
                 ConflictStrategy::Skip => {
-                    self.update_target_record(skill_name, tool_id, &target_path, mode, "skipped", None);
+                    self.update_target_record(
+                        skill_name,
+                        tool_id,
+                        &target_path,
+                        mode,
+                        "skipped",
+                        None,
+                    );
                     return DetailedSyncResult {
                         skill_name: skill_name.to_string(),
                         tool_id: tool_id.to_string(),
@@ -392,7 +406,9 @@ impl SyncEngine {
         mode: &SyncMode,
         strategy: &ConflictStrategy,
     ) -> Vec<BatchSyncResult> {
-        let installed_tools: Vec<String> = self.registry.all()
+        let installed_tools: Vec<String> = self
+            .registry
+            .all()
             .iter()
             .filter(|a| a.is_installed())
             .map(|a| a.tool_id().to_string())
@@ -426,11 +442,11 @@ impl SyncEngine {
 
     /// Check drift for a specific skill+tool combination
     pub fn check_drift(&self, skill_name: &str, tool_id: &str) -> DriftReport {
-        let source_hash = self.read_skill_content(skill_name)
-            .ok()
-            .map(|(_, h)| h);
+        let source_hash = self.read_skill_content(skill_name).ok().map(|(_, h)| h);
 
-        let target_hash = self.registry.get(tool_id)
+        let target_hash = self
+            .registry
+            .get(tool_id)
             .and_then(|a| a.skill_base_path())
             .map(|p| p.join(skill_name).join("SKILL.md"))
             .filter(|p| p.exists())
@@ -477,9 +493,9 @@ impl SyncEngine {
             Err(_) => return Vec::new(),
         };
 
-        let mut stmt = match conn.prepare(
-            "SELECT st.skill_id, st.tool FROM skill_targets st WHERE st.status = 'synced'"
-        ) {
+        let mut stmt = match conn
+            .prepare("SELECT st.skill_id, st.tool FROM skill_targets st WHERE st.status = 'synced'")
+        {
             Ok(s) => s,
             Err(_) => return Vec::new(),
         };
@@ -610,7 +626,8 @@ impl SyncEngine {
 
         for adapter in self.registry.all() {
             let is_installed = adapter.is_installed();
-            let base_path = adapter.skill_base_path()
+            let base_path = adapter
+                .skill_base_path()
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_default();
 
@@ -642,10 +659,12 @@ impl SyncEngine {
                 let size_bytes = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
                 let preview = fs::read_to_string(&path)
                     .ok()
-                    .and_then(|c| c.lines().next().map(|l| {
-                        let l = l.trim_start_matches('#').trim();
-                        l.chars().take(80).collect()
-                    }))
+                    .and_then(|c| {
+                        c.lines().next().map(|l| {
+                            let l = l.trim_start_matches('#').trim();
+                            l.chars().take(80).collect()
+                        })
+                    })
                     .unwrap_or_default();
 
                 // Classify
@@ -768,7 +787,8 @@ impl SyncEngine {
             let content_hash = compute_content_hash(&content);
 
             // Extract description from first heading
-            let description = content.lines()
+            let description = content
+                .lines()
                 .find(|l| l.starts_with('#'))
                 .map(|l| l.trim_start_matches('#').trim().to_string())
                 .unwrap_or_else(|| format!("Imported from {}", item.tool_display_name));
@@ -827,18 +847,17 @@ impl SyncEngine {
             Ok(c) => c,
             Err(_) => return map,
         };
-        let mut stmt = match conn.prepare(
-            "SELECT skill_id, tool FROM skill_targets WHERE status = 'synced'"
-        ) {
+        let mut stmt = match conn
+            .prepare("SELECT skill_id, tool FROM skill_targets WHERE status = 'synced'")
+        {
             Ok(s) => s,
             Err(_) => return map,
         };
-        let rows = match stmt.query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        }) {
-            Ok(r) => r,
-            Err(_) => return map,
-        };
+        let rows =
+            match stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
+                Ok(r) => r,
+                Err(_) => return map,
+            };
         for r in rows.flatten() {
             let key = format!("{}-{}", r.0, r.1);
             map.insert(key, String::new()); // We don't store hash in targets currently
@@ -896,9 +915,14 @@ const GIT_CACHE_CLEANUP_DAYS: i64 = 30;
 
 impl SyncEngine {
     /// Clone a Git repository to the skill cache directory
-    pub fn clone_skill_repo(&self, repo_url: &str, branch: Option<&str>) -> Result<GitCloneResult, String> {
+    pub fn clone_skill_repo(
+        &self,
+        repo_url: &str,
+        branch: Option<&str>,
+    ) -> Result<GitCloneResult, String> {
         let cache_dir = self.git_cache_dir();
-        std::fs::create_dir_all(&cache_dir).map_err(|e| format!("Failed to create cache dir: {}", e))?;
+        std::fs::create_dir_all(&cache_dir)
+            .map_err(|e| format!("Failed to create cache dir: {}", e))?;
 
         // Generate a stable directory name from the URL
         let repo_dir_name = sanitize_repo_name(repo_url);
@@ -916,7 +940,9 @@ impl SyncEngine {
             }
             cmd.arg(repo_url).arg(&target_path);
 
-            let output = cmd.output().map_err(|e| format!("git clone failed: {}", e))?;
+            let output = cmd
+                .output()
+                .map_err(|e| format!("git clone failed: {}", e))?;
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 return Err(format!("git clone failed: {}", stderr.trim()));
@@ -951,7 +977,12 @@ impl SyncEngine {
     }
 
     /// Import a skill from a Git repo cache into OMNIX
-    pub fn import_git_skill(&self, repo_url: &str, skill_name: &str, revision: &str) -> Result<String, String> {
+    pub fn import_git_skill(
+        &self,
+        repo_url: &str,
+        skill_name: &str,
+        revision: &str,
+    ) -> Result<String, String> {
         let cache_dir = self.git_cache_dir();
         let repo_dir_name = sanitize_repo_name(repo_url);
         let repo_path = cache_dir.join(&repo_dir_name);
@@ -974,15 +1005,28 @@ impl SyncEngine {
 
         // Write files
         std::fs::write(central_dir.join("SKILL.md"), &content).map_err(|e| e.to_string())?;
-        std::fs::write(central_dir.join(format!("{}_core.md", skill_name)), &content).map_err(|e| e.to_string())?;
-        std::fs::write(central_dir.join(format!("{}_minimal.md", skill_name)), &content).map_err(|e| e.to_string())?;
-        std::fs::write(central_dir.join(format!("{}_comprehensive.md", skill_name)), &content).map_err(|e| e.to_string())?;
+        std::fs::write(
+            central_dir.join(format!("{}_core.md", skill_name)),
+            &content,
+        )
+        .map_err(|e| e.to_string())?;
+        std::fs::write(
+            central_dir.join(format!("{}_minimal.md", skill_name)),
+            &content,
+        )
+        .map_err(|e| e.to_string())?;
+        std::fs::write(
+            central_dir.join(format!("{}_comprehensive.md", skill_name)),
+            &content,
+        )
+        .map_err(|e| e.to_string())?;
 
         let central_path_str = central_dir.to_string_lossy().to_string();
         let content_hash = compute_content_hash(&content);
 
         // Extract description from first heading
-        let description = content.lines()
+        let description = content
+            .lines()
             .find(|l| l.starts_with('#'))
             .map(|l| l.trim_start_matches('#').trim().to_string())
             .unwrap_or_else(|| format!("Imported from Git: {}", repo_url));
@@ -1006,7 +1050,7 @@ impl SyncEngine {
         };
 
         let mut stmt = match conn.prepare(
-            "SELECT name, source_ref, source_revision FROM skills WHERE source_type = 'git'"
+            "SELECT name, source_ref, source_revision FROM skills WHERE source_type = 'git'",
         ) {
             Ok(s) => s,
             Err(_) => return Vec::new(),
@@ -1089,7 +1133,9 @@ impl SyncEngine {
         if let Ok(entries) = std::fs::read_dir(&cache_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if !path.is_dir() { continue; }
+                if !path.is_dir() {
+                    continue;
+                }
 
                 // Check modification time
                 if let Ok(metadata) = std::fs::metadata(&path) {
@@ -1120,8 +1166,10 @@ impl SyncEngine {
 
     fn git_pull(&self, repo_path: &PathBuf) -> Result<(), String> {
         let output = std::process::Command::new("git")
-            .arg("-C").arg(repo_path)
-            .arg("pull").arg("--ff-only")
+            .arg("-C")
+            .arg(repo_path)
+            .arg("pull")
+            .arg("--ff-only")
             .output()
             .map_err(|e| format!("git pull failed: {}", e))?;
 
@@ -1135,8 +1183,11 @@ impl SyncEngine {
 
     fn get_git_revision(&self, repo_path: &PathBuf) -> Result<String, String> {
         let output = std::process::Command::new("git")
-            .arg("-C").arg(repo_path)
-            .arg("rev-parse").arg("--short").arg("HEAD")
+            .arg("-C")
+            .arg(repo_path)
+            .arg("rev-parse")
+            .arg("--short")
+            .arg("HEAD")
             .output()
             .map_err(|e| format!("git rev-parse failed: {}", e))?;
 
@@ -1147,7 +1198,10 @@ impl SyncEngine {
         }
     }
 
-    fn list_repo_skills_from_path(&self, repo_path: &PathBuf) -> Result<Vec<GitSkillCandidate>, String> {
+    fn list_repo_skills_from_path(
+        &self,
+        repo_path: &PathBuf,
+    ) -> Result<Vec<GitSkillCandidate>, String> {
         let skills_dir = repo_path.join("skills");
         if !skills_dir.exists() {
             return Ok(Vec::new());
@@ -1159,14 +1213,19 @@ impl SyncEngine {
         if let Ok(entries) = std::fs::read_dir(&skills_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if !path.is_dir() { continue; }
+                if !path.is_dir() {
+                    continue;
+                }
 
                 let name = entry.file_name().to_string_lossy().to_string();
                 let skill_file = path.join("SKILL.md");
-                if !skill_file.exists() { continue; }
+                if !skill_file.exists() {
+                    continue;
+                }
 
                 let content = std::fs::read_to_string(&skill_file).unwrap_or_default();
-                let preview = content.lines()
+                let preview = content
+                    .lines()
                     .find(|l| l.starts_with('#'))
                     .map(|l| l.trim_start_matches('#').trim().chars().take(80).collect())
                     .unwrap_or_default();
@@ -1178,9 +1237,8 @@ impl SyncEngine {
                     local_path: skill_file.to_string_lossy().to_string(),
                     preview,
                     content_hash: hash,
-                    already_imported: db_skill_names.contains(
-                        &entry.file_name().to_string_lossy().to_string()
-                    ),
+                    already_imported: db_skill_names
+                        .contains(&entry.file_name().to_string_lossy().to_string()),
                 });
             }
         }

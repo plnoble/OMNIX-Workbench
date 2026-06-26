@@ -2,74 +2,77 @@
 
 ## Current Objective
 
-MSI packaging follow-up for OMNIX after the third refactor slice. The repo now has explicit Windows packaging scripts, diagnostics, and repair tooling, but the validated MSI still requires an elevated local Windows Installer/WiX environment repair.
+User acceptance is underway. Three items have landed in the worktree since the release candidate (all gate-verified, not yet packaged): the Codex `thread/start` timeout fix, per-Agent chat isolation, and roadmap **P1** — Codex/Claude default model now reaches the runtime via a Responses↔Chat translating gateway. Next is user acceptance of these, then roadmap P2–P5.
 
-## What Changed
+## Latest Changes (2026-06-25)
 
-- 2026-06-14 MSI packaging follow-up:
-  - Added `tauri:build`, `tauri:build:msi`, `tauri:build:nsis`, `diagnose:msi`, and `repair:msi-env` npm scripts.
-  - Added `scripts/diagnose-msi.ps1` to report WiX tool paths, Windows Installer service state, COM/script-engine registration, normal `light.exe` validation, and optional `-sval` control linking.
-  - Added `scripts/repair-msi-environment.ps1` for elevated `msiexec`, VBScript/JScript, and `msiserver` repair, with optional DISM/SFC health scan.
-  - Added a stable WiX `upgradeCode` to `src-tauri/tauri.conf.json`.
-  - Confirmed `main.wxs` receives `UpgradeCode="1339290b-b4f1-5e65-b4b9-f8b0141ebc54"`.
-- `src/App.tsx` now defaults to `work`; legacy `chat` and `workbench` navigation requests normalize to Work.
-- `src/lib/appRegistry.tsx` and `src/hooks/useNavigationLayout.ts` define and persist fixed/launcher/hidden app placement.
-- `src/components/layout/AppHeader.tsx` now provides fixed core entries, `+` application grid, theme/settings/diagnostics buttons, and per-entry placement actions.
-- `src/components/layout/AppSidebar.tsx` is context-only: new chat, search, cron, conversations, workspaces for Work/Team; resource pages do not show the old resource stack.
-- `src/components/tabs/ChatTab.tsx` is the single-agent Work page with Agent selector, large auto-growing input, model selector, permission mode, work mode, optional Knowledge/search, and collapsible workspace panel.
-- `src/components/tabs/ModelsTab.tsx` wraps the model center as an independent app; Settings hides the visible platform tab.
-- `src/components/tabs/SearchResourceTab.tsx` and `src/components/tabs/QuickAssistantTab.tsx` provide optional launcher apps.
-- `src/components/tabs/AgentHubTab.tsx` was rewritten as spacious agent cards plus a detail drawer for detection/install/update/model binding.
-- `src/hooks/usePlatforms.ts` now errors clearly when adding a custom model without a provider and uses provider-bound stable IDs.
-- `src-tauri/src/commands/platforms.rs` now uses provider-bound model IDs for fetched models and decrypts active API keys before model list fetch and health checks.
-- 2026-06-13 UI feedback patch: Work page now hides the right workspace panel until `xl`, shrinks it before `2xl`, shrinks the left contextual sidebar on narrower desktop widths, and uses a dropdown for work mode instead of wide segmented buttons plus duplicate text.
-- 2026-06-13 app-grid/Skill feedback patch: Settings and Diagnostics are no longer app-grid entries, the Settings theme card is hidden because theme switching lives in the title bar, launcher copy now explains fixed/collected/hidden states, fixed title-bar entries can move forward/backward, navigation placement persistence uses latest state, and `SkillHub` now owns height/scroll boundaries to avoid overlap.
-- 2026-06-13 shell consistency/workspace/model patch: `AppHeader` is now top-level global chrome, non-Work/Team pages no longer render `AppSidebar`, shared dialogs follow theme tokens, `WorkspaceModal` opens a Windows folder picker through `pick_directory`, and Ark/Volces endpoints no longer import/display Claude fallback catalogs.
+- `responses_bridge.rs` translates Codex's Responses API to/from Chat Completions; `proxy.rs handle_responses_for_session` forwards native Responses providers verbatim and translates Chat providers. Validated end-to-end against the real `codex app-server`.
+- Model resolution: Agent binding → global `default_model` setting → Agent default; the Work page pre-selects the resolved default (`is_default`, fixed to re-derive on Agent switch). `evaluate_model_compatibility` now allows Chat providers for Codex (gateway-translated).
+- P2 model center: global ☆ "Agent 默认" model + ZCF provider presets in `PlatformModal`; capability icons + health checks already existed. `target_model` (Settings → "内置功能默认模型") vs `default_model` (Models ☆) are distinct by design — see decisions.
+- UX: 对话/工作 split (Work requires a workspace), tab-chunk preload, first-token waiting indicator, portaled delete dialog.
+- The user must re-test online with their own provider key (set a Chat-Completions provider as the Agent default and confirm Codex uses it). Reference repos are in gitignored `scratch/`.
+- Next: P3 (MCP one-config sync), P4 (Team board on `aionui.rs` mailbox/task-DAG backend), P5 (assistants/Skills/remote) — detailed plans requested before implementation. A fresh Windows package must be rebuilt before redistribution (current Desktop artifacts predate P1/P2).
 
-## Verified
+## (Prior) Objective
 
-- MSI follow-up verification on 2026-06-14:
-  - `npx.cmd tsc --noEmit` passed.
-  - `cargo check` passed with existing unused/dead-code warnings.
-  - `npm.cmd run build` passed with existing Vite chunking warnings.
-  - `npm.cmd run diagnose:msi -- -RunSuppressValidation` reproduced the ICE validation failure and proved `-sval` diagnostic linking succeeds.
-  - `npm.cmd run tauri:build:msi` failed at WiX `light.exe`.
-  - `npm.cmd run tauri:build` failed at the same WiX `light.exe` MSI stage.
-- `npx.cmd tsc --noEmit` passed.
-- `npm.cmd run build` passed.
-- `cargo check` passed with existing unused/dead-code warnings.
-- Latest UI feedback patch also passed `npx.cmd tsc --noEmit` and `npm.cmd run build`.
-- Latest app-grid/Skill feedback patch also passed `npx.cmd tsc --noEmit` and `npm.cmd run build`.
-- Latest shell consistency/workspace/model patch passed `npx.cmd tsc --noEmit`, `npm.cmd run build`, and `cargo check`.
+The full OMNIX Workbench real-gap release candidate is complete. The next task is user acceptance testing and feedback collection, not another hidden implementation pass.
 
-## Not Verified
+## Implemented
 
-- Automated visual screenshot QA was not completed. `npm.cmd ls playwright --depth=0` showed Playwright is not installed, and the host did not keep Vite/static preview background servers listening.
-- Full Tauri desktop runtime behavior for agent install/update actions was not exercised in this environment.
-- The exact minimized-window Skill page screenshot was not re-captured automatically; user desktop verification is still needed.
-- The native Windows folder picker was added but not manually clicked inside the Tauri desktop runtime during this session.
-- The Ark/Volces model fetch fix was verified by type/build/check only; it still needs manual provider refresh against the user's configured endpoint/account.
+- Claude Code stream-JSON and Codex app-server structured runtime adapters.
+- System-first CLI detection, official isolated managed installs, truthful runtime support states, and protocol-specific model compatibility.
+- Persisted Agent sessions, chat/tool/approval/error messages, raw runtime events, stop, resume, and restart restoration.
+- Session model precedence, direct/plan modes, per-session full-access confirmation, primary API Key plus failover, and real workspace/Git state.
+- User-approved Team manager plans, dependency/concurrency scheduling, Worker approvals, retries, cancellation, persistence, and final manager validation.
+- Real Git-backed Skill preview/import with provenance, model-generated fusion drafts, split conflict review, approval, Skill Sets, and truthful sync verification.
+- Evidence-backed memory, Skill, and protocol distillation inbox; no automatic write without approval.
+- Named Knowledge bases, multi-base ordinary-chat RAG, citation metadata, native file/folder selection, and conservative Quick Assistant capture with blacklists.
+- Focused Work-first shell, configurable top navigation/app grid, context-only sidebars, stable title-bar tools, responsive workspace overlay, and short-height welcome state.
+- OMNIX Workbench naming contract, provisional E1 branding, stable MSI upgrade identity, and Windows MSI/NSIS/release artifacts.
 
-## Known Risks or Blockers
+## Final Verification
 
-- Validated MSI output is still blocked until `npm.cmd run repair:msi-env` is run from an elevated PowerShell or the WiX/Windows Installer validation environment is otherwise repaired.
-- `diagnostic-sval.msi` is not a release artifact. It exists only to prove generated WiX inputs can link when MSI validation is suppressed.
-- MCP currently routes through `SettingsTab` focused on the MCP subtab; later slices should split it into its own page.
-- Knowledge is still document-level, not a full multi-named-knowledge-base model.
-- Agent built-in model selection is represented in UI but deeper per-agent execution config should be expanded later.
-- `pick_directory` is currently Windows-first via PowerShell/Windows Forms. Cross-platform folder picking should use a dedicated Tauri dialog path if needed.
-- Successful provider model refresh now clears previous model rows for that provider. This fixes stale fallback rows, but a future data model may need a manual-only flag if users want hand-added models to survive refresh.
+- `npx.cmd tsc --noEmit`: passed.
+- `npm.cmd run build`: passed.
+- `cargo check`: passed with 90 known legacy warnings, down from the 126-warning baseline.
+- `cargo test --lib`: 70 passed, 0 failed, 4 ignored.
+- `npm.cmd run tauri -- build`: passed; normal WiX MSI validation and NSIS generation completed.
+- Release exe launched successfully.
+- Per-Monitor-V2 native visual QA passed for the full 2586x1655 physical window and the 1280x1040 physical / 640x520 logical minimum window.
+- No OMNIX Workbench process was intentionally left running after QA.
 
-## Next Recommended Action
+## Artifacts
 
-Run elevated MSI repair and rebuild:
+- `src-tauri/target/release/omnix-workbench.exe`
+  - SHA256: `1DBBA2848082A1A0E339CD98A06D24670C481161B54E38EDE9F717441DE961DE`
+- `src-tauri/target/release/bundle/msi/OMNIX Workbench_0.1.0_x64_en-US.msi`
+  - SHA256: `2E92C98E591DF8D225B9B7654B78CCF1D08D680A3028B9A7AE856FED6C64CC52`
+- `src-tauri/target/release/bundle/nsis/OMNIX Workbench_0.1.0_x64-setup.exe`
+  - SHA256: `6949F3A797BE84472ACDD851552E4F4C7878AD062FC29B1004C4B591AD8EF8B2`
+- Desktop delivery folder: `OMNIX Workbench 0.1.0 测试版`.
+- Documentation: complete detection plan, user manual, and 0.1.0 release manifest.
 
-1. Open PowerShell as Administrator in `D:\Agent\Project\OMNIX-Development Tools`.
-2. Run `npm.cmd run repair:msi-env`.
-3. Run `npm.cmd run diagnose:msi`.
-4. Run `npm.cmd run tauri:build:msi`.
-5. Run `npm.cmd run tauri:build`.
+## Explicit Boundaries
 
-Have the user manually test the desktop app: first screen, top launcher fixed/hidden behavior, Models save/fetch/check, Agents card/detail flow, and long input auto-growth. Then use the feedback for the next reference-software borrowing round.
-Also verify the app launcher after removing Settings/Diagnostics, title-bar entry ordering, and the Skill page in the user's smaller desktop window.
-Also verify the new global title-bar alignment across Work/Agents/Skills/Models, light-theme workspace picker, no left Work rail on non-work pages, and Ark/Volces provider refresh behavior.
+- The first supported structured runtime milestone covers Claude Code and Codex. Gemini CLI, OpenCode, and other Agents remain marked as pending until their structured adapters are verified.
+- Goal pursuit, unverified cross-tool Skill sync, and incomplete cross-platform Quick Assistant behavior stay in Labs.
+- Automated runtime tests do not spend a real online model request. User acceptance must exercise the user's own CLI login/API keys and network.
+- Remaining Rust warnings are technical debt, not failed verification.
+
+## Next Acceptance Flow
+
+1. Install from the Desktop MSI or NSIS package.
+2. Add/enable a model provider and perform health checks.
+3. Detect Claude Code and Codex; verify default, official/builtin, and OMNIX model bindings.
+4. Run one ordinary chat and one workspace task with each supported Agent, including approval, stop, app restart, and history restoration.
+5. Approve a Team plan and inspect Worker dependency/retry behavior.
+6. Exercise Skill import/fusion approval, distillation inbox approval, named Knowledge citations, and Quick Assistant blacklist behavior.
+7. Record user feedback before the next reference-software borrowing slice.
+
+## Safety Notes
+
+- Do not log decrypted API keys or persist full-access confirmation globally.
+- Do not reintroduce terminal-text parsing as structured Agent output or mock success states.
+- Do not distribute older bundle files as this release.
+- Native Windows screenshot tools must declare Per-Monitor-V2 DPI awareness before measuring or capturing windows.
+- Preserve existing SQLite data, stable WiX upgrade code, naming contract, and E1 design history.

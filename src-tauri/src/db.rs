@@ -1,6 +1,6 @@
-use rusqlite::{params, Connection, Result};
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
+use rusqlite::{params, Connection, Result};
 use std::fs;
 use std::path::PathBuf;
 
@@ -14,7 +14,8 @@ pub struct DbManager {
 impl DbManager {
     pub fn new() -> Self {
         // Resolve home directory path on Windows / Linux
-        let home_dir = dirs::home_dir().expect("Failed to determine home directory. Cannot initialize database.");
+        let home_dir = dirs::home_dir()
+            .expect("Failed to determine home directory. Cannot initialize database.");
         let mut omnix_dir = home_dir.clone();
         omnix_dir.push(".omnix");
 
@@ -27,39 +28,69 @@ impl DbManager {
         db_path.push("omnix.db");
 
         let db = Self::from_path(db_path);
-        db.init_schema().expect("Failed to initialize database schema");
+        db.init_schema()
+            .expect("Failed to initialize database schema");
         db
     }
 
     #[allow(dead_code)]
     pub fn new_with_path(db_path: PathBuf) -> Self {
         let db = Self::from_path(db_path);
-        db.init_schema().expect("Failed to initialize database schema");
+        db.init_schema()
+            .expect("Failed to initialize database schema");
         db
     }
 
     #[cfg(test)]
     #[allow(dead_code)]
-    pub fn new_workbench_test(db_path: PathBuf) -> Self {
+    pub fn new_run_test(db_path: PathBuf) -> Self {
         let db = Self::from_path(db_path);
-        db.init_workbench_schema().expect("Failed to initialize workbench test schema");
+        db.init_run_schema()
+            .expect("Failed to initialize run test schema");
+        db
+    }
+
+    #[cfg(test)]
+    pub fn new_runtime_test(db_path: PathBuf) -> Self {
+        let db = Self::from_path(db_path);
+        let conn = db.get_connection().expect("runtime test connection");
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS conversations (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                workspace_path TEXT NOT NULL,
+                active_agent TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS messages (
+                id TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+            );",
+        )
+        .expect("runtime test base schema");
+        db.init_runtime_schema(&conn)
+            .expect("runtime test structured schema");
+        drop(conn);
         db
     }
 
     /// Internal: create DbManager with r2d2 connection pool
     fn from_path(db_path: PathBuf) -> Self {
-        let manager = SqliteConnectionManager::file(&db_path)
-            .with_init(|conn| {
-                // Set busy timeout (5 seconds)
-                conn.busy_timeout(std::time::Duration::from_secs(5))?;
-                // Enable WAL mode for better concurrent read performance
-                conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
-                Ok(())
-            });
+        let manager = SqliteConnectionManager::file(&db_path).with_init(|conn| {
+            // Set busy timeout (5 seconds)
+            conn.busy_timeout(std::time::Duration::from_secs(5))?;
+            // Enable WAL mode for better concurrent read performance
+            conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
+            Ok(())
+        });
 
         let pool = Pool::builder()
-            .max_size(8)           // max 8 concurrent connections
-            .min_idle(Some(1))     // keep at least 1 idle connection
+            .max_size(8) // max 8 concurrent connections
+            .min_idle(Some(1)) // keep at least 1 idle connection
             .build(manager)
             .expect("Failed to create SQLite connection pool");
 
@@ -76,7 +107,7 @@ impl DbManager {
         })
     }
 
-    pub fn init_workbench_schema(&self) -> Result<()> {
+    pub fn init_run_schema(&self) -> Result<()> {
         let conn = self.get_connection()?;
 
         conn.execute(
@@ -118,10 +149,28 @@ impl DbManager {
                 started_at DATETIME NULL,
                 completed_at DATETIME NULL,
                 log_excerpt TEXT NOT NULL DEFAULT '',
+                assignment_id TEXT NOT NULL DEFAULT '',
+                dependencies_json TEXT NOT NULL DEFAULT '[]',
+                acceptance_json TEXT NOT NULL DEFAULT '[]',
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                max_retries INTEGER NOT NULL DEFAULT 1,
+                result_summary TEXT NOT NULL DEFAULT '',
+                validation_status TEXT NOT NULL DEFAULT 'pending',
                 FOREIGN KEY(run_id) REFERENCES workspace_runs(id) ON DELETE CASCADE
             )",
             [],
         )?;
+        for migration in [
+            "ALTER TABLE agent_runs ADD COLUMN assignment_id TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE agent_runs ADD COLUMN dependencies_json TEXT NOT NULL DEFAULT '[]'",
+            "ALTER TABLE agent_runs ADD COLUMN acceptance_json TEXT NOT NULL DEFAULT '[]'",
+            "ALTER TABLE agent_runs ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE agent_runs ADD COLUMN max_retries INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE agent_runs ADD COLUMN result_summary TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE agent_runs ADD COLUMN validation_status TEXT NOT NULL DEFAULT 'pending'",
+        ] {
+            let _ = conn.execute(migration, []);
+        }
 
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_workspace_runs_created_at ON workspace_runs(created_at)",
@@ -135,9 +184,96 @@ impl DbManager {
         Ok(())
     }
 
+    fn init_runtime_schema(&self, conn: &Connection) -> Result<()> {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS agent_sessions (
+                id TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                adapter_kind TEXT NOT NULL,
+                executable_path TEXT NOT NULL,
+                workspace_path TEXT NOT NULL,
+                model_json TEXT NOT NULL,
+                permission_json TEXT NOT NULL,
+                work_mode TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'created',
+                external_session_id TEXT NULL,
+                external_turn_id TEXT NULL,
+                last_error TEXT NULL,
+                started_at DATETIME NULL,
+                ended_at DATETIME NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS runtime_events (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                sequence INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                text TEXT NULL,
+                external_session_id TEXT NULL,
+                external_turn_id TEXT NULL,
+                item_id TEXT NULL,
+                request_id TEXT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(session_id, sequence),
+                FOREIGN KEY(session_id) REFERENCES agent_sessions(id) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS agent_installations (
+                agent_id TEXT NOT NULL,
+                source TEXT NOT NULL,
+                executable_path TEXT NOT NULL,
+                version TEXT NOT NULL DEFAULT '',
+                managed_root TEXT NULL,
+                status TEXT NOT NULL DEFAULT 'detected',
+                last_checked_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(agent_id, source, executable_path)
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_sessions_conversation ON agent_sessions(conversation_id, created_at)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_runtime_events_session ON runtime_events(session_id, sequence)",
+            [],
+        )?;
+        let _ = conn.execute(
+            "ALTER TABLE messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'message'",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE messages ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE messages ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE messages ADD COLUMN sequence INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE messages ADD COLUMN runtime_session_id TEXT NULL",
+            [],
+        );
+        Ok(())
+    }
+
     pub fn init_schema(&self) -> Result<()> {
         let conn = self.get_connection()?;
-        
+
         // 1. Settings Table (atomic key-value config)
         conn.execute(
             "CREATE TABLE IF NOT EXISTS settings (
@@ -251,6 +387,8 @@ impl DbManager {
             [],
         )?;
 
+        self.init_runtime_schema(&conn)?;
+
         // 6d. Project Protocol / Evolution Loop
         conn.execute(
             "CREATE TABLE IF NOT EXISTS project_protocol_runs (
@@ -347,6 +485,43 @@ impl DbManager {
                 slug TEXT PRIMARY KEY,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS skill_fusion_drafts (
+                id TEXT PRIMARY KEY,
+                source_skills_json TEXT NOT NULL,
+                model_id TEXT NOT NULL,
+                proposed_name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                fused_content TEXT NOT NULL,
+                explanation TEXT NOT NULL DEFAULT '',
+                conflicts_json TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                applied_at DATETIME NULL
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS distillation_inbox (
+                id TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
+                workspace_path TEXT NOT NULL DEFAULT '',
+                candidate_type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                summary TEXT NOT NULL DEFAULT '',
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                evidence_json TEXT NOT NULL DEFAULT '[]',
+                model_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                reviewed_at DATETIME NULL
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_distillation_inbox_status ON distillation_inbox(status, created_at)",
             [],
         )?;
 
@@ -456,7 +631,10 @@ impl DbManager {
             found
         };
         if !has_agent_name {
-            let _ = conn.execute("ALTER TABLE agent_accounts ADD COLUMN agent_name TEXT DEFAULT ''", []);
+            let _ = conn.execute(
+                "ALTER TABLE agent_accounts ADD COLUMN agent_name TEXT DEFAULT ''",
+                [],
+            );
         }
 
         // 6c. Custom Models Table
@@ -533,7 +711,10 @@ impl DbManager {
                 let _ = conn.execute("ALTER TABLE platform_models ADD COLUMN has_embedding INTEGER NOT NULL DEFAULT 0", []);
             }
             if !cols.iter().any(|c| c == "has_speedy") {
-                let _ = conn.execute("ALTER TABLE platform_models ADD COLUMN has_speedy INTEGER NOT NULL DEFAULT 0", []);
+                let _ = conn.execute(
+                    "ALTER TABLE platform_models ADD COLUMN has_speedy INTEGER NOT NULL DEFAULT 0",
+                    [],
+                );
             }
         }
 
@@ -551,7 +732,7 @@ impl DbManager {
             [],
         )?;
 
-        self.init_workbench_schema()?;
+        self.init_run_schema()?;
 
         // 8. Cron Tasks Table
         conn.execute(
@@ -582,10 +763,28 @@ impl DbManager {
             [],
         )?;
 
-        // 10. Knowledge Base Documents Table
+        // 10. Named Knowledge Bases
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS knowledge_bases (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                description TEXT NOT NULL DEFAULT '',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO knowledge_bases (id, name, description)
+             VALUES ('default', '默认知识库', '由旧版文档池迁移而来')",
+            [],
+        )?;
+
+        // 10b. Knowledge Base Documents Table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS kb_documents (
                 id TEXT PRIMARY KEY,
+                knowledge_base_id TEXT NOT NULL DEFAULT 'default',
                 title TEXT NOT NULL,
                 source_path TEXT NOT NULL,
                 file_type TEXT NOT NULL DEFAULT 'text',
@@ -851,7 +1050,7 @@ impl DbManager {
             "CREATE INDEX IF NOT EXISTS idx_cron_runs_task_id ON cron_runs(task_id)",
             // Tasks by conversation (PlanTree loads tasks per-conversation)
             "CREATE INDEX IF NOT EXISTS idx_tasks_conversation_id ON tasks(conversation_id)",
-            // Workbench runs by recency and agent runs by parent run
+            // Workspace runs by recency and agent runs by parent run
             "CREATE INDEX IF NOT EXISTS idx_workspace_runs_created_at ON workspace_runs(created_at)",
             "CREATE INDEX IF NOT EXISTS idx_agent_runs_run_id ON agent_runs(run_id)",
             // Agent accounts by agent (sidebar shows accounts per-agent)
@@ -885,8 +1084,8 @@ impl DbManager {
         // Seed default memories if empty
         self.seed_default_memories(&conn)?;
 
-        // Seed default conversations if empty
-        self.seed_default_conversations(&conn)?;
+        // Remove only the two historical demo conversations. Real user data is untouched.
+        self.remove_known_mock_conversations(&conn)?;
 
         // Seed default cron tasks if empty
         self.seed_default_cron_tasks(&conn)?;
@@ -903,6 +1102,16 @@ impl DbManager {
             "ALTER TABLE memories ADD COLUMN type TEXT NOT NULL DEFAULT 'experience'",
             [],
         );
+        for migration in [
+            "ALTER TABLE platform_api_keys ADD COLUMN priority INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE platform_api_keys ADD COLUMN is_enabled INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE platform_api_keys ADD COLUMN last_status TEXT NOT NULL DEFAULT 'unknown'",
+            "ALTER TABLE platform_api_keys ADD COLUMN last_error TEXT NULL",
+            "ALTER TABLE platform_api_keys ADD COLUMN latency_ms INTEGER NULL",
+            "ALTER TABLE platform_api_keys ADD COLUMN last_checked_at TEXT NULL",
+        ] {
+            let _ = conn.execute(migration, []);
+        }
         let _ = conn.execute(
             "ALTER TABLE memories ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'",
             [],
@@ -923,73 +1132,35 @@ impl DbManager {
         Ok(())
     }
 
-    fn seed_default_conversations(&self, conn: &Connection) -> Result<()> {
-        let mut stmt = conn.prepare("SELECT COUNT(*) FROM conversations")?;
-        let count: i64 = stmt.query_row([], |r| r.get(0))?;
-        if count > 0 {
-            return Ok(());
-        }
-
-        conn.execute("BEGIN TRANSACTION", [])?;
-
-        let res = (|| -> Result<()> {
-            // Insert a mock conversation
-            conn.execute(
-                "INSERT INTO conversations (id, title, workspace_path, active_agent)
-                 VALUES (?1, ?2, ?3, ?4)",
-                params!["mock_sess_cors", "会话 #1: Web 前端 CORS 调试", "d:/Agent/Project/MyWebDemo", "Claude Code"],
-            )?;
-
-            // Insert messages showing a CORS issue being discussed and fixed
-            let messages = vec![
-                ("msg_1", "user", "我遇到了预检请求(Preflight)拦截错误，CORS 报错，说 Origin 不能是通配符 *，因为 credentials 设为了 include。"),
-                ("msg_2", "assistant", "对的，当在 fetch 中设置 `credentials: 'include'` 时，浏览器的安全策略要求后端响应的 CORS 头 `Access-Control-Allow-Origin` 必须指定明确的域名（比如 `http://localhost:3000`），而不能是通配符 `*`。此外，`Access-Control-Allow-Credentials` 必须设为 `true`。"),
-                ("msg_3", "user", "明白了，修改了后端的 Access-Control-Allow-Origin 为具体的请求源后成功了。"),
-                ("msg_4", "assistant", "太棒了！这是一个非常经典的 Web 踩坑点。在处理跨域凭证传递时，切记不要使用 *。"),
-            ];
-
-            for (msg_id, role, content) in messages {
-                conn.execute(
-                    "INSERT INTO messages (id, conversation_id, role, content)
-                     VALUES (?1, ?2, ?3, ?4)",
-                    params![msg_id, "mock_sess_cors", role, content],
-                )?;
-            }
-
-            // Insert another mock conversation for a Tokio lock deadlock
-            conn.execute(
-                "INSERT INTO conversations (id, title, workspace_path, active_agent)
-                 VALUES (?1, ?2, ?3, ?4)",
-                params!["mock_sess_lock", "会话 #2: Rust Tokio 异步死锁排查", "d:/Agent/Project/MyRustService", "Google Antigravity"],
-            )?;
-
-            let messages_lock = vec![
-                ("msg_l1", "user", "我的 Rust 异步服务卡住了，日志停在一个 await 处。我用了 std::sync::Mutex。"),
-                ("msg_l2", "assistant", "在异步任务中跨越 `.await` 点持有 `std::sync::MutexGuard` 会导致线程被阻塞或者出现 Send 校验失败、死锁。你应该使用 `tokio::sync::Mutex`，或者用一个花括号作用域，在 `.await` 之前显式 drop 掉 `MutexGuard`。"),
-                ("msg_l3", "user", "我用 tokio::sync::Mutex 替换了 std::sync::Mutex，并把持有锁的代码段包在了作用域内。重新测试，程序不再卡死了。"),
-                ("msg_l4", "assistant", "完美！在异步上下文中，一定要防范同步锁跨 await 点的情况，否则很容易造成死锁崩溃。"),
-            ];
-
-            for (msg_id, role, content) in messages_lock {
-                conn.execute(
-                    "INSERT INTO messages (id, conversation_id, role, content)
-                     VALUES (?1, ?2, ?3, ?4)",
-                    params![msg_id, "mock_sess_lock", role, content],
-                )?;
-            }
-            Ok(())
-        })();
-
-        match res {
-            Ok(_) => {
-                conn.execute("COMMIT", [])?;
-                Ok(())
-            }
-            Err(e) => {
-                let _ = conn.execute("ROLLBACK", []);
-                Err(e)
-            }
-        }
+    fn remove_known_mock_conversations(&self, conn: &Connection) -> Result<()> {
+        conn.execute(
+            "DELETE FROM messages WHERE conversation_id IN ('mock_sess_cors', 'mock_sess_lock')",
+            [],
+        )?;
+        let _ = conn.execute(
+            "ALTER TABLE kb_documents ADD COLUMN knowledge_base_id TEXT NOT NULL DEFAULT 'default'",
+            [],
+        );
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_kb_documents_base ON kb_documents(knowledge_base_id, updated_at)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS chat_knowledge_bindings (
+                conversation_id TEXT NOT NULL,
+                knowledge_base_id TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(conversation_id, knowledge_base_id),
+                FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+                FOREIGN KEY(knowledge_base_id) REFERENCES knowledge_bases(id) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+        conn.execute(
+            "DELETE FROM conversations WHERE id IN ('mock_sess_cors', 'mock_sess_lock')",
+            [],
+        )?;
+        Ok(())
     }
 
     fn seed_default_accounts(&self, conn: &Connection) -> Result<()> {
@@ -1000,23 +1171,74 @@ impl DbManager {
 
         // Fetch current setting configurations to establish default profile
         let api_key = self.get_setting("api_key")?.unwrap_or_default();
-        let api_host = self.get_setting("api_host")?.unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+        let api_host = self
+            .get_setting("api_host")?
+            .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
 
         let agents_to_seed = vec![
-            ("claude_code_default", "Claude Code 默认账户", "", "https://api.anthropic.com/v1", "claude-3-5-sonnet", "Claude Code"),
-            ("gemini_cli_default", "Gemini CLI 默认账户", "", "https://generativelanguage.googleapis.com", "gemini-2.0-flash", "Gemini CLI"),
-            ("codex_default", "Codex 默认账户", &api_key, &api_host, "gpt-4o", "Codex"),
-            ("qwen_code_default", "Qwen Code 默认账户", "", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus", "Qwen Code"),
-            ("github_copilot_cli_default", "GitHub Copilot CLI 默认账户", "", "https://api.github.com", "gpt-4o", "GitHub Copilot CLI"),
-            ("google_antigravity_default", "Google Antigravity 默认账户", "", "https://api.openai.com/v1", "gpt-4o", "Google Antigravity"),
-            ("opencode_default", "OpenCode 默认账户", "", "https://api.openai.com/v1", "gpt-4o", "OpenCode"),
+            (
+                "claude_code_default",
+                "Claude Code 默认账户",
+                "",
+                "https://api.anthropic.com/v1",
+                "claude-3-5-sonnet",
+                "Claude Code",
+            ),
+            (
+                "gemini_cli_default",
+                "Gemini CLI 默认账户",
+                "",
+                "https://generativelanguage.googleapis.com",
+                "gemini-2.0-flash",
+                "Gemini CLI",
+            ),
+            (
+                "codex_default",
+                "Codex 默认账户",
+                &api_key,
+                &api_host,
+                "gpt-4o",
+                "Codex",
+            ),
+            (
+                "qwen_code_default",
+                "Qwen Code 默认账户",
+                "",
+                "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "qwen-plus",
+                "Qwen Code",
+            ),
+            (
+                "github_copilot_cli_default",
+                "GitHub Copilot CLI 默认账户",
+                "",
+                "https://api.github.com",
+                "gpt-4o",
+                "GitHub Copilot CLI",
+            ),
+            (
+                "google_antigravity_default",
+                "Google Antigravity 默认账户",
+                "",
+                "https://api.openai.com/v1",
+                "gpt-4o",
+                "Google Antigravity",
+            ),
+            (
+                "opencode_default",
+                "OpenCode 默认账户",
+                "",
+                "https://api.openai.com/v1",
+                "gpt-4o",
+                "OpenCode",
+            ),
         ];
 
         for (id, name, key, host, model, agent_name) in agents_to_seed {
             let exists: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM agent_accounts WHERE agent_name = ?1",
                 params![agent_name],
-                |r| r.get(0)
+                |r| r.get(0),
             )?;
             if exists == 0 {
                 conn.execute(
@@ -1079,7 +1301,6 @@ impl DbManager {
     }
 
     fn seed_default_skills(&self, conn: &Connection) -> Result<()> {
-
         // Get or create the local ~/.omnix/skills directory
         let home_dir = match dirs::home_dir() {
             Some(h) => h,
@@ -1160,15 +1381,18 @@ impl DbManager {
             // Write three profiles
             let mut min_path = base_path.clone();
             min_path.set_file_name(format!("{}_minimal.md", name));
-            fs::write(&min_path, min).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            fs::write(&min_path, min)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
 
             let mut core_path = base_path.clone();
             core_path.set_file_name(format!("{}_core.md", name));
-            fs::write(&core_path, core).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            fs::write(&core_path, core)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
 
             let mut comp_path = base_path.clone();
             comp_path.set_file_name(format!("{}_comprehensive.md", name));
-            fs::write(&comp_path, comp).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            fs::write(&comp_path, comp)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
 
             // Write DB row with file_path pointing to base path
             conn.execute(
@@ -1199,6 +1423,8 @@ impl DbManager {
             ("selection_assistant_capture_mode", "hybrid"),
             ("selection_assistant_show_on_capture", "true"),
             ("selection_assistant_preserve_clipboard", "false"),
+            ("selection_assistant_auto_capture", "false"),
+            ("selection_assistant_blacklist", "[\"KeePass\",\"1Password\",\"Bitwarden\",\"CredentialUIBroker\",\"Windows Security\"]"),
             ("translate_preferred_lang", "zh-cn"),
             ("translate_alter_lang", "en-us"),
             ("translate_model", ""),
@@ -1225,7 +1451,9 @@ impl DbManager {
                 use std::io::Read;
                 let mut rng_bytes = [0u8; 32];
                 // Use OS CSPRNG via /dev/urandom or CryptGenRandom
-                if let Ok(mut f) = std::fs::File::open("/dev/urandom").or_else(|_| std::fs::File::open("CON")) {
+                if let Ok(mut f) =
+                    std::fs::File::open("/dev/urandom").or_else(|_| std::fs::File::open("CON"))
+                {
                     let _ = f.read_exact(&mut rng_bytes);
                 } else {
                     // Fallback: mix time + thread + process id (still better than DefaultHasher alone)
@@ -1237,7 +1465,10 @@ impl DbManager {
                         *b = ((seed >> (i % 16 * 8)) & 0xFF) as u8;
                     }
                 }
-                format!("tok_{:064x}", u128::from_be_bytes(rng_bytes[0..16].try_into().unwrap_or([0u8; 16])))
+                format!(
+                    "tok_{:064x}",
+                    u128::from_be_bytes(rng_bytes[0..16].try_into().unwrap_or([0u8; 16]))
+                )
             };
             let _ = conn.execute(
                 "INSERT INTO settings (key, value) VALUES ('remote_token', ?1)",
@@ -1253,7 +1484,7 @@ impl DbManager {
         let conn = self.get_connection()?;
         let mut stmt = conn.prepare("SELECT value FROM settings WHERE key = ?1")?;
         let mut rows = stmt.query(params![key])?;
-        
+
         if let Some(row) = rows.next()? {
             let val: String = row.get(0)?;
             Ok(Some(val))
@@ -1288,7 +1519,10 @@ impl DbManager {
         }
     }
 
-    pub fn get_active_account_for_agent(&self, agent_name: &str) -> Result<Option<ActiveAccountInfo>> {
+    pub fn get_active_account_for_agent(
+        &self,
+        agent_name: &str,
+    ) -> Result<Option<ActiveAccountInfo>> {
         let conn = self.get_connection()?;
         let mut stmt = conn.prepare("SELECT id, account_name, api_key, api_host, target_model FROM agent_accounts WHERE agent_name = ?1 AND is_active = 1 LIMIT 1")?;
         let mut rows = stmt.query(params![agent_name])?;
@@ -1374,10 +1608,34 @@ impl DbManager {
         // Seed default platforms
         let default_platforms = vec![
             ("ollama", "Ollama", "ollama", "", "http://localhost:11434"),
-            ("deepseek", "DeepSeek", "openai", "", "https://api.deepseek.com/v1"),
-            ("siliconflow", "硅基流动 (SiliconFlow)", "openai", "", "https://api.siliconflow.cn/v1"),
-            ("openai", "OpenAI", "openai", "", "https://api.openai.com/v1"),
-            ("anthropic", "Anthropic", "anthropic", "", "https://api.anthropic.com"),
+            (
+                "deepseek",
+                "DeepSeek",
+                "openai",
+                "",
+                "https://api.deepseek.com/v1",
+            ),
+            (
+                "siliconflow",
+                "硅基流动 (SiliconFlow)",
+                "openai",
+                "",
+                "https://api.siliconflow.cn/v1",
+            ),
+            (
+                "openai",
+                "OpenAI",
+                "openai",
+                "",
+                "https://api.openai.com/v1",
+            ),
+            (
+                "anthropic",
+                "Anthropic",
+                "anthropic",
+                "",
+                "https://api.anthropic.com",
+            ),
         ];
 
         for (id, name, api_type, api_key, api_address) in default_platforms {
@@ -1389,20 +1647,28 @@ impl DbManager {
         }
 
         // Migrate old settings if present
-        let old_key: Option<String> = conn.query_row(
-            "SELECT value FROM settings WHERE key = 'api_key'",
-            [],
-            |r| r.get(0)
-        ).ok();
-        let old_host: Option<String> = conn.query_row(
-            "SELECT value FROM settings WHERE key = 'api_host'",
-            [],
-            |r| r.get(0)
-        ).ok();
+        let old_key: Option<String> = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'api_key'",
+                [],
+                |r| r.get(0),
+            )
+            .ok();
+        let old_host: Option<String> = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'api_host'",
+                [],
+                |r| r.get(0),
+            )
+            .ok();
 
         if let (Some(k), Some(h)) = (old_key, old_host) {
             if !k.trim().is_empty() && !h.trim().is_empty() {
-                let api_type = if h.contains("anthropic") { "anthropic" } else { "openai" };
+                let api_type = if h.contains("anthropic") {
+                    "anthropic"
+                } else {
+                    "openai"
+                };
                 let _ = conn.execute(
                     "INSERT INTO model_platforms (id, name, api_type, api_key, api_address, is_enabled)
                      VALUES (?1, ?2, ?3, ?4, ?5, 1)",
@@ -1429,29 +1695,186 @@ impl DbManager {
         // Ollama models are auto-enabled (local, no API key needed).
         let default_models: Vec<(&str, &str, &str, i32, i32, i32, i32, i32, i32, i32, i32)> = vec![
             // DeepSeek models
-            ("deepseek:deepseek-chat",        "deepseek", "deepseek-chat",       1, 0, 1, 1, 0, 1, 0, 1),
-            ("deepseek:deepseek-reasoner",     "deepseek", "deepseek-reasoner",   0, 0, 1, 0, 0, 1, 0, 0),
+            (
+                "deepseek:deepseek-chat",
+                "deepseek",
+                "deepseek-chat",
+                1,
+                0,
+                1,
+                1,
+                0,
+                1,
+                0,
+                1,
+            ),
+            (
+                "deepseek:deepseek-reasoner",
+                "deepseek",
+                "deepseek-reasoner",
+                0,
+                0,
+                1,
+                0,
+                0,
+                1,
+                0,
+                0,
+            ),
             // OpenAI models
-            ("openai:gpt-4o",                  "openai",   "gpt-4o",              1, 1, 1, 1, 1, 1, 0, 0),
-            ("openai:gpt-4o-mini",             "openai",   "gpt-4o-mini",         1, 0, 0, 1, 0, 1, 0, 1),
-            ("openai:text-embedding-3-small",  "openai",   "text-embedding-3-small", 0, 0, 0, 0, 0, 0, 1, 1),
-            ("openai:text-embedding-3-large",  "openai",   "text-embedding-3-large", 0, 0, 0, 0, 0, 0, 1, 0),
+            ("openai:gpt-4o", "openai", "gpt-4o", 1, 1, 1, 1, 1, 1, 0, 0),
+            (
+                "openai:gpt-4o-mini",
+                "openai",
+                "gpt-4o-mini",
+                1,
+                0,
+                0,
+                1,
+                0,
+                1,
+                0,
+                1,
+            ),
+            (
+                "openai:text-embedding-3-small",
+                "openai",
+                "text-embedding-3-small",
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+            ),
+            (
+                "openai:text-embedding-3-large",
+                "openai",
+                "text-embedding-3-large",
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+            ),
             // Anthropic models
-            ("anthropic:claude-sonnet-4-6",    "anthropic", "claude-sonnet-4-6",  1, 0, 1, 1, 1, 1, 0, 0),
-            ("anthropic:claude-haiku-4-5",     "anthropic", "claude-haiku-4-5-20251001", 0, 0, 0, 1, 0, 1, 0, 1),
+            (
+                "anthropic:claude-sonnet-4-6",
+                "anthropic",
+                "claude-sonnet-4-6",
+                1,
+                0,
+                1,
+                1,
+                1,
+                1,
+                0,
+                0,
+            ),
+            (
+                "anthropic:claude-haiku-4-5",
+                "anthropic",
+                "claude-haiku-4-5-20251001",
+                0,
+                0,
+                0,
+                1,
+                0,
+                1,
+                0,
+                1,
+            ),
             // SiliconFlow models (popular Chinese provider with free tier)
-            ("siliconflow:deepseek-ai/DeepSeek-V3", "siliconflow", "deepseek-ai/DeepSeek-V3", 1, 0, 1, 1, 0, 1, 0, 1),
-            ("siliconflow:BAAI/bge-m3",        "siliconflow", "BAAI/bge-m3",       0, 0, 0, 0, 0, 0, 1, 1),
-            ("siliconflow:Qwen/Qwen3-Embedding-0.6B", "siliconflow", "Qwen/Qwen3-Embedding-0.6B", 0, 0, 0, 0, 0, 0, 1, 1),
+            (
+                "siliconflow:deepseek-ai/DeepSeek-V3",
+                "siliconflow",
+                "deepseek-ai/DeepSeek-V3",
+                1,
+                0,
+                1,
+                1,
+                0,
+                1,
+                0,
+                1,
+            ),
+            (
+                "siliconflow:BAAI/bge-m3",
+                "siliconflow",
+                "BAAI/bge-m3",
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+            ),
+            (
+                "siliconflow:Qwen/Qwen3-Embedding-0.6B",
+                "siliconflow",
+                "Qwen/Qwen3-Embedding-0.6B",
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+            ),
             // Ollama models (local, free, no API key needed)
-            ("ollama:qwen2.5:7b",              "ollama",   "qwen2.5:7b",          0, 0, 0, 1, 0, 1, 0, 1),
-            ("ollama:nomic-embed-text",        "ollama",   "nomic-embed-text",    0, 0, 0, 0, 0, 0, 1, 1),
-            ("ollama:bge-m3",                  "ollama",   "bge-m3",              0, 0, 0, 0, 0, 0, 1, 0),
+            (
+                "ollama:qwen2.5:7b",
+                "ollama",
+                "qwen2.5:7b",
+                0,
+                0,
+                0,
+                1,
+                0,
+                1,
+                0,
+                1,
+            ),
+            (
+                "ollama:nomic-embed-text",
+                "ollama",
+                "nomic-embed-text",
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+            ),
+            ("ollama:bge-m3", "ollama", "bge-m3", 0, 0, 0, 0, 0, 0, 1, 0),
         ];
 
         // columns: id, platform_id, model_name, has_vision, has_audio, has_reasoning,
         //          has_coding, has_long_context, has_tool_use, has_embedding, has_speedy
-        for (id, platform_id, model_name, vision, audio, reasoning, coding, long_ctx, tool_use, embedding, speedy) in default_models.iter() {
+        for (
+            id,
+            platform_id,
+            model_name,
+            vision,
+            audio,
+            reasoning,
+            coding,
+            long_ctx,
+            tool_use,
+            embedding,
+            speedy,
+        ) in default_models.iter()
+        {
             let _ = conn.execute(
                 "INSERT OR IGNORE INTO platform_models
                  (id, platform_id, model_name, has_vision, has_audio, has_reasoning,
@@ -1484,7 +1907,11 @@ impl DbManager {
 
         // Truncate text to 100KB to prevent DB bloat (safe UTF-8 boundary)
         let truncated = if text.len() > 100_000 {
-            let end = text.char_indices().nth(100_000).map(|(i, _)| i).unwrap_or(text.len());
+            let end = text
+                .char_indices()
+                .nth(100_000)
+                .map(|(i, _)| i)
+                .unwrap_or(text.len());
             format!("{}…", &text[..end])
         } else {
             text.to_string()
@@ -1498,22 +1925,28 @@ impl DbManager {
         Ok(id)
     }
 
-    pub fn get_selection_history(&self, limit: u32) -> Result<Vec<crate::selection::SelectionHistoryEntry>> {
+    pub fn get_selection_history(
+        &self,
+        limit: u32,
+    ) -> Result<Vec<crate::selection::SelectionHistoryEntry>> {
         let conn = self.get_connection()?;
         let mut stmt = conn.prepare(
             "SELECT id, captured_text, source, window_title, process_name, created_at
-             FROM selection_history ORDER BY created_at DESC LIMIT ?1"
+             FROM selection_history ORDER BY created_at DESC LIMIT ?1",
         )?;
-        let entries = stmt.query_map(params![limit], |row| {
-            Ok(crate::selection::SelectionHistoryEntry {
-                id: row.get(0)?,
-                captured_text: row.get(1)?,
-                source: row.get(2)?,
-                window_title: row.get(3)?,
-                process_name: row.get(4)?,
-                created_at: row.get(5)?,
-            })
-        })?.filter_map(|e| e.ok()).collect();
+        let entries = stmt
+            .query_map(params![limit], |row| {
+                Ok(crate::selection::SelectionHistoryEntry {
+                    id: row.get(0)?,
+                    captured_text: row.get(1)?,
+                    source: row.get(2)?,
+                    window_title: row.get(3)?,
+                    process_name: row.get(4)?,
+                    created_at: row.get(5)?,
+                })
+            })?
+            .filter_map(|e| e.ok())
+            .collect();
         Ok(entries)
     }
 
@@ -1542,13 +1975,21 @@ impl DbManager {
         let id = format!("tr_{}", chrono::Utc::now().timestamp_millis());
 
         let truncated_source = if source_text.len() > 100_000 {
-            let end = source_text.char_indices().nth(100_000).map(|(i, _)| i).unwrap_or(source_text.len());
+            let end = source_text
+                .char_indices()
+                .nth(100_000)
+                .map(|(i, _)| i)
+                .unwrap_or(source_text.len());
             format!("{}…", &source_text[..end])
         } else {
             source_text.to_string()
         };
         let truncated_target = if target_text.len() > 100_000 {
-            let end = target_text.char_indices().nth(100_000).map(|(i, _)| i).unwrap_or(target_text.len());
+            let end = target_text
+                .char_indices()
+                .nth(100_000)
+                .map(|(i, _)| i)
+                .unwrap_or(target_text.len());
             format!("{}…", &target_text[..end])
         } else {
             target_text.to_string()
@@ -1562,22 +2003,28 @@ impl DbManager {
         Ok(id)
     }
 
-    pub fn get_translation_history(&self, limit: u32) -> Result<Vec<crate::selection::SelectionHistoryEntry>> {
+    pub fn get_translation_history(
+        &self,
+        limit: u32,
+    ) -> Result<Vec<crate::selection::SelectionHistoryEntry>> {
         let conn = self.get_connection()?;
         let mut stmt = conn.prepare(
             "SELECT id, source_text, target_text, source_lang, target_lang, created_at
-             FROM translation_history ORDER BY created_at DESC LIMIT ?1"
+             FROM translation_history ORDER BY created_at DESC LIMIT ?1",
         )?;
-        let entries = stmt.query_map(params![limit], |row| {
-            Ok(crate::selection::SelectionHistoryEntry {
-                id: row.get(0)?,
-                captured_text: row.get(1)?,
-                source: row.get(3)?,   // source_lang
-                window_title: row.get(2)?,  // target_text (repurposed field)
-                process_name: row.get(4)?,   // target_lang
-                created_at: row.get(5)?,
-            })
-        })?.filter_map(|e| e.ok()).collect();
+        let entries = stmt
+            .query_map(params![limit], |row| {
+                Ok(crate::selection::SelectionHistoryEntry {
+                    id: row.get(0)?,
+                    captured_text: row.get(1)?,
+                    source: row.get(3)?,       // source_lang
+                    window_title: row.get(2)?, // target_text (repurposed field)
+                    process_name: row.get(4)?, // target_lang
+                    created_at: row.get(5)?,
+                })
+            })?
+            .filter_map(|e| e.ok())
+            .collect();
         Ok(entries)
     }
 
@@ -1602,7 +2049,13 @@ impl DbManager {
             return Ok(());
         }
         let defaults = [
-            ("sp_searxng", "SearXNG (自建)", "searxng", "", "http://localhost:8080"),
+            (
+                "sp_searxng",
+                "SearXNG (自建)",
+                "searxng",
+                "",
+                "http://localhost:8080",
+            ),
             ("sp_brave", "Brave Search", "brave", "", ""),
             ("sp_duckduckgo", "DuckDuckGo", "duckduckgo", "", ""),
         ];
@@ -1615,7 +2068,9 @@ impl DbManager {
         Ok(())
     }
 
-    pub fn get_search_providers(&self) -> Result<Vec<(String, String, String, String, String, bool)>> {
+    pub fn get_search_providers(
+        &self,
+    ) -> Result<Vec<(String, String, String, String, String, bool)>> {
         let conn = self.get_connection()?;
         let mut stmt = conn.prepare(
             "SELECT id, name, api_type, api_key, api_address, is_enabled FROM search_providers ORDER BY created_at"
@@ -1632,12 +2087,22 @@ impl DbManager {
         })?;
         let mut result = Vec::new();
         for r in rows {
-            if let Ok(item) = r { result.push(item); }
+            if let Ok(item) = r {
+                result.push(item);
+            }
         }
         Ok(result)
     }
 
-    pub fn save_search_provider(&self, id: &str, name: &str, api_type: &str, api_key: &str, api_address: &str, is_enabled: bool) -> Result<()> {
+    pub fn save_search_provider(
+        &self,
+        id: &str,
+        name: &str,
+        api_type: &str,
+        api_key: &str,
+        api_address: &str,
+        is_enabled: bool,
+    ) -> Result<()> {
         let conn = self.get_connection()?;
         conn.execute(
             "INSERT INTO search_providers (id, name, api_type, api_key, api_address, is_enabled) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -1655,7 +2120,14 @@ impl DbManager {
 
     // ── Search History CRUD ──────────────────────────────
 
-    pub fn save_search_history(&self, id: &str, query: &str, provider_id: &str, result_count: i32, results_json: &str) -> Result<()> {
+    pub fn save_search_history(
+        &self,
+        id: &str,
+        query: &str,
+        provider_id: &str,
+        result_count: i32,
+        results_json: &str,
+    ) -> Result<()> {
         let conn = self.get_connection()?;
         conn.execute(
             "INSERT INTO search_history (id, query, provider_id, result_count, results_json) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -1664,7 +2136,10 @@ impl DbManager {
         Ok(())
     }
 
-    pub fn get_search_history(&self, limit: i32) -> Result<Vec<(String, String, String, i32, String)>> {
+    pub fn get_search_history(
+        &self,
+        limit: i32,
+    ) -> Result<Vec<(String, String, String, i32, String)>> {
         let conn = self.get_connection()?;
         let mut stmt = conn.prepare(
             "SELECT id, query, provider_id, result_count, created_at FROM search_history ORDER BY created_at DESC LIMIT ?1"
@@ -1680,7 +2155,9 @@ impl DbManager {
         })?;
         let mut result = Vec::new();
         for r in rows {
-            if let Ok(item) = r { result.push(item); }
+            if let Ok(item) = r {
+                result.push(item);
+            }
         }
         Ok(result)
     }
@@ -1699,7 +2176,9 @@ impl DbManager {
 
     // ── MCP Servers CRUD ─────────────────────────────────
 
-    pub fn get_mcp_servers(&self) -> Result<Vec<(String, String, String, String, String, String, String, bool)>> {
+    pub fn get_mcp_servers(
+        &self,
+    ) -> Result<Vec<(String, String, String, String, String, String, String, bool)>> {
         let conn = self.get_connection()?;
         let mut stmt = conn.prepare(
             "SELECT id, name, command, args, env, url, server_type, is_enabled FROM mcp_servers ORDER BY created_at"
@@ -1718,12 +2197,24 @@ impl DbManager {
         })?;
         let mut result = Vec::new();
         for r in rows {
-            if let Ok(item) = r { result.push(item); }
+            if let Ok(item) = r {
+                result.push(item);
+            }
         }
         Ok(result)
     }
 
-    pub fn save_mcp_server(&self, id: &str, name: &str, command: &str, args: &str, env: &str, url: &str, server_type: &str, is_enabled: bool) -> Result<()> {
+    pub fn save_mcp_server(
+        &self,
+        id: &str,
+        name: &str,
+        command: &str,
+        args: &str,
+        env: &str,
+        url: &str,
+        server_type: &str,
+        is_enabled: bool,
+    ) -> Result<()> {
         let conn = self.get_connection()?;
         conn.execute(
             "INSERT INTO mcp_servers (id, name, command, args, env, url, server_type, is_enabled) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
@@ -1744,11 +2235,28 @@ impl DbManager {
     pub fn get_table_row_counts(&self) -> Result<Vec<(String, i64)>> {
         let conn = self.get_connection()?;
         let tables = [
-            "settings", "agents", "conversations", "messages", "skills", "memories",
-            "agent_accounts", "custom_models", "model_platforms", "platform_models",
-            "tasks", "cron_tasks", "cron_runs", "kb_documents", "kb_chunks",
-            "kb_embeddings", "selection_history", "translation_history",
-            "mcp_servers", "prompt_library", "search_providers", "search_history",
+            "settings",
+            "agents",
+            "conversations",
+            "messages",
+            "skills",
+            "memories",
+            "agent_accounts",
+            "custom_models",
+            "model_platforms",
+            "platform_models",
+            "tasks",
+            "cron_tasks",
+            "cron_runs",
+            "kb_documents",
+            "kb_chunks",
+            "kb_embeddings",
+            "selection_history",
+            "translation_history",
+            "mcp_servers",
+            "prompt_library",
+            "search_providers",
+            "search_history",
             "activity_log",
         ];
         let mut result = Vec::new();
@@ -1766,15 +2274,36 @@ impl DbManager {
     pub fn export_table_as_json(&self, table_name: &str) -> Result<String> {
         // SQL injection prevention: whitelist valid table names
         const VALID_TABLES: &[&str] = &[
-            "settings", "agents", "conversations", "messages", "skills", "memories",
-            "agent_accounts", "custom_models", "model_platforms", "platform_models",
-            "cron_tasks", "cron_runs", "knowledge_documents", "knowledge_chunks",
-            "selection_history", "translation_history", "mcp_servers", "search_providers",
-            "prompt_library", "activity_log", "skill_targets", "agent_configs",
-            "autopilot_configs", "request_logs",
+            "settings",
+            "agents",
+            "conversations",
+            "messages",
+            "skills",
+            "memories",
+            "agent_accounts",
+            "custom_models",
+            "model_platforms",
+            "platform_models",
+            "cron_tasks",
+            "cron_runs",
+            "knowledge_documents",
+            "knowledge_chunks",
+            "selection_history",
+            "translation_history",
+            "mcp_servers",
+            "search_providers",
+            "prompt_library",
+            "activity_log",
+            "skill_targets",
+            "agent_configs",
+            "autopilot_configs",
+            "request_logs",
         ];
         if !VALID_TABLES.contains(&table_name) {
-            return Err(rusqlite::Error::InvalidParameterName(format!("Invalid table name: {}", table_name)));
+            return Err(rusqlite::Error::InvalidParameterName(format!(
+                "Invalid table name: {}",
+                table_name
+            )));
         }
         let conn = self.get_connection()?;
         let sql = format!("SELECT * FROM \"{}\"", table_name);
@@ -1816,43 +2345,77 @@ impl DbManager {
             Ok(serde_json::Value::Object(map))
         })?;
         for r in rows {
-            if let Ok(v) = r { rows_json.push(v); }
+            if let Ok(v) = r {
+                rows_json.push(v);
+            }
         }
-        serde_json::to_string(&rows_json).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+        serde_json::to_string(&rows_json)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
     }
 
     pub fn import_table_from_json(&self, table_name: &str, rows_json: &str) -> Result<usize> {
         // SQL injection prevention: whitelist valid table names
         const VALID_TABLES: &[&str] = &[
-            "settings", "agents", "conversations", "messages", "skills", "memories",
-            "agent_accounts", "custom_models", "model_platforms", "platform_models",
-            "cron_tasks", "cron_runs", "knowledge_documents", "knowledge_chunks",
-            "selection_history", "translation_history", "mcp_servers", "search_providers",
-            "prompt_library", "activity_log", "skill_targets", "agent_configs",
-            "autopilot_configs", "request_logs",
+            "settings",
+            "agents",
+            "conversations",
+            "messages",
+            "skills",
+            "memories",
+            "agent_accounts",
+            "custom_models",
+            "model_platforms",
+            "platform_models",
+            "cron_tasks",
+            "cron_runs",
+            "knowledge_documents",
+            "knowledge_chunks",
+            "selection_history",
+            "translation_history",
+            "mcp_servers",
+            "search_providers",
+            "prompt_library",
+            "activity_log",
+            "skill_targets",
+            "agent_configs",
+            "autopilot_configs",
+            "request_logs",
         ];
         if !VALID_TABLES.contains(&table_name) {
-            return Err(rusqlite::Error::InvalidParameterName(format!("Invalid table name: {}", table_name)));
+            return Err(rusqlite::Error::InvalidParameterName(format!(
+                "Invalid table name: {}",
+                table_name
+            )));
         }
 
         let conn = self.get_connection()?;
         let rows: Vec<serde_json::Map<String, serde_json::Value>> = serde_json::from_str(rows_json)
-            .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e)))?;
-        if rows.is_empty() { return Ok(0); }
+            .map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?;
+        if rows.is_empty() {
+            return Ok(0);
+        }
 
         // Get column names from first row, validate against SQL injection
         let cols: Vec<&str> = rows[0].keys().map(|s| s.as_str()).collect();
         // Validate column names: only allow alphanumeric + underscore (prevent SQL injection via column names)
         for col in &cols {
             if col.is_empty() || !col.chars().all(|c| c.is_alphanumeric() || c == '_') {
-                return Err(rusqlite::Error::InvalidParameterName(
-                    format!("Invalid column name: '{}'. Only alphanumeric and underscore allowed.", col)
-                ));
+                return Err(rusqlite::Error::InvalidParameterName(format!(
+                    "Invalid column name: '{}'. Only alphanumeric and underscore allowed.",
+                    col
+                )));
             }
             if col.starts_with(|c: char| c.is_ascii_digit()) {
-                return Err(rusqlite::Error::InvalidParameterName(
-                    format!("Invalid column name: '{}'. Must not start with a digit.", col)
-                ));
+                return Err(rusqlite::Error::InvalidParameterName(format!(
+                    "Invalid column name: '{}'. Must not start with a digit.",
+                    col
+                )));
             }
         }
         let col_placeholders: Vec<&str> = cols.iter().map(|_| "?").collect();
@@ -1871,11 +2434,17 @@ impl DbManager {
                     match val {
                         serde_json::Value::String(s) => params.push(Box::new(s.clone())),
                         serde_json::Value::Number(n) => {
-                            if let Some(i) = n.as_i64() { params.push(Box::new(i)); }
-                            else if let Some(f) = n.as_f64() { params.push(Box::new(f)); }
-                            else { params.push(Box::new(n.to_string())); }
-                        },
-                        serde_json::Value::Bool(b) => params.push(Box::new(if *b { 1i32 } else { 0i32 })),
+                            if let Some(i) = n.as_i64() {
+                                params.push(Box::new(i));
+                            } else if let Some(f) = n.as_f64() {
+                                params.push(Box::new(f));
+                            } else {
+                                params.push(Box::new(n.to_string()));
+                            }
+                        }
+                        serde_json::Value::Bool(b) => {
+                            params.push(Box::new(if *b { 1i32 } else { 0i32 }))
+                        }
                         serde_json::Value::Null => params.push(Box::new(rusqlite::types::Null)),
                         other => params.push(Box::new(other.to_string())),
                     }
@@ -1883,7 +2452,8 @@ impl DbManager {
                     params.push(Box::new(rusqlite::types::Null));
                 }
             }
-            let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+            let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+                params.iter().map(|p| p.as_ref()).collect();
             if conn.execute(&sql, param_refs.as_slice()).is_ok() {
                 count += 1;
             }
@@ -1934,5 +2504,3 @@ mod tests {
         }
     }
 }
-
-

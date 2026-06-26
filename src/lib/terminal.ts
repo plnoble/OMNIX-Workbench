@@ -1,5 +1,5 @@
 /**
- * OMNIX DevFlow — Terminal Stream Processing Utilities
+ * OMNIX Workbench - Terminal Stream Processing Utilities
  *
  * Pure functions for ANSI stripping, block-character filtering,
  * and interactive prompt detection from PTY output.

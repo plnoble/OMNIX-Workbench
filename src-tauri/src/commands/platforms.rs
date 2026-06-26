@@ -1,11 +1,10 @@
-use tauri::State;
-use std::sync::Arc;
-use rusqlite::params;
+use super::*;
 use crate::db::DbManager;
 use crate::input_validation;
-use super::*;
+use rusqlite::params;
+use std::sync::Arc;
+use tauri::State;
 
-use log::warn;
 #[derive(Debug, Deserialize)]
 struct OllamaResponse {
     models: Vec<OllamaModel>,
@@ -26,21 +25,113 @@ pub async fn get_all_models_metadata(
     let api_models = vec![
         // OpenAI
         ("gpt-4o", true, true, false, true, true, true, false, false),
-        ("gpt-4o-mini", true, true, false, true, true, true, false, true),
+        (
+            "gpt-4o-mini",
+            true,
+            true,
+            false,
+            true,
+            true,
+            true,
+            false,
+            true,
+        ),
         ("o1", true, false, true, true, true, true, false, false),
-        ("o1-mini", false, false, true, true, true, true, false, false),
+        (
+            "o1-mini", false, false, true, true, true, true, false, false,
+        ),
         ("o3-mini", false, false, true, true, true, true, false, true),
         // Anthropic
-        ("claude-3-5-sonnet", true, false, false, true, true, true, false, false),
-        ("claude-3-opus", true, false, false, true, true, true, false, false),
-        ("claude-3-5-haiku", false, false, false, true, true, true, false, true),
+        (
+            "claude-3-5-sonnet",
+            true,
+            false,
+            false,
+            true,
+            true,
+            true,
+            false,
+            false,
+        ),
+        (
+            "claude-3-opus",
+            true,
+            false,
+            false,
+            true,
+            true,
+            true,
+            false,
+            false,
+        ),
+        (
+            "claude-3-5-haiku",
+            false,
+            false,
+            false,
+            true,
+            true,
+            true,
+            false,
+            true,
+        ),
         // DeepSeek
-        ("deepseek-chat", false, false, false, true, true, true, false, true),
-        ("deepseek-reasoner", false, false, true, true, true, true, false, false),
+        (
+            "deepseek-chat",
+            false,
+            false,
+            false,
+            true,
+            true,
+            true,
+            false,
+            true,
+        ),
+        (
+            "deepseek-reasoner",
+            false,
+            false,
+            true,
+            true,
+            true,
+            true,
+            false,
+            false,
+        ),
         // Gemini
-        ("gemini-1.5-pro", true, true, false, true, true, true, false, false),
-        ("gemini-1.5-flash", true, true, false, true, true, true, false, true),
-        ("gemini-2.0-flash", true, true, false, true, true, true, false, true),
+        (
+            "gemini-1.5-pro",
+            true,
+            true,
+            false,
+            true,
+            true,
+            true,
+            false,
+            false,
+        ),
+        (
+            "gemini-1.5-flash",
+            true,
+            true,
+            false,
+            true,
+            true,
+            true,
+            false,
+            true,
+        ),
+        (
+            "gemini-2.0-flash",
+            true,
+            true,
+            false,
+            true,
+            true,
+            true,
+            false,
+            true,
+        ),
     ];
 
     for (name, vis, aud, reas, cod, long_ctx, tool, embed, speedy) in api_models {
@@ -69,61 +160,60 @@ pub async fn get_all_models_metadata(
             if let Ok(ollama_resp) = resp.json::<OllamaResponse>().await {
                 for m in ollama_resp.models {
                     let name_lower = m.name.to_lowercase();
-                    
+
                     // Cap tagging heuristics
-                    let has_reasoning = name_lower.contains("r1") 
-                        || name_lower.contains("reasoning") 
-                        || name_lower.contains("qwq") 
+                    let has_reasoning = name_lower.contains("r1")
+                        || name_lower.contains("reasoning")
+                        || name_lower.contains("qwq")
                         || name_lower.contains("thinking");
-                    
-                    let has_vision = name_lower.contains("vision") 
-                        || name_lower.contains("llava") 
-                        || name_lower.contains("minicpm") 
-                        || name_lower.contains("bakllava") 
+
+                    let has_vision = name_lower.contains("vision")
+                        || name_lower.contains("llava")
+                        || name_lower.contains("minicpm")
+                        || name_lower.contains("bakllava")
                         || name_lower.contains("moondream");
-                    
-                    let has_audio = name_lower.contains("audio") 
-                        || name_lower.contains("whisper");
-                    
+
+                    let has_audio = name_lower.contains("audio") || name_lower.contains("whisper");
+
                     // Most general-purpose models do coding
-                    let has_coding = name_lower.contains("coder") 
-                        || name_lower.contains("code") 
-                        || name_lower.contains("llama") 
-                        || name_lower.contains("qwen") 
-                        || name_lower.contains("deepseek") 
-                        || name_lower.contains("mistral") 
-                        || name_lower.contains("phi") 
-                        || name_lower.contains("gemma") 
-                        || name_lower.contains("command-r") 
-                        || name_lower.contains("starcoder") 
+                    let has_coding = name_lower.contains("coder")
+                        || name_lower.contains("code")
+                        || name_lower.contains("llama")
+                        || name_lower.contains("qwen")
+                        || name_lower.contains("deepseek")
+                        || name_lower.contains("mistral")
+                        || name_lower.contains("phi")
+                        || name_lower.contains("gemma")
+                        || name_lower.contains("command-r")
+                        || name_lower.contains("starcoder")
                         || name_lower.contains("stable-code");
 
-                    let has_long_context = name_lower.contains("long") 
-                        || name_lower.contains("128k") 
-                        || name_lower.contains("32k") 
-                        || name_lower.contains("64k") 
-                        || name_lower.contains("yarn") 
+                    let has_long_context = name_lower.contains("long")
+                        || name_lower.contains("128k")
+                        || name_lower.contains("32k")
+                        || name_lower.contains("64k")
+                        || name_lower.contains("yarn")
                         || name_lower.contains("command-r")
                         || name_lower.contains("llama3");
 
-                    let has_tool_use = name_lower.contains("llama3") 
-                        || name_lower.contains("qwen") 
-                        || name_lower.contains("mistral") 
+                    let has_tool_use = name_lower.contains("llama3")
+                        || name_lower.contains("qwen")
+                        || name_lower.contains("mistral")
                         || name_lower.contains("command-r")
-                        || name_lower.contains("tool") 
+                        || name_lower.contains("tool")
                         || name_lower.contains("agent");
 
-                    let has_embedding = name_lower.contains("embed") 
-                        || name_lower.contains("nomic") 
-                        || name_lower.contains("bge") 
+                    let has_embedding = name_lower.contains("embed")
+                        || name_lower.contains("nomic")
+                        || name_lower.contains("bge")
                         || name_lower.contains("mxbai");
 
-                    let has_speedy = name_lower.contains("1.5b") 
-                        || name_lower.contains("3b") 
-                        || name_lower.contains("8b") 
-                        || name_lower.contains("mini") 
-                        || name_lower.contains("haiku") 
-                        || name_lower.contains("flash") 
+                    let has_speedy = name_lower.contains("1.5b")
+                        || name_lower.contains("3b")
+                        || name_lower.contains("8b")
+                        || name_lower.contains("mini")
+                        || name_lower.contains("haiku")
+                        || name_lower.contains("flash")
                         || name_lower.contains("speed");
 
                     list.push(ModelMetadata {
@@ -148,7 +238,7 @@ pub async fn get_all_models_metadata(
         if let Ok(mut stmt) = conn.prepare(
             "SELECT name, source, has_vision, has_audio, has_reasoning,
                     has_coding, has_long_context, has_tool_use, has_embedding, has_speedy
-             FROM custom_models"
+             FROM custom_models",
         ) {
             let rows = stmt.query_map([], |row| {
                 let has_vis: i32 = row.get(2)?;
@@ -221,22 +311,24 @@ pub struct PlatformModel {
 }
 
 #[tauri::command]
-pub fn get_model_platforms(
-    db: State<'_, Arc<DbManager>>,
-) -> Result<Vec<ModelPlatform>, String> {
+pub fn get_model_platforms(db: State<'_, Arc<DbManager>>) -> Result<Vec<ModelPlatform>, String> {
     let conn = db.get_connection().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare("SELECT id, name, api_type, api_key, api_address, is_enabled FROM model_platforms").map_err(|e| e.to_string())?;
-    let rows = stmt.query_map([], |row| {
-        let is_enabled_int: i32 = row.get(5)?;
-        Ok(ModelPlatform {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            api_type: row.get(2)?,
-            api_key: row.get(3)?,
-            api_address: row.get(4)?,
-            is_enabled: is_enabled_int != 0,
+    let mut stmt = conn
+        .prepare("SELECT id, name, api_type, api_key, api_address, is_enabled FROM model_platforms")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            let is_enabled_int: i32 = row.get(5)?;
+            Ok(ModelPlatform {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                api_type: row.get(2)?,
+                api_key: row.get(3)?,
+                api_address: row.get(4)?,
+                is_enabled: is_enabled_int != 0,
+            })
         })
-    }).map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?;
 
     let mut result = Vec::new();
     for r in rows {
@@ -270,15 +362,13 @@ pub fn save_model_platform(
             platform.api_address,
             if platform.is_enabled { 1 } else { 0 }
         ],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
 #[tauri::command]
-pub fn delete_model_platform(
-    db: State<'_, Arc<DbManager>>,
-    id: String,
-) -> Result<(), String> {
+pub fn delete_model_platform(db: State<'_, Arc<DbManager>>, id: String) -> Result<(), String> {
     input_validation::validate_id(&id, "id")?;
     let conn = db.get_connection().map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM model_platforms WHERE id = ?1", params![id])
@@ -326,13 +416,20 @@ pub fn get_platform_models(
     platform_id: String,
 ) -> Result<Vec<PlatformModel>, String> {
     let conn = db.get_connection().map_err(|e| e.to_string())?;
-    let sql = format!("SELECT {} FROM platform_models WHERE platform_id = ?1", PM_COLUMNS);
+    let sql = format!(
+        "SELECT {} FROM platform_models WHERE platform_id = ?1",
+        PM_COLUMNS
+    );
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    let rows = stmt.query_map(params![platform_id], |row| row_to_platform_model(row)).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![platform_id], |row| row_to_platform_model(row))
+        .map_err(|e| e.to_string())?;
 
     let mut result = Vec::new();
     for r in rows {
-        if let Ok(m) = r { result.push(m); }
+        if let Ok(m) = r {
+            result.push(m);
+        }
     }
     Ok(result)
 }
@@ -380,10 +477,7 @@ pub fn save_platform_model(
 }
 
 #[tauri::command]
-pub fn delete_platform_model(
-    db: State<'_, Arc<DbManager>>,
-    id: String,
-) -> Result<(), String> {
+pub fn delete_platform_model(db: State<'_, Arc<DbManager>>, id: String) -> Result<(), String> {
     let conn = db.get_connection().map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM platform_models WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
@@ -391,9 +485,7 @@ pub fn delete_platform_model(
 }
 
 #[tauri::command]
-pub fn get_active_models(
-    db: State<'_, Arc<DbManager>>,
-) -> Result<Vec<PlatformModel>, String> {
+pub fn get_active_models(db: State<'_, Arc<DbManager>>) -> Result<Vec<PlatformModel>, String> {
     let conn = db.get_connection().map_err(|e| e.to_string())?;
     let sql = "\
         SELECT \
@@ -406,11 +498,15 @@ pub fn get_active_models(
         WHERE pm.is_enabled = 1 AND mp.is_enabled = 1 \
         ORDER BY mp.name, pm.model_name";
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    let rows = stmt.query_map([], |row| row_to_platform_model(row)).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| row_to_platform_model(row))
+        .map_err(|e| e.to_string())?;
 
     let mut result = Vec::new();
     for r in rows {
-        if let Ok(m) = r { result.push(m); }
+        if let Ok(m) = r {
+            result.push(m);
+        }
     }
     Ok(result)
 }
@@ -418,21 +514,25 @@ pub fn get_active_models(
 /// Get distinct model names from all enabled platforms.
 /// Used by frontend Select dropdowns for default model selection.
 #[tauri::command]
-pub fn get_available_models(
-    db: State<'_, Arc<DbManager>>,
-) -> Result<Vec<String>, String> {
+pub fn get_available_models(db: State<'_, Arc<DbManager>>) -> Result<Vec<String>, String> {
     let conn = db.get_connection().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare(
-        "SELECT DISTINCT pm.model_name \
+    let mut stmt = conn
+        .prepare(
+            "SELECT DISTINCT pm.model_name \
          FROM platform_models pm \
          JOIN model_platforms mp ON pm.platform_id = mp.id \
          WHERE pm.is_enabled = 1 AND mp.is_enabled = 1 \
-         ORDER BY pm.model_name"
-    ).map_err(|e| e.to_string())?;
-    let rows = stmt.query_map([], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?;
+         ORDER BY pm.model_name",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
     let mut result = Vec::new();
     for r in rows {
-        if let Ok(name) = r { result.push(name); }
+        if let Ok(name) = r {
+            result.push(name);
+        }
     }
     Ok(result)
 }
@@ -476,7 +576,7 @@ struct CapResult {
     has_tool_use: bool,
     has_embedding: bool,
     has_speedy: bool,
-    source: &'static str,  // "catalog" | "heuristic"
+    source: &'static str, // "catalog" | "heuristic"
 }
 
 /// ── Tier 1: Hardcoded model capability catalog ──────────────
@@ -484,127 +584,415 @@ struct CapResult {
 /// Inspired by Cherry Studio's models.json but simplified to our 8-dimension model.
 const MODEL_CATALOG: &[(&str, (bool, bool, bool, bool, bool, bool, bool, bool))] = &[
     // ── OpenAI ──────────────────────────────────
-    ("gpt-4o",            (true,  false, true,  true,  true,  true,  false, false)),
-    ("gpt-4o-mini",       (true,  false, false, true,  false, true,  false, true)),
-    ("gpt-4.1",           (true,  false, true,  true,  true,  true,  false, false)),
-    ("gpt-4.1-mini",      (true,  false, false, true,  false, true,  false, true)),
-    ("gpt-4.1-nano",      (true,  false, false, true,  false, true,  false, true)),
-    ("gpt-4-turbo",       (true,  false, false, true,  true,  true,  false, false)),
-    ("gpt-4-",            (false, false, false, true,  true,  true,  false, false)),
-    ("o3",                (true,  false, true,  true,  true,  true,  false, false)),
-    ("o3-mini",           (false, false, true,  true,  false, true,  false, true)),
-    ("o4-mini",           (true,  false, true,  true,  false, true,  false, true)),
-    ("o1",                (true,  false, true,  true,  true,  false, false, false)),
-    ("o1-mini",           (false, false, true,  true,  false, false, false, true)),
-    ("o1-pro",            (true,  false, true,  true,  true,  true,  false, false)),
-    ("gpt-3.5",           (false, false, false, true,  false, true,  false, true)),
+    (
+        "gpt-4o",
+        (true, false, true, true, true, true, false, false),
+    ),
+    (
+        "gpt-4o-mini",
+        (true, false, false, true, false, true, false, true),
+    ),
+    (
+        "gpt-4.1",
+        (true, false, true, true, true, true, false, false),
+    ),
+    (
+        "gpt-4.1-mini",
+        (true, false, false, true, false, true, false, true),
+    ),
+    (
+        "gpt-4.1-nano",
+        (true, false, false, true, false, true, false, true),
+    ),
+    (
+        "gpt-4-turbo",
+        (true, false, false, true, true, true, false, false),
+    ),
+    (
+        "gpt-4-",
+        (false, false, false, true, true, true, false, false),
+    ),
+    ("o3", (true, false, true, true, true, true, false, false)),
+    (
+        "o3-mini",
+        (false, false, true, true, false, true, false, true),
+    ),
+    (
+        "o4-mini",
+        (true, false, true, true, false, true, false, true),
+    ),
+    ("o1", (true, false, true, true, true, false, false, false)),
+    (
+        "o1-mini",
+        (false, false, true, true, false, false, false, true),
+    ),
+    (
+        "o1-pro",
+        (true, false, true, true, true, true, false, false),
+    ),
+    (
+        "gpt-3.5",
+        (false, false, false, true, false, true, false, true),
+    ),
     // ── Anthropic ───────────────────────────────
-    ("claude-sonnet-4",   (true,  false, true,  true,  true,  true,  false, false)),
-    ("claude-opus-4",     (true,  false, true,  true,  true,  true,  false, false)),
-    ("claude-3-5-sonnet", (true,  false, true,  true,  true,  true,  false, false)),
-    ("claude-3-5-haiku",  (true,  false, false, true,  false, true,  false, true)),
-    ("claude-3-opus",     (true,  false, true,  true,  true,  true,  false, false)),
-    ("claude-3-sonnet",   (true,  false, false, true,  true,  true,  false, false)),
-    ("claude-3-haiku",    (true,  false, false, true,  false, true,  false, true)),
-    ("claude-3.5",        (true,  false, true,  true,  true,  true,  false, false)),  // Volcano/Ark alias
-    ("claude-",           (true,  false, false, true,  true,  true,  false, false)),  // generic Claude fallback
+    (
+        "claude-sonnet-4",
+        (true, false, true, true, true, true, false, false),
+    ),
+    (
+        "claude-opus-4",
+        (true, false, true, true, true, true, false, false),
+    ),
+    (
+        "claude-3-5-sonnet",
+        (true, false, true, true, true, true, false, false),
+    ),
+    (
+        "claude-3-5-haiku",
+        (true, false, false, true, false, true, false, true),
+    ),
+    (
+        "claude-3-opus",
+        (true, false, true, true, true, true, false, false),
+    ),
+    (
+        "claude-3-sonnet",
+        (true, false, false, true, true, true, false, false),
+    ),
+    (
+        "claude-3-haiku",
+        (true, false, false, true, false, true, false, true),
+    ),
+    (
+        "claude-3.5",
+        (true, false, true, true, true, true, false, false),
+    ), // Volcano/Ark alias
+    (
+        "claude-",
+        (true, false, false, true, true, true, false, false),
+    ), // generic Claude fallback
     // ── Google Gemini ───────────────────────────
-    ("gemini-2.5-pro",    (true,  false, true,  true,  true,  true,  false, false)),
-    ("gemini-2.5-flash",  (true,  false, true,  true,  true,  true,  false, true)),
-    ("gemini-2.0-flash",  (true,  false, true,  true,  true,  true,  false, true)),
-    ("gemini-1.5-pro",    (true,  false, false, true,  true,  true,  false, false)),
-    ("gemini-1.5-flash",  (true,  false, false, true,  true,  true,  false, true)),
-    ("gemini-1.0-pro",    (false, false, false, true,  false, true,  false, false)),
+    (
+        "gemini-2.5-pro",
+        (true, false, true, true, true, true, false, false),
+    ),
+    (
+        "gemini-2.5-flash",
+        (true, false, true, true, true, true, false, true),
+    ),
+    (
+        "gemini-2.0-flash",
+        (true, false, true, true, true, true, false, true),
+    ),
+    (
+        "gemini-1.5-pro",
+        (true, false, false, true, true, true, false, false),
+    ),
+    (
+        "gemini-1.5-flash",
+        (true, false, false, true, true, true, false, true),
+    ),
+    (
+        "gemini-1.0-pro",
+        (false, false, false, true, false, true, false, false),
+    ),
     // ── DeepSeek ────────────────────────────────
-    ("deepseek-r1",       (false, false, true,  true,  true,  false, false, false)),
-    ("deepseek-v3",       (false, false, false, true,  true,  true,  false, false)),
-    ("deepseek-chat",     (false, false, false, true,  true,  true,  false, false)),
-    ("deepseek-coder",    (false, false, false, true,  false, true,  false, false)),
-    ("deepseek-reasoner", (false, false, true,  true,  true,  false, false, false)),
+    (
+        "deepseek-r1",
+        (false, false, true, true, true, false, false, false),
+    ),
+    (
+        "deepseek-v3",
+        (false, false, false, true, true, true, false, false),
+    ),
+    (
+        "deepseek-chat",
+        (false, false, false, true, true, true, false, false),
+    ),
+    (
+        "deepseek-coder",
+        (false, false, false, true, false, true, false, false),
+    ),
+    (
+        "deepseek-reasoner",
+        (false, false, true, true, true, false, false, false),
+    ),
     // ── Qwen ────────────────────────────────────
-    ("qwen3-",            (false, false, true,  true,  true,  true,  false, false)),
-    ("qwq",               (false, false, true,  true,  true,  true,  false, false)),
-    ("qwen2.5-",          (false, false, false, true,  true,  true,  false, false)),
-    ("qwen2-vl",          (true,  false, false, true,  true,  true,  false, false)),
-    ("qwen-vl",           (true,  false, false, true,  false, true,  false, false)),
-    ("qwen2.5-coder",     (false, false, false, true,  false, true,  false, false)),
+    (
+        "qwen3-",
+        (false, false, true, true, true, true, false, false),
+    ),
+    ("qwq", (false, false, true, true, true, true, false, false)),
+    (
+        "qwen2.5-",
+        (false, false, false, true, true, true, false, false),
+    ),
+    (
+        "qwen2-vl",
+        (true, false, false, true, true, true, false, false),
+    ),
+    (
+        "qwen-vl",
+        (true, false, false, true, false, true, false, false),
+    ),
+    (
+        "qwen2.5-coder",
+        (false, false, false, true, false, true, false, false),
+    ),
     // ── Meta Llama ──────────────────────────────
-    ("llama-4",           (true,  false, false, true,  true,  true,  false, false)),
-    ("llama-3.3",         (false, false, false, true,  true,  true,  false, false)),
-    ("llama-3.2",         (false, false, false, true,  false, true,  false, true)),
-    ("llama-3.1",         (false, false, false, true,  true,  true,  false, false)),
-    ("llama-3",           (false, false, false, true,  false, true,  false, true)),
-    ("llama-guard",       (false, false, false, false, false, false, false, false)),
+    (
+        "llama-4",
+        (true, false, false, true, true, true, false, false),
+    ),
+    (
+        "llama-3.3",
+        (false, false, false, true, true, true, false, false),
+    ),
+    (
+        "llama-3.2",
+        (false, false, false, true, false, true, false, true),
+    ),
+    (
+        "llama-3.1",
+        (false, false, false, true, true, true, false, false),
+    ),
+    (
+        "llama-3",
+        (false, false, false, true, false, true, false, true),
+    ),
+    (
+        "llama-guard",
+        (false, false, false, false, false, false, false, false),
+    ),
     // ── Mistral ─────────────────────────────────
-    ("mistral-large",     (false, false, false, true,  true,  true,  false, false)),
-    ("mistral-medium",    (false, false, false, true,  false, true,  false, false)),
-    ("mistral-small",     (false, false, false, true,  false, true,  false, true)),
-    ("mistral-nemo",      (false, false, false, true,  false, true,  false, true)),
-    ("codestral",         (false, false, false, true,  false, true,  false, false)),
-    ("pixtral",           (true,  false, false, true,  false, true,  false, false)),
+    (
+        "mistral-large",
+        (false, false, false, true, true, true, false, false),
+    ),
+    (
+        "mistral-medium",
+        (false, false, false, true, false, true, false, false),
+    ),
+    (
+        "mistral-small",
+        (false, false, false, true, false, true, false, true),
+    ),
+    (
+        "mistral-nemo",
+        (false, false, false, true, false, true, false, true),
+    ),
+    (
+        "codestral",
+        (false, false, false, true, false, true, false, false),
+    ),
+    (
+        "pixtral",
+        (true, false, false, true, false, true, false, false),
+    ),
     // ── Embedding models ────────────────────────
-    ("text-embedding",    (false, false, false, false, false, false, true,  true)),
-    ("embed",             (false, false, false, false, false, false, true,  true)),
-    ("bge-",              (false, false, false, false, false, false, true,  true)),
-    ("e5-",               (false, false, false, false, false, false, true,  true)),
-    ("nomic-embed",       (false, false, false, false, false, false, true,  true)),
-    ("voyage-",           (false, false, false, false, false, false, true,  true)),
-    ("mxbai-",            (false, false, false, false, false, false, true,  true)),
+    (
+        "text-embedding",
+        (false, false, false, false, false, false, true, true),
+    ),
+    (
+        "embed",
+        (false, false, false, false, false, false, true, true),
+    ),
+    (
+        "bge-",
+        (false, false, false, false, false, false, true, true),
+    ),
+    (
+        "e5-",
+        (false, false, false, false, false, false, true, true),
+    ),
+    (
+        "nomic-embed",
+        (false, false, false, false, false, false, true, true),
+    ),
+    (
+        "voyage-",
+        (false, false, false, false, false, false, true, true),
+    ),
+    (
+        "mxbai-",
+        (false, false, false, false, false, false, true, true),
+    ),
     // ── Image generation ────────────────────────
-    ("dall-e",            (false, false, false, false, false, false, false, false)),
-    ("flux",              (false, false, false, false, false, false, false, false)),
-    ("stable-diffusion",  (false, false, false, false, false, false, false, false)),
+    (
+        "dall-e",
+        (false, false, false, false, false, false, false, false),
+    ),
+    (
+        "flux",
+        (false, false, false, false, false, false, false, false),
+    ),
+    (
+        "stable-diffusion",
+        (false, false, false, false, false, false, false, false),
+    ),
     // ── Audio ───────────────────────────────────
-    ("whisper",           (false, true,  false, false, false, false, false, false)),
-    ("tts-",              (false, false, false, false, false, false, false, false)),
+    (
+        "whisper",
+        (false, true, false, false, false, false, false, false),
+    ),
+    (
+        "tts-",
+        (false, false, false, false, false, false, false, false),
+    ),
     // ── Zhipu GLM ───────────────────────────────
-    ("glm-5.",             (true,  false, true,  true,  true,  true,  false, false)),
-    ("glm-4v",            (true,  false, false, true,  true,  true,  false, false)),
-    ("glm-4-",            (false, false, false, true,  true,  true,  false, false)),
-    ("glm-4-flash",       (false, false, false, true,  false, true,  false, true)),
-    ("glm-z1",            (false, false, true,  true,  false, true,  false, false)),
-    ("glm-",              (false, false, false, true,  true,  true,  false, false)),
+    (
+        "glm-5.",
+        (true, false, true, true, true, true, false, false),
+    ),
+    (
+        "glm-4v",
+        (true, false, false, true, true, true, false, false),
+    ),
+    (
+        "glm-4-",
+        (false, false, false, true, true, true, false, false),
+    ),
+    (
+        "glm-4-flash",
+        (false, false, false, true, false, true, false, true),
+    ),
+    (
+        "glm-z1",
+        (false, false, true, true, false, true, false, false),
+    ),
+    (
+        "glm-",
+        (false, false, false, true, true, true, false, false),
+    ),
     // ── Moonshot / Kimi ─────────────────────────
-    ("kimi-k2",           (true,  false, true,  true,  true,  true,  false, false)),
-    ("moonshot-v1",       (false, false, false, true,  true,  true,  false, false)),
+    (
+        "kimi-k2",
+        (true, false, true, true, true, true, false, false),
+    ),
+    (
+        "moonshot-v1",
+        (false, false, false, true, true, true, false, false),
+    ),
     // ── Doubao / Volcengine ─────────────────────
-    ("doubao-seed",       (false, false, true,  true,  true,  true,  false, false)),
-    ("doubao-pro",        (false, false, false, true,  true,  true,  false, false)),
-    ("doubao-lite",       (false, false, false, true,  false, true,  false, true)),
+    (
+        "doubao-seed",
+        (false, false, true, true, true, true, false, false),
+    ),
+    (
+        "doubao-pro",
+        (false, false, false, true, true, true, false, false),
+    ),
+    (
+        "doubao-lite",
+        (false, false, false, true, false, true, false, true),
+    ),
     // ── MiniMax ─────────────────────────────────
-    ("minimax-text",      (false, false, false, true,  true,  true,  false, false)),
-    ("minimax-m1",        (false, false, true,  true,  true,  true,  false, false)),
+    (
+        "minimax-text",
+        (false, false, false, true, true, true, false, false),
+    ),
+    (
+        "minimax-m1",
+        (false, false, true, true, true, true, false, false),
+    ),
     // ── Grok ────────────────────────────────────
-    ("grok-3-mini",       (false, false, true,  true,  false, true,  false, true)),
-    ("grok-3",            (true,  false, false, true,  true,  true,  false, false)),
-    ("grok-4",            (true,  false, true,  true,  true,  true,  false, false)),
+    (
+        "grok-3-mini",
+        (false, false, true, true, false, true, false, true),
+    ),
+    (
+        "grok-3",
+        (true, false, false, true, true, true, false, false),
+    ),
+    (
+        "grok-4",
+        (true, false, true, true, true, true, false, false),
+    ),
     // ── Yi / 01.ai ─────────────────────────────
-    ("yi-vision",         (true,  false, false, true,  true,  true,  false, false)),
-    ("yi-lightning",      (false, false, false, true,  false, true,  false, true)),
+    (
+        "yi-vision",
+        (true, false, false, true, true, true, false, false),
+    ),
+    (
+        "yi-lightning",
+        (false, false, false, true, false, true, false, true),
+    ),
     // ── Hunyuan ─────────────────────────────────
-    ("hunyuan-t1",        (false, false, true,  true,  true,  true,  false, false)),
-    ("hunyuan-pro",       (false, false, false, true,  true,  true,  false, false)),
-    ("hunyuan-lite",      (false, false, false, true,  false, true,  false, true)),
+    (
+        "hunyuan-t1",
+        (false, false, true, true, true, true, false, false),
+    ),
+    (
+        "hunyuan-pro",
+        (false, false, false, true, true, true, false, false),
+    ),
+    (
+        "hunyuan-lite",
+        (false, false, false, true, false, true, false, true),
+    ),
     // ── Step ────────────────────────────────────
-    ("step-2",            (false, false, false, true,  true,  true,  false, false)),
+    (
+        "step-2",
+        (false, false, false, true, true, true, false, false),
+    ),
     // ── Baichuan ────────────────────────────────
-    ("baichuan4",         (false, false, false, true,  true,  true,  false, false)),
+    (
+        "baichuan4",
+        (false, false, false, true, true, true, false, false),
+    ),
     // ── Perplexity ──────────────────────────────
-    ("sonar",             (false, false, false, true,  false, true,  false, true)),
+    (
+        "sonar",
+        (false, false, false, true, false, true, false, true),
+    ),
     // ── Mimo ────────────────────────────────────
-    ("mimo-vl",           (true,  false, true,  true,  true,  true,  false, false)),
+    (
+        "mimo-vl",
+        (true, false, true, true, true, true, false, false),
+    ),
     // ── Local models ────────────────────────────
-    ("llava",             (true,  false, false, true,  false, false, false, false)),
-    ("bakllava",          (true,  false, false, true,  false, false, false, false)),
-    ("moondream",         (true,  false, false, true,  false, false, false, false)),
-    ("minicpm-v",         (true,  false, false, true,  false, false, false, false)),
-    ("starcoder",         (false, false, false, true,  false, false, false, false)),
-    ("codellama",         (false, false, false, true,  false, true,  false, false)),
-    ("phi-3",             (false, false, false, true,  false, true,  false, true)),
-    ("gemma-2",           (false, false, false, true,  false, true,  false, true)),
-    ("command-r",         (false, false, false, true,  true,  true,  false, false)),
+    (
+        "llava",
+        (true, false, false, true, false, false, false, false),
+    ),
+    (
+        "bakllava",
+        (true, false, false, true, false, false, false, false),
+    ),
+    (
+        "moondream",
+        (true, false, false, true, false, false, false, false),
+    ),
+    (
+        "minicpm-v",
+        (true, false, false, true, false, false, false, false),
+    ),
+    (
+        "starcoder",
+        (false, false, false, true, false, false, false, false),
+    ),
+    (
+        "codellama",
+        (false, false, false, true, false, true, false, false),
+    ),
+    (
+        "phi-3",
+        (false, false, false, true, false, true, false, true),
+    ),
+    (
+        "gemma-2",
+        (false, false, false, true, false, true, false, true),
+    ),
+    (
+        "command-r",
+        (false, false, false, true, true, true, false, false),
+    ),
     // ── Reranking ───────────────────────────────
-    ("rerank",            (false, false, false, false, false, false, true,  false)),
+    (
+        "rerank",
+        (false, false, false, false, false, false, true, false),
+    ),
 ];
 
 /// Infer 8-dimension capability flags from a model name.
@@ -625,36 +1013,78 @@ fn infer_capabilities(name: &str) -> CapResult {
     if let Some((pattern, (v, a, r, c, lc, t, e, s))) = best_match {
         log::warn!("[Capabilities] Catalog match: '{}' → '{}'", name, pattern);
         return CapResult {
-            has_vision: v, has_audio: a, has_reasoning: r, has_coding: c,
-            has_long_context: lc, has_tool_use: t, has_embedding: e, has_speedy: s,
+            has_vision: v,
+            has_audio: a,
+            has_reasoning: r,
+            has_coding: c,
+            has_long_context: lc,
+            has_tool_use: t,
+            has_embedding: e,
+            has_speedy: s,
             source: "catalog",
         };
     }
 
     // Phase 2: Heuristic fallback (enhanced from Cherry Studio regex sets)
-    let has_vision = n.contains("vision") || n.contains("vl") || n.contains("4o")
-        || n.contains("llava") || n.contains("minicpm") || n.contains("bakllava")
-        || n.contains("moondream") || n.contains("pixtral") || n.contains("-v")
-        || n.contains("image") || n.contains("multimodal");
+    let has_vision = n.contains("vision")
+        || n.contains("vl")
+        || n.contains("4o")
+        || n.contains("llava")
+        || n.contains("minicpm")
+        || n.contains("bakllava")
+        || n.contains("moondream")
+        || n.contains("pixtral")
+        || n.contains("-v")
+        || n.contains("image")
+        || n.contains("multimodal");
     let has_audio = n.contains("audio") || n.contains("whisper") || n.contains("tts");
-    let has_reasoning = n.contains("r1") || n.contains("reason") || n.contains("o1")
-        || n.contains("o3") || n.contains("o4") || n.contains("qwq")
-        || n.contains("thinking") || n.contains("deepthink") || n.contains("-z1")
-        || n.contains("t1") || n.contains("seed") || n.contains("reasoner");
-    let has_coding = n.contains("coder") || n.contains("code") || n.contains("dev")
-        || n.contains("programming");
-    let has_long_context = n.contains("128k") || n.contains("32k") || n.contains("64k")
-        || n.contains("200k") || n.contains("long") || n.contains("yarn");
+    let has_reasoning = n.contains("r1")
+        || n.contains("reason")
+        || n.contains("o1")
+        || n.contains("o3")
+        || n.contains("o4")
+        || n.contains("qwq")
+        || n.contains("thinking")
+        || n.contains("deepthink")
+        || n.contains("-z1")
+        || n.contains("t1")
+        || n.contains("seed")
+        || n.contains("reasoner");
+    let has_coding =
+        n.contains("coder") || n.contains("code") || n.contains("dev") || n.contains("programming");
+    let has_long_context = n.contains("128k")
+        || n.contains("32k")
+        || n.contains("64k")
+        || n.contains("200k")
+        || n.contains("long")
+        || n.contains("yarn");
     let has_tool_use = n.contains("tool") || n.contains("agent") || n.contains("function");
-    let has_embedding = n.contains("embed") || n.contains("nomic") || n.contains("bge")
-        || n.contains("mxbai") || n.contains("e5") || n.contains("rerank");
-    let has_speedy = n.contains("mini") || n.contains("flash") || n.contains("haiku")
-        || n.contains("nano") || n.contains("lite") || n.contains("speed")
-        || n.contains("1.5b") || n.contains("3b") || n.contains("7b") || n.contains("8b");
+    let has_embedding = n.contains("embed")
+        || n.contains("nomic")
+        || n.contains("bge")
+        || n.contains("mxbai")
+        || n.contains("e5")
+        || n.contains("rerank");
+    let has_speedy = n.contains("mini")
+        || n.contains("flash")
+        || n.contains("haiku")
+        || n.contains("nano")
+        || n.contains("lite")
+        || n.contains("speed")
+        || n.contains("1.5b")
+        || n.contains("3b")
+        || n.contains("7b")
+        || n.contains("8b");
 
     CapResult {
-        has_vision, has_audio, has_reasoning, has_coding,
-        has_long_context, has_tool_use, has_embedding, has_speedy,
+        has_vision,
+        has_audio,
+        has_reasoning,
+        has_coding,
+        has_long_context,
+        has_tool_use,
+        has_embedding,
+        has_speedy,
         source: "heuristic",
     }
 }
@@ -666,7 +1096,8 @@ pub async fn fetch_remote_models(
 ) -> Result<Vec<PlatformModel>, String> {
     let (api_type, api_key, api_address) = {
         let conn = db.get_connection().map_err(|e| e.to_string())?;
-        let mut stmt = conn.prepare("SELECT api_type, api_key, api_address FROM model_platforms WHERE id = ?1")
+        let mut stmt = conn
+            .prepare("SELECT api_type, api_key, api_address FROM model_platforms WHERE id = ?1")
             .map_err(|e| e.to_string())?;
         stmt.query_row(params![platform_id], |row| {
             Ok((
@@ -674,7 +1105,8 @@ pub async fn fetch_remote_models(
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
             ))
-        }).map_err(|e| e.to_string())?
+        })
+        .map_err(|e| e.to_string())?
     };
     let api_key = crate::crypto::decrypt(&api_key);
 
@@ -691,199 +1123,253 @@ pub async fn fetch_remote_models(
             model_names.push((*name).to_string());
         }
     } else {
-    match api_type.as_str() {
-        "ollama" => {
-            let url = join_url(&api_address, "/api/tags");
-            if let Ok(resp) = client.get(&url).send().await {
-                if resp.status().is_success() {
-                    #[derive(serde::Deserialize)]
-                    struct OllamaModel { name: String }
-                    #[derive(serde::Deserialize)]
-                    struct OllamaTags { models: Vec<OllamaModel> }
-                    if let Ok(tags) = resp.json::<OllamaTags>().await {
-                        for m in tags.models { model_names.push(m.name); }
+        match api_type.as_str() {
+            "ollama" => {
+                let url = join_url(&api_address, "/api/tags");
+                if let Ok(resp) = client.get(&url).send().await {
+                    if resp.status().is_success() {
+                        #[derive(serde::Deserialize)]
+                        struct OllamaModel {
+                            name: String,
+                        }
+                        #[derive(serde::Deserialize)]
+                        struct OllamaTags {
+                            models: Vec<OllamaModel>,
+                        }
+                        if let Ok(tags) = resp.json::<OllamaTags>().await {
+                            for m in tags.models {
+                                model_names.push(m.name);
+                            }
+                        }
                     }
                 }
             }
-        }
-        "openai" | "openai-response" | "openai-compatible" => {
-            // ── Volcano (火山方舟) special handling ─────────────────────────
-            // Volcano's "codingplan" / "/api/coding" endpoints are CHAT endpoints,
-            // not model-list endpoints. Calling /api/v3/models returns the WHOLE
-            // tenant's models (including proxied Claude/GPT/etc.), which is
-            // WRONG for codingplan users — they want their doubao endpoint IDs
-            // and custom inference profiles, not random tenant models.
-            //
-            // Per user feedback (Round 5 + 6): we MUST NOT auto-fetch from the
-            // tenant URL. Instead, return the well-known doubao model family
-            // and let the user add their own endpoint IDs in the Model Modal.
-            let is_volcano = api_address.contains("volces.com")
-                || api_address.contains("ark.cn-beijing");
-            if is_volcano {
-                for name in [
-                    "doubao-seed-1.6",
-                    "doubao-1.5-pro-32k",
-                    "doubao-1.5-pro-256k",
-                    "doubao-1.5-lite-32k",
-                    "doubao-pro-32k",
-                    "doubao-pro-128k",
-                    "doubao-lite-32k",
-                    "doubao-lite-128k",
-                    "doubao-embedding",
-                ] {
-                    model_names.push(name.to_string());
+            "openai" | "openai-response" | "openai-compatible" => {
+                // ── Volcano (火山方舟) special handling ─────────────────────────
+                // Volcano's "codingplan" / "/api/coding" endpoints are CHAT endpoints,
+                // not model-list endpoints. Calling /api/v3/models returns the WHOLE
+                // tenant's models (including proxied Claude/GPT/etc.), which is
+                // WRONG for codingplan users — they want their doubao endpoint IDs
+                // and custom inference profiles, not random tenant models.
+                //
+                // Per user feedback (Round 5 + 6): we MUST NOT auto-fetch from the
+                // tenant URL. Instead, return the well-known doubao model family
+                // and let the user add their own endpoint IDs in the Model Modal.
+                let is_volcano =
+                    api_address.contains("volces.com") || api_address.contains("ark.cn-beijing");
+                if is_volcano {
+                    for name in [
+                        "doubao-seed-1.6",
+                        "doubao-1.5-pro-32k",
+                        "doubao-1.5-pro-256k",
+                        "doubao-1.5-lite-32k",
+                        "doubao-pro-32k",
+                        "doubao-pro-128k",
+                        "doubao-lite-32k",
+                        "doubao-lite-128k",
+                        "doubao-embedding",
+                    ] {
+                        model_names.push(name.to_string());
+                    }
+                    // Skip the generic OpenAI path entirely — Volcano endpoint IDs
+                    // are tenant-specific and cannot be discovered safely.
+                } else {
+                    // Generic OpenAI-compatible: try /models on the user's address.
+                    let primary_url = join_url(&api_address, "/models");
+                    let mut req = client.get(&primary_url);
+                    if !api_key.trim().is_empty() {
+                        req = req.header("Authorization", format!("Bearer {}", api_key.trim()));
+                    }
+                    match req.send().await {
+                        Ok(resp) if resp.status().is_success() => {
+                            #[derive(serde::Deserialize)]
+                            struct OpenAIModel {
+                                id: String,
+                            }
+                            #[derive(serde::Deserialize)]
+                            struct OpenAIModels {
+                                data: Vec<OpenAIModel>,
+                            }
+                            if let Ok(models_list) = resp.json::<OpenAIModels>().await {
+                                for m in models_list.data {
+                                    model_names.push(m.id);
+                                }
+                            }
+                        }
+                        Ok(resp) => {
+                            return Err(format!(
+                                "模型列表 API 返回错误 (HTTP {}), 请检查 API Key 和地址",
+                                resp.status().as_u16()
+                            ));
+                        }
+                        Err(e) => {
+                            return Err(format!(
+                                "模型列表 API 请求失败: {}, 请检查网络和 API 地址",
+                                e
+                            ));
+                        }
+                    }
                 }
-                // Skip the generic OpenAI path entirely — Volcano endpoint IDs
-                // are tenant-specific and cannot be discovered safely.
-            } else {
-                // Generic OpenAI-compatible: try /models on the user's address.
-                let primary_url = join_url(&api_address, "/models");
-                let mut req = client.get(&primary_url);
+            }
+            "anthropic" => {
+                let url = join_url(&api_address, "/v1/models");
+                let mut fetched = false;
+                let mut req = client.get(&url);
+                if !api_key.trim().is_empty() {
+                    req = req
+                        .header("x-api-key", api_key.trim())
+                        .header("anthropic-version", "2023-06-01");
+                }
+                if let Ok(resp) = req.send().await {
+                    if resp.status().is_success() {
+                        #[derive(serde::Deserialize)]
+                        struct AntModel {
+                            id: String,
+                        }
+                        #[derive(serde::Deserialize)]
+                        struct AntModels {
+                            data: Vec<AntModel>,
+                        }
+                        if let Ok(models_list) = resp.json::<AntModels>().await {
+                            for m in models_list.data {
+                                model_names.push(m.id);
+                            }
+                            fetched = true;
+                        }
+                    }
+                }
+                if !fetched {
+                    // Fallback: known Anthropic models
+                    for name in [
+                        "claude-sonnet-4-20250514",
+                        "claude-3-5-sonnet-20241022",
+                        "claude-3-5-haiku-20241022",
+                        "claude-3-opus-20240229",
+                        "claude-3-5-sonnet",
+                        "claude-3-5-haiku",
+                    ] {
+                        model_names.push(name.to_string());
+                    }
+                }
+            }
+            "gemini" => {
+                // Gemini: GET {base}/v1beta/models?key={api_key}
+                let base = api_address.trim_end_matches('/');
+                let url = format!("{}/v1beta/models?key={}", base, api_key.trim());
+                if let Ok(resp) = client.get(&url).send().await {
+                    if resp.status().is_success() {
+                        #[derive(serde::Deserialize)]
+                        struct GeminiModel {
+                            name: String,
+                        }
+                        #[derive(serde::Deserialize)]
+                        struct GeminiModels {
+                            models: Vec<GeminiModel>,
+                        }
+                        if let Ok(models_list) = resp.json::<GeminiModels>().await {
+                            for m in models_list.models {
+                                // Strip "models/" prefix from Gemini API response
+                                let name = m
+                                    .name
+                                    .strip_prefix("models/")
+                                    .unwrap_or(&m.name)
+                                    .to_string();
+                                model_names.push(name);
+                            }
+                        }
+                    }
+                }
+            }
+            "mistral" => {
+                let url = join_url(&api_address, "/v1/models");
+                let mut req = client.get(&url);
                 if !api_key.trim().is_empty() {
                     req = req.header("Authorization", format!("Bearer {}", api_key.trim()));
                 }
-                match req.send().await {
-                    Ok(resp) if resp.status().is_success() => {
+                if let Ok(resp) = req.send().await {
+                    if resp.status().is_success() {
                         #[derive(serde::Deserialize)]
-                        struct OpenAIModel { id: String }
+                        struct MistralModel {
+                            id: String,
+                        }
                         #[derive(serde::Deserialize)]
-                        struct OpenAIModels { data: Vec<OpenAIModel> }
-                        if let Ok(models_list) = resp.json::<OpenAIModels>().await {
+                        struct MistralModels {
+                            data: Vec<MistralModel>,
+                        }
+                        if let Ok(models_list) = resp.json::<MistralModels>().await {
                             for m in models_list.data {
                                 model_names.push(m.id);
                             }
                         }
                     }
-                    Ok(resp) => {
-                        return Err(format!(
-                            "模型列表 API 返回错误 (HTTP {}), 请检查 API Key 和地址",
-                            resp.status().as_u16()
-                        ));
-                    }
-                    Err(e) => {
-                        return Err(format!("模型列表 API 请求失败: {}, 请检查网络和 API 地址", e));
-                    }
                 }
             }
-        }
-        "anthropic" => {
-            let url = join_url(&api_address, "/v1/models");
-            let mut fetched = false;
-            let mut req = client.get(&url);
-            if !api_key.trim().is_empty() {
-                req = req.header("x-api-key", api_key.trim())
-                     .header("anthropic-version", "2023-06-01");
-            }
-            if let Ok(resp) = req.send().await {
-                if resp.status().is_success() {
-                    #[derive(serde::Deserialize)]
-                    struct AntModel { id: String }
-                    #[derive(serde::Deserialize)]
-                    struct AntModels { data: Vec<AntModel> }
-                    if let Ok(models_list) = resp.json::<AntModels>().await {
-                        for m in models_list.data { model_names.push(m.id); }
-                        fetched = true;
+            "new-api" => {
+                // new-api gateways use the same /v1/models as OpenAI
+                let url = join_url(&api_address, "/v1/models");
+                let mut req = client.get(&url);
+                if !api_key.trim().is_empty() {
+                    req = req.header("Authorization", format!("Bearer {}", api_key.trim()));
+                }
+                if let Ok(resp) = req.send().await {
+                    if resp.status().is_success() {
+                        #[derive(serde::Deserialize)]
+                        struct NewApiModel {
+                            id: String,
+                        }
+                        #[derive(serde::Deserialize)]
+                        struct NewApiModels {
+                            data: Vec<NewApiModel>,
+                        }
+                        if let Ok(models_list) = resp.json::<NewApiModels>().await {
+                            for m in models_list.data {
+                                model_names.push(m.id);
+                            }
+                        }
                     }
                 }
             }
-            if !fetched {
-                // Fallback: known Anthropic models
-                for name in ["claude-sonnet-4-20250514", "claude-3-5-sonnet-20241022",
-                    "claude-3-5-haiku-20241022", "claude-3-opus-20240229",
-                    "claude-3-5-sonnet", "claude-3-5-haiku"] {
-                    model_names.push(name.to_string());
-                }
+            "azure-openai" => {
+                // Azure OpenAI does not support a model list API
+                // Return empty — user must add models manually
             }
-        }
-        "gemini" => {
-            // Gemini: GET {base}/v1beta/models?key={api_key}
-            let base = api_address.trim_end_matches('/');
-            let url = format!("{}/v1beta/models?key={}", base, api_key.trim());
-            if let Ok(resp) = client.get(&url).send().await {
-                if resp.status().is_success() {
-                    #[derive(serde::Deserialize)]
-                    struct GeminiModel { name: String }
-                    #[derive(serde::Deserialize)]
-                    struct GeminiModels { models: Vec<GeminiModel> }
-                    if let Ok(models_list) = resp.json::<GeminiModels>().await {
-                        for m in models_list.models {
-                            // Strip "models/" prefix from Gemini API response
-                            let name = m.name.strip_prefix("models/").unwrap_or(&m.name).to_string();
-                            model_names.push(name);
+            _ => {
+                // Default fallback: try OpenAI-compatible /models
+                let url = join_url(&api_address, "/models");
+                let mut req = client.get(&url);
+                if !api_key.trim().is_empty() {
+                    req = req.header("Authorization", format!("Bearer {}", api_key.trim()));
+                }
+                if let Ok(resp) = req.send().await {
+                    if resp.status().is_success() {
+                        #[derive(serde::Deserialize)]
+                        struct FallbackModel {
+                            id: String,
+                        }
+                        #[derive(serde::Deserialize)]
+                        struct FallbackModels {
+                            data: Vec<FallbackModel>,
+                        }
+                        if let Ok(models_list) = resp.json::<FallbackModels>().await {
+                            for m in models_list.data {
+                                model_names.push(m.id);
+                            }
                         }
                     }
                 }
             }
         }
-        "mistral" => {
-            let url = join_url(&api_address, "/v1/models");
-            let mut req = client.get(&url);
-            if !api_key.trim().is_empty() {
-                req = req.header("Authorization", format!("Bearer {}", api_key.trim()));
-            }
-            if let Ok(resp) = req.send().await {
-                if resp.status().is_success() {
-                    #[derive(serde::Deserialize)]
-                    struct MistralModel { id: String }
-                    #[derive(serde::Deserialize)]
-                    struct MistralModels { data: Vec<MistralModel> }
-                    if let Ok(models_list) = resp.json::<MistralModels>().await {
-                        for m in models_list.data { model_names.push(m.id); }
-                    }
-                }
-            }
-        }
-        "new-api" => {
-            // new-api gateways use the same /v1/models as OpenAI
-            let url = join_url(&api_address, "/v1/models");
-            let mut req = client.get(&url);
-            if !api_key.trim().is_empty() {
-                req = req.header("Authorization", format!("Bearer {}", api_key.trim()));
-            }
-            if let Ok(resp) = req.send().await {
-                if resp.status().is_success() {
-                    #[derive(serde::Deserialize)]
-                    struct NewApiModel { id: String }
-                    #[derive(serde::Deserialize)]
-                    struct NewApiModels { data: Vec<NewApiModel> }
-                    if let Ok(models_list) = resp.json::<NewApiModels>().await {
-                        for m in models_list.data { model_names.push(m.id); }
-                    }
-                }
-            }
-        }
-        "azure-openai" => {
-            // Azure OpenAI does not support a model list API
-            // Return empty — user must add models manually
-        }
-        _ => {
-            // Default fallback: try OpenAI-compatible /models
-            let url = join_url(&api_address, "/models");
-            let mut req = client.get(&url);
-            if !api_key.trim().is_empty() {
-                req = req.header("Authorization", format!("Bearer {}", api_key.trim()));
-            }
-            if let Ok(resp) = req.send().await {
-                if resp.status().is_success() {
-                    #[derive(serde::Deserialize)]
-                    struct FallbackModel { id: String }
-                    #[derive(serde::Deserialize)]
-                    struct FallbackModels { data: Vec<FallbackModel> }
-                    if let Ok(models_list) = resp.json::<FallbackModels>().await {
-                        for m in models_list.data { model_names.push(m.id); }
-                    }
-                }
-            }
-        }
-    }
     }
 
     let conn = db.get_connection().map_err(|e| e.to_string())?;
     let mut imported_models = Vec::new();
 
     if !model_names.is_empty() {
-        conn.execute("DELETE FROM platform_models WHERE platform_id = ?1", params![&platform_id])
-            .map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM platform_models WHERE platform_id = ?1",
+            params![&platform_id],
+        )
+        .map_err(|e| e.to_string())?;
     }
 
     for name in model_names {
@@ -945,7 +1431,7 @@ pub async fn fetch_remote_models(
 /// auth-failed, rate-limited, unreachable, and no-key states.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct HealthCheckDetail {
-    pub status: String,        // success | auth_error | rate_limited | error | unreachable | no_api_key
+    pub status: String, // success | auth_error | rate_limited | error | unreachable | no_api_key
     pub http_code: Option<u16>,
     pub latency_ms: Option<u64>,
     pub message: String,
@@ -964,7 +1450,11 @@ fn classify_http_status(code: u16) -> &'static str {
 }
 
 /// Build a HealthCheckDetail from a successful HTTP response.
-fn health_from_response(code: u16, _latency: std::time::Instant, start: std::time::Instant) -> HealthCheckDetail {
+fn health_from_response(
+    code: u16,
+    _latency: std::time::Instant,
+    start: std::time::Instant,
+) -> HealthCheckDetail {
     let status = classify_http_status(code);
     let msg = match status {
         "success" => "模型可用".into(),
@@ -987,12 +1477,14 @@ pub async fn check_model_status(
 ) -> Result<HealthCheckDetail, String> {
     let (_platform_id, model_name, api_type, api_key, api_address) = {
         let conn = db.get_connection().map_err(|e| e.to_string())?;
-        let mut stmt = conn.prepare(
-            "SELECT pm.platform_id, pm.model_name, mp.api_type, mp.api_key, mp.api_address
+        let mut stmt = conn
+            .prepare(
+                "SELECT pm.platform_id, pm.model_name, mp.api_type, mp.api_key, mp.api_address
              FROM platform_models pm
              JOIN model_platforms mp ON pm.platform_id = mp.id
-             WHERE pm.id = ?1"
-        ).map_err(|e| e.to_string())?;
+             WHERE pm.id = ?1",
+            )
+            .map_err(|e| e.to_string())?;
         stmt.query_row(params![model_id], |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -1001,7 +1493,8 @@ pub async fn check_model_status(
                 row.get::<_, String>(3)?,
                 row.get::<_, String>(4)?,
             ))
-        }).map_err(|e| e.to_string())?
+        })
+        .map_err(|e| e.to_string())?
     };
     let api_key = crate::crypto::decrypt(&api_key);
 
@@ -1014,7 +1507,10 @@ pub async fn check_model_status(
             message: "未配置 API Key".into(),
         };
         let conn = db.get_connection().map_err(|e| e.to_string())?;
-        let _ = conn.execute("UPDATE platform_models SET status = ?1 WHERE id = ?2", params!["no_api_key", model_id]);
+        let _ = conn.execute(
+            "UPDATE platform_models SET status = ?1 WHERE id = ?2",
+            params!["no_api_key", model_id],
+        );
         return Ok(detail);
     }
 
@@ -1045,7 +1541,12 @@ pub async fn check_model_status(
         }
         "gemini" => {
             let base = api_address.trim_end_matches('/');
-            let url = format!("{}/v1beta/models/{}:generateContent?key={}", base, model_name, api_key.trim());
+            let url = format!(
+                "{}/v1beta/models/{}:generateContent?key={}",
+                base,
+                model_name,
+                api_key.trim()
+            );
             let body = serde_json::json!({
                 "contents": [{"parts": [{"text": "ping"}]}],
                 "generationConfig": {"maxOutputTokens": 1}
@@ -1061,7 +1562,8 @@ pub async fn check_model_status(
                 "messages": [{"role": "user", "content": "ping"}],
                 "max_tokens": 1
             });
-            let mut req = client.post(&url)
+            let mut req = client
+                .post(&url)
                 .header("anthropic-version", "2023-06-01")
                 .header("content-type", "application/json");
             if !api_key.trim().is_empty() {
@@ -1105,11 +1607,17 @@ pub async fn batch_check_models(
 ) -> Result<Vec<PlatformModel>, String> {
     let (api_type, api_key, api_address) = {
         let conn = db.get_connection().map_err(|e| e.to_string())?;
-        let mut stmt = conn.prepare("SELECT api_type, api_key, api_address FROM model_platforms WHERE id = ?1")
+        let mut stmt = conn
+            .prepare("SELECT api_type, api_key, api_address FROM model_platforms WHERE id = ?1")
             .map_err(|e| e.to_string())?;
         stmt.query_row(params![platform_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
-        }).map_err(|e| e.to_string())?
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?
     };
     let api_key = crate::crypto::decrypt(&api_key);
 
@@ -1121,20 +1629,28 @@ pub async fn batch_check_models(
             params![platform_id],
         );
         // Return updated list
-        let sql = format!("SELECT {} FROM platform_models WHERE platform_id = ?1", PM_COLUMNS);
+        let sql = format!(
+            "SELECT {} FROM platform_models WHERE platform_id = ?1",
+            PM_COLUMNS
+        );
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-        let rows = stmt.query_map(params![platform_id], |row| row_to_platform_model(row)).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![platform_id], |row| row_to_platform_model(row))
+            .map_err(|e| e.to_string())?;
         return Ok(rows.filter_map(|r| r.ok()).collect());
     }
 
     // Load all models for this platform
     let models: Vec<(String, String)> = {
         let conn = db.get_connection().map_err(|e| e.to_string())?;
-        let mut stmt = conn.prepare("SELECT id, model_name FROM platform_models WHERE platform_id = ?1")
+        let mut stmt = conn
+            .prepare("SELECT id, model_name FROM platform_models WHERE platform_id = ?1")
             .map_err(|e| e.to_string())?;
-        let rows = stmt.query_map(params![platform_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        }).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![platform_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| e.to_string())?;
         rows.filter_map(|r| r.ok()).collect()
     };
 
@@ -1166,7 +1682,12 @@ pub async fn batch_check_models(
                 }
                 "gemini" => {
                     let base = aaddr.trim_end_matches('/');
-                    let url = format!("{}/v1beta/models/{}:generateContent?key={}", base, mname, akey.trim());
+                    let url = format!(
+                        "{}/v1beta/models/{}:generateContent?key={}",
+                        base,
+                        mname,
+                        akey.trim()
+                    );
                     let body = serde_json::json!({"contents": [{"parts": [{"text": "ping"}]}], "generationConfig": {"maxOutputTokens": 1}});
                     if let Ok(resp) = cl.post(&url).json(&body).send().await {
                         status = classify_http_status(resp.status().as_u16());
@@ -1175,8 +1696,13 @@ pub async fn batch_check_models(
                 "anthropic" => {
                     let url = join_url(&aaddr, "/v1/messages");
                     let body = serde_json::json!({"model": mname, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1});
-                    let mut req = cl.post(&url).header("anthropic-version", "2023-06-01").header("content-type", "application/json");
-                    if !akey.trim().is_empty() { req = req.header("x-api-key", akey.trim()); }
+                    let mut req = cl
+                        .post(&url)
+                        .header("anthropic-version", "2023-06-01")
+                        .header("content-type", "application/json");
+                    if !akey.trim().is_empty() {
+                        req = req.header("x-api-key", akey.trim());
+                    }
                     if let Ok(resp) = req.json(&body).send().await {
                         status = classify_http_status(resp.status().as_u16());
                     }
@@ -1185,7 +1711,9 @@ pub async fn batch_check_models(
                     let url = join_url(&aaddr, "/chat/completions");
                     let body = serde_json::json!({"model": mname, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1});
                     let mut req = cl.post(&url);
-                    if !akey.trim().is_empty() { req = req.header("Authorization", format!("Bearer {}", akey.trim())); }
+                    if !akey.trim().is_empty() {
+                        req = req.header("Authorization", format!("Bearer {}", akey.trim()));
+                    }
                     if let Ok(resp) = req.json(&body).send().await {
                         status = classify_http_status(resp.status().as_u16());
                     }
@@ -1209,17 +1737,29 @@ pub async fn batch_check_models(
     {
         let conn = db.get_connection().map_err(|e| e.to_string())?;
         for (model_id, status) in &results {
-            let _ = conn.execute("UPDATE platform_models SET status = ?1 WHERE id = ?2", params![status, model_id]);
+            let _ = conn.execute(
+                "UPDATE platform_models SET status = ?1 WHERE id = ?2",
+                params![status, model_id],
+            );
         }
     }
 
     // Return the updated full model list
     let conn = db.get_connection().map_err(|e| e.to_string())?;
-    let sql = format!("SELECT {} FROM platform_models WHERE platform_id = ?1", PM_COLUMNS);
+    let sql = format!(
+        "SELECT {} FROM platform_models WHERE platform_id = ?1",
+        PM_COLUMNS
+    );
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    let rows = stmt.query_map(params![platform_id], |row| row_to_platform_model(row)).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![platform_id], |row| row_to_platform_model(row))
+        .map_err(|e| e.to_string())?;
     let mut updated = Vec::new();
-    for r in rows { if let Ok(m) = r { updated.push(m); } }
+    for r in rows {
+        if let Ok(m) = r {
+            updated.push(m);
+        }
+    }
     Ok(updated)
 }
 
@@ -1235,24 +1775,37 @@ pub fn reinfer_model_capabilities(
     let models: Vec<(String, String)> = {
         let conn = db.get_connection().map_err(|e| e.to_string())?;
         if let Some(mid) = model_id {
-            let name: String = conn.query_row(
-                "SELECT model_name FROM platform_models WHERE id = ?1",
-                params![mid], |r| r.get(0),
-            ).map_err(|e| e.to_string())?;
+            let name: String = conn
+                .query_row(
+                    "SELECT model_name FROM platform_models WHERE id = ?1",
+                    params![mid],
+                    |r| r.get(0),
+                )
+                .map_err(|e| e.to_string())?;
             vec![(mid, name)]
         } else if let Some(pid) = platform_id {
-            let mut stmt = conn.prepare("SELECT id, model_name FROM platform_models WHERE platform_id = ?1")
+            let mut stmt = conn
+                .prepare("SELECT id, model_name FROM platform_models WHERE platform_id = ?1")
                 .map_err(|e| e.to_string())?;
-            let rows: Vec<_> = stmt.query_map(params![pid], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+            let rows: Vec<_> = stmt
+                .query_map(params![pid], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok())
+                .collect();
             rows
         } else {
-            let mut stmt = conn.prepare("SELECT id, model_name FROM platform_models")
+            let mut stmt = conn
+                .prepare("SELECT id, model_name FROM platform_models")
                 .map_err(|e| e.to_string())?;
-            let rows: Vec<_> = stmt.query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+            let rows: Vec<_> = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok())
+                .collect();
             rows
         }
     }; // conn dropped here
@@ -1276,7 +1829,9 @@ pub fn reinfer_model_capabilities(
                 id,
             ],
         );
-        if let Ok(_) = result { count += 1; }
+        if let Ok(_) = result {
+            count += 1;
+        }
     }
 
     Ok(count)
@@ -1292,8 +1847,12 @@ pub struct PlatformApiKey {
     pub id: String,
     pub platform_id: String,
     pub label: String,
-    pub masked_key: String,   // e.g. "sk-...8f3d"
+    pub masked_key: String, // e.g. "sk-...8f3d"
     pub is_active: bool,
+    pub last_status: String,
+    pub last_error: Option<String>,
+    pub latency_ms: Option<i64>,
+    pub last_checked_at: Option<String>,
     pub created_at: String,
 }
 
@@ -1302,7 +1861,7 @@ fn mask_api_key(key: &str) -> String {
     if key.len() <= 8 {
         return "*".repeat(key.len());
     }
-    format!("{}...{}", &key[..4], &key[key.len()-4..])
+    format!("{}...{}", &key[..4], &key[key.len() - 4..])
 }
 
 /// Add an API key to a platform (encrypted)
@@ -1325,10 +1884,13 @@ pub fn add_platform_api_key(
     let conn = db.get_connection().map_err(|e| e.to_string())?;
 
     // If this is the first key for this platform, make it active
-    let existing: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM platform_api_keys WHERE platform_id = ?1",
-        params![platform_id], |r| r.get(0),
-    ).unwrap_or(0);
+    let existing: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM platform_api_keys WHERE platform_id = ?1",
+            params![platform_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
     let is_active = existing == 0;
 
     conn.execute(
@@ -1352,6 +1914,10 @@ pub fn add_platform_api_key(
         label: lbl,
         masked_key: masked,
         is_active,
+        last_status: "unknown".into(),
+        last_error: None,
+        latency_ms: None,
+        last_checked_at: None,
         created_at: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
     })
 }
@@ -1363,22 +1929,34 @@ pub fn list_platform_api_keys(
     db: State<'_, Arc<DbManager>>,
 ) -> Result<Vec<PlatformApiKey>, String> {
     let conn = db.get_connection().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare(
-        "SELECT id, platform_id, encrypted_key, label, is_active, created_at FROM platform_api_keys WHERE platform_id = ?1 ORDER BY created_at ASC"
-    ).map_err(|e| e.to_string())?;
-    let rows = stmt.query_map(params![platform_id], |row| {
-        let encrypted: String = row.get(2)?;
-        let decrypted = crate::crypto::decrypt(&encrypted);
-        let masked = mask_api_key(&decrypted);
-        Ok(PlatformApiKey {
-            id: row.get(0)?,
-            platform_id: row.get(1)?,
-            label: row.get(3)?,
-            masked_key: masked,
-            is_active: row.get::<_, i32>(4)? == 1,
-            created_at: row.get::<_, String>(5).unwrap_or_default(),
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, platform_id, encrypted_key, label, is_active, created_at,
+                last_status, last_error, latency_ms, last_checked_at
+         FROM platform_api_keys
+         WHERE platform_id = ?1
+         ORDER BY is_active DESC, priority DESC, created_at ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![platform_id], |row| {
+            let encrypted: String = row.get(2)?;
+            let decrypted = crate::crypto::decrypt(&encrypted);
+            let masked = mask_api_key(&decrypted);
+            Ok(PlatformApiKey {
+                id: row.get(0)?,
+                platform_id: row.get(1)?,
+                label: row.get(3)?,
+                masked_key: masked,
+                is_active: row.get::<_, i32>(4)? == 1,
+                last_status: row.get(6).unwrap_or_else(|_| "unknown".into()),
+                last_error: row.get(7).ok(),
+                latency_ms: row.get(8).ok(),
+                last_checked_at: row.get(9).ok(),
+                created_at: row.get::<_, String>(5).unwrap_or_default(),
+            })
         })
-    }).map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
@@ -1391,29 +1969,35 @@ pub fn select_platform_api_key(
     let conn = db.get_connection().map_err(|e| e.to_string())?;
 
     // Get the key's platform_id and decrypted value
-    let (platform_id, decrypted): (String, String) = conn.query_row(
-        "SELECT platform_id, encrypted_key FROM platform_api_keys WHERE id = ?1",
-        params![key_id], |row| {
-            let enc: String = row.get(1)?;
-            Ok((row.get(0)?, crate::crypto::decrypt(&enc)))
-        },
-    ).map_err(|e| e.to_string())?;
+    let (platform_id, decrypted): (String, String) = conn
+        .query_row(
+            "SELECT platform_id, encrypted_key FROM platform_api_keys WHERE id = ?1",
+            params![key_id],
+            |row| {
+                let enc: String = row.get(1)?;
+                Ok((row.get(0)?, crate::crypto::decrypt(&enc)))
+            },
+        )
+        .map_err(|e| e.to_string())?;
 
     // Deactivate all keys for this platform, then activate the selected one
     conn.execute(
         "UPDATE platform_api_keys SET is_active = 0 WHERE platform_id = ?1",
         params![platform_id],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
     conn.execute(
         "UPDATE platform_api_keys SET is_active = 1 WHERE id = ?1",
         params![key_id],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
 
     // Write the active key to model_platforms.api_key for backward compat
     conn.execute(
         "UPDATE model_platforms SET api_key = ?1 WHERE id = ?2",
         params![decrypted, platform_id],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -1427,18 +2011,27 @@ pub fn delete_platform_api_key(
     let conn = db.get_connection().map_err(|e| e.to_string())?;
 
     // Check if this was the active key
-    let was_active: bool = conn.query_row(
-        "SELECT is_active FROM platform_api_keys WHERE id = ?1",
-        params![key_id], |r| r.get::<_, i32>(0).map(|v| v == 1),
-    ).unwrap_or(false);
+    let was_active: bool = conn
+        .query_row(
+            "SELECT is_active FROM platform_api_keys WHERE id = ?1",
+            params![key_id],
+            |r| r.get::<_, i32>(0).map(|v| v == 1),
+        )
+        .unwrap_or(false);
 
-    let platform_id: Option<String> = conn.query_row(
-        "SELECT platform_id FROM platform_api_keys WHERE id = ?1",
-        params![key_id], |r| r.get(0),
-    ).ok();
+    let platform_id: Option<String> = conn
+        .query_row(
+            "SELECT platform_id FROM platform_api_keys WHERE id = ?1",
+            params![key_id],
+            |r| r.get(0),
+        )
+        .ok();
 
-    conn.execute("DELETE FROM platform_api_keys WHERE id = ?1", params![key_id])
-        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM platform_api_keys WHERE id = ?1",
+        params![key_id],
+    )
+    .map_err(|e| e.to_string())?;
 
     // If deleted key was active, activate the next available key
     if was_active {
@@ -1451,7 +2044,10 @@ pub fn delete_platform_api_key(
                 let _ = select_platform_api_key(nid, db);
             } else {
                 // No keys left — clear the active key
-                let _ = conn.execute("UPDATE model_platforms SET api_key = '' WHERE id = ?1", params![pid]);
+                let _ = conn.execute(
+                    "UPDATE model_platforms SET api_key = '' WHERE id = ?1",
+                    params![pid],
+                );
             }
         }
     }
@@ -1466,9 +2062,12 @@ pub fn reveal_platform_api_key(
     db: State<'_, Arc<DbManager>>,
 ) -> Result<String, String> {
     let conn = db.get_connection().map_err(|e| e.to_string())?;
-    let encrypted: String = conn.query_row(
-        "SELECT encrypted_key FROM platform_api_keys WHERE id = ?1",
-        params![key_id], |r| r.get(0),
-    ).map_err(|e| e.to_string())?;
+    let encrypted: String = conn
+        .query_row(
+            "SELECT encrypted_key FROM platform_api_keys WHERE id = ?1",
+            params![key_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
     Ok(crate::crypto::decrypt(&encrypted))
 }

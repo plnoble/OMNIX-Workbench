@@ -1,7 +1,7 @@
 {
   "decision_id": "DEC-018",
   "topic": "借鉴 SkillsLM 的 Skill 同步管理机制，升级 OMNIX Skill 系统",
-  "context": "通过逆向分析 SkillsLM.exe (Go+Wails v2+SQLite)，发现其 Skill 同步引擎、工具适配器、Git技能源等机制值得借鉴到 OMNIX DevFlow",
+  "context": "通过逆向分析 SkillsLM.exe (Go+Wails v2+SQLite)，发现其 Skill 同步引擎、工具适配器、Git技能源等机制值得借鉴到 OMNIX Workbench",
   "options_considered": [
     "A. 仅借鉴同步引擎概念，自行重新设计",
     "B. 深度借鉴 SkillsLM 的完整数据模型+同步机制+工具适配器架构，适配到 Tauri/Rust 技术栈",

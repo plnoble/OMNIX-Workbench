@@ -23,6 +23,8 @@ export interface UseSelectionReturn {
   captureMode: "hybrid" | "uia_only" | "clipboard_only";
   showOnCapture: boolean;
   preserveClipboard: boolean;
+  autoCaptureEnabled: boolean;
+  blacklist: string[];
 
   // History
   selectionHistory: SelectionHistoryEntry[];
@@ -36,6 +38,8 @@ export interface UseSelectionReturn {
     captureMode: "hybrid" | "uia_only" | "clipboard_only";
     showOnCapture: boolean;
     preserveClipboard: boolean;
+    autoCaptureEnabled: boolean;
+    blacklist: string[];
   }>) => Promise<void>;
   loadHistory: () => Promise<void>;
   deleteHistoryItem: (id: string) => Promise<void>;
@@ -53,6 +57,8 @@ export function useSelection(): UseSelectionReturn {
   const [captureMode, setCaptureMode] = useState<"hybrid" | "uia_only" | "clipboard_only">("hybrid");
   const [showOnCapture, setShowOnCapture] = useState(true);
   const [preserveClipboard, setPreserveClipboard] = useState(false);
+  const [autoCaptureEnabled, setAutoCaptureEnabled] = useState(false);
+  const [blacklist, setBlacklist] = useState<string[]>([]);
 
   // ── History state ─────────────────────────────────
   const [selectionHistory, setSelectionHistory] = useState<SelectionHistoryEntry[]>([]);
@@ -96,11 +102,13 @@ export function useSelection(): UseSelectionReturn {
 
   const loadSelectionSettings = useCallback(async () => {
     try {
-      const [shortcut, mode, show, preserve] = await Promise.all([
+      const [shortcut, mode, show, preserve, autoCapture, blacklistValue] = await Promise.all([
         settingsApi.get("selection_assistant_shortcut"),
         settingsApi.get("selection_assistant_capture_mode"),
         settingsApi.get("selection_assistant_show_on_capture"),
         settingsApi.get("selection_assistant_preserve_clipboard"),
+        settingsApi.get("selection_assistant_auto_capture"),
+        settingsApi.get("selection_assistant_blacklist"),
       ]);
       if (shortcut) setSelectionShortcut(shortcut);
       if (mode === "uia_only" || mode === "clipboard_only" || mode === "hybrid") {
@@ -109,9 +117,19 @@ export function useSelection(): UseSelectionReturn {
       const shouldAutoCapture = show !== "false";
       if (!shouldAutoCapture) setShowOnCapture(false);
       if (preserve === "true") setPreserveClipboard(true);
+      const autoCaptureIsEnabled = autoCapture === "true";
+      setAutoCaptureEnabled(autoCaptureIsEnabled);
+      if (blacklistValue) {
+        try {
+          const parsed = JSON.parse(blacklistValue);
+          if (Array.isArray(parsed)) setBlacklist(parsed.filter((item): item is string => typeof item === "string"));
+        } catch {
+          setBlacklist(blacklistValue.split(",").map((item) => item.trim()).filter(Boolean));
+        }
+      }
 
-      // Auto-start the Rust-side capture monitor if show_on_capture is enabled
-      if (shouldAutoCapture) {
+      // Auto-capture is opt-in; showing the window after a manual capture is separate.
+      if (autoCaptureIsEnabled) {
         try {
           await selectionApi.toggleAutoCapture(true);
           console.log("[useSelection] Auto-capture monitor started on app launch");
@@ -129,6 +147,8 @@ export function useSelection(): UseSelectionReturn {
     captureMode: "hybrid" | "uia_only" | "clipboard_only";
     showOnCapture: boolean;
     preserveClipboard: boolean;
+    autoCaptureEnabled: boolean;
+    blacklist: string[];
   }>) => {
     try {
       if (updates.shortcut !== undefined) {
@@ -146,6 +166,16 @@ export function useSelection(): UseSelectionReturn {
       if (updates.preserveClipboard !== undefined) {
         await settingsApi.set("selection_assistant_preserve_clipboard", String(updates.preserveClipboard));
         setPreserveClipboard(updates.preserveClipboard);
+      }
+      if (updates.autoCaptureEnabled !== undefined) {
+        await settingsApi.set("selection_assistant_auto_capture", String(updates.autoCaptureEnabled));
+        await selectionApi.toggleAutoCapture(updates.autoCaptureEnabled);
+        setAutoCaptureEnabled(updates.autoCaptureEnabled);
+      }
+      if (updates.blacklist !== undefined) {
+        const normalized = Array.from(new Set(updates.blacklist.map((item) => item.trim()).filter(Boolean)));
+        await settingsApi.set("selection_assistant_blacklist", JSON.stringify(normalized));
+        setBlacklist(normalized);
       }
     } catch (e) {
       console.error("[useSelection] Failed to save settings:", e);
@@ -190,6 +220,8 @@ export function useSelection(): UseSelectionReturn {
     captureMode,
     showOnCapture,
     preserveClipboard,
+    autoCaptureEnabled,
+    blacklist,
     selectionHistory,
     captureAndShow,
     captureTextOnly,

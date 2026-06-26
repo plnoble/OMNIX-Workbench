@@ -10,7 +10,7 @@
   "reasoning": [
     "ACP Integration: Parsing JSON-RPC stdio streams from agents (like Claude Code, Codex) is much more robust than regex-parsing terminal characters. It allows us to render native UI components for plans, file edits (showing visual diffs), and model switching.",
     "Permission Guard: Developers need security controls when running autonomous CLI agents. Implementing granular states (YOLO, Ask on Write, Ask on Execute) ensures safety while maintaining a smooth developer experience.",
-    "Theme Engine: Since OMNIX DevFlow targets a premium developer audience, offering custom CSS overrides and standard editor themes (Dracula, Nord, Cyberpunk) matches our visual excellence guidelines."
+    "Theme Engine: Since OMNIX Workbench targets a premium developer audience, offering custom CSS overrides and standard editor themes (Dracula, Nord, Cyberpunk) matches our visual excellence guidelines."
   ],
   "tradeoffs": [
     "Non-ACP compliant CLIs will fall back to raw terminal execution (wrapped in xterm.js), ensuring general compatibility while providing rich visual overlays for compliant agents."

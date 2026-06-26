@@ -32,12 +32,25 @@ pub struct AgentRun {
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
     pub log_excerpt: String,
+    pub assignment_id: String,
+    pub dependencies: Vec<String>,
+    pub acceptance_criteria: Vec<String>,
+    pub retry_count: i64,
+    pub max_retries: i64,
+    pub result_summary: String,
+    pub validation_status: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TeamAssignmentInput {
     pub agent_name: String,
     pub task_title: String,
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    #[serde(default)]
+    pub acceptance_criteria: Vec<String>,
+    #[serde(default = "default_max_retries")]
+    pub max_retries: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,6 +59,16 @@ pub struct TeamAssignment {
     pub agent_name: String,
     pub task_title: String,
     pub status: String,
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    #[serde(default)]
+    pub acceptance_criteria: Vec<String>,
+    #[serde(default = "default_max_retries")]
+    pub max_retries: i64,
+}
+
+fn default_max_retries() -> i64 {
+    1
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,7 +114,12 @@ pub fn create_workspace_run_core(
     conn.execute(
         "INSERT INTO workspace_runs (id, title, workspace_path, manager_agent, status)
          VALUES (?1, ?2, ?3, ?4, 'draft')",
-        params![id, title.trim(), workspace_path.trim(), manager_agent.trim()],
+        params![
+            id,
+            title.trim(),
+            workspace_path.trim(),
+            manager_agent.trim()
+        ],
     )
     .map_err(|e| e.to_string())?;
 
@@ -152,7 +180,8 @@ pub fn list_workspace_runs_core(
         })
         .map_err(|e| e.to_string())?;
 
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 pub fn propose_team_plan_core(
@@ -178,6 +207,9 @@ pub fn propose_team_plan_core(
             agent_name,
             task_title,
             status: "planned".into(),
+            depends_on: Vec::new(),
+            acceptance_criteria: Vec::new(),
+            max_retries: 1,
         })
         .collect();
 
@@ -279,7 +311,14 @@ pub fn start_agent_run_core(
     conn.execute(
         "INSERT INTO agent_runs (id, run_id, agent_name, task_title, status, session_id)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![id, run_id, agent_name.trim(), task_title.trim(), status.trim(), session_id],
+        params![
+            id,
+            run_id,
+            agent_name.trim(),
+            task_title.trim(),
+            status.trim(),
+            session_id
+        ],
     )
     .map_err(|e| e.to_string())?;
 
@@ -290,7 +329,8 @@ pub fn get_agent_run_core(db: &Arc<DbManager>, agent_run_id: &str) -> Result<Age
     input_validation::validate_id(agent_run_id, "agent_run_id")?;
     let conn = db.get_connection().map_err(|e| e.to_string())?;
     conn.query_row(
-        "SELECT id, run_id, agent_name, task_title, status, session_id, started_at, completed_at, log_excerpt
+        "SELECT id, run_id, agent_name, task_title, status, session_id, started_at, completed_at, log_excerpt,
+                assignment_id, dependencies_json, acceptance_json, retry_count, max_retries, result_summary, validation_status
          FROM agent_runs WHERE id = ?1",
         params![agent_run_id],
         |row| {
@@ -304,6 +344,13 @@ pub fn get_agent_run_core(db: &Arc<DbManager>, agent_run_id: &str) -> Result<Age
                 started_at: row.get(6)?,
                 completed_at: row.get(7)?,
                 log_excerpt: row.get(8)?,
+                assignment_id: row.get(9)?,
+                dependencies: serde_json::from_str(&row.get::<_, String>(10)?).unwrap_or_default(),
+                acceptance_criteria: serde_json::from_str(&row.get::<_, String>(11)?).unwrap_or_default(),
+                retry_count: row.get(12)?,
+                max_retries: row.get(13)?,
+                result_summary: row.get(14)?,
+                validation_status: row.get(15)?,
             })
         },
     )
@@ -315,7 +362,8 @@ pub fn list_agent_runs_core(db: &Arc<DbManager>, run_id: &str) -> Result<Vec<Age
     let conn = db.get_connection().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(
-            "SELECT id, run_id, agent_name, task_title, status, session_id, started_at, completed_at, log_excerpt
+            "SELECT id, run_id, agent_name, task_title, status, session_id, started_at, completed_at, log_excerpt,
+                    assignment_id, dependencies_json, acceptance_json, retry_count, max_retries, result_summary, validation_status
              FROM agent_runs WHERE run_id = ?1 ORDER BY id ASC",
         )
         .map_err(|e| e.to_string())?;
@@ -331,11 +379,20 @@ pub fn list_agent_runs_core(db: &Arc<DbManager>, run_id: &str) -> Result<Vec<Age
                 started_at: row.get(6)?,
                 completed_at: row.get(7)?,
                 log_excerpt: row.get(8)?,
+                assignment_id: row.get(9)?,
+                dependencies: serde_json::from_str(&row.get::<_, String>(10)?).unwrap_or_default(),
+                acceptance_criteria: serde_json::from_str(&row.get::<_, String>(11)?)
+                    .unwrap_or_default(),
+                retry_count: row.get(12)?,
+                max_retries: row.get(13)?,
+                result_summary: row.get(14)?,
+                validation_status: row.get(15)?,
             })
         })
         .map_err(|e| e.to_string())?;
 
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 pub fn list_lab_features_core() -> Vec<LabFeature> {
@@ -355,7 +412,7 @@ pub fn list_lab_features_core() -> Vec<LabFeature> {
             layer: "labs".into(),
             status: "experimental".into(),
             risk: "medium".into(),
-            description: "后台定时执行 Agent 任务，等待与 Workbench run 模型进一步统一。".into(),
+            description: "后台定时执行 Agent 任务，等待与统一 run 模型进一步整合。".into(),
             is_visible: true,
         },
         LabFeature {
@@ -391,7 +448,7 @@ pub fn list_lab_features_core() -> Vec<LabFeature> {
             layer: "labs".into(),
             status: "experimental".into(),
             risk: "medium".into(),
-            description: "架构图谱和代码深度分析后续接入 Workbench 验证链路。".into(),
+            description: "架构图谱和代码深度分析后续接入 run 验证链路。".into(),
             is_visible: true,
         },
     ]
@@ -443,7 +500,10 @@ pub fn get_team_plan(run_id: String, db: State<'_, Arc<DbManager>>) -> Result<Te
 }
 
 #[tauri::command]
-pub fn approve_team_plan(run_id: String, db: State<'_, Arc<DbManager>>) -> Result<TeamPlan, String> {
+pub fn approve_team_plan(
+    run_id: String,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<TeamPlan, String> {
     approve_team_plan_core(&db, &run_id)
 }
 
@@ -465,7 +525,10 @@ pub fn start_agent_run(
 }
 
 #[tauri::command]
-pub fn list_agent_runs(run_id: String, db: State<'_, Arc<DbManager>>) -> Result<Vec<AgentRun>, String> {
+pub fn list_agent_runs(
+    run_id: String,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<Vec<AgentRun>, String> {
     list_agent_runs_core(&db, &run_id)
 }
 
@@ -485,17 +548,17 @@ mod tests {
         list_workspace_runs_core, propose_team_plan_core, start_agent_run_core,
     };
 
-    fn workbench_test_db(name: &str) -> Arc<DbManager> {
+    fn run_test_db(name: &str) -> Arc<DbManager> {
         let path = std::env::temp_dir().join(name);
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("sqlite-wal"));
         let _ = std::fs::remove_file(path.with_extension("sqlite-shm"));
-        Arc::new(DbManager::new_workbench_test(path))
+        Arc::new(DbManager::new_run_test(path))
     }
 
     #[test]
     fn workspace_run_lifecycle_creates_lists_and_starts_agent_run() {
-        let db = workbench_test_db("omnix_workbench_lifecycle_test.sqlite");
+        let db = run_test_db("omnix_run_lifecycle_test.sqlite");
 
         let run = create_workspace_run_core(
             &db,
@@ -511,14 +574,8 @@ mod tests {
         let runs = list_workspace_runs_core(&db, false).expect("runs should list");
         assert!(runs.iter().any(|item| item.id == run.id));
 
-        let agent_run = start_agent_run_core(
-            &db,
-            &run.id,
-            "Codex",
-            "实现 Workbench UI",
-            "pending",
-        )
-        .expect("agent run should be created");
+        let agent_run = start_agent_run_core(&db, &run.id, "Codex", "实现团队任务 UI", "pending")
+            .expect("agent run should be created");
 
         assert_eq!(agent_run.run_id, run.id);
         assert_eq!(agent_run.status, "pending");
@@ -526,15 +583,10 @@ mod tests {
 
     #[test]
     fn manager_plan_requires_explicit_approval() {
-        let db = workbench_test_db("omnix_workbench_plan_test.sqlite");
+        let db = run_test_db("omnix_run_plan_test.sqlite");
 
-        let run = create_workspace_run_core(
-            &db,
-            "实现半自动队长",
-            "D:/workspace",
-            "Claude Code",
-        )
-        .expect("run should be created");
+        let run = create_workspace_run_core(&db, "实现半自动队长", "D:/workspace", "Claude Code")
+            .expect("run should be created");
 
         let plan = propose_team_plan_core(
             &db,

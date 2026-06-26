@@ -1,7 +1,7 @@
 {
   "decision_id": "DEC-013",
-  "topic": "OMNIX DevFlow AI Proxy Gateway Integration, Subscription-to-API Bridging, and Upstream Synchronization Maintenance Strategy",
-  "context": "We analyzed the reverse proxy capabilities of sub2api and new-api to determine their value for OMNIX DevFlow, and defined a robust software engineering strategy for maintaining borrowed/copied features that are actively updated upstream.",
+  "topic": "OMNIX Workbench AI Proxy Gateway Integration, Subscription-to-API Bridging, and Upstream Synchronization Maintenance Strategy",
+  "context": "We analyzed the reverse proxy capabilities of sub2api and new-api to determine their value for OMNIX Workbench, and defined a robust software engineering strategy for maintaining borrowed/copied features that are actively updated upstream.",
   "options_considered": [
     "Do not include proxy translation or subscription bridging; require users to provide direct official API keys only.",
     "Integrate lightweight protocol translation (Anthropic <-> OpenAI) and subscription-to-API reverse proxies, using a 4-tier upstream sync strategy (Sidecars, Decoupled Adapters, Git Patches, and Dynamic Selector Hot-patches)."

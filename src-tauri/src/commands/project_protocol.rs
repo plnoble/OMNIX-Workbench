@@ -97,8 +97,14 @@ fn make_id(prefix: &str) -> String {
 /// Validate a free-form protocol event field: bounded length, no control chars.
 fn validate_event_field(value: &str, param_name: &str) -> Result<(), String> {
     input_validation::validate_content(value, param_name)?;
-    if value.chars().any(|c| c.is_control() && c != '\n' && c != '\r' && c != '\t') {
-        return Err(format!("{} contains invalid control characters", param_name));
+    if value
+        .chars()
+        .any(|c| c.is_control() && c != '\n' && c != '\r' && c != '\t')
+    {
+        return Err(format!(
+            "{} contains invalid control characters",
+            param_name
+        ));
     }
     Ok(())
 }
@@ -107,7 +113,9 @@ fn validate_event_field(value: &str, param_name: &str) -> Result<(), String> {
 /// bound its length. Rejects malformed JSON so it cannot be stored verbatim and
 /// later break consumers that trust its shape.
 fn validate_details_json(details_json: &Option<String>) -> Result<(), String> {
-    let Some(raw) = details_json else { return Ok(()) };
+    let Some(raw) = details_json else {
+        return Ok(());
+    };
     if raw.len() > 1_048_576 {
         return Err("details_json exceeds maximum length".to_string());
     }
@@ -126,14 +134,17 @@ fn validate_project_name(project_name: &str) -> Result<(), String> {
     if trimmed.len() > 256 {
         return Err("project_name exceeds maximum length".to_string());
     }
-    if trimmed.chars().any(|c| c.is_control() || c == '/' || c == '\\') {
+    if trimmed
+        .chars()
+        .any(|c| c.is_control() || c == '/' || c == '\\')
+    {
         return Err("project_name contains invalid characters".to_string());
     }
     Ok(())
 }
 
 fn normalize_workspace(workspace_path: &str) -> Result<PathBuf, String> {
-    // Validate before touching the filesystem — mirrors workbench::create_workspace_run_core
+    // Validate before touching the filesystem - mirrors runs::create_workspace_run_core
     // so a frontend-supplied system directory (e.g. C:\Windows) is rejected here too.
     input_validation::validate_workspace_path(workspace_path, "workspace_path")?;
     let path = PathBuf::from(workspace_path);
@@ -169,7 +180,9 @@ fn default_project_name(path: &Path, project_name: Option<String>) -> String {
         })
 }
 
-fn protocol_file_templates(project_name: &str) -> Vec<(&'static str, &'static str, String, &'static str)> {
+fn protocol_file_templates(
+    project_name: &str,
+) -> Vec<(&'static str, &'static str, String, &'static str)> {
     vec![
         (
             "AGENTS.md",
@@ -214,7 +227,10 @@ fn protocol_file_templates(project_name: &str) -> Vec<(&'static str, &'static st
     ]
 }
 
-fn build_preview(workspace_path: &str, project_name: Option<String>) -> Result<ProtocolInitPreview, String> {
+fn build_preview(
+    workspace_path: &str,
+    project_name: Option<String>,
+) -> Result<ProtocolInitPreview, String> {
     let workspace = normalize_workspace(workspace_path)?;
     let project_name = default_project_name(&workspace, project_name);
     let files = protocol_file_templates(&project_name)
@@ -328,7 +344,8 @@ pub fn protocol_init_workspace(
     let preview = build_preview(&workspace_path, project_name)?;
     let workspace = PathBuf::from(&preview.workspace_path);
 
-    for (relative, _label, content, _description) in protocol_file_templates(&preview.project_name) {
+    for (relative, _label, content, _description) in protocol_file_templates(&preview.project_name)
+    {
         let file_path = workspace.join(relative);
         if file_path.exists() {
             continue;
@@ -461,12 +478,20 @@ pub fn protocol_archive_and_distill(
     });
 
     let mut memory_count = 0_i64;
-    if let Some((event_type, event_summary, details, _created_at)) = events
-        .iter()
-        .find(|(event_type, event_summary, _details, _created_at)| {
-            let text = format!("{} {}", event_type.to_lowercase(), event_summary.to_lowercase());
-            text.contains("bug") || text.contains("error") || text.contains("failure") || text.contains("mistake")
-        })
+    if let Some((event_type, event_summary, details, _created_at)) =
+        events
+            .iter()
+            .find(|(event_type, event_summary, _details, _created_at)| {
+                let text = format!(
+                    "{} {}",
+                    event_type.to_lowercase(),
+                    event_summary.to_lowercase()
+                );
+                text.contains("bug")
+                    || text.contains("error")
+                    || text.contains("failure")
+                    || text.contains("mistake")
+            })
     {
         conn.execute(
             "INSERT INTO memories (id, incident_desc, code_pattern, remediation, keywords, type, source, workspace_path, evidence_json, status)

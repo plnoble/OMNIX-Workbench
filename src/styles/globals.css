@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
 /* ============================================
-   OMNIX DevFlow Design Tokens
+   OMNIX Workbench Design Tokens
    Migrated from App.css :root CSS variables
    ============================================ */
 
@@ -294,4 +294,33 @@
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
+}
+
+@media (max-height: 760px) {
+  .first-screen {
+    padding-top: 0.75rem;
+    padding-bottom: 0.75rem;
+  }
+
+  .first-screen-icon {
+    width: 3rem;
+    height: 3rem;
+    margin-bottom: 0.75rem;
+  }
+
+  .first-screen-title {
+    font-size: 1.5rem;
+    line-height: 2rem;
+  }
+
+  .first-screen-description,
+  .first-screen-suggestions {
+    display: none;
+  }
+}
+
+@media (max-height: 560px) {
+  .first-screen-icon {
+    display: none;
+  }
 }

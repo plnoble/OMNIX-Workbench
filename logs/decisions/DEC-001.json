@@ -1,7 +1,7 @@
 {
   "decision_id": "DEC-001",
-  "topic": "Architecture Alignment and Concept Mapping from AingDesk for OMNIX DevFlow",
-  "context": "We researched the first reference library, AingDesk, to determine which features and designs to borrow for OMNIX DevFlow, ensuring no name/code contamination.",
+  "topic": "Architecture Alignment and Concept Mapping from AingDesk for OMNIX Workbench",
+  "context": "We researched the first reference library, AingDesk, to determine which features and designs to borrow for OMNIX Workbench, ensuring no name/code contamination.",
   "options_considered": [
     "Clone and adapt AingDesk's structure directly (electron-egg framework)",
     "Extract and reimplement key architectural patterns (Ollama management, MCP client, bundled bun/uv execution) using clean OMNIX standards"
@@ -9,7 +9,7 @@
   "chosen_option": "Extract and reimplement key architectural patterns using clean OMNIX standards, avoiding electron-egg wrapper, optimizing for developer CLI focus and evolving skills.",
   "reasoning": [
     "Direct replication risks copyright issues and names like AingDesk showing in our codebase.",
-    "AingDesk uses a heavy MVC-style electron-egg structure which is generic; OMNIX DevFlow needs a developer-first tool focused on CLI wrappers, interactive shell executing, and skill evolution.",
+    "AingDesk uses a heavy MVC-style electron-egg structure which is generic; OMNIX Workbench needs a developer-first tool focused on CLI wrappers, interactive shell executing, and skill evolution.",
     "Reimplementing Ollama lifecycle management and MCP clients cleanly under TypeScript strict mode matches OMNIX code quality and safety requirements."
   ],
   "tradeoffs": [

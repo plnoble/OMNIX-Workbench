@@ -1,4 +1,5 @@
 import { useMemo, useState, type MouseEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import {
   Archive,
   CalendarClock,
@@ -21,6 +22,7 @@ interface AppSidebarProps {
   gatewayStatus: GatewayStatus;
   showConversations: boolean;
   conversations: ConversationInfo[];
+  activeAgent: string;
   currentConvId: string;
   activeSessions: string[];
   onSelectConversation: (id: string) => void;
@@ -37,6 +39,7 @@ export function AppSidebar({
   gatewayStatus,
   showConversations,
   conversations,
+  activeAgent,
   currentConvId,
   activeSessions,
   onSelectConversation,
@@ -47,17 +50,22 @@ export function AppSidebar({
   onOpenWorkspaceModal,
 }: AppSidebarProps) {
   const [pendingDelete, setPendingDelete] = useState<{ id: string; title: string } | null>(null);
-  const isWorkSurface = showConversations && (activeTab === "work" || activeTab === "team");
+  const isWorkSurface = showConversations && (activeTab === "chat" || activeTab === "work" || activeTab === "team");
+  const showWorkspaceList = activeTab === "work" || activeTab === "team";
+  const showChatList = activeTab === "chat" || activeTab === "team";
 
+  // Each Agent keeps an independent chat history, so the work context only
+  // lists conversations belonging to the currently active Agent.
   const grouped = useMemo(() => {
     const direct: ConversationInfo[] = [];
     const workspace: ConversationInfo[] = [];
     for (const conv of conversations) {
+      if (conv.active_agent !== activeAgent) continue;
       if (conv.workspace_path && conv.workspace_path !== "direct") workspace.push(conv);
       else direct.push(conv);
     }
     return { direct, workspace };
-  }, [conversations]);
+  }, [conversations, activeAgent]);
 
   const statusText = {
     idle: "空闲",
@@ -70,11 +78,11 @@ export function AppSidebar({
   }
 
   return (
-    <aside className="flex w-60 shrink-0 flex-col border-r border-border bg-background/70 backdrop-blur-xl xl:w-72">
+    <aside className="flex w-44 shrink-0 flex-col border-r border-border bg-background/70 backdrop-blur-xl md:w-52 min-[1500px]:w-72">
       <div className="border-b border-border p-4">
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
-            <div className="truncate text-sm font-semibold">{activeTab === "team" ? "团队上下文" : "工作上下文"}</div>
+            <div className="truncate text-sm font-semibold">{activeTab === "team" ? "团队上下文" : activeTab === "chat" ? "对话" : "工作上下文"}</div>
             <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
               <span className={cn("h-1.5 w-1.5 rounded-full", gatewayStatus === "idle" && "bg-success", gatewayStatus === "busy" && "bg-warning", gatewayStatus === "error" && "bg-destructive")} />
               {statusText}
@@ -96,11 +104,14 @@ export function AppSidebar({
       {isWorkSurface ? (
         <>
           <div className="grid grid-cols-1 gap-1.5 p-3">
-            <button className="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm hover:bg-muted/20" onClick={onNewConversation}>
+            <button
+              className="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm hover:bg-muted/20"
+              onClick={() => (activeTab === "work" ? onOpenWorkspaceModal() : onNewConversation())}
+            >
               <span className="flex h-8 w-8 items-center justify-center rounded-md bg-muted/30">
                 <Plus className="h-4 w-4" />
               </span>
-              新会话
+              {activeTab === "chat" ? "新对话" : activeTab === "work" ? "新工作会话" : "新会话"}
             </button>
             <button className="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm hover:bg-muted/20" onClick={onOpenHistoryFullscreen}>
               <span className="flex h-8 w-8 items-center justify-center rounded-md bg-muted/30">
@@ -119,17 +130,20 @@ export function AppSidebar({
           <Separator />
 
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-            <ConversationSection
-              title="工作"
-              icon={<FolderOpen className="h-3.5 w-3.5" />}
-              emptyText="还没有工作区会话"
-              conversations={grouped.workspace}
-              currentConvId={currentConvId}
-              activeSessions={activeSessions}
-              onSelectConversation={onSelectConversation}
-              onDelete={(conv) => setPendingDelete({ id: conv.id, title: conv.title })}
-              onArchiveConversation={onArchiveConversation}
-            />
+            {showWorkspaceList && (
+              <ConversationSection
+                title="工作"
+                icon={<FolderOpen className="h-3.5 w-3.5" />}
+                emptyText="还没有工作区会话"
+                conversations={grouped.workspace}
+                currentConvId={currentConvId}
+                activeSessions={activeSessions}
+                onSelectConversation={onSelectConversation}
+                onDelete={(conv) => setPendingDelete({ id: conv.id, title: conv.title })}
+                onArchiveConversation={onArchiveConversation}
+              />
+            )}
+            {showChatList && (
             <ConversationSection
               title={activeTab === "team" ? "团队" : "对话"}
               icon={activeTab === "team" ? <Users className="h-3.5 w-3.5" /> : <MessageSquare className="h-3.5 w-3.5" />}
@@ -141,8 +155,10 @@ export function AppSidebar({
               onDelete={(conv) => setPendingDelete({ id: conv.id, title: conv.title })}
               onArchiveConversation={onArchiveConversation}
             />
+            )}
           </div>
 
+          {activeTab !== "chat" && (
           <div className="border-t border-border p-3">
             <button
               className="flex w-full items-center justify-center gap-2 rounded-md border border-border px-3 py-2 text-sm hover:bg-muted/20"
@@ -152,6 +168,7 @@ export function AppSidebar({
               选择工作区
             </button>
           </div>
+          )}
         </>
       ) : (
         <div className="flex flex-1 flex-col justify-between p-4">
@@ -171,11 +188,11 @@ export function AppSidebar({
         </div>
       )}
 
-      {pendingDelete && (
-        <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/60 backdrop-blur-sm">
-          <div className="mx-4 max-w-md rounded-md border border-border bg-card p-5 shadow-xl">
+      {pendingDelete && createPortal(
+        <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-sm rounded-md border border-border bg-card p-5 shadow-xl">
             <h3 className="m-0 mb-2 text-base font-semibold text-foreground">确认删除会话？</h3>
-            <p className="mb-1 truncate text-sm text-muted-foreground">"{pendingDelete.title}"</p>
+            <p className="mb-1 break-words text-sm text-muted-foreground line-clamp-3">"{pendingDelete.title}"</p>
             <p className="mb-4 text-xs leading-5 text-muted-foreground">
               删除后无法恢复。需要保留记录时，请先归档。
             </p>
@@ -197,7 +214,8 @@ export function AppSidebar({
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </aside>
   );

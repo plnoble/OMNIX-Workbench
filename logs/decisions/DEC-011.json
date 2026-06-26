@@ -1,7 +1,7 @@
 {
   "decision_id": "DEC-011",
   "topic": "OMNIX Code Topology Graph, Guided Onboarding Tours, and Ripple-Effect Impact Guard",
-  "context": "We researched the seventh reference library, Understand-Anything, to integrate codebase visualization, structured guided tours, and recursive impact analysis into OMNIX DevFlow.",
+  "context": "We researched the seventh reference library, Understand-Anything, to integrate codebase visualization, structured guided tours, and recursive impact analysis into OMNIX Workbench.",
   "options_considered": [
     "Rely solely on standard chat messages and text-based git diffs to verify agent outputs and explore project structures.",
     "Implement: 1. A hybrid Tree-sitter (deterministic parsing) + LLM (semantic summaries) codebase knowledge graph builder; 2. Automated dependencies-ordered Guided Onboarding Tours; 3. Ripple-Effect Impact Guard that intersects git diff paths, crawls the dependency graph, references history lessons in `ai-memory.json`, and triggers alerts for high-risk changes before approval."

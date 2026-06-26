@@ -1,14 +1,14 @@
 {
   "decision_id": "DEC-003",
   "topic": "System-wide Shortcut Capture and Hardware-aware Local Model Recommendation Engine",
-  "context": "We are designing the system-level global lookup helper and the local hardware auto-detection recommendation engine for OMNIX DevFlow.",
+  "context": "We are designing the system-level global lookup helper and the local hardware auto-detection recommendation engine for OMNIX Workbench.",
   "options_considered": [
     "Rely purely on hardcoded model lists and require the user to configure global shortcuts manually via third-party OS tools.",
     "Implement native OS-level hardware detection (CPU, RAM, GPU, VRAM) to dynamically recommend optimal models, pull the latest online model manifest, and hook global shortcut keys + clipboard access natively."
   ],
   "chosen_option": "Implement native OS-level hardware detection, dynamic recommended model list, and native system-wide shortcut/clipboard hook.",
   "reasoning": [
-    "Hardware Detection: Querying system RAM and VRAM (via tools like wmic/nvidia-smi on Windows or equivalent Unix APIs) allows OMNIX DevFlow to calculate memory requirements and flag which models (e.g., 1.5B, 7B, 14B, 32B) run optimally without freezing the system.",
+    "Hardware Detection: Querying system RAM and VRAM (via tools like wmic/nvidia-smi on Windows or equivalent Unix APIs) allows OMNIX Workbench to calculate memory requirements and flag which models (e.g., 1.5B, 7B, 14B, 32B) run optimally without freezing the system.",
     "Model List Auto-retrieval: Connecting to the Ollama service to fetch installed models, and querying online manifests (e.g., a curated JSON file of the latest open-source models) keeps the recommendation list up-to-date.",
     "Global Shortcut: Hooking system keys (like Alt+Space or Ctrl+Shift+C) and reading the system clipboard allows the floating helper to capture text from any application (IDE, web browser) and immediately execute LLM tasks."
   ],

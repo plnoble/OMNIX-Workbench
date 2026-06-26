@@ -1,6 +1,6 @@
-use tauri::{AppHandle, Emitter, Manager, State};
-use std::sync::Arc;
 use crate::db::DbManager;
+use std::sync::Arc;
+use tauri::{AppHandle, Emitter, Manager, State};
 
 // ── Selection Assistant Commands ───────────────────────
 
@@ -18,6 +18,18 @@ pub async fn capture_selection_and_show(app_handle: AppHandle) -> Result<(), Str
 
     // Save to selection history
     if let Some(db) = app_handle.try_state::<Arc<crate::db::DbManager>>() {
+        let blacklist = db
+            .get_setting("selection_assistant_blacklist")
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "[]".into());
+        if crate::selection::is_capture_blocked(
+            &blacklist,
+            &result.process_name,
+            &result.window_title,
+        ) {
+            return Err("当前应用位于快捷助手黑名单中".into());
+        }
         let _ = crate::db::DbManager::add_selection_history(
             &db,
             &result.text,
@@ -67,14 +79,13 @@ pub fn delete_selection_history_item(
     id: &str,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<(), String> {
-    db.delete_selection_history_item(id).map_err(|e| e.to_string())
+    db.delete_selection_history_item(id)
+        .map_err(|e| e.to_string())
 }
 
 /// Clear all selection history.
 #[tauri::command]
-pub fn clear_selection_history(
-    db: State<'_, Arc<DbManager>>,
-) -> Result<(), String> {
+pub fn clear_selection_history(db: State<'_, Arc<DbManager>>) -> Result<(), String> {
     db.clear_selection_history().map_err(|e| e.to_string())
 }
 
@@ -145,7 +156,8 @@ pub async fn translate_text(
         .replace("{{text}}", &text);
 
     // Resolve proxy port
-    let port = db.get_setting("proxy_port")
+    let port = db
+        .get_setting("proxy_port")
         .ok()
         .flatten()
         .unwrap_or_else(|| "1421".to_string());
@@ -252,7 +264,8 @@ pub async fn detect_language(
         text.chars().take(500).collect::<String>()  // Truncate to 500 chars for detection
     );
 
-    let port = db.get_setting("proxy_port")
+    let port = db
+        .get_setting("proxy_port")
         .ok()
         .flatten()
         .unwrap_or_else(|| "1421".to_string());
@@ -296,7 +309,10 @@ pub async fn detect_language(
         .unwrap_or_default();
 
     // Validate the detected language is in our list
-    let valid_codes = ["en-us", "zh-cn", "zh-tw", "ja-jp", "ko-kr", "fr-fr", "de-de", "it-it", "es-es", "pt-pt", "ru-ru", "pl-pl", "ar-sa", "tr-tr", "th-th", "vi-vn", "id-id", "ur-pk", "ms-my", "uk-ua"];
+    let valid_codes = [
+        "en-us", "zh-cn", "zh-tw", "ja-jp", "ko-kr", "fr-fr", "de-de", "it-it", "es-es", "pt-pt",
+        "ru-ru", "pl-pl", "ar-sa", "tr-tr", "th-th", "vi-vn", "id-id", "ur-pk", "ms-my", "uk-ua",
+    ];
     if valid_codes.contains(&detected.as_str()) {
         Ok(detected)
     } else {
@@ -319,14 +335,13 @@ pub fn delete_translation_history_item(
     id: &str,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<(), String> {
-    db.delete_translation_history_item(id).map_err(|e| e.to_string())
+    db.delete_translation_history_item(id)
+        .map_err(|e| e.to_string())
 }
 
 /// Clear all translation history.
 #[tauri::command]
-pub fn clear_translation_history(
-    db: State<'_, Arc<DbManager>>,
-) -> Result<(), String> {
+pub fn clear_translation_history(db: State<'_, Arc<DbManager>>) -> Result<(), String> {
     db.clear_translation_history().map_err(|e| e.to_string())
 }
 

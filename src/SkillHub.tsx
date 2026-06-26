@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { SkillTopology } from "./SkillTopology";
-import { Layers, Sparkles, BookOpen, Download, RefreshCw, Search, Star, Upload, ArrowRightLeft, HardDrive, CheckCircle2, XCircle, AlertCircle } from "lucide-react";
+import { Layers, Sparkles, BookOpen, Download, RefreshCw, Search, Star, Upload, ArrowRightLeft, HardDrive, CheckCircle2, XCircle, AlertCircle, FolderOpen, Wand2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/sonner";
-import { skillLibraryApi, skillSetApi, skillSyncApi } from "@/lib/tauri-api";
+import { modelApi, skillLibraryApi, skillSetApi, skillSyncApi, skillGeneratorApi, shellApi, type WorkspaceFile, type SkillDraft } from "@/lib/tauri-api";
+import type { PlatformModel } from "@/types";
 import type {
   ToolStatus as SyncToolStatus,
   ScanReport,
@@ -13,6 +14,7 @@ import type {
   GitCloneResult,
   GitSkillCandidate,
   MarketSkill,
+  MarketSkillPreview,
   SkillSet,
 } from "@/lib/tauri-api";
 
@@ -36,6 +38,8 @@ interface Skill {
 
 /** Tool adapter status for skill sync */
 export interface ToolStatus {
+  verification: "verified" | "experimental";
+  verification_note: string;
   tool_id: string;
   display_name: string;
   is_installed: boolean;
@@ -62,39 +66,15 @@ export interface DiscoveredSkill {
   content_hash: string;
 }
 
-type SkillHubSection = "library" | "furnace" | "sets" | "market" | "sync";
+type SkillHubSection = "library" | "generate" | "furnace" | "sets" | "market" | "sync";
 
 const SKILL_HUB_SECTIONS: Array<{ id: SkillHubSection; label: string; desc: string }> = [
   { id: "library", label: "技能库", desc: "查看、编辑、收藏和启停本地技能" },
+  { id: "generate", label: "生成", desc: "扫描工作区，让模型生成技能草稿" },
   { id: "furnace", label: "熔炉", desc: "融合多个技能并审批写入" },
   { id: "sets", label: "组合", desc: "保存 Skill Set 并同步到工具" },
   { id: "market", label: "市场", desc: "搜索、预览和导入外部技能" },
   { id: "sync", label: "同步", desc: "扫描、Git 来源、漂移与冲突处理" },
-];
-
-// Mock marketplace skills
-const MARKETPLACE_SKILLS = [
-  {
-    name: "web_scraper",
-    description: "高并发网页爬虫，支持动态 JavaScript 渲染、代理池配置与抗防爬限制。",
-    category: "智能搜索",
-    dependencies: ["file_reader", "file_writer"],
-    content: "### Role & Identity\n你是一个专业的网络爬虫与数据提取专家...\n\n### Core Knowledge\n- 掌握 Playwright / Puppeteer 模拟无头浏览器操作。\n- 支持代理 IP 自动轮询与自定义请求 Header 规避阻断。\n\n### Step-by-Step Workflow\n1. 初始化浏览器引擎。\n2. 请求目标页面并等待动态内容渲染。\n3. 解析 DOM 节点并提取结构化 JSON 数据。\n4. 调用 file_writer 写入本地。\n\n### Quality Checklist\n- [ ] 是否设置了延迟防封禁限制？\n- [ ] 是否正确处理了验证码拦截？"
-  },
-  {
-    name: "docker_builder",
-    description: "自动化构建多阶段 Docker 容器镜像，并优化运行体积与安全性检查。",
-    category: "测试部署",
-    dependencies: ["file_reader"],
-    content: "### Role & Identity\n你是一个 Docker 容器化构建专家，专注于极简轻量级镜像设计...\n\n### Core Knowledge\n- 掌握 Dockerfile 多阶段构建 (Multi-stage build) 语法。\n- 熟悉 alpine 等超轻量底层镜像与非 root 安全运行限制。\n\n### Step-by-Step Workflow\n1. 读取项目 package/cargo 文件结构。\n2. 自动生成多阶段 Dockerfile 配置文件。\n3. 编译应用，将制品拷贝至最小运行镜像中。\n\n### Quality Checklist\n- [ ] 镜像大小是否控制在 50MB 以内？\n- [ ] 容器内是否禁止了 root 提权？"
-  },
-  {
-    name: "pptx_exporter",
-    description: "将代码重构与系统设计事实，自动化渲染导出为精美的商业 PPTX 幻灯片汇报演示包。",
-    category: "文档办公",
-    dependencies: ["file_reader", "file_writer"],
-    content: "### Role & Identity\n你是一个系统设计与商业演示导出助手，负责将技术文档转化为精美的幻灯片汇报...\n\n### Core Knowledge\n- 熟悉 PptxGenJS 或是 python-pptx 格式输出。\n- 掌握结构化商业演示版式：目录页、架构图页、收益对比页等。\n\n### Step-by-Step Workflow\n1. 读取要汇报的技术概要或系统设计文本。\n2. 拆解为分章节的幻灯片大纲。\n3. 构建 PPTX 的版面坐标与主题配色样式。\n4. 输出二进制流并写入为 .pptx 文件。\n\n### Quality Checklist\n- [ ] 每张 PPT 的字数是否精简？\n- [ ] 主题配色是否与 OMNIX 暗色系协调？"
-  }
 ];
 
 export const SkillHub: React.FC = () => {
@@ -115,13 +95,85 @@ export const SkillHub: React.FC = () => {
   const [furnacePot, setFurnacePot] = useState<string[]>([]);
   const [isFusing, setIsFusing] = useState<boolean>(false);
   const [fusedResult, setFusedResult] = useState<{
+    draft_id: string;
     name: string;
     description: string;
     fused_code: string;
     explanation: string;
+    conflicts: string[];
+    status: string;
   } | null>(null);
   const [showDiff, setShowDiff] = useState<boolean>(false);
   const [fusedSaveName, setFusedSaveName] = useState<string>("");
+  const [fusionModels, setFusionModels] = useState<PlatformModel[]>([]);
+  const [selectedFusionModel, setSelectedFusionModel] = useState("");
+
+  // ── Skill generation from workspace (AionUi inspired) ──
+  const [genWorkspace, setGenWorkspace] = useState("");
+  const [genFiles, setGenFiles] = useState<WorkspaceFile[]>([]);
+  const [genSelected, setGenSelected] = useState<Set<string>>(new Set());
+  const [genName, setGenName] = useState("");
+  const [genDraft, setGenDraft] = useState<SkillDraft | null>(null);
+  const [genBusy, setGenBusy] = useState("");
+
+  const pickGenWorkspace = async () => {
+    const path = await shellApi.pickDirectory();
+    if (!path) return;
+    setGenWorkspace(path);
+    setGenFiles([]);
+    setGenSelected(new Set());
+    setGenDraft(null);
+    setGenBusy("scan");
+    try {
+      setGenFiles(await skillGeneratorApi.scanWorkspace(path));
+    } catch (error) {
+      toast.error(`扫描失败：${error}`);
+    } finally {
+      setGenBusy("");
+    }
+  };
+
+  const toggleGenFile = (path: string) => {
+    setGenSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path); else next.add(path);
+      return next;
+    });
+  };
+
+  const generateSkillDraft = async () => {
+    if (!genName.trim() || genSelected.size === 0) {
+      toast.warning("请填写技能名称并至少选择一个文件");
+      return;
+    }
+    setGenBusy("generate");
+    try {
+      setGenDraft(await skillGeneratorApi.generate(genName.trim(), Array.from(genSelected), genWorkspace));
+    } catch (error) {
+      toast.error(`生成失败：${error}`);
+    } finally {
+      setGenBusy("");
+    }
+  };
+
+  const saveGeneratedSkill = async () => {
+    if (!genDraft) return;
+    setGenBusy("save");
+    try {
+      const firstLine = genDraft.draft.split("\n").find((line) => line.trim()) ?? "";
+      const description = firstLine.replace(/^#+\s*/, "").slice(0, 120) || `由工作区生成：${genDraft.name}`;
+      await skillLibraryApi.create(genDraft.name, description, "Core", [], genDraft.draft);
+      await loadSkills();
+      toast.success(`已保存为本地技能：${genDraft.name}`);
+      setGenDraft(null);
+      setGenName("");
+      setGenSelected(new Set());
+    } catch (error) {
+      toast.error(`保存失败：${error}`);
+    } finally {
+      setGenBusy("");
+    }
+  };
 
   // ── P3: Sync & Scanner states ──
   const [toolStatuses, setToolStatuses] = useState<SyncToolStatus[]>([]);
@@ -153,11 +205,18 @@ export const SkillHub: React.FC = () => {
   const [marketResults, setMarketResults] = useState<MarketSkill[]>([]);
   const [isSearchingMarket, setIsSearchingMarket] = useState(false);
   const [selectedMarketSkill, setSelectedMarketSkill] = useState<MarketSkill | null>(null);
+  const [marketPreview, setMarketPreview] = useState<MarketSkillPreview | null>(null);
+  const [isLoadingMarketPreview, setIsLoadingMarketPreview] = useState(false);
+  const [marketImportConflict, setMarketImportConflict] = useState(false);
 
   useEffect(() => {
     loadSkills();
     loadToolStatuses();
     loadSkillSets();
+    modelApi.getActive().then((models) => {
+      setFusionModels(models);
+      if (models[0]) setSelectedFusionModel(`${models[0].platform_id}:${models[0].model_name}`);
+    }).catch(() => setFusionModels([]));
   }, []);
 
   useEffect(() => {
@@ -362,6 +421,8 @@ export const SkillHub: React.FC = () => {
       const results = await skillLibraryApi.searchMarket(query);
       setMarketResults(results);
       setSelectedMarketSkill(results[0] ?? null);
+      setMarketPreview(null);
+      setMarketImportConflict(false);
       if (results.length === 0) {
         toast.info("没有找到匹配技能");
       }
@@ -493,16 +554,23 @@ export const SkillHub: React.FC = () => {
       toast.warning("请至少选择 2 个技能投入融合炉！");
       return;
     }
+    if (!selectedFusionModel) {
+      toast.warning("请先选择用于融合的模型");
+      return;
+    }
     setIsFusing(true);
     setFusedResult(null);
     setShowDiff(false);
     try {
       const res = await invoke<{
+        draft_id: string;
         name: string;
         description: string;
         fused_code: string;
         explanation: string;
-      }>("fuse_skills_api", { skills: furnacePot });
+        conflicts: string[];
+        status: string;
+      }>("fuse_skills_api", { skills: furnacePot, modelId: selectedFusionModel });
       setFusedResult(res);
       setFusedSaveName(`${furnacePot[0]}_fused`);
       setShowDiff(true);
@@ -521,27 +589,17 @@ export const SkillHub: React.FC = () => {
       return;
     }
     try {
-      const mergedDeps = Array.from(
-        new Set(
-          skills
-            .filter((s) => furnacePot.includes(s.name))
-            .flatMap((s) => s.dependencies)
-        )
-      );
-
-      await invoke("create_skill", {
-        name: fusedSaveName.replace(/\s+/g, "_"),
-        description: fusedResult.description,
-        profile: "Core",
-        dependencies: mergedDeps,
-        content: fusedResult.fused_code
+      const approvedName = fusedSaveName.replace(/\s+/g, "_");
+      await invoke("apply_skill_fusion_draft", {
+        draftId: fusedResult.draft_id,
+        approvedName,
       });
 
       toast.success("融合超级技能资产已成功写入技能库！已重建血统拓扑。");
       setFurnacePot([]);
       setFusedResult(null);
       setShowDiff(false);
-      setSelectedSkillName(fusedSaveName);
+      setSelectedSkillName(approvedName);
       setSelectedProfile("Core");
       await loadSkills();
     } catch (e) {
@@ -549,53 +607,43 @@ export const SkillHub: React.FC = () => {
     }
   };
 
-  // Install custom skill from marketplace
-  const handleDownloadMarketSkill = async (item: typeof MARKETPLACE_SKILLS[0]) => {
+  const handlePreviewMarketSkill = async (item: MarketSkill) => {
+    setSelectedMarketSkill(item);
+    setMarketPreview(null);
+    setMarketImportConflict(false);
+    setIsLoadingMarketPreview(true);
     try {
-      await invoke("create_skill", {
-        name: item.name,
-        description: item.description,
-        profile: "Core",
-        dependencies: item.dependencies,
-        content: item.content
-      });
-      toast.success(`市场技能 ${item.name} 下载安装成功！已成功加载进本地拓扑网络。`);
-      await loadSkills();
+      setMarketPreview(await skillLibraryApi.previewMarket(item));
     } catch (e) {
-      toast.error("安装市场技能失败：" + e);
+      toast.error("读取真实 SKILL.md 失败：" + e);
+    } finally {
+      setIsLoadingMarketPreview(false);
     }
   };
 
-  const handleImportMarketSkill = async (item: MarketSkill) => {
-    const safeName = item.name.replace(/[^\w-]+/g, "_").replace(/^_+|_+$/g, "");
-    if (!safeName) {
-      toast.warning("市场技能名称无效，无法导入");
-      return;
-    }
+  const handleRejectFusion = async () => {
+    if (!fusedResult) return;
     try {
-      await invoke("create_skill", {
-        name: safeName,
-        description: item.description,
-        profile: "Core",
-        dependencies: [],
-        content: [
-          `# ${item.name}`,
-          "",
-          item.description,
-          "",
-          "## Source",
-          `- Provider: ${item.source}`,
-          `- Author: ${item.author}`,
-          `- URL: ${item.url}`,
-          "",
-          "## Usage",
-          "Review this imported market skill, then refine the workflow before enabling it in production.",
-        ].join("\n"),
-      });
-      toast.success(`已导入市场技能：${item.name}`);
+      await invoke("reject_skill_fusion_draft", { draftId: fusedResult.draft_id });
+      setFusedResult(null);
+      setShowDiff(false);
+      toast.success("融合草案已拒绝，未写入技能库");
+    } catch (error) {
+      toast.error("拒绝草案失败：" + error);
+    }
+  };
+
+  const handleImportMarketSkill = async (overwrite = false) => {
+    if (!selectedMarketSkill || !marketPreview) return;
+    try {
+      const imported = await skillLibraryApi.importMarket(selectedMarketSkill, overwrite);
+      setMarketImportConflict(false);
+      toast.success(`已导入真实技能：${imported}`);
       await loadSkills();
     } catch (e) {
-      toast.error("导入市场技能失败：" + e);
+      const message = String(e);
+      if (message.includes("已存在")) setMarketImportConflict(true);
+      toast.error("导入市场技能失败：" + message);
     }
   };
 
@@ -1128,6 +1176,72 @@ export const SkillHub: React.FC = () => {
           </div>
         ))}
 
+        {/* Generate skill from workspace */}
+        {section === "generate" && (
+          <div className="card flex-none p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <div className="text-sm font-semibold">从工作区生成技能</div>
+                <p className="mt-1 text-xs text-muted-foreground">扫描一个项目，选择有代表性的文件，让模型据此生成一份技能草稿（SKILL.md），审阅后保存为本地技能。</p>
+              </div>
+              <button onClick={pickGenWorkspace} disabled={genBusy === "scan"} className="flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm hover:bg-muted/20">
+                <FolderOpen className="h-4 w-4" />
+                {genBusy === "scan" ? "扫描中…" : genWorkspace ? "重新选择工作区" : "选择工作区"}
+              </button>
+            </div>
+
+            {genWorkspace && (
+              <div className="mt-2 truncate text-xs text-muted-foreground" title={genWorkspace}>{genWorkspace}</div>
+            )}
+
+            {genFiles.length > 0 && (
+              <>
+                <div className="mt-3 flex items-center gap-2">
+                  <input
+                    value={genName}
+                    onChange={(e) => setGenName(e.target.value)}
+                    placeholder="技能名称，如 project-conventions"
+                    className="h-9 flex-1 rounded-md border border-border bg-background px-3 text-sm"
+                  />
+                  <span className="text-xs text-muted-foreground">已选 {genSelected.size}/{genFiles.length}</span>
+                  <button onClick={generateSkillDraft} disabled={genBusy === "generate" || !genName.trim() || genSelected.size === 0} className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50">
+                    <Wand2 className="h-4 w-4" />
+                    {genBusy === "generate" ? "生成中…" : "生成草稿"}
+                  </button>
+                </div>
+                <div className="mt-3 max-h-56 overflow-auto rounded-md border border-border">
+                  {genFiles.map((file) => (
+                    <label key={file.path} className="flex cursor-pointer items-center gap-2 border-b border-border px-3 py-1.5 text-xs last:border-0 hover:bg-muted/10">
+                      <input type="checkbox" checked={genSelected.has(file.path)} onChange={() => toggleGenFile(file.path)} />
+                      <span className="flex-1 truncate" title={file.relativePath}>{file.relativePath}</span>
+                      <span className="text-muted-foreground">{file.extension || "-"}</span>
+                    </label>
+                  ))}
+                </div>
+              </>
+            )}
+
+            {genWorkspace && genFiles.length === 0 && genBusy !== "scan" && (
+              <div className="mt-3 text-center text-xs text-muted-foreground">该工作区没有扫描到可用文件</div>
+            )}
+
+            {genDraft && (
+              <div className="mt-4 border-t border-border pt-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-sm font-semibold">草稿预览 · 分析了 {genDraft.files_analyzed} 个文件</div>
+                  <div className="flex gap-2">
+                    <button onClick={() => navigator.clipboard.writeText(genDraft.draft).then(() => toast.success("已复制"))} className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-muted/20">复制</button>
+                    <button onClick={saveGeneratedSkill} disabled={genBusy === "save"} className="rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50">
+                      {genBusy === "save" ? "保存中…" : "保存为本地技能"}
+                    </button>
+                  </div>
+                </div>
+                <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap rounded-md bg-muted p-3 text-xs">{genDraft.draft}</pre>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Fusion Furnace Drawer */}
         {section === "furnace" && <div className="card flex-none p-4">
           <div className="flex justify-between items-center">
@@ -1141,16 +1255,25 @@ export const SkillHub: React.FC = () => {
               </p>
             </div>
 
-            {furnacePot.length >= 2 && (
-              <button
-                className="btn border-none"
-                onClick={handleIgniteFusion}
-                disabled={isFusing}
-                style={{ background: "var(--accent-gradient)", boxShadow: "var(--accent-glow)" }} // TODO: migrate to Tailwind — CSS variable references
+            <div className="flex items-center gap-2">
+              <select
+                value={selectedFusionModel}
+                onChange={(event) => setSelectedFusionModel(event.target.value)}
+                className="h-9 max-w-64 rounded-md border border-border bg-background px-2 text-xs"
               >
-                {isFusing ? "🔥 智能蒸馏融合中..." : "Ignite 点火融合"}
-              </button>
-            )}
+                {fusionModels.length === 0 && <option value="">没有启用模型</option>}
+                {fusionModels.map((model) => (
+                  <option key={model.id} value={`${model.platform_id}:${model.model_name}`}>
+                    {model.model_name} · {model.platform_id}
+                  </option>
+                ))}
+              </select>
+              {furnacePot.length >= 2 && (
+                <button className="btn" onClick={handleIgniteFusion} disabled={isFusing || !selectedFusionModel}>
+                  {isFusing ? "生成融合草案中..." : "生成融合草案"}
+                </button>
+              )}
+            </div>
           </div>
 
           {/* Selected slots */}
@@ -1160,7 +1283,7 @@ export const SkillHub: React.FC = () => {
                 key={name}
                 className="flex items-center gap-1.5 bg-amber-500/8 border border-amber-500/30 py-1 px-2.5 rounded-2xl text-xs text-amber-400"
               >
-                <span>🔥 {name}</span>
+                <span>{name}</span>
                 <span
                   className="cursor-pointer font-bold ml-1 opacity-70"
                   onClick={() => removeFromFurnace(name)}
@@ -1179,8 +1302,13 @@ export const SkillHub: React.FC = () => {
             <div className="border-t border-border mt-4 pt-4">
               <div className="flex justify-between items-center mb-3">
                 <div>
-                  <h4 className="text-emerald-500 text-sm font-bold">AI 融合成功！请对比审核差异</h4>
+                  <h4 className="text-emerald-500 text-sm font-bold">融合草案待审批</h4>
                   <p className="text-xs text-secondary-foreground mt-0.5">{fusedResult.explanation}</p>
+                  {fusedResult.conflicts.length > 0 && (
+                    <ul className="mt-2 space-y-1 text-xs text-warning">
+                      {fusedResult.conflicts.map((conflict) => <li key={conflict}>{conflict}</li>)}
+                    </ul>
+                  )}
                 </div>
 
                 <div className="flex gap-2 items-center">
@@ -1194,8 +1322,8 @@ export const SkillHub: React.FC = () => {
                   <button className="btn py-1 px-3 text-xs" onClick={handleAcceptFusion}>
                     接受并写入本地库
                   </button>
-                  <button className="btn btn-secondary py-1 px-3 text-xs" onClick={() => setShowDiff(false)}>
-                    放弃
+                  <button className="btn btn-secondary py-1 px-3 text-xs" onClick={handleRejectFusion}>
+                    拒绝草案
                   </button>
                 </div>
               </div>
@@ -1307,7 +1435,7 @@ export const SkillHub: React.FC = () => {
             公共技能市场 (Skill Marketplace)
           </h3>
           <p className="text-secondary-foreground text-xs mt-0.5 mb-3">
-            由 OMNIX 官方和社区维护的成熟技能包，点击即可一键下载并自动导入至您当前的本地开发库中。
+            搜索真实 Git 来源。必须先读取并预览远程 SKILL.md，确认后才写入本地技能库。
           </p>
 
           <div className="mb-4 flex flex-col gap-2 sm:flex-row">
@@ -1337,12 +1465,32 @@ export const SkillHub: React.FC = () => {
                     {selectedMarketSkill.source} · {selectedMarketSkill.author || "unknown"} · {selectedMarketSkill.stars ?? 0} stars
                   </div>
                 </div>
-                <button className="btn btn-secondary py-1 px-3 text-xs" onClick={() => handleImportMarketSkill(selectedMarketSkill)}>
-                  导入预览技能
-                </button>
+                <div className="flex gap-2">
+                  <button className="btn btn-secondary py-1 px-3 text-xs" onClick={() => handlePreviewMarketSkill(selectedMarketSkill)} disabled={isLoadingMarketPreview}>
+                    {isLoadingMarketPreview ? "读取中..." : "预览 SKILL.md"}
+                  </button>
+                  <button className="btn py-1 px-3 text-xs" onClick={() => handleImportMarketSkill(false)} disabled={!marketPreview}>
+                    确认导入
+                  </button>
+                  {marketImportConflict && (
+                    <button className="btn py-1 px-3 text-xs" onClick={() => handleImportMarketSkill(true)}>
+                      覆盖导入
+                    </button>
+                  )}
+                </div>
               </div>
               <p className="mt-2 text-xs leading-5 text-secondary-foreground">{selectedMarketSkill.description}</p>
               <div className="mt-2 truncate text-xs text-muted-foreground">{selectedMarketSkill.url}</div>
+              {marketPreview && marketPreview.skill.url === selectedMarketSkill.url && (
+                <div className="mt-3 border-t border-border pt-3">
+                  <div className="mb-2 text-xs text-muted-foreground">
+                    commit/sha: {selectedMarketSkill.content_sha || selectedMarketSkill.revision} · hash: {marketPreview.content_hash}
+                  </div>
+                  <pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-background/60 p-3 text-xs leading-5">
+                    {marketPreview.content}
+                  </pre>
+                </div>
+              )}
             </div>
           )}
 
@@ -1356,7 +1504,7 @@ export const SkillHub: React.FC = () => {
                     "rounded-lg border p-3 text-left",
                     selectedMarketSkill?.url === item.url ? "border-primary/40 bg-primary/10" : "border-border bg-muted/10"
                   )}
-                  onClick={() => setSelectedMarketSkill(item)}
+                  onClick={() => handlePreviewMarketSkill(item)}
                 >
                   <div className="text-xs font-semibold">{item.name}</div>
                   <p className="mt-1 line-clamp-3 text-xs leading-snug text-secondary-foreground">{item.description}</p>
@@ -1366,31 +1514,11 @@ export const SkillHub: React.FC = () => {
             </div>
           )}
 
-          <div className="mb-2 text-xs font-medium text-muted-foreground">精选本地示例</div>
-          <div className="grid grid-cols-[repeat(auto-fit,minmax(240px,1fr))] gap-3">
-            {MARKETPLACE_SKILLS.map((item) => (
-              <div
-                key={item.name}
-                className="bg-muted/10 border border-border rounded-lg p-3 flex flex-col justify-between"
-              >
-                <div>
-                  <div className="flex justify-between items-center mb-1.5">
-                    <span className="font-semibold text-xs">{item.name}</span>
-                    <span className="text-xs text-muted-foreground bg-muted/15 py-px px-1.5 rounded-[10px]">{item.category}</span>
-                  </div>
-                  <p className="m-0 line-clamp-3 text-xs leading-snug text-secondary-foreground">{item.description}</p>
-                </div>
-
-                <button
-                  className="btn btn-secondary mt-3 w-full py-1 px-2 text-xs flex items-center justify-center gap-1"
-                  onClick={() => handleDownloadMarketSkill(item)}
-                >
-                  <Download size={12} />
-                  一键导入
-                </button>
-              </div>
-            ))}
-          </div>
+          {marketResults.length === 0 && !isSearchingMarket && (
+            <div className="rounded-md border border-dashed border-border p-6 text-center text-xs text-muted-foreground">
+              搜索 GitHub 上的 SKILL.md 后再选择预览。
+            </div>
+          )}
         </div>}
 
         {/* ── P3: Disk Scanner Results ── */}
@@ -1420,8 +1548,9 @@ export const SkillHub: React.FC = () => {
                 <div key={tool.tool_id} className="rounded-lg border border-border bg-muted/10 p-3">
                   <div className="text-sm font-semibold">{tool.display_name}</div>
                   <div className={cn("mt-2 text-xs", tool.is_installed ? "text-[var(--color-success)]" : "text-muted-foreground")}>
-                    {tool.is_installed ? "已检测" : "未检测"}
+                    {tool.is_installed ? "已检测" : "未检测"} · {tool.verification === "verified" ? "已验证同步" : "实验性适配"}
                   </div>
+                  <div className="mt-1 text-xs leading-5 text-muted-foreground">{tool.verification_note}</div>
                   <div className="mt-2 truncate text-xs text-muted-foreground">{tool.skill_base_path}</div>
                 </div>
               ))}

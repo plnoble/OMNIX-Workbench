@@ -34,4 +34,26 @@
 * **安全修复方案**: 先确认用户进入软件后的第一动作，并让默认首屏只服务这个动作。高频核心入口放顶部横向导航，低频资源/实验功能放可配置应用宫格；左侧栏只显示当前上下文，如对话、工作区、团队会话。
 * **相关标签**: `ui,product-shell,navigation,workbench,ux`
 
+### ❌ 坑点 5: 未声明 DPI 感知的 Windows 截图脚本把坐标虚拟化误判为应用裁切。
+* **危险模式/命令**: 用默认 DPI 感知级别的 PowerShell、`GetWindowRect`、`CopyFromScreen` 或 `PrintWindow` 直接比较高缩放窗口尺寸。
+* **安全修复方案**: 原生视觉验收进程必须先调用 `SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)`，再枚举、缩放和截图窗口；同时对照应用进程内的 Tauri `inner_size` 与 Win32 `GetClientRect`。只有进程内两者确实不一致时才允许校正 WebView 缩放。
+* **相关标签**: `windows,dpi,visual-qa,tauri,webview2`
+
+### OMNIX Naming Standard
+
+The product naming hierarchy is fixed and must be used consistently:
+
+- Formal product name, desktop window title, installer name, and public documentation: `OMNIX Workbench`
+- Compact UI brand label where space is limited: `OMNIX`
+- Chinese product descriptor: `多 Agent 开发与协作工作台`
+- Node package, Cargo package, binary, and artifact slug: `omnix-workbench`
+- Tauri application identifier: `com.omnix.workbench`
+- `Workbench` names the whole product. Do not add a `Workbench` navigation item, page, or feature bucket.
+- Do not introduce the retired names `OMNIX DevFlow`, `omnix-app`, or `omnix_app` in new code or documentation.
+- Git repository slug: `OMNIX-Workbench` (`https://github.com/plnoble/OMNIX-Workbench`). A local checkout folder may retain an older name, but new clones and documentation must use `OMNIX-Workbench`.
+
+When adding a new surface, use the shortest contextual feature name in navigation (for example `工作`, `团队`, `智能体`, `技能`) and reserve `OMNIX Workbench` for product identity.
+
+Current provisional brand icon: `E1`, an interlocked teal `O` and coral `X` with a yellow distillation point on a graphite tile. The master source is `src-tauri/icons/omnix-workbench-e1.png`. Use the generated Tauri icon set and `/omnix-workbench-icon.png` for product branding until the user approves a replacement. This choice is provisional, not a final trademark decision.
+
 <!--- OMNIX MEMORY END --->

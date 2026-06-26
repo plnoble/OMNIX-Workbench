@@ -8,9 +8,25 @@
  * COM threading: UIA calls run on a blocking thread via
  * tokio::task::spawn_blocking, with CoInitializeEx on that thread.
  */
-
 use serde::Serialize;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
+
+pub fn is_capture_blocked(blacklist: &str, process_name: &str, window_title: &str) -> bool {
+    let entries: Vec<String> = serde_json::from_str(blacklist).unwrap_or_else(|_| {
+        blacklist
+            .split(',')
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+            .map(ToOwned::to_owned)
+            .collect()
+    });
+    let process = process_name.to_lowercase();
+    let title = window_title.to_lowercase();
+    entries.iter().any(|entry| {
+        let needle = entry.trim().to_lowercase();
+        !needle.is_empty() && (process.contains(&needle) || title.contains(&needle))
+    })
+}
 
 // ── Capture Result Types ────────────────────────────────
 
@@ -18,7 +34,7 @@ use tauri::Emitter;
 #[derive(Debug, Clone, Serialize)]
 pub struct CaptureResult {
     pub text: String,
-    pub source: String,           // "uia" | "clipboard"
+    pub source: String, // "uia" | "clipboard"
     pub window_title: String,
     pub process_name: String,
     pub timestamp: String,
@@ -40,11 +56,11 @@ pub struct SelectionHistoryEntry {
 /// Get the focused window title and process name via Win32 API.
 #[cfg(target_os = "windows")]
 fn get_focused_window_info() -> (String, String) {
-    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW};
     use windows::Win32::System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW,
-        PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_NAME_FORMAT,
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT,
+        PROCESS_QUERY_LIMITED_INFORMATION,
     };
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW};
 
     // SAFETY: GetForegroundWindow returns a valid HWND (or null) with no preconditions.
     // GetWindowTextW writes into a stack-allocated [0u16; 512] buffer — the buffer is
@@ -109,8 +125,7 @@ fn get_focused_window_info() -> (String, String) {
 #[cfg(target_os = "windows")]
 pub fn simulate_ctrl_c() {
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        SendInput, INPUT, INPUT_0, INPUT_TYPE, KEYBDINPUT, KEYEVENTF_KEYUP,
-        VK_CONTROL,
+        SendInput, INPUT, INPUT_0, INPUT_TYPE, KEYBDINPUT, KEYEVENTF_KEYUP, VK_CONTROL,
     };
 
     // SAFETY: SendInput accepts a slice of INPUT structs. We construct 4 INPUT
@@ -191,11 +206,11 @@ pub fn simulate_ctrl_c() {
 /// retries up to 3 times with 50ms intervals.
 #[cfg(target_os = "windows")]
 pub fn read_clipboard_win32() -> Result<String, String> {
+    use windows::Win32::Foundation::{HGLOBAL, HWND};
     use windows::Win32::System::DataExchange::{
-        OpenClipboard, CloseClipboard, GetClipboardData, IsClipboardFormatAvailable,
+        CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
     };
     use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock};
-    use windows::Win32::Foundation::{HWND, HGLOBAL};
 
     // CF_UNICODETEXT = 13 (Win32 clipboard format constant)
     const CF_UNICODETEXT: u32 = 13;
@@ -221,7 +236,10 @@ pub fn read_clipboard_win32() -> Result<String, String> {
                 break;
             }
             if attempt == 2 {
-                return Err("Failed to open clipboard after 3 attempts (locked by another application)".to_string());
+                return Err(
+                    "Failed to open clipboard after 3 attempts (locked by another application)"
+                        .to_string(),
+                );
             }
             // Brief sleep before retry
             std::thread::sleep(std::time::Duration::from_millis(50));
@@ -253,7 +271,8 @@ pub fn read_clipboard_win32() -> Result<String, String> {
             };
 
             let slice = std::slice::from_raw_parts(ptr as *const u16, len);
-            let text = String::from_utf16(slice).map_err(|e| format!("UTF-16 decode failed: {}", e))?;
+            let text =
+                String::from_utf16(slice).map_err(|e| format!("UTF-16 decode failed: {}", e))?;
 
             let _ = GlobalUnlock(hglobal);
 
@@ -280,8 +299,8 @@ pub fn read_clipboard_win32() -> Result<String, String> {
 /// 3. Return empty if neither pattern is available
 #[cfg(target_os = "windows")]
 pub fn get_selected_text_via_uia() -> Result<String, String> {
-    use windows::Win32::UI::Accessibility::*;
     use windows::Win32::System::Com::*;
+    use windows::Win32::UI::Accessibility::*;
 
     // SAFETY: CoInitializeEx initializes the COM library on the current thread.
     // COINIT_MULTITHREADED is valid for background threads. The returned _com
@@ -295,14 +314,11 @@ pub fn get_selected_text_via_uia() -> Result<String, String> {
         let _com = CoInitializeEx(None, COINIT_MULTITHREADED);
 
         // Create the CUIAutomation instance
-        let automation: IUIAutomation = match CoCreateInstance(
-            &CUIAutomation,
-            None,
-            CLSCTX_INPROC_SERVER,
-        ) {
-            Ok(a) => a,
-            Err(e) => return Err(format!("CUIAutomation creation failed: {}", e)),
-        };
+        let automation: IUIAutomation =
+            match CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER) {
+                Ok(a) => a,
+                Err(e) => return Err(format!("CUIAutomation creation failed: {}", e)),
+            };
 
         // Get the focused element
         let focused = match automation.GetFocusedElement() {
@@ -312,7 +328,9 @@ pub fn get_selected_text_via_uia() -> Result<String, String> {
 
         // Strategy 1: TextPattern (for text editors, browsers, etc.)
         // UIA_TextPatternId = 10014
-        if let Ok(text_pattern) = focused.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId) {
+        if let Ok(text_pattern) =
+            focused.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
+        {
             if let Ok(selection) = text_pattern.GetSelection() {
                 if let Ok(length) = selection.Length() {
                     let mut combined = String::new();
@@ -338,7 +356,9 @@ pub fn get_selected_text_via_uia() -> Result<String, String> {
 
         // Strategy 2: SelectionPattern (for lists, tree views, etc.)
         // UIA_SelectionPatternId = 10001
-        if let Ok(sel_pattern) = focused.GetCurrentPatternAs::<IUIAutomationSelectionPattern>(UIA_SelectionPatternId) {
+        if let Ok(sel_pattern) =
+            focused.GetCurrentPatternAs::<IUIAutomationSelectionPattern>(UIA_SelectionPatternId)
+        {
             if let Ok(selected) = sel_pattern.GetCurrentSelection() {
                 if let Ok(length) = selected.Length() {
                     let mut combined = String::new();
@@ -464,16 +484,31 @@ pub fn start_auto_capture_monitor(
             // Try UIA capture on a blocking thread
             let result = tokio::task::spawn_blocking(|| {
                 // Get window info first
-                let (window_title, _process_name) = get_focused_window_info();
+                let (window_title, process_name) = get_focused_window_info();
                 // Then try UIA
                 match get_selected_text_via_uia() {
-                    Ok(text) if !text.trim().is_empty() => Some((text, window_title)),
+                    Ok(text) if !text.trim().is_empty() => Some((text, window_title, process_name)),
                     _ => None,
                 }
-            }).await;
+            })
+            .await;
 
             match result {
-                Ok(Some((text, window_title))) => {
+                Ok(Some((text, window_title, process_name))) => {
+                    let blocked = app_handle
+                        .try_state::<std::sync::Arc<crate::db::DbManager>>()
+                        .and_then(|db| {
+                            db.get_setting("selection_assistant_blacklist")
+                                .ok()
+                                .flatten()
+                        })
+                        .is_some_and(|blacklist| {
+                            is_capture_blocked(&blacklist, &process_name, &window_title)
+                        });
+                    if blocked {
+                        last_text.clear();
+                        continue;
+                    }
                     let text = text.trim().to_string();
                     // Only emit if text changed AND window changed (new selection in different focus)
                     // OR if text is different from last capture
@@ -481,10 +516,14 @@ pub fn start_auto_capture_monitor(
                         last_text = text.clone();
                         last_window = window_title.clone();
 
-                        let _ = app_handle.emit("selection-auto-captured", serde_json::json!({
-                            "text": text,
-                            "window_title": window_title,
-                        }));
+                        let _ = app_handle.emit(
+                            "selection-auto-captured",
+                            serde_json::json!({
+                                "text": text,
+                                "window_title": window_title,
+                                "process_name": process_name,
+                            }),
+                        );
                     }
                 }
                 Ok(None) => {
@@ -499,4 +538,26 @@ pub fn start_auto_capture_monitor(
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_capture_blocked;
+
+    #[test]
+    fn selection_blacklist_matches_process_or_window_case_insensitively() {
+        let blacklist = r#"["Bitwarden","Windows Security"]"#;
+
+        assert!(is_capture_blocked(blacklist, "Bitwarden.exe", "Vault"));
+        assert!(is_capture_blocked(
+            blacklist,
+            "explorer.exe",
+            "WINDOWS SECURITY"
+        ));
+        assert!(!is_capture_blocked(
+            blacklist,
+            "Code.exe",
+            "OMNIX Workbench"
+        ));
+    }
 }

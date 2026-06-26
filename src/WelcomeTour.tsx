@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { PRODUCT_DESCRIPTOR_ZH, PRODUCT_NAME } from "@/lib/constants";
 
 export interface TourStep {
   targetId?: string;
@@ -12,8 +13,8 @@ export interface TourStep {
 const TOUR_STEPS: TourStep[] = [
   {
     tab: "dashboard",
-    title: "🔮 OMNIX DevFlow 交互式开发中枢",
-    content: "欢迎来到 OMNIX DevFlow！这是为您量身打造的开发提效网关。我们特别准备了 6 步简易指引，带您领略包括智能大模型路由切换、技能熔炼拓扑与开发经验事故蒸馏在内的全部高级特性。",
+    title: `${PRODUCT_NAME} 交互式开发中枢`,
+    content: `欢迎来到 ${PRODUCT_NAME}！这是一个${PRODUCT_DESCRIPTOR_ZH}。我们准备了 6 步简易指引，带您了解模型路由、技能熔炼与开发经验蒸馏等核心能力。`,
     position: "center"
   },
   {

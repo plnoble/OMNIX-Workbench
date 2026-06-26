@@ -61,7 +61,7 @@ export function LabsTab({ onNavigate }: LabsTabProps) {
                 Labs 实验区
               </div>
               <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">
-                这些能力保留可见，但默认不进入核心 Workbench 主流程。每个功能都会标记完成度、风险和当前接入状态。
+                这些能力保留可见，但默认不进入核心开发流程。每个功能都会标记完成度、风险和当前接入状态。
               </p>
             </div>
             <Button size="sm" variant="outline" onClick={loadFeatures}>

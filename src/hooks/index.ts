@@ -1,5 +1,5 @@
 /**
- * OMNIX DevFlow — Custom Hooks Barrel Export
+ * OMNIX Workbench - Custom Hooks Barrel Export
  */
 
 export { useSettings } from "./useSettings";

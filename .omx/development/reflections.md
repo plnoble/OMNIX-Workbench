@@ -2,6 +2,54 @@
 
 Use this file at the end of meaningful tasks. Keep entries short and focused on reusable learning.
 
+### 2026-06-25 - Borrowing roadmap P2 and naming two similar concepts apart
+
+- Related task: Land the unified model center (P2) and resolve the "two default models" confusion.
+- What worked: Tracing each setting to its actual consumer (`target_model` → proxy/internal features; `default_model` → Agent runtime) before answering "is this a duplicate?" turned a vague worry into a precise, defensible answer. Reusing the existing P1 backend (`default_model` resolution) meant P2's keystone was mostly a UI surface plus naming.
+- What failed or slowed down: A subtle pre-select bug — keeping a selection identified by a cross-Agent-shared id (`agent_default`) across Agent switches masked the new Agent's default. Easy to miss because the backend was correct.
+- Root lessons: When two features share a vocabulary ("默认模型"), the fix is usually to name them by their consumer, not to merge them. And selection state keyed by a changing value must re-derive on that change rather than preserve a shared-id choice.
+- Process improvements: Check existing surfaces (capability icons, health checks already existed) before building — much of a "new" phase may already be done.
+- Potential skill candidates: none new.
+
+### 2026-06-25 - Probe the real CLI protocol before trusting assumptions
+
+- Related task: Fix Codex ignoring the user's default model; build a Responses↔Chat gateway bridge.
+- What worked: Running the real `codex app-server` and `generate-json-schema` to capture the exact Responses request, and replaying my translator's exact SSE output back into Codex to confirm acceptance. This turned a high-risk streaming translator into a validated one without spending a real model request.
+- What failed or slowed down: A backgrounded capture server died with its shell, and a second server's port conflict made the output land in the wrong file — cost a couple of iterations. A single self-contained driver process (server + codex driver in one) was the reliable shape.
+- Root lessons: For protocol bridges, ground every field in captured ground truth, not docs alone; and validate the hard direction (response events the peer must parse) against the real peer. Two reference projects (cc-switch) confirmed the upstream constraint (Codex dropped Chat Completions) and the auth field shape.
+- Process improvements: Keep a captured request as a test fixture; unit-test pure translation and live-validate the streaming shape.
+- Potential skill candidates: "Capture-and-replay a CLI's wire protocol to de-risk an adapter".
+
+### 2026-06-23 - Product identity and domain naming
+
+- Related task: Finalize OMNIX Workbench naming across application, packages, source, and release metadata.
+- What worked: Defining a hierarchy before editing separated formal product identity, compact UI branding, human-readable descriptor, and machine-safe package names.
+- What failed or slowed down: Earlier iterations used `DevFlow`, `omnix-app`, and `Workbench` interchangeably as brand, package, route, and feature domain. That made the product shape harder to explain and left dead UI behind.
+- Root lessons: Product name, navigation vocabulary, domain vocabulary, and artifact slug are separate contracts. A product called Workbench should not contain another catch-all Workbench page.
+- Process improvements: Keep canonical names in frontend constants, Tauri metadata, and `AGENTS.md`; search retired names before every release build.
+- Future optimizations: Add a lightweight naming-lint script if retired names reappear.
+- Potential skill candidates: Product naming migration checklist for desktop applications.
+
+### 2026-06-23 - Provisional E1 icon rollout
+
+- Related task: Replace every OMNIX Workbench product icon with the selected E1 concept.
+- What worked: Generating one RGBA master and using `tauri icon` kept platform variants consistent; direct PE parsing exposed stale embedded resources that source-file inspection missed.
+- What failed or slowed down: Cargo resource caching preserved the old executable icon, NSIS needed separate installer icon configuration, and MSI verification required an unavailable non-sandbox approval.
+- Root lessons: Icon rollout has three layers: source assets, in-app/web references, and embedded package resources. Each needs separate verification.
+- Process improvements: Track icon inputs in `build.rs`, configure installer icons explicitly, and extract packaged PE resources in release QA.
+- Future optimizations: Add a reusable Windows icon verification script and rebuild the MSI when non-sandbox approval returns.
+- Potential skill candidates: Tauri cross-platform icon rollout and package verification checklist.
+
+### 2026-06-24 - E1 MSI closure
+
+- Related task: Finish the icon rollout after non-sandbox WiX approval became available.
+- What worked: Decompiling the final MSI and comparing its embedded executable/ProductIcon against the master provided stronger evidence than checking the output filename.
+- What failed or slowed down: Completion crossed sessions because MSI validation required an external approval path.
+- Root lessons: A package is only verified when its embedded payload and metadata are inspected, not merely when a bundle command exits successfully.
+- Process improvements: Keep normal WiX validation plus `dark.exe` payload inspection in Windows release QA.
+- Future optimizations: Automate MSI icon comparison in a reusable verification script if Windows releases become frequent.
+- Potential skill candidates: MSI payload/icon verification helper.
+
 ## Entry Template
 
 ### YYYY-MM-DD - Task or milestone
@@ -71,3 +119,25 @@ Use this file at the end of meaningful tasks. Keep entries short and focused on 
 - Process improvements: Keep `diagnose:msi` and `repair:msi-env` as standard release tools.
 - Future optimizations: Add a CI/release checklist that refuses stale Windows bundle artifacts and prints installer timestamps.
 - Potential skill candidates: Tauri Windows MSI packaging checklist.
+
+### 2026-06-24 - Structured single-Agent runtime
+
+- Related task: Replace placeholder execution with a persistent Claude Code/Codex runtime.
+- What worked: Starting with protocol fixtures and fake executables made argument mapping, JSON parsing, persistence, approval, stop, and resume behavior testable without credentials. A broadcast boundary kept the runtime independent from Tauri.
+- What failed or slowed down: The first test fixture initialized the full production database; tying the core manager to `AppHandle` prevented the Windows test binary from starting; npm shim resolution differed between PowerShell and child-process callers.
+- Root lessons: A real Agent integration is a protocol adapter plus lifecycle state machine, not a terminal parser. Desktop handles, database seeding, and shell-specific command resolution must stay outside that core.
+- Token or time waste: `cargo fmt --check` exposed broad pre-existing formatting drift and was too noisy for a scoped change; future formatting work should target touched files or be a dedicated repository-wide slice.
+- Process improvements: Keep fake executable fixtures, model compatibility tests, and real no-cost CLI initialize probes in the release gate. Persist before emitting events, and check artifact timestamps after packaging.
+- Future optimizations: Add an automated native Tauri screenshot runner and split remaining legacy PTY code from `useConversations` once Team adopts the same runtime layer.
+- Potential skill candidates: Structured CLI Agent adapter checklist; Windows npm CLI resolution checklist.
+
+### 2026-06-25 - Full real-gap release and DPI-aware desktop QA
+
+- Related task: Complete the real single-Agent, Skills/distillation, Team, Knowledge/Quick Assistant plan and package a Windows test release.
+- What worked: Protocol-level fake executables, persisted state-machine tests, sequential release gates, normal WiX validation, and Per-Monitor-V2 native screenshots gave evidence at the right layers.
+- What failed or slowed down: A DPI-unaware capture process produced convincing but false half-window clipping; treating the screenshot as physical evidence led to an unnecessary frontend zoom experiment before in-process measurements contradicted it.
+- Root lessons: Desktop visual QA is part of the tested system. Its DPI context, window handle, coordinate space, and artifact timestamp must be explicit. Keep primary workflows honest and put unsupported runtimes behind visible status rather than simulated success.
+- Token or time waste: Repeated packaging and screenshots before the DPI virtualization discrepancy was isolated.
+- Process improvements: Run release gates sequentially, calculate hashes only after the final package, capture at full and minimum logical sizes with PMv2 awareness, and copy docs/manifest beside the installer.
+- Future optimizations: Turn the native capture script and artifact manifest generation into checked-in release helpers; reduce the remaining 90 Rust warnings in domain-sized slices.
+- Potential skill candidates: DPI-aware Tauri visual QA; structured Agent runtime acceptance; Windows release manifest generator.

@@ -20,10 +20,19 @@ import type { AppEntry, NavigationLayout } from "@/types";
 
 export const APP_ENTRIES: AppEntry[] = [
   {
+    id: "chat",
+    label: "对话",
+    title: "对话",
+    description: "选择一个 Agent 或模型，直接开始普通对话，不绑定工作区。",
+    group: "core",
+    placement: "pinned",
+    is_core: true,
+  },
+  {
     id: "work",
     label: "工作",
     title: "单 Agent 工作",
-    description: "选择一个 Agent，然后直接开始对话或处理任务。",
+    description: "选择一个工作区，让 Agent 在项目里读写文件、处理开发任务。",
     group: "core",
     placement: "pinned",
     is_core: true,
@@ -151,7 +160,7 @@ export const APP_ENTRIES: AppEntry[] = [
 ];
 
 export const DEFAULT_NAVIGATION_LAYOUT: NavigationLayout = {
-  pinned: ["work", "team", "agents", "skills"],
+  pinned: ["chat", "work", "team", "agents", "skills"],
   launcher: [
     "models",
     "knowledge",
@@ -169,7 +178,8 @@ export const DEFAULT_NAVIGATION_LAYOUT: NavigationLayout = {
 };
 
 export const APP_ICON_MAP = {
-  work: MessageSquare,
+  chat: MessageSquare,
+  work: Code2,
   team: Users,
   agents: Bot,
   skills: Sparkles,
@@ -218,12 +228,15 @@ export function normalizeNavigationLayout(layout?: Partial<NavigationLayout> | n
     }
   }
 
-  if (!pinned.includes("work")) {
-    const fromLauncher = launcher.indexOf("work");
-    const fromHidden = hidden.indexOf("work");
-    if (fromLauncher >= 0) launcher.splice(fromLauncher, 1);
-    if (fromHidden >= 0) hidden.splice(fromHidden, 1);
-    pinned.unshift("work");
+  // The two primary surfaces (对话 / 工作) must always stay pinned and lead.
+  for (const required of ["work", "chat"]) {
+    if (!pinned.includes(required)) {
+      const fromLauncher = launcher.indexOf(required);
+      const fromHidden = hidden.indexOf(required);
+      if (fromLauncher >= 0) launcher.splice(fromLauncher, 1);
+      if (fromHidden >= 0) hidden.splice(fromHidden, 1);
+      pinned.unshift(required);
+    }
   }
 
   return { pinned, launcher, hidden };

@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] — 2026-06-26
+
+A large feature release driven by reference-project borrowing (cc-switch, AionUi, Cherry Studio) and user acceptance testing.
+
+### Added
+- **Codex/Claude default model via a translating gateway** — the OMNIX session gateway now translates between Codex's Responses API and providers that only speak Chat Completions (DeepSeek, Volcano, most OpenAI-compatible relays), so any configured provider works with Codex (`responses_bridge.rs`). Validated end-to-end against a real `codex app-server`.
+- **Unified model center (P2)** — a global ☆ "Agent default" model (used when an Agent has no binding), plus quick provider presets in the add-provider form (DeepSeek, 火山 OpenAI-compatible, OpenAI, Anthropic, SiliconFlow, GLM, Kimi, 百炼, Ollama, LM Studio). Capability icons and health checks surfaced in the model list.
+- **MCP one-config sync (P3)** — sync OMNIX MCP servers into the agents' native config: Claude `~/.claude.json` and Codex `~/.codex/config.toml` (syntax-preserving via `toml_edit`). Backs up before writing, merges only, validates output, supports per-agent undo. MCP is now its own focused page.
+- **Team collaboration board (P4)** — a layered Worker dependency DAG colored by live status, plus a per-status count summary, in the Team tab.
+- **对话 / 工作 split** — distinct Chat (no workspace) and Work (workspace-required) surfaces; each Agent keeps independent conversation history; switching Agent loads that Agent's own conversation.
+- **Office assistant presets (P5a)** — PPT/Word/Excel/学术论文/会议纪要/周报 assistants (leveraging the bundled pptx/docx/xlsx skills); 53 built-in assistants total.
+- **Skill generation from a workspace (P5b)** — scan a project, select files, and have a model generate a SKILL.md draft to save as a local skill.
+- First-token waiting indicator and idle preloading of tab chunks for smoother navigation.
+
+### Changed
+- Global default model resolution order: session override → Agent binding → global default → Agent default.
+- Settings "默认大模型" renamed to "内置功能默认模型" and clarified as distinct from the Agent default model.
+- MCP and the model center are focused pages; Settings now only holds system + data backup.
+
+### Fixed
+- Codex session start no longer times out at 5s and breaks the stdin pipe — the `thread/start` budget is 30s with process-death detection, accommodating Codex booting MCP servers.
+- The Agent model selector now re-derives the default on Agent switch (was masking the new Agent's default with the shared "Agent default" option).
+- The Work surface no longer auto-defaults a stale workspace; a workspace is required before sending.
+- The conversation delete-confirm dialog no longer overflows the sidebar (portaled to the document body).
+
 ## [0.1.0] — 2026-06-12
 
 ### Security
