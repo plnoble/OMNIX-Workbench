@@ -75,7 +75,8 @@ Next: rebuild (dev or release) and have the user (a) re-run the Codex turn and A
 - P4 (Team board: Worker dependency DAG + status summary over team_get_run_detail): done.
 - P5a (office assistant presets), P5b (workspace → skill generation in SkillHub): done.
 - P5c (remote access + unattended cron): assessed as already implemented; no filler built.
-- Borrowing roadmap P1–P5 complete. **Outstanding: rebuild a fresh Windows MSI/NSIS package** — all P1–P5 work is only in the `tauri dev` build; the Desktop artifacts predate P1. The dev app runs via `npm run tauri dev` (frontend hot-reloads; closing the window stops the dev server).
+- Borrowing roadmap P1–P5 complete and **released as 0.2.0**: fresh standalone exe + NSIS + MSI built and copied to Desktop `OMNIX Workbench 0.2.0`; version bumped; CHANGELOG written; all work committed and pushed to `origin/master`; the `feat/msi-packaging-and-refactor-slice` branch deleted (master is the sole branch + GitHub default).
+- Next action: user acceptance of the 0.2.0 standalone build (especially the live paths that need real credentials — Codex with a Chat-Completions provider via the translating gateway, MCP sync write to real agent config, and a real Team run). The dev app still runs via `npm run tauri dev` for iteration.
 
 ## Naming Contract
 

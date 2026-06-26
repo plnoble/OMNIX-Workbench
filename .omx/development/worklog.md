@@ -203,4 +203,10 @@
   - The workspace-skill-generation backend already existed but had no UI (`scan_workspace_for_skills` / `generate_skill_from_files` via `skillGeneratorApi`, plus a registered-but-unwrapped `create_skill`). Added a `create` wrapper to `skillLibraryApi` and a new "生成" section to `SkillHub`: pick workspace → scan files → select + name → generate a SKILL.md draft → review → save as a local skill (or copy).
   - Verification: `npx.cmd tsc --noEmit`, `npm.cmd run build` pass.
 - **P5c (远程/定时)**: assessed as already implemented — not building filler. Remote cross-device access (`get_remote_access_info` → Dashboard "远程跨设备调试") and unattended cron (`CronTab` with create/edit/toggle/delete/history + an existing "立即运行" manual trigger via `trigger_cron_task`) both already exist and work. The three-tier skill source idea (builtin/custom/extension) was not forced because skills only carry a `source_type` flag, not a meaningful three-tier taxonomy; the generation feature delivers the concrete P5b value instead.
-- Borrowing roadmap P1–P5 complete (P5c was already present). Note: a fresh Windows MSI/NSIS package has NOT been rebuilt since P1; all P1–P5 work is currently only in the `tauri dev` build.
+- Borrowing roadmap P1–P5 complete (P5c was already present).
+- Released **0.2.0**:
+  - Bumped version to 0.2.0 in `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`; wrote the 0.2.0 CHANGELOG entry.
+  - Built fresh artifacts via `npm run tauri build`: standalone `omnix-workbench.exe`, `OMNIX Workbench_0.2.0_x64-setup.exe` (NSIS), and `OMNIX Workbench_0.2.0_x64_en-US.msi`. Copied the standalone exe + NSIS + MSI + CHANGELOG to the Desktop `OMNIX Workbench 0.2.0` folder for user testing.
+    - Standalone exe SHA256: `8E45DAB3A72D996B0CAD25A1020D0FBDB640D1ACBADC14DA65351D275E7FD769`.
+    - NSIS setup SHA256: `DDF0ECD2048E5BDE1CDBE1DB9F18510BFAC1B3A69DDA7A3920380D11D1371E12`.
+  - Git consolidation: committed all P1–P5 work, fast-forwarded `master` to the release commit, pushed to `origin/master`, and deleted the now-merged `feat/msi-packaging-and-refactor-slice` branch (local + remote). `master` is the only branch and GitHub's default.
