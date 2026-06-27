@@ -12,8 +12,9 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { qaApi, settingsApi, modelApi } from "@/lib/tauri-api";
+import { qaApi, settingsApi, modelApi, quickActionApi, notesApi, type QuickAction } from "@/lib/tauri-api";
 import { useTranslation } from "@/hooks/useTranslation";
+import { useTheme, type ThemeMode } from "@/hooks/useTheme";
 import { BUILTIN_LANGUAGES, getLanguageByCode } from "@/lib/translate-constants";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -24,7 +25,7 @@ import ReactMarkdown from "react-markdown";
 import {
   Search, Copy, X, Loader2,
   Languages, ArrowRightLeft, Lightbulb, FileText,
-  Square, Globe, ClipboardCopy, Sparkles,
+  Square, Globe, ClipboardCopy, Sparkles, StickyNote,
 } from "lucide-react";
 import type { SearchResult } from "@/types";
 
@@ -88,13 +89,39 @@ export function QuickAssistant() {
   const translation = useTranslation();
   const [targetLang, setTargetLang] = useState(""); // empty = auto (smart bidirectional)
 
+  // Custom user-defined quick actions (划词助手深挖)
+  const [customActions, setCustomActions] = useState<QuickAction[]>([]);
+  const [activeCustomLabel, setActiveCustomLabel] = useState("");
+
   // Auto-capture state
   const [capturedText, setCapturedText] = useState("");
   const [capturedWindow, setCapturedWindow] = useState("");
   const [showCaptureBar, setShowCaptureBar] = useState(false);
 
+  // Apply the same theme as the main app (this is a separate window, so it must
+  // read + apply the saved theme itself — otherwise it defaults to dark).
+  const [themeMode, setThemeMode] = useState<ThemeMode>("auto");
+  useTheme(themeMode);
+  const loadTheme = useCallback(async () => {
+    const mode = await settingsApi.get("theme_mode").catch(() => null);
+    if (mode === "dark" || mode === "light" || mode === "auto") setThemeMode(mode);
+  }, []);
+
   // Stream cleanup ref
   const unlistenStreamRef = useRef<(() => void) | null>(null);
+  // Latest streaming flag for the focus listener (avoids stale closures).
+  const isStreamingRef = useRef(false);
+  useEffect(() => { isStreamingRef.current = isStreaming; }, [isStreaming]);
+
+  // Idle auto-dismiss: if the action bar pops up and the user takes no action,
+  // hide it after a few seconds so it's never stuck on screen.
+  const dismissTimerRef = useRef<number | null>(null);
+  const cancelDismiss = useCallback(() => {
+    if (dismissTimerRef.current !== null) {
+      window.clearTimeout(dismissTimerRef.current);
+      dismissTimerRef.current = null;
+    }
+  }, []);
 
   const isTranslateMode = action === "translate";
   const currentActionDef = action ? ACTIONS.find(a => a.id === action) : null;
@@ -123,6 +150,13 @@ export function QuickAssistant() {
         }
 
         await translation.loadTranslationSettings();
+        await loadTheme();
+
+        // Load enabled custom actions (best-effort).
+        try {
+          const actions = await quickActionApi.list();
+          setCustomActions(actions.filter((a) => a.enabled));
+        } catch { /* table may be empty */ }
       } catch (e) {
         console.error("[QA] Failed to load settings:", e);
       }
@@ -136,6 +170,7 @@ export function QuickAssistant() {
     const unlistenAutoCapture = listen<{ text: string; window_title: string }>(
       "selection-auto-captured",
       (event) => {
+        void loadTheme(); // pick up theme changes since the window was created
         setCapturedText(event.payload.text);
         setCapturedWindow(event.payload.window_title);
         setQuery(event.payload.text);
@@ -144,6 +179,7 @@ export function QuickAssistant() {
         setAnswer("");
         setAction(null);
         setSources([]);
+        scheduleDismiss(); // auto-hide if the user takes no action
       }
     );
 
@@ -155,6 +191,7 @@ export function QuickAssistant() {
           setCapturedText(text.trim());
           setQuery(text.trim());
           setShowCaptureBar(true);
+          scheduleDismiss();
         }
       } catch (e) {
         console.error("[QA] Failed to read clipboard:", e);
@@ -194,10 +231,35 @@ export function QuickAssistant() {
   // ── Window control ───────────────────────────────────
 
   const hideWindow = useCallback(async () => {
+    cancelDismiss();
     try {
       await qaApi.toggle(false);
     } catch { /* ignore */ }
-  }, []);
+  }, [cancelDismiss]);
+
+  // (Re)start the idle auto-dismiss countdown for an un-acted action bar.
+  const scheduleDismiss = useCallback((ms = 8000) => {
+    cancelDismiss();
+    dismissTimerRef.current = window.setTimeout(() => { void hideWindow(); }, ms);
+  }, [cancelDismiss, hideWindow]);
+
+  // Dismiss the popup when it loses focus (the user clicked back to their work),
+  // Cherry-style — so it's never stuck on screen even if the small ✕ is awkward
+  // to hit. Not while streaming, so an in-flight answer isn't lost.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    import("@tauri-apps/api/window")
+      .then(({ getCurrentWindow }) =>
+        getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+          if (!focused && !isStreamingRef.current) {
+            void hideWindow();
+          }
+        }),
+      )
+      .then((fn) => { unlisten = fn; })
+      .catch(() => { /* not in a Tauri window */ });
+    return () => unlisten?.();
+  }, [hideWindow]);
 
   // ── Stop streaming ───────────────────────────────────
 
@@ -210,6 +272,55 @@ export function QuickAssistant() {
     setIsLoading(false);
   }, []);
 
+  // ── Shared streaming prompt runner (built-in + custom actions) ──────────
+
+  const streamPrompt = useCallback(async (fullQuery: string) => {
+    setIsLoading(true);
+    setIsStreaming(true);
+    setAnswer("");
+    setSources([]);
+    try {
+      const unlistenChunk = listen<string>("qa-stream-chunk", (event) => {
+        setAnswer(prev => prev + event.payload);
+      });
+      const unlistenDone = listen<Record<string, unknown>>("qa-stream-done", (event) => {
+        const payload = event.payload;
+        if (Array.isArray(payload.sources)) {
+          const validated = payload.sources.filter(
+            (s): s is SearchResult =>
+              typeof s === "object" && s !== null &&
+              typeof (s as Record<string, unknown>).chunk_id === "string" &&
+              typeof (s as Record<string, unknown>).content === "string"
+          );
+          setSources(validated);
+        }
+        setIsStreaming(false);
+        setIsLoading(false);
+        unlistenChunk.then(fn => fn());
+        unlistenDone.then(fn => fn());
+        unlistenStreamRef.current = null;
+      });
+      const unlistenError = listen<string>("qa-stream-error", (event) => {
+        setAnswer(prev => prev + friendlyError(event.payload));
+        setIsStreaming(false);
+        setIsLoading(false);
+        unlistenChunk.then(fn => fn());
+        unlistenDone.then(fn => fn());
+        unlistenStreamRef.current = null;
+      });
+      unlistenStreamRef.current = () => {
+        unlistenChunk.then(fn => fn());
+        unlistenDone.then(fn => fn());
+        unlistenError.then(fn => fn());
+      };
+      await qaApi.queryStream({ query: fullQuery, useKb: false, chatModel, embeddingModel: undefined });
+    } catch (e) {
+      setAnswer(friendlyError(e));
+      setIsStreaming(false);
+      setIsLoading(false);
+    }
+  }, [chatModel]);
+
   // ── Execute action ────────────────────────────────────
 
   const executeAction = useCallback(async (pickedAction: QAction, textOverride?: string) => {
@@ -217,7 +328,9 @@ export function QuickAssistant() {
     if (!text) return;
 
     setAction(pickedAction);
+    setActiveCustomLabel("");
     setShowCaptureBar(false);
+    cancelDismiss(); // user is acting — keep the popup open
 
     // Special: Copy action — just copy to clipboard
     if (pickedAction === "copy") {
@@ -254,67 +367,25 @@ export function QuickAssistant() {
       return;
     }
 
-    // Explain / Summarize — use streaming QA
-    setIsLoading(true);
-    setIsStreaming(true);
-    setAnswer("");
-    setSources([]);
+    // Explain / Summarize — run through the shared streaming runner.
+    const actionDef = ACTIONS.find(a => a.id === pickedAction)!;
+    const fullQuery = actionDef.promptPrefix ? `${actionDef.promptPrefix}${text}` : text;
+    await streamPrompt(fullQuery);
+  }, [query, targetLang, translation, streamPrompt]);
 
-    try {
-      const actionDef = ACTIONS.find(a => a.id === pickedAction)!;
-      const fullQuery = actionDef.promptPrefix
-        ? `${actionDef.promptPrefix}${text}`
-        : text;
+  // ── Execute a custom user-defined action ───────────────
 
-      const unlistenChunk = listen<string>("qa-stream-chunk", (event) => {
-        setAnswer(prev => prev + event.payload);
-      });
-
-      const unlistenDone = listen<Record<string, unknown>>("qa-stream-done", (event) => {
-        const payload = event.payload;
-        if (Array.isArray(payload.sources)) {
-          const validated = payload.sources.filter(
-            (s): s is SearchResult =>
-              typeof s === "object" && s !== null &&
-              typeof (s as Record<string, unknown>).chunk_id === "string" &&
-              typeof (s as Record<string, unknown>).content === "string"
-          );
-          setSources(validated);
-        }
-        setIsStreaming(false);
-        setIsLoading(false);
-        unlistenChunk.then(fn => fn());
-        unlistenDone.then(fn => fn());
-        unlistenStreamRef.current = null;
-      });
-
-      const unlistenError = listen<string>("qa-stream-error", (event) => {
-        setAnswer(prev => prev + friendlyError(event.payload));
-        setIsStreaming(false);
-        setIsLoading(false);
-        unlistenChunk.then(fn => fn());
-        unlistenDone.then(fn => fn());
-        unlistenStreamRef.current = null;
-      });
-
-      unlistenStreamRef.current = () => {
-        unlistenChunk.then(fn => fn());
-        unlistenDone.then(fn => fn());
-        unlistenError.then(fn => fn());
-      };
-
-      await qaApi.queryStream({
-        query: fullQuery,
-        useKb: false,
-        chatModel,
-        embeddingModel: undefined,
-      });
-    } catch (e) {
-      setAnswer(friendlyError(e));
-      setIsStreaming(false);
-      setIsLoading(false);
-    }
-  }, [query, chatModel, targetLang, translation]);
+  const executeCustomAction = useCallback(async (act: QuickAction, textOverride?: string) => {
+    const text = (textOverride || query).trim();
+    if (!text) return;
+    setAction(null);
+    setActiveCustomLabel(act.label);
+    setShowCaptureBar(false);
+    cancelDismiss();
+    const tpl = act.prompt_template;
+    const fullQuery = tpl.includes("{{text}}") ? tpl.split("{{text}}").join(text) : `${tpl}\n\n${text}`;
+    await streamPrompt(fullQuery);
+  }, [query, streamPrompt]);
 
   // ── Copy result ──────────────────────────────────────
 
@@ -329,6 +400,24 @@ export function QuickAssistant() {
     }
   }, [answer, isTranslateMode, translation.translatedText]);
 
+  // ── Save result as a note (笔记) ─────────────────────────
+
+  const handleSaveNote = useCallback(async () => {
+    const result = isTranslateMode ? translation.translatedText : answer;
+    if (!result) return;
+    const label = isTranslateMode ? "翻译" : (activeCustomLabel || currentActionDef?.label || "划词");
+    const title = (capturedText || query).trim().slice(0, 30) || "划词笔记";
+    const body = capturedText
+      ? `> ${capturedText.slice(0, 500)}\n\n---\n\n${result}`
+      : result;
+    try {
+      await notesApi.save({ title: `[${label}] ${title}`, content: body, source: "划词助手" });
+      toast.success("已存为笔记");
+    } catch (e) {
+      toast.error("保存笔记失败", { description: String(e) });
+    }
+  }, [isTranslateMode, translation.translatedText, answer, activeCustomLabel, currentActionDef, capturedText, query]);
+
   // ── Render ───────────────────────────────────────────
 
   return (
@@ -336,18 +425,19 @@ export function QuickAssistant() {
       {/* Header: captured text preview + action bar */}
       {showCaptureBar && capturedText ? (
         <div className="border-b border-border/50 bg-muted/30">
-          {/* Captured text preview */}
+          {/* Captured text preview — this row is a drag handle (window has no titlebar) */}
           <div className="px-3 pt-2.5 pb-1.5">
-            <div className="flex items-center gap-1.5 mb-1">
+            <div data-tauri-drag-region className="flex cursor-move items-center gap-1.5 mb-1">
               <ClipboardCopy className="h-3 w-3 text-muted-foreground" />
               <span className="text-xs text-muted-foreground">
-                {capturedWindow ? `来自 ${capturedWindow}` : "已捕获文字"}
+                {capturedWindow ? `来自 ${capturedWindow}` : "已捕获文字"} · 可拖动
               </span>
               <button
-                className="ml-auto text-xs text-muted-foreground hover:text-foreground"
-                onClick={() => setShowCaptureBar(false)}
+                className="ml-auto rounded px-1 text-xs text-muted-foreground hover:bg-muted/30 hover:text-foreground"
+                onClick={() => void hideWindow()}
+                title="关闭"
               >
-                ✕
+                ✕ 关闭
               </button>
             </div>
             <p className="text-xs text-foreground/80 line-clamp-2">
@@ -355,7 +445,7 @@ export function QuickAssistant() {
             </p>
           </div>
           {/* Action buttons */}
-          <div className="flex items-center gap-1 px-2 pb-2">
+          <div className="flex flex-wrap items-center gap-1 px-2 pb-2">
             {ACTIONS.map(a => (
               <button
                 key={a.id}
@@ -367,6 +457,20 @@ export function QuickAssistant() {
                 onClick={() => executeAction(a.id, capturedText)}
               >
                 {a.icon}
+                {a.label}
+              </button>
+            ))}
+            {customActions.map(a => (
+              <button
+                key={a.id}
+                title={a.prompt_template}
+                className={cn(
+                  "flex items-center gap-1 px-3 py-1.5 rounded-md text-xs font-medium transition-all",
+                  "bg-primary/10 hover:bg-primary/20 border border-primary/30 text-primary",
+                )}
+                onClick={() => executeCustomAction(a, capturedText)}
+              >
+                <span>{a.emoji}</span>
                 {a.label}
               </button>
             ))}
@@ -467,6 +571,15 @@ export function QuickAssistant() {
                 )}
               </div>
             )}
+            {!action && activeCustomLabel && (
+              <div className="flex items-center gap-1.5">
+                <Sparkles className="h-3 w-3 text-primary" />
+                <Badge variant="outline" className="text-xs h-5 bg-primary/10 text-primary border-primary/30">
+                  {activeCustomLabel}
+                </Badge>
+                {isStreaming && <span className="text-xs text-muted-foreground animate-pulse">生成中…</span>}
+              </div>
+            )}
             {/* Markdown rendered result */}
             <div className="text-sm leading-relaxed prose prose-sm max-w-none
               prose-p:my-1 prose-pre:my-2 prose-code:text-xs prose-code:before:content-[''] prose-code:after:content-['']
@@ -527,6 +640,10 @@ export function QuickAssistant() {
             <Button size="sm" variant="ghost" className="h-6 text-xs gap-1 ml-auto" onClick={handleCopy}>
               <Copy className="h-3 w-3" />
               复制
+            </Button>
+            <Button size="sm" variant="ghost" className="h-6 text-xs gap-1" onClick={handleSaveNote} title="把结果存为笔记">
+              <StickyNote className="h-3 w-3" />
+              存为笔记
             </Button>
             {!isStreaming && action && action !== "search" && action !== "copy" && (
               <Button size="sm" variant="ghost" className="h-6 text-xs gap-1" onClick={() => executeAction(action)}>

@@ -14,14 +14,13 @@ interface AgentAccount {
   is_active: boolean;
 }
 
-interface ApiResult {
-  accountName: string;
-  model: string;
+/** One message in a per-model conversation thread (多模型同对话). */
+interface TurnMsg {
+  role: "user" | "assistant";
   content: string;
-  loading: boolean;
+  loading?: boolean;
   error?: string;
   startTime?: number;
-  endTime?: number;
   latencyMs?: number;
   tokenCount?: number;
 }
@@ -71,9 +70,9 @@ export const CompareHub: React.FC = () => {
   const [prompt, setPrompt] = useState("");
   const [accounts, setAccounts] = useState<AgentAccount[]>([]);
 
-  // API Mode States
+  // API Mode States — multi-turn conversation per model (多模型同对话)
   const [selectedApiAccs, setSelectedApiAccs] = useState<string[]>([]);
-  const [apiResults, setApiResults] = useState<{ [accId: string]: ApiResult }>({});
+  const [threads, setThreads] = useState<{ [accId: string]: TurnMsg[] }>({});
 
   // Web Mode States
   const [selectedWebExps, setSelectedWebExps] = useState<string[]>(["deepseek", "chatgpt"]);
@@ -152,7 +151,20 @@ export const CompareHub: React.FC = () => {
     }
   };
 
-  // API Concurrent Dispatcher (SSE reader)
+  // Update the trailing (in-flight) assistant message of one model's thread.
+  const patchLastAssistant = (accId: string, patch: Partial<TurnMsg>) => {
+    setThreads(prev => {
+      const arr = [...(prev[accId] || [])];
+      const idx = arr.length - 1;
+      if (idx >= 0 && arr[idx].role === "assistant") {
+        arr[idx] = { ...arr[idx], ...patch };
+      }
+      return { ...prev, [accId]: arr };
+    });
+  };
+
+  // API Concurrent Dispatcher — multi-turn: each submit fans the FULL per-model
+  // history out to every selected model and streams a new reply into its column.
   const handleApiCompareSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!prompt.trim() || selectedApiAccs.length === 0) return;
@@ -161,26 +173,36 @@ export const CompareHub: React.FC = () => {
     abortControllersRef.current.forEach(controller => controller.abort());
     abortControllersRef.current = [];
 
-    const initialResults: { [accId: string]: ApiResult } = {};
+    const submitted = prompt.trim();
+
+    // Build the message history to send per model from the CURRENT threads,
+    // appending this turn's user message (exclude any in-flight placeholders).
+    const historyByAcc: Record<string, { role: string; content: string }[]> = {};
     selectedApiAccs.forEach(accId => {
-      const acc = accounts.find(a => a.id === accId);
-      if (acc) {
-        initialResults[accId] = {
-          accountName: acc.account_name,
-          model: acc.target_model,
-          content: "",
-          loading: true,
-          startTime: Date.now(),
-        };
-      }
+      const prior = (threads[accId] || [])
+        .filter(m => !m.loading && !m.error)
+        .map(m => ({ role: m.role, content: m.content }));
+      historyByAcc[accId] = [...prior, { role: "user", content: submitted }];
     });
-    setApiResults(initialResults);
+
+    // Append the user turn + an in-flight assistant placeholder to each thread.
+    setThreads(prev => {
+      const next = { ...prev };
+      selectedApiAccs.forEach(accId => {
+        const arr = next[accId] ? [...next[accId]] : [];
+        arr.push({ role: "user", content: submitted });
+        arr.push({ role: "assistant", content: "", loading: true, startTime: Date.now() });
+        next[accId] = arr;
+      });
+      return next;
+    });
+    setPrompt("");
     setFusionContent("");
 
-    // Concurrently trigger fetch requests (use Promise.all for proper async handling)
     const apiPromises = selectedApiAccs.map(async (accId) => {
       const controller = new AbortController();
       abortControllersRef.current.push(controller);
+      const startTime = Date.now();
       try {
         const response = await fetch(`http://localhost:${DEFAULT_PROXY_PORT}/v1/chat/completions`, {
           method: "POST",
@@ -191,7 +213,7 @@ export const CompareHub: React.FC = () => {
           },
           body: JSON.stringify({
             model: "Auto",
-            messages: [{ role: "user", content: prompt }],
+            messages: historyByAcc[accId],
             stream: true
           }),
           signal: controller.signal
@@ -225,15 +247,7 @@ export const CompareHub: React.FC = () => {
                   const dataObj = JSON.parse(line.substring(6));
                   const delta = dataObj.choices?.[0]?.delta?.content || "";
                   accumText += delta;
-
-                  setApiResults(prev => ({
-                    ...prev,
-                    [accId]: {
-                      ...prev[accId],
-                      content: accumText,
-                      loading: !done
-                    }
-                  }));
+                  patchLastAssistant(accId, { content: accumText, loading: !done });
                 } catch (err) {
                   // Partial SSE lines are expected during streaming; skip silently
                 }
@@ -243,35 +257,40 @@ export const CompareHub: React.FC = () => {
         }
 
         const endTime = Date.now();
-        setApiResults(prev => ({
-          ...prev,
-          [accId]: {
-            ...prev[accId],
-            loading: false,
-            endTime,
-            latencyMs: endTime - (prev[accId]?.startTime || endTime),
-            tokenCount: prev[accId]?.content?.length || 0,
-          }
-        }));
+        patchLastAssistant(accId, {
+          loading: false,
+          latencyMs: endTime - startTime,
+          tokenCount: accumText.length,
+        });
 
       } catch (err: unknown) {
         const error = err instanceof Error ? err : new Error(String(err));
         if (error.name === 'AbortError') return;
         console.error("API dispatch error for account:", accId, error);
-        setApiResults(prev => ({
-          ...prev,
-          [accId]: {
-            ...prev[accId],
-            loading: false,
-            error: error.message || "请求失败"
-          }
-        }));
+        patchLastAssistant(accId, { loading: false, error: error.message || "请求失败" });
       } finally {
         abortControllersRef.current = abortControllersRef.current.filter(c => c !== controller);
       }
     });
-    // Fire all promises concurrently (forEach doesn't await, but we want concurrent anyway)
     Promise.allSettled(apiPromises);
+  };
+
+  // Start a fresh multi-model conversation.
+  const handleNewCompareConversation = () => {
+    abortControllersRef.current.forEach(controller => controller.abort());
+    abortControllersRef.current = [];
+    setThreads({});
+    setFusionContent("");
+  };
+
+  /** Latest assistant answer per model (for the fusion furnace). */
+  const latestAnswers = (): { [accId: string]: string } => {
+    const out: { [accId: string]: string } = {};
+    Object.entries(threads).forEach(([accId, msgs]) => {
+      const lastAssistant = [...msgs].reverse().find(m => m.role === "assistant" && m.content.trim());
+      if (lastAssistant) out[accId] = lastAssistant.content;
+    });
+    return out;
   };
 
   // Sync Layout calculation and positioning of sub-Webview windows over HTML placeholders
@@ -481,10 +500,10 @@ export const CompareHub: React.FC = () => {
     const textDict: { [name: string]: string } = {};
 
     if (mode === "api") {
-      Object.entries(apiResults).forEach(([_, res]) => {
-        if (res.content.trim()) {
-          textDict[res.accountName] = res.content;
-        }
+      Object.entries(latestAnswers()).forEach(([accId, content]) => {
+        const acc = accounts.find(a => a.id === accId);
+        const name = acc?.account_name || accId;
+        if (content.trim()) textDict[name] = content;
       });
     } else {
       // Trigger Webtext extraction first
@@ -607,7 +626,7 @@ ${sources}
             ⚖️ AI 专家比对与最佳结论熔炼炉
           </h2>
           <span className="text-xs text-muted-foreground">
-            一问多答模式，免除重复发问，多维度并排参考得出系统开发最佳解决方案
+            多模型同对话：一次提问并排发给多个模型，可持续追问（每个模型各自保留上下文），再熔炼出最佳结论
           </span>
         </div>
 
@@ -774,9 +793,21 @@ ${sources}
 
           <div className="flex gap-2.5">
             {mode === "api" ? (
-              <button type="submit" className="btn btn-primary flex-1 flex items-center justify-center gap-1.5 py-2.5">
-                🎯 开始 API 并行比对
-              </button>
+              <>
+                <button type="submit" className="btn btn-primary flex-1 flex items-center justify-center gap-1.5 py-2.5">
+                  {Object.keys(threads).length > 0 ? "💬 继续追问（多模型同对话）" : "🎯 开始 API 并行比对"}
+                </button>
+                {Object.keys(threads).length > 0 && (
+                  <button
+                    type="button"
+                    className="btn btn-secondary px-4 flex items-center justify-center gap-1.5 py-2.5"
+                    onClick={handleNewCompareConversation}
+                    title="清空所有模型的对话，开始新一轮"
+                  >
+                    🆕 新对话
+                  </button>
+                )}
+              </>
             ) : (
               <button
                 type="button"
@@ -818,40 +849,51 @@ ${sources}
 
       {/* Side-by-Side Display Columns */}
 
-      {/* API Columns */}
-      {mode === "api" && Object.keys(apiResults).length > 0 && (
+      {/* API Columns — multi-turn conversation per model */}
+      {mode === "api" && Object.keys(threads).length > 0 && (
         // TODO: migrate to Tailwind - gridTemplateColumns is dynamic based on selectedApiAccs.length
         <div style={{ display: "grid", gridTemplateColumns: `repeat(${selectedApiAccs.length}, 1fr)` }} className="gap-[15px] min-h-[260px]">
           {selectedApiAccs.map(accId => {
-            const res = apiResults[accId];
-            if (!res) return null;
+            const acc = accounts.find(a => a.id === accId);
+            const msgs = threads[accId] || [];
+            const lastAssistant = [...msgs].reverse().find(m => m.role === "assistant");
             return (
               <div key={accId} className="card glass-card flex flex-col h-full p-4">
                 <div className="flex justify-between items-center border-b border-border pb-2.5 mb-3">
                   <div>
-                    <strong className="text-sm block">{res.accountName}</strong>
-                    <span className="text-xs text-muted-foreground">{res.model}</span>
-                    {res.latencyMs && !res.loading && (
+                    <strong className="text-sm block">{acc?.account_name || accId}</strong>
+                    <span className="text-xs text-muted-foreground">{acc?.target_model}</span>
+                    {lastAssistant?.latencyMs && !lastAssistant.loading && (
                       <span className="text-xs text-cyan-400 ml-2">
-                        ⏱ {(res.latencyMs / 1000).toFixed(1)}s · ~{Math.ceil(res.tokenCount! / 4)} tokens
+                        ⏱ {(lastAssistant.latencyMs / 1000).toFixed(1)}s · ~{Math.ceil((lastAssistant.tokenCount || 0) / 4)} tokens
                       </span>
                     )}
                   </div>
-                  {res.loading ? (
+                  {lastAssistant?.loading ? (
                     <span className="pulse-dot active" title="正在生成实时流..." />
-                  ) : (
-                    <button className="btn-icon border-none bg-transparent cursor-pointer text-sm" onClick={() => handleCopyText(res.content)} title="复制代码" aria-label="复制代码">
+                  ) : lastAssistant?.content ? (
+                    <button className="btn-icon border-none bg-transparent cursor-pointer text-sm" onClick={() => handleCopyText(lastAssistant.content)} title="复制最新回答" aria-label="复制最新回答">
                       📋
                     </button>
-                  )}
+                  ) : null}
                 </div>
 
-                <div className="flex-1 min-h-[180px] overflow-y-auto text-sm leading-relaxed whitespace-pre-wrap text-foreground">
-                  {res.error ? (
-                    <span className="text-red-500">🚫 错误: {res.error}</span>
-                  ) : (
-                    res.content || <span className="text-muted-foreground">等待回答流生成中...</span>
-                  )}
+                <div className="flex-1 min-h-[180px] max-h-[60vh] overflow-y-auto text-sm leading-relaxed flex flex-col gap-2.5">
+                  {msgs.map((m, i) => (
+                    m.role === "user" ? (
+                      <div key={i} className="self-end max-w-[90%] rounded-lg bg-accent/15 px-2.5 py-1.5 text-xs text-foreground whitespace-pre-wrap">
+                        {m.content}
+                      </div>
+                    ) : (
+                      <div key={i} className="text-foreground whitespace-pre-wrap">
+                        {m.error ? (
+                          <span className="text-red-500">🚫 错误: {m.error}</span>
+                        ) : (
+                          m.content || <span className="text-muted-foreground">等待回答流生成中...</span>
+                        )}
+                      </div>
+                    )
+                  ))}
                 </div>
               </div>
             );
@@ -883,7 +925,7 @@ ${sources}
       )}
 
       {/* Summary Fusion Furnace Card */}
-      {((mode === "api" && Object.keys(apiResults).length > 0) || (mode === "web" && webActive)) && (
+      {((mode === "api" && Object.keys(threads).length > 0) || (mode === "web" && webActive)) && (
         <div className="card p-5 flex flex-col gap-4" style={{
           background: "linear-gradient(135deg, rgba(168, 85, 247, 0.08) 0%, rgba(236, 72, 153, 0.08) 100%)",
           border: "1px solid rgba(168, 85, 247, 0.25)",

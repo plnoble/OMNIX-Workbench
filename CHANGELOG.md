@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-06-27
+
+The "desktop-app roadmap" release (R1–R5) plus a phone remote-access feature and a large round of user-acceptance fixes.
+
+### Added
+- **Workspace checkpoints + per-file diff review (R1)** — before a Direct-mode workspace turn, OMNIX auto-snapshots the working tree onto a Git shadow ref (`refs/omnix/checkpoints/…`, no commit pollution); a timeline lets you rewind, and a per-file diff lets you accept/reject single files (`commands/checkpoints.rs`, `WorkspaceCheckpoints.tsx`).
+- **In-app file preview (R2)** — click a workspace file to preview images/PDF/Markdown/code inline; Office/binary open with the system app (`read_workspace_file`, `FilePreviewPanel.tsx`).
+- **Parallel sessions via Git worktrees (R3)** — spin up an isolated `omnix/<branch>` worktree per session, with dirty/ahead badges and conflict-safe merge; plus an in-session **background sub-agent** panel (each runs in its own worktree, concurrent with the parent) (`commands/worktrees.rs`, `commands/subagents.rs`).
+- **Token activity & cost panel (R4)** — surfaces the collected `request_logs` usage with estimated cost and a daily chart (`TokenActivityPanel.tsx`).
+- **User-state hooks (R4)** — event→action rules (notify / shell command / log) fired from the runtime event loop, with their own page (`commands/hooks.rs`, `HooksTab.tsx`).
+- **Context-window meter (R4)** — an accurate token gauge over the OMNIX-stored conversation transcript, with one-click compaction.
+- **Custom Quick Assistant actions + always-on selection popup (R5)** — define your own prompt-based 划词 actions; the popup now appears next to the cursor on selection (no copy, no hotkey) (`commands/quick_actions.rs`).
+- **Notes (R5)** — local Markdown notes (mirrored to `~/.omnix/notes/*.md`), with "save from Quick Assistant", "save agent message to notes", and an optional notes-MCP for agents.
+- **Dedicated translation page (R5)** — Google/有道-style two-pane multilingual AI translation with history.
+- **Multi-model same-conversation (R5)** — CompareHub upgraded from one-shot to a multi-turn side-by-side conversation per model.
+- **Custom assistants + import/export (R5)** — create your own assistants and share them as JSON.
+- **Knowledge-base export/import** — move a knowledge base (documents + chunks + embeddings) between machines as a portable `.omnixkb.json`.
+- **Phone remote access (AionUi-style)** — enable LAN binding to view + continue your agent conversations from a phone (chat thread, send, start new session, approve/deny), with a QR code on the dashboard. Cross-network reach is the user's own tunnel.
+
+### Changed
+- Navigation simplified to two tiers: 固定(标题栏) / 收纳(宫格); the 隐藏 tier was removed.
+- Translation now uses the unified "内置功能默认模型" — no separate model picker.
+
+### Fixed
+- **Translation never displayed** despite succeeding — Rust↔TS field-name mismatches on the translate result and history; now use dedicated structs (`TranslateResult`/`TranslateHistoryEntry`).
+- Select dropdowns and toasts rendered dark-on-dark in light theme (now use theme `popover` tokens).
+- Quick Assistant popup follows the app theme, is movable/closeable, and auto-dismisses; the "auto-capture" toggle now persists correctly.
+- Remote access info served `local_ip`/`connection_url` but the UI read `ip`/`url` (blank link/QR); aligned via serde rename.
+- Folder-open permission fixed; the notes folder opens via a native command.
+
 ## [0.2.0] — 2026-06-26
 
 A large feature release driven by reference-project borrowing (cc-switch, AionUi, Cherry Studio) and user acceptance testing.

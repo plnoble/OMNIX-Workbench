@@ -13,7 +13,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { listen, emit } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import { conversationApi, ptyApi, agentApi, runtimeApi } from "@/lib/tauri-api";
+import { conversationApi, ptyApi, agentApi, runtimeApi, checkpointApi } from "@/lib/tauri-api";
 import { processTerminalStream, detectInteractivePrompts, detectMistakes } from "@/lib/terminal";
 import { AGENT_NAMES } from "@/lib/constants";
 import type {
@@ -610,6 +610,14 @@ export function useConversations(
     // Show a waiting indicator until the session starts and the first token arrives.
     // First Codex start can take a while (it boots MCP servers during thread/start).
     setStartingConversations((current) => current.includes(convId) ? current : [...current, convId]);
+
+    // Auto-checkpoint before a workspace-modifying turn (Direct mode + real
+    // workspace), so the user can review the diff and rewind. No-op / skipped
+    // for non-Git workspaces; never blocks the turn.
+    if (config.workMode === "direct" && chatWorkspace && chatWorkspace !== "direct") {
+      const snippet = chatInput.trim().slice(0, 40);
+      checkpointApi.create(chatWorkspace, convId, snippet || "改动前检查点").catch(() => undefined);
+    }
 
     const inputMsg = agentContent;
     setChatInput("");

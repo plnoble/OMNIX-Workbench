@@ -21,13 +21,19 @@ import {
   Square,
   Users,
   RefreshCw,
+  StickyNote,
 } from "lucide-react";
+import { WorkspaceCheckpoints } from "@/components/WorkspaceCheckpoints";
+import { WorktreePanel } from "@/components/WorktreePanel";
+import { FilePreviewPanel } from "@/components/FilePreviewPanel";
+import { ContextMeter } from "@/components/ContextMeter";
+import { SubAgentPanel } from "@/components/SubAgentPanel";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { AGENT_NAMES } from "@/lib/constants";
 import { cn } from "@/lib/utils";
-import { knowledgeApi, runtimeApi, searchApi, workspaceApi } from "@/lib/tauri-api";
+import { knowledgeApi, runtimeApi, searchApi, workspaceApi, notesApi } from "@/lib/tauri-api";
 import type {
   ConversationMessage,
   DetectedAgent,
@@ -63,6 +69,8 @@ export interface ChatTabProps {
   onRespondApproval: (approved: boolean, forSession?: boolean) => void;
   onStopSession: (id: string) => void;
   onSuggestTeam?: (prompt: string) => void;
+  onReloadMessages?: () => void;
+  onSelectConversation?: (id: string) => void;
 }
 
 const PERMISSION_OPTIONS: Array<{ id: PermissionPolicy; label: string; desc: string }> = [
@@ -151,6 +159,8 @@ export function ChatTab({
   onRespondApproval,
   onStopSession,
   onSuggestTeam,
+  onReloadMessages,
+  onSelectConversation,
 }: ChatTabProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [permissionPolicy, setPermissionPolicy] = useState<PermissionPolicy>("ask_on_risk");
@@ -167,6 +177,7 @@ export function ChatTab({
   const [embeddingModels, setEmbeddingModels] = useState<EmbeddingModelInfo[]>([]);
   const [selectedKnowledgeIds, setSelectedKnowledgeIds] = useState<string[]>([]);
   const [workspaceSnapshot, setWorkspaceSnapshot] = useState<WorkspaceSnapshot | null>(null);
+  const [previewPath, setPreviewPath] = useState<string | null>(null);
   const [workspaceLoading, setWorkspaceLoading] = useState(false);
 
   const runtimeAgentId = getRuntimeAgentId(activeAgent);
@@ -281,6 +292,25 @@ export function ChatTab({
     }
 
     return blocks.join("\n\n---\n\n");
+  };
+
+  // Connect agent output → notebook: save a plan / suggestion / deferred item
+  // straight into Notes so it can be reviewed for missed work later.
+  const saveMessageAsNote = async (content: string) => {
+    const firstLine = content.trim().split("\n").find((l) => l.trim()) ?? "Agent 笔记";
+    const title = firstLine.replace(/[#>*`]/g, "").trim().slice(0, 40) || "Agent 笔记";
+    const ws = isWorkspaceMode ? chatWorkspace.split(/[\\/]/).pop() : "";
+    try {
+      await notesApi.save({
+        title: `[${activeAgent}] ${title}`,
+        content,
+        tags: "agent",
+        source: ws ? `${activeAgent} · ${ws}` : activeAgent,
+      });
+      toast.success("已存为笔记", { description: "可在「笔记」中查阅" });
+    } catch (e) {
+      toast.error("保存笔记失败", { description: String(e) });
+    }
   };
 
   const handleSubmit = async (event: React.FormEvent) => {
@@ -417,7 +447,18 @@ export function ChatTab({
                         : "border-border bg-card/50"
                     )}
                   >
-                    <div className="mb-1 text-xs text-muted-foreground">{message.role === "user" ? "你" : activeAgent}</div>
+                    <div className="mb-1 flex items-center gap-2 text-xs text-muted-foreground">
+                      <span>{message.role === "user" ? "你" : activeAgent}</span>
+                      {message.role !== "user" && message.content.trim() && (
+                        <button
+                          onClick={() => void saveMessageAsNote(message.content)}
+                          title="存为笔记（计划/建议/待办，方便回查）"
+                          className="ml-auto flex items-center gap-1 rounded px-1 py-0.5 opacity-60 hover:bg-muted/30 hover:text-foreground hover:opacity-100"
+                        >
+                          <StickyNote className="h-3 w-3" /> 存为笔记
+                        </button>
+                      )}
+                    </div>
                     <div className="whitespace-pre-wrap break-words">
                       <MessageContent content={message.content} />
                     </div>
@@ -526,6 +567,14 @@ export function ChatTab({
               </button>
 
               <div className="ml-auto flex items-center gap-2">
+                {currentConvId && (
+                  <ContextMeter
+                    conversationId={currentConvId}
+                    modelName={selectedModel?.model_name}
+                    refreshSignal={messages.length}
+                    onCompacted={onReloadMessages}
+                  />
+                )}
                 {selectedModel && selectedModel.compatibility.level !== "native" && (
                   <span className="flex items-center gap-1 text-xs text-warning">
                     <AlertTriangle className="h-3.5 w-3.5" />
@@ -605,7 +654,7 @@ export function ChatTab({
                         <button
                           key={`${change.status}:${change.path}`}
                           className="flex w-full min-w-0 items-center gap-2 rounded px-1.5 py-1 text-left text-xs hover:bg-muted/25"
-                          onClick={() => void openWorkspaceEntry(change.path)}
+                          onClick={() => setPreviewPath(change.path)}
                           title={change.path}
                         >
                           <span className="w-6 shrink-0 font-mono text-warning">{change.status || "M"}</span>
@@ -616,6 +665,34 @@ export function ChatTab({
                   </section>
 
                   <section>
+                    <WorkspaceCheckpoints
+                      workspacePath={chatWorkspace}
+                      conversationId={currentConvId}
+                      refreshSignal={messages.length}
+                    />
+                  </section>
+
+                  <section>
+                    <WorktreePanel
+                      workspacePath={chatWorkspace}
+                      conversationId={currentConvId}
+                      refreshSignal={messages.length}
+                    />
+                  </section>
+
+                  <section>
+                    <SubAgentPanel
+                      parentConversationId={currentConvId}
+                      workspacePath={chatWorkspace}
+                      agent={runtimeAgentId}
+                      agentDisplay={activeAgent}
+                      permission={permissionPolicy === "full_access" ? { kind: "full_access", confirmed: fullAccessConfirmed } : { kind: permissionPolicy }}
+                      refreshSignal={messages.length}
+                      onOpenConversation={onSelectConversation}
+                    />
+                  </section>
+
+                  <section>
                     <div className="mb-2 text-xs font-semibold text-muted-foreground">文件</div>
                     <div className="max-h-[48vh] overflow-y-auto">
                       {workspaceSnapshot.files.map((entry) => (
@@ -623,7 +700,7 @@ export function ChatTab({
                           key={entry.path}
                           className="flex w-full min-w-0 items-center gap-1.5 rounded py-1 pr-1 text-left text-xs hover:bg-muted/25"
                           style={{ paddingLeft: `${entry.depth * 12 + 4}px` }}
-                          onClick={() => void openWorkspaceEntry(entry.path)}
+                          onClick={() => entry.is_dir ? void openWorkspaceEntry(entry.path) : setPreviewPath(entry.path)}
                           title={entry.path}
                         >
                           {entry.is_dir ? <Folder className="h-3.5 w-3.5 shrink-0 text-warning" /> : <FileCode2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
@@ -644,6 +721,14 @@ export function ChatTab({
             )}
           </div>
         </aside>
+      )}
+
+      {previewPath && isWorkspaceMode && (
+        <FilePreviewPanel
+          workspacePath={chatWorkspace}
+          relativePath={previewPath}
+          onClose={() => setPreviewPath(null)}
+        />
       )}
     </div>
   );

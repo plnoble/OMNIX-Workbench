@@ -315,9 +315,12 @@ pub fn get_mailbox_messages() -> Result<Vec<MailboxMessage>, String> {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteAccessInfo {
+    // Serialized as `ip` / `url` to match the frontend `RemoteAccessInfo` type.
+    #[serde(rename = "ip")]
     pub local_ip: String,
     pub port: u16,
     pub token: String,
+    #[serde(rename = "url")]
     pub connection_url: String,
 }
 

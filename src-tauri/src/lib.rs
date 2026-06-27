@@ -145,7 +145,7 @@ pub fn run() {
         .setup(move |app| {
             // Start the proxy server inside the Tokio runtime context
             if let Ok(mut server) = proxy_state.lock() {
-                server.start(Arc::clone(&db), Arc::clone(&agent_manager), port);
+                server.start(Arc::clone(&db), Arc::clone(&agent_manager), Arc::clone(&runtime_manager), port);
             }
 
             // Share references globally as Tauri App State
@@ -156,8 +156,13 @@ pub fn run() {
 
             let mut runtime_events = runtime_manager.subscribe();
             let runtime_app = app.handle().clone();
+            let hooks_db = Arc::clone(&db);
             tauri::async_runtime::spawn(async move {
                 while let Ok(envelope) = runtime_events.recv().await {
+                    // Fire user-state hooks before forwarding to the UI. The
+                    // engine drops its DB guard before any action/spawn, so it
+                    // never holds a lock across the loop's await.
+                    commands::evaluate_hooks(&hooks_db, &runtime_app, &envelope);
                     let _ = runtime_app.emit("agent-session-event", envelope);
                 }
             });
@@ -337,6 +342,7 @@ pub fn run() {
             commands::get_conversation_tasks,
             commands::get_mailbox_messages,
             commands::get_remote_access_info,
+            commands::set_remote_access,
             commands::get_all_models_metadata,
             commands::get_cron_tasks,
             commands::save_cron_task,
@@ -384,6 +390,7 @@ pub fn run() {
             commands::read_file_as_base64,
             commands::get_workspace_git_diff,
             commands::get_workspace_snapshot,
+            commands::read_workspace_file,
             commands::run_env_diagnostics,
             commands::repair_env_tool,
             commands::kb_list_bases,
@@ -489,6 +496,7 @@ pub fn run() {
             // Request Logs & Usage Stats (New API/Sub2API inspired)
             commands::get_request_logs,
             commands::get_usage_stats,
+            commands::get_usage_timeseries,
             commands::cleanup_request_logs,
             // Platform Health Management (New API/Sub2API inspired)
             commands::get_platform_health,
@@ -549,6 +557,47 @@ pub fn run() {
             commands::mcp_sync_to_agents,
             commands::mcp_remove_from_agent,
             commands::mcp_get_agent_states,
+            // Workspace checkpoints + diff review (Claude Code / Codex desktop inspired)
+            commands::create_checkpoint,
+            commands::list_checkpoints,
+            commands::get_workspace_diff,
+            commands::restore_checkpoint,
+            commands::revert_file,
+            // Parallel sessions via Git worktrees (Codex / Claude Code desktop inspired)
+            commands::create_worktree,
+            commands::list_worktrees,
+            commands::remove_worktree,
+            commands::merge_worktree,
+            // User-state hooks (Claude Code hooks inspired): event → action rules
+            commands::list_hooks,
+            commands::save_hook,
+            commands::toggle_hook,
+            commands::delete_hook,
+            commands::test_hook,
+            commands::get_hook_runs,
+            commands::clear_hook_runs,
+            // In-session background tasks / sub-agents (own worktree, concurrent session)
+            commands::create_subagent,
+            commands::list_subagents,
+            commands::update_subagent_status,
+            commands::delete_subagent,
+            // Custom Quick Assistant actions (划词助手深挖)
+            commands::list_quick_actions,
+            commands::save_quick_action,
+            commands::delete_quick_action,
+            // Notes (笔记)
+            commands::list_notes,
+            commands::save_note,
+            commands::delete_note,
+            commands::get_notes_dir,
+            commands::open_notes_folder,
+            // Custom assistants (助手库: 自定义 + 分享)
+            commands::list_custom_assistants,
+            commands::save_custom_assistant,
+            commands::delete_custom_assistant,
+            // Knowledge-base portability (export / import)
+            commands::kb_export_base,
+            commands::kb_import_base,
             // Output Styles (ZCF inspired)
             commands::get_output_styles,
             commands::get_output_style_prompt,

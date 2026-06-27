@@ -4,6 +4,42 @@ use rusqlite::params;
 use crate::db::DbManager;
 use super::*;
 
+/// Enable/disable remote phone access. When ON, the proxy binds to 0.0.0.0 so a
+/// phone on the LAN (or via the user's own tunnel) can reach `/remote`; OFF keeps
+/// it localhost-only. Restarts the proxy so the bind change applies immediately.
+#[tauri::command]
+pub async fn set_remote_access(
+    enabled: bool,
+    proxy: State<'_, std::sync::Mutex<crate::proxy::ProxyServer>>,
+    db: State<'_, Arc<DbManager>>,
+    agent_manager: State<'_, Arc<crate::agent::AgentManager>>,
+    runtime_manager: State<'_, Arc<crate::runtime_manager::RuntimeManager>>,
+) -> Result<(), String> {
+    db.set_setting("remote_access_enabled", if enabled { "true" } else { "false" })
+        .map_err(|e| e.to_string())?;
+    let port: u16 = db
+        .get_setting("proxy_port")
+        .unwrap_or(None)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1421);
+    {
+        let mut server = proxy.lock().map_err(|e| format!("proxy lock: {e}"))?;
+        server.stop();
+    }
+    // Let the old listener release the port before re-binding.
+    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+    {
+        let mut server = proxy.lock().map_err(|e| format!("proxy lock: {e}"))?;
+        server.start(
+            Arc::clone(&db),
+            Arc::clone(&agent_manager),
+            Arc::clone(&runtime_manager),
+            port,
+        );
+    }
+    Ok(())
+}
+
 // ══════════════════════════════════════════════════
 // Request Logs & Usage Stats (New API/Sub2API inspired)
 // ══════════════════════════════════════════════════
@@ -34,6 +70,8 @@ pub struct UsageStats {
     pub avg_latency_ms: f64,
     pub requests_today: i64,
     pub tokens_today: i64,
+    pub total_cost_usd: f64,
+    pub cost_today_usd: f64,
     pub top_models: Vec<ModelUsage>,
     pub hourly_distribution: Vec<HourlyCount>,
 }
@@ -43,12 +81,39 @@ pub struct ModelUsage {
     pub model: String,
     pub request_count: i64,
     pub total_tokens: i64,
+    pub cost_usd: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HourlyCount {
     pub hour: String,
     pub count: i64,
+}
+
+/// One day's aggregated token/cost activity (for the activity chart).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DailyUsage {
+    pub date: String,
+    pub requests: i64,
+    pub tokens: i64,
+    pub cost_usd: f64,
+}
+
+/// Sum estimated cost across every model in a query that yields
+/// `(model, SUM(prompt_tokens), SUM(completion_tokens))` rows.
+fn sum_cost(conn: &rusqlite::Connection, sql: &str) -> f64 {
+    let mut stmt = match conn.prepare(sql) {
+        Ok(stmt) => stmt,
+        Err(_) => return 0.0,
+    };
+    stmt.query_map([], |row| {
+        let model: String = row.get(0)?;
+        let prompt: i64 = row.get::<_, Option<i64>>(1)?.unwrap_or(0);
+        let completion: i64 = row.get::<_, Option<i64>>(2)?.unwrap_or(0);
+        Ok(crate::circuit_breaker::estimate_cost(&model, prompt, completion))
+    })
+    .map(|rows| rows.flatten().sum())
+    .unwrap_or(0.0)
 }
 
 /// Get request logs with pagination and optional model filter
@@ -117,13 +182,22 @@ pub fn get_usage_stats(db: State<'_, Arc<DbManager>>) -> Result<UsageStats, Stri
     let requests_today: i64 = conn.query_row("SELECT COUNT(*) FROM request_logs WHERE date(timestamp) = date('now')", [], |r| r.get(0)).unwrap_or(0);
     let tokens_today: i64 = conn.query_row("SELECT COALESCE(SUM(total_tokens), 0) FROM request_logs WHERE date(timestamp) = date('now')", [], |r| r.get(0)).unwrap_or(0);
 
-    // Top models
-    let mut stmt = conn.prepare("SELECT model, COUNT(*) as cnt, SUM(total_tokens) as tokens FROM request_logs GROUP BY model ORDER BY cnt DESC LIMIT 10").map_err(|e| e.to_string())?;
+    // Estimated cost (priced via the model pricing table; unknown models use a
+    // default rate). Summed per-model so each model uses its own rate.
+    let total_cost_usd = sum_cost(&conn, "SELECT model, SUM(prompt_tokens), SUM(completion_tokens) FROM request_logs GROUP BY model");
+    let cost_today_usd = sum_cost(&conn, "SELECT model, SUM(prompt_tokens), SUM(completion_tokens) FROM request_logs WHERE date(timestamp) = date('now') GROUP BY model");
+
+    // Top models (with per-model estimated cost)
+    let mut stmt = conn.prepare("SELECT model, COUNT(*) as cnt, SUM(total_tokens) as tokens, SUM(prompt_tokens), SUM(completion_tokens) FROM request_logs GROUP BY model ORDER BY cnt DESC LIMIT 10").map_err(|e| e.to_string())?;
     let top_models: Vec<ModelUsage> = stmt.query_map([], |row| {
+        let model: String = row.get(0)?;
+        let prompt: i64 = row.get::<_, Option<i64>>(3)?.unwrap_or(0);
+        let completion: i64 = row.get::<_, Option<i64>>(4)?.unwrap_or(0);
         Ok(ModelUsage {
-            model: row.get(0)?,
+            model: model.clone(),
             request_count: row.get(1)?,
-            total_tokens: row.get(2)?,
+            total_tokens: row.get::<_, Option<i64>>(2)?.unwrap_or(0),
+            cost_usd: crate::circuit_breaker::estimate_cost(&model, prompt, completion),
         })
     }).map_err(|e| e.to_string())?.flatten().collect();
 
@@ -143,9 +217,57 @@ pub fn get_usage_stats(db: State<'_, Arc<DbManager>>) -> Result<UsageStats, Stri
         avg_latency_ms: avg_latency,
         requests_today,
         tokens_today,
+        total_cost_usd,
+        cost_today_usd,
         top_models,
         hourly_distribution,
     })
+}
+
+/// Daily token / request / cost activity for the last `days` days (ascending).
+/// Days with no traffic are omitted; the frontend fills gaps for the chart.
+#[tauri::command]
+pub fn get_usage_timeseries(
+    days: Option<u32>,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<Vec<DailyUsage>, String> {
+    let days = days.unwrap_or(14).clamp(1, 90);
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT date(timestamp) AS d, model, COUNT(*), SUM(total_tokens), SUM(prompt_tokens), SUM(completion_tokens)
+             FROM request_logs
+             WHERE timestamp >= datetime('now', ?1)
+             GROUP BY d, model
+             ORDER BY d ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let offset = format!("-{} days", days);
+
+    // Accumulate per-model rows into per-day totals so cost uses each model's rate.
+    let mut by_day: std::collections::BTreeMap<String, (i64, i64, f64)> = std::collections::BTreeMap::new();
+    let rows = stmt
+        .query_map(params![offset], |row| {
+            let date: String = row.get(0)?;
+            let model: String = row.get(1)?;
+            let requests: i64 = row.get(2)?;
+            let tokens: i64 = row.get::<_, Option<i64>>(3)?.unwrap_or(0);
+            let prompt: i64 = row.get::<_, Option<i64>>(4)?.unwrap_or(0);
+            let completion: i64 = row.get::<_, Option<i64>>(5)?.unwrap_or(0);
+            Ok((date, requests, tokens, crate::circuit_breaker::estimate_cost(&model, prompt, completion)))
+        })
+        .map_err(|e| e.to_string())?;
+    for row in rows.flatten() {
+        let entry = by_day.entry(row.0).or_insert((0, 0, 0.0));
+        entry.0 += row.1;
+        entry.1 += row.2;
+        entry.2 += row.3;
+    }
+
+    Ok(by_day
+        .into_iter()
+        .map(|(date, (requests, tokens, cost_usd))| DailyUsage { date, requests, tokens, cost_usd })
+        .collect())
 }
 
 /// Delete old request logs (cleanup)

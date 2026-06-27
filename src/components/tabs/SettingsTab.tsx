@@ -79,6 +79,7 @@ export interface SettingsTabProps {
   // Selection Assistant
   selectionCaptureMode: string;
   selectionShowOnCapture: boolean;
+  selectionAutoCaptureEnabled: boolean;
   selectionPreserveClipboard: boolean;
   isSelectionCapturing: boolean;
   lastSelectionCapture: string | null;
@@ -86,6 +87,7 @@ export interface SettingsTabProps {
   selectionHistory: SelectionHistoryEntry[];
   onSetSelectionCaptureMode: (v: string) => void;
   onSetSelectionShowOnCapture: (v: boolean) => void;
+  onSetSelectionAutoCaptureEnabled: (v: boolean) => void;
   onSetSelectionPreserveClipboard: (v: boolean) => void;
   onTestSelectionCapture: () => Promise<string | null>;
   onSaveSelectionSettings: (updates: Record<string, unknown>) => Promise<void>;
@@ -518,7 +520,7 @@ function SystemSubTab({
   wslDistro, setWslDistro,
   onSaveSettings,
   selectionCaptureMode, onSetSelectionCaptureMode,
-  selectionShowOnCapture, onSetSelectionShowOnCapture,
+  selectionAutoCaptureEnabled, onSetSelectionAutoCaptureEnabled,
   selectionPreserveClipboard, onSetSelectionPreserveClipboard,
   isSelectionCapturing,
   lastSelectionCapture: _lastSelectionCapture,
@@ -723,19 +725,11 @@ function SystemSubTab({
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="flex items-center gap-2.5">
               <Switch
-                checked={selectionShowOnCapture}
-                onCheckedChange={async (v) => {
-                  onSetSelectionShowOnCapture(v);
-                  try {
-                    const { selectionApi } = await import("@/lib/tauri-api");
-                    await selectionApi.toggleAutoCapture(v);
-                  } catch (e) {
-                    console.error("[AutoCapture] Toggle failed:", e);
-                  }
-                }}
+                checked={selectionAutoCaptureEnabled}
+                onCheckedChange={(v) => onSetSelectionAutoCaptureEnabled(v)}
                 id="sel_auto_capture"
               />
-              <Label htmlFor="sel_auto_capture" className="m-0">🖱️ 自动捕获选中文字</Label>
+              <Label htmlFor="sel_auto_capture" className="m-0">🖱️ 自动捕获选中文字（划词监听）</Label>
             </div>
             <div className="flex items-center gap-2.5">
               <Switch checked={selectionPreserveClipboard} onCheckedChange={onSetSelectionPreserveClipboard} id="sel_preserve_cb" />

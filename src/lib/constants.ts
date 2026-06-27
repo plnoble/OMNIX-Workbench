@@ -322,3 +322,35 @@ export const OUTPUT_STYLE_PRESETS: OutputStylePreset[] = [
     system_prompt_suffix: "Think creatively and propose multiple approaches to each problem. Consider unconventional solutions. Evaluate trade-offs between simplicity, performance, and maintainability. Be open to experimentation.",
   },
 ];
+
+/**
+ * Nominal context-window sizes (tokens) by model-name substring, for the
+ * context-budget meter. These are the models' published windows — used only to
+ * show how full the OMNIX-stored transcript is, not a billing figure.
+ */
+const CONTEXT_WINDOW_TABLE: { match: string; window: number }[] = [
+  { match: "claude", window: 200_000 },
+  { match: "gpt-5", window: 256_000 },
+  { match: "o1", window: 200_000 },
+  { match: "o3", window: 200_000 },
+  { match: "o4", window: 200_000 },
+  { match: "gpt-4.1", window: 1_000_000 },
+  { match: "gpt-4o", window: 128_000 },
+  { match: "gpt-4", window: 128_000 },
+  { match: "deepseek", window: 128_000 },
+  { match: "qwen", window: 128_000 },
+  { match: "glm", window: 128_000 },
+  { match: "doubao", window: 128_000 },
+  { match: "moonshot", window: 128_000 },
+  { match: "kimi", window: 128_000 },
+  { match: "gemini", window: 1_000_000 },
+  { match: "llama", window: 128_000 },
+];
+
+/** Best-effort context window (tokens) for a model name; defaults to 128K. */
+export function contextWindowFor(modelName?: string | null): number {
+  if (!modelName) return 128_000;
+  const lower = modelName.toLowerCase();
+  const hit = CONTEXT_WINDOW_TABLE.find((entry) => lower.includes(entry.match));
+  return hit ? hit.window : 128_000;
+}

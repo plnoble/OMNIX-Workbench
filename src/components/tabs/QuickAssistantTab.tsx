@@ -5,6 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { BUILTIN_LANGUAGES } from "@/lib/translate-constants";
+import { QuickActionsEditor } from "@/components/QuickActionsEditor";
+import { TranslationHistoryPanel } from "@/components/TranslationHistoryPanel";
 import type { SelectionHistoryEntry } from "@/types";
 
 interface QuickAssistantTabProps {
@@ -189,6 +191,10 @@ export function QuickAssistantTab({
               </label>
             </div>
           </div>
+
+          <QuickActionsEditor />
+
+          <TranslationHistoryPanel />
         </div>
       </section>
 

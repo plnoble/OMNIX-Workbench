@@ -158,9 +158,188 @@ pub fn get_workspace_snapshot(workspace_path: String) -> Result<WorkspaceSnapsho
     })
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct FilePreview {
+    pub path: String,
+    pub kind: String, // text | markdown | image | pdf | binary
+    pub language: String,
+    pub content: String, // text content, or a data: URL for image/pdf
+    pub size: u64,
+    pub truncated: bool,
+}
+
+const TEXT_MAX: u64 = 512 * 1024;
+const IMAGE_MAX: u64 = 8 * 1024 * 1024;
+const PDF_MAX: u64 = 24 * 1024 * 1024;
+
+fn image_mime(ext: &str) -> Option<&'static str> {
+    Some(match ext {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "bmp" => "image/bmp",
+        "ico" => "image/x-icon",
+        "avif" => "image/avif",
+        _ => return None,
+    })
+}
+
+fn highlight_language(ext: &str) -> String {
+    match ext {
+        "rs" => "rust",
+        "ts" => "typescript",
+        "tsx" => "tsx",
+        "js" | "mjs" | "cjs" => "javascript",
+        "jsx" => "jsx",
+        "py" => "python",
+        "go" => "go",
+        "java" => "java",
+        "kt" => "kotlin",
+        "c" | "h" => "c",
+        "cpp" | "cc" | "hpp" => "cpp",
+        "cs" => "csharp",
+        "rb" => "ruby",
+        "php" => "php",
+        "swift" => "swift",
+        "sh" | "bash" | "zsh" => "bash",
+        "ps1" => "powershell",
+        "json" => "json",
+        "toml" => "toml",
+        "yaml" | "yml" => "yaml",
+        "xml" | "svg" => "xml",
+        "html" | "htm" => "html",
+        "css" => "css",
+        "scss" => "scss",
+        "sql" => "sql",
+        "md" | "markdown" => "markdown",
+        other => other,
+    }
+    .to_string()
+}
+
+fn is_known_binary(ext: &str) -> bool {
+    matches!(
+        ext,
+        "exe" | "dll" | "bin" | "so" | "dylib" | "a" | "o" | "obj" | "lib" | "class" | "pyc"
+            | "zip" | "tar" | "gz" | "tgz" | "7z" | "rar" | "xz" | "bz2"
+            | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "odt" | "ods" | "odp"
+            | "mp3" | "wav" | "flac" | "ogg" | "mp4" | "mov" | "avi" | "mkv" | "webm"
+            | "woff" | "woff2" | "ttf" | "otf" | "eot"
+            | "sqlite" | "db" | "wasm" | "node"
+    )
+}
+
+#[tauri::command]
+pub fn read_workspace_file(
+    workspace_path: String,
+    relative_path: String,
+) -> Result<FilePreview, String> {
+    let root = PathBuf::from(workspace_path.trim())
+        .canonicalize()
+        .map_err(|error| format!("工作区不存在或无法访问: {error}"))?;
+    let target = root
+        .join(relative_path.trim().replace('\\', "/"))
+        .canonicalize()
+        .map_err(|error| format!("文件不存在或无法访问: {error}"))?;
+    // Path-traversal guard: the resolved file must stay inside the workspace.
+    if !target.starts_with(&root) {
+        return Err("文件超出工作区范围".into());
+    }
+    if !target.is_file() {
+        return Err("所选路径不是文件".into());
+    }
+
+    let metadata = std::fs::metadata(&target).map_err(|error| error.to_string())?;
+    let size = metadata.len();
+    let ext = target
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let rel = target
+        .strip_prefix(&root)
+        .map(|value| value.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_else(|_| relative_path.clone());
+
+    let binary = |kind: &str| FilePreview {
+        path: rel.clone(),
+        kind: kind.into(),
+        language: String::new(),
+        content: String::new(),
+        size,
+        truncated: false,
+    };
+
+    if let Some(mime) = image_mime(&ext) {
+        if size > IMAGE_MAX {
+            return Ok(binary("binary"));
+        }
+        let bytes = std::fs::read(&target).map_err(|error| error.to_string())?;
+        let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+        return Ok(FilePreview {
+            path: rel,
+            kind: "image".into(),
+            language: String::new(),
+            content: format!("data:{mime};base64,{encoded}"),
+            size,
+            truncated: false,
+        });
+    }
+
+    if ext == "pdf" {
+        if size > PDF_MAX {
+            return Ok(binary("binary"));
+        }
+        let bytes = std::fs::read(&target).map_err(|error| error.to_string())?;
+        let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+        return Ok(FilePreview {
+            path: rel,
+            kind: "pdf".into(),
+            language: String::new(),
+            content: format!("data:application/pdf;base64,{encoded}"),
+            size,
+            truncated: false,
+        });
+    }
+
+    if is_known_binary(&ext) {
+        return Ok(binary("binary"));
+    }
+
+    // Text/code/markdown: read up to the cap and reject non-UTF-8 / null bytes.
+    let read_len = (size.min(TEXT_MAX) + 1) as usize;
+    let bytes = {
+        use std::io::Read;
+        let mut file = std::fs::File::open(&target).map_err(|error| error.to_string())?;
+        let mut buffer = vec![0u8; read_len];
+        let read = file.read(&mut buffer).map_err(|error| error.to_string())?;
+        buffer.truncate(read);
+        buffer
+    };
+    if bytes.contains(&0) {
+        return Ok(binary("binary"));
+    }
+    let text = match String::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(_) => return Ok(binary("binary")),
+    };
+    let truncated = size > TEXT_MAX;
+    let kind = if ext == "md" || ext == "markdown" { "markdown" } else { "text" };
+    Ok(FilePreview {
+        path: rel,
+        kind: kind.into(),
+        language: highlight_language(&ext),
+        content: text,
+        size,
+        truncated,
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::collect_workspace_files;
+    use super::{collect_workspace_files, read_workspace_file};
 
     #[test]
     fn workspace_tree_is_relative_and_skips_generated_directories() {
@@ -181,6 +360,31 @@ mod tests {
         assert!(serialized.contains("src/components/App.tsx"));
         assert!(!serialized.contains("node_modules"));
         assert!(!serialized.contains(root.to_string_lossy().as_ref()));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn read_text_file_and_block_traversal() {
+        let root = std::env::temp_dir().join(format!(
+            "omnix_preview_{}",
+            chrono::Utc::now().timestamp_micros()
+        ));
+        std::fs::create_dir_all(root.join("src")).expect("dirs");
+        std::fs::write(root.join("src/main.rs"), "fn main() {}\n").expect("file");
+
+        let preview = read_workspace_file(
+            root.to_string_lossy().into_owned(),
+            "src/main.rs".into(),
+        )
+        .expect("preview");
+        assert_eq!(preview.kind, "text");
+        assert_eq!(preview.language, "rust");
+        assert!(preview.content.contains("fn main"));
+
+        // Path traversal must be rejected.
+        let escaped = read_workspace_file(root.to_string_lossy().into_owned(), "../../etc/hosts".into());
+        assert!(escaped.is_err());
 
         let _ = std::fs::remove_dir_all(root);
     }

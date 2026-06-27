@@ -16,7 +16,7 @@ export function Toaster() {
       toastOptions={{
         classNames: {
           toast:
-            "group toast group-[.toaster]:bg-[rgba(15,15,20,0.9)] group-[.toaster]:text-foreground group-[.toaster]:border-border group-[.toaster]:backdrop-blur-xl",
+            "group toast group-[.toaster]:bg-popover group-[.toaster]:text-popover-foreground group-[.toaster]:border-border group-[.toaster]:backdrop-blur-xl",
           description: "group-[.toast]:text-muted-foreground",
           actionButton:
             "group-[.toast]:bg-accent group-[.toast]:text-accent-foreground",

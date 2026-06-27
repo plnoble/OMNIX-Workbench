@@ -113,13 +113,22 @@ pub fn checklist_summary(session_id: String, db: State<'_, Arc<DbManager>>) -> R
 
 // ── Context Budget ────────────────────────────────
 
-#[tauri::command]
-pub fn estimate_tokens(text: String) -> u32 {
+/// CJK-aware token estimate: ASCII text is ~4 chars/token, CJK ~2 chars/token.
+/// Shared by `estimate_tokens` and `get_context_budget` so the meter is accurate.
+pub fn estimate_text_tokens(text: &str) -> u32 {
     let ascii = text.chars().filter(|c| c.is_ascii()).count() as u32;
     let cjk = text.chars().filter(|c| !c.is_ascii()).count() as u32;
-    ascii / 4 + cjk / 2 + 1
+    ascii / 4 + cjk / 2
 }
 
+#[tauri::command]
+pub fn estimate_tokens(text: String) -> u32 {
+    estimate_text_tokens(&text) + 1
+}
+
+/// Context-window budget over the OMNIX-stored conversation transcript (the
+/// `messages` table — i.e. what OMNIX would replay). Accurate as a measure of
+/// the stored transcript; per-message tokens use the CJK-aware estimate.
 #[tauri::command]
 pub fn get_context_budget(
     conversation_id: String, model_context_limit: Option<u32>,
@@ -127,15 +136,24 @@ pub fn get_context_budget(
 ) -> Result<serde_json::Value, String> {
     let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
     let limit = model_context_limit.unwrap_or(128000);
-    let total_chars: i64 = conn.query_row(
-        "SELECT COALESCE(SUM(LENGTH(content)), 0) FROM messages WHERE conversation_id = ?1",
-        params![conversation_id], |r| r.get(0),
-    ).unwrap_or(0);
-    let est = (total_chars as u32) / 4 + 1;
+    let mut stmt = conn
+        .prepare("SELECT content FROM messages WHERE conversation_id = ?1")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![conversation_id], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
+    let mut est: u32 = 0;
+    let mut count: u32 = 0;
+    for content in rows.flatten() {
+        est = est.saturating_add(estimate_text_tokens(&content));
+        count += 1;
+    }
+    // Small per-message structural overhead (role markers, separators).
+    est = est.saturating_add(count.saturating_mul(4));
     let remaining = limit.saturating_sub(est);
     let pct = if limit > 0 { est as f64 / limit as f64 * 100.0 } else { 0.0 };
     Ok(serde_json::json!({
-        "model_limit": limit, "estimated_tokens": est,
+        "model_limit": limit, "estimated_tokens": est, "message_count": count,
         "remaining_tokens": remaining, "usage_percent": (pct * 100.0).round() / 100.0,
         "status": if pct > 90.0 { "critical" } else if pct > 70.0 { "warning" } else { "ok" },
     }))

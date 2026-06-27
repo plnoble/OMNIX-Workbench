@@ -91,6 +91,24 @@ pub fn clear_selection_history(db: State<'_, Arc<DbManager>>) -> Result<(), Stri
 
 // ── Translation Commands ──────────────────────────────
 
+/// The first enabled platform model that has an API key, as `platform_id:model_name`
+/// (the format the gateway router resolves). Used as a last-resort default so
+/// translation works whenever ANY chat provider is configured.
+fn first_enabled_chat_model(db: &DbManager) -> Option<String> {
+    let conn = db.get_connection().ok()?;
+    conn.query_row(
+        "SELECT pm.platform_id, pm.model_name FROM platform_models pm
+         JOIN model_platforms mp ON pm.platform_id = mp.id
+         WHERE pm.is_enabled = 1 AND mp.is_enabled = 1
+           AND (TRIM(mp.api_key) != '' OR mp.api_type = 'ollama')
+         ORDER BY mp.priority DESC, mp.weight DESC
+         LIMIT 1",
+        [],
+        |r| Ok(format!("{}:{}", r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+    )
+    .ok()
+}
+
 /// Translate text using LLM via the proxy gateway.
 #[tauri::command]
 pub async fn translate_text(
@@ -100,7 +118,7 @@ pub async fn translate_text(
     chat_model: Option<String>,
     prompt: Option<String>,
     db: State<'_, Arc<DbManager>>,
-) -> Result<crate::selection::CaptureResult, String> {
+) -> Result<crate::selection::TranslateResult, String> {
     use serde::{Deserialize, Serialize};
 
     #[derive(Serialize)]
@@ -126,13 +144,23 @@ pub async fn translate_text(
         message: ChatMessage,
     }
 
-    // Resolve model
-    let model = chat_model.unwrap_or_else(|| {
-        db.get_setting("target_model")
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| "deepseek-chat".to_string())
-    });
+    // Resolve a definitely-routable chat model: explicit → target_model (内置功能
+    // 默认模型) → the first enabled platform model that has an API key. Erroring
+    // here (instead of defaulting to an unconfigured "deepseek-chat") makes the
+    // real cause visible when nothing is configured.
+    let model = chat_model
+        .filter(|m| !m.trim().is_empty())
+        .or_else(|| {
+            db.get_setting("target_model")
+                .ok()
+                .flatten()
+                .filter(|m| !m.trim().is_empty())
+        })
+        .or_else(|| first_enabled_chat_model(&db))
+        .ok_or_else(|| {
+            "未配置可用的聊天模型。请到「模型」启用一个带 API Key 的供应商，或在「设置 → 内置功能默认模型」选择一个。".to_string()
+        })?;
+    let model_label = model.clone();
 
     // Resolve prompt template
     let default_prompt = std::include_str!("../../translate_prompt_default.txt").to_string();
@@ -185,16 +213,15 @@ pub async fn translate_text(
         .await
         .map_err(|e| format!("Translation request failed: {}", e))?;
 
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(format!("Translation API error {}: {}", status, body));
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    let snippet = |s: &str| s.chars().take(300).collect::<String>();
+    if !status.is_success() {
+        return Err(format!("翻译接口错误 {} (模型 {}): {}", status, model_label, snippet(&body)));
     }
 
-    let chat_resp: ChatResponse = response
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse translation response: {}", e))?;
+    let chat_resp: ChatResponse = serde_json::from_str(&body)
+        .map_err(|e| format!("解析翻译响应失败: {} — 原始响应: {}", e, snippet(&body)))?;
 
     let translated = chat_resp
         .choices
@@ -202,18 +229,25 @@ pub async fn translate_text(
         .map(|c| c.message.content.clone())
         .unwrap_or_default();
 
+    // A blank result almost always means the chosen model is unavailable — make
+    // that visible instead of silently returning empty text.
+    if translated.trim().is_empty() {
+        return Err(format!(
+            "模型 '{}' 返回了空译文，可能不可用或不支持该请求。原始响应: {}",
+            model_label,
+            snippet(&body)
+        ));
+    }
+
     let detected = source_lang.unwrap_or_else(|| "unknown".to_string());
-    let timestamp = chrono::Utc::now().to_rfc3339();
 
     // Save to translation history
     let _ = db.add_translation_history(&text, &translated, &detected, &target_lang);
 
-    Ok(crate::selection::CaptureResult {
-        text: translated,
-        source: detected,
-        window_title: target_lang,
-        process_name: "translation".to_string(),
-        timestamp,
+    Ok(crate::selection::TranslateResult {
+        translated_text: translated,
+        detected_lang: detected,
+        target_lang,
     })
 }
 
@@ -325,7 +359,7 @@ pub async fn detect_language(
 pub fn get_translation_history(
     limit: u32,
     db: State<'_, Arc<DbManager>>,
-) -> Result<Vec<crate::selection::SelectionHistoryEntry>, String> {
+) -> Result<Vec<crate::selection::TranslateHistoryEntry>, String> {
     db.get_translation_history(limit).map_err(|e| e.to_string())
 }
 
@@ -379,6 +413,10 @@ pub async fn toggle_selection_auto_capture(
         // Stop monitor
         if let Some(h) = guard.take() {
             h.abort();
+        }
+        // Also hide any popup left on screen, so disabling fully closes it.
+        if let Some(qa) = app_handle.get_webview_window("quick-assistant") {
+            let _ = qa.hide();
         }
         Ok(false)
     }

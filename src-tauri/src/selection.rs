@@ -51,6 +51,27 @@ pub struct SelectionHistoryEntry {
     pub created_at: String,
 }
 
+/// Translation result — serializes to the `TranslateResponse` shape the frontend
+/// reads (`translatedText` / `detectedLang` / `targetLang`).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranslateResult {
+    pub translated_text: String,
+    pub detected_lang: String,
+    pub target_lang: String,
+}
+
+/// Translation history entry — fields match the frontend `TranslateHistoryEntry`.
+#[derive(Debug, Clone, Serialize)]
+pub struct TranslateHistoryEntry {
+    pub id: String,
+    pub source_text: String,
+    pub target_text: String,
+    pub source_lang: String,
+    pub target_lang: String,
+    pub created_at: String,
+}
+
 // ── Window Context ─────────────────────────────────────
 
 /// Get the focused window title and process name via Win32 API.
@@ -464,6 +485,50 @@ pub async fn capture_selection_with_context() -> Result<CaptureResult, String> {
 
 // ── Auto-Capture Monitor ────────────────────────────────
 
+/// Current mouse-cursor position in physical screen pixels, so the popup can
+/// appear right next to the selection (Cherry Studio style).
+#[cfg(windows)]
+fn get_cursor_position() -> Option<(i32, i32)> {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+    let mut point = POINT { x: 0, y: 0 };
+    // SAFETY: GetCursorPos writes into a valid POINT we own.
+    if unsafe { GetCursorPos(&mut point) }.is_ok() {
+        Some((point.x, point.y))
+    } else {
+        None
+    }
+}
+
+#[cfg(not(windows))]
+fn get_cursor_position() -> Option<(i32, i32)> {
+    None
+}
+
+/// Show the Quick Assistant popup next to the cursor. It is shown focused so its
+/// buttons (翻译/总结/✕…) are clickable on the first click — a non-activating
+/// window made WebView2 eat the first click. To stay non-intrusive it instead
+/// auto-dismisses: the frontend hides it the moment it loses focus (you click
+/// back to your work) or after a short idle timeout, and the monitor hides it
+/// when you deselect.
+fn show_popup_near_cursor(app_handle: &tauri::AppHandle) {
+    if let Some(qa) = app_handle.get_webview_window("quick-assistant") {
+        if let Some((x, y)) = get_cursor_position() {
+            // Offset slightly down-right of the cursor.
+            let _ = qa.set_position(tauri::PhysicalPosition::new(x + 12, y + 18));
+        }
+        let _ = qa.show();
+        let _ = qa.set_focus();
+    }
+}
+
+/// Hide the popup (used when the user deselects / clicks away without acting).
+fn hide_popup(app_handle: &tauri::AppHandle) {
+    if let Some(qa) = app_handle.get_webview_window("quick-assistant") {
+        let _ = qa.hide();
+    }
+}
+
 /// Start a background auto-capture monitor that polls UIA every `interval_ms`
 /// for selected text changes. When new text is detected, it emits a
 /// `selection-auto-captured` event to the frontend.
@@ -477,6 +542,11 @@ pub fn start_auto_capture_monitor(
     tokio::spawn(async move {
         let mut last_text = String::new();
         let mut last_window = String::new();
+        // Track whether WE auto-showed the popup, plus how many consecutive polls
+        // saw no selection, so we can auto-dismiss after the user clicks away
+        // (without flickering on a single UIA hiccup).
+        let mut popup_shown = false;
+        let mut empty_polls: u8 = 0;
 
         loop {
             tokio::time::sleep(tokio::time::Duration::from_millis(interval_ms)).await;
@@ -495,6 +565,13 @@ pub fn start_auto_capture_monitor(
 
             match result {
                 Ok(Some((text, window_title, process_name))) => {
+                    // Never capture OMNIX's own windows (the popup gains focus when
+                    // shown) — otherwise it would re-capture its own result text.
+                    if process_name.to_lowercase().contains("omnix")
+                        || window_title.contains("Quick Assistant")
+                    {
+                        continue;
+                    }
                     let blocked = app_handle
                         .try_state::<std::sync::Arc<crate::db::DbManager>>()
                         .and_then(|db| {
@@ -512,9 +589,16 @@ pub fn start_auto_capture_monitor(
                     let text = text.trim().to_string();
                     // Only emit if text changed AND window changed (new selection in different focus)
                     // OR if text is different from last capture
+                    empty_polls = 0;
                     if text != last_text || window_title != last_window {
                         last_text = text.clone();
                         last_window = window_title.clone();
+
+                        // Show the popup next to the cursor BEFORE emitting so the
+                        // window is visible by the time React renders the action bar.
+                        // Shown without focus, so it never interrupts the user.
+                        show_popup_near_cursor(&app_handle);
+                        popup_shown = true;
 
                         let _ = app_handle.emit(
                             "selection-auto-captured",
@@ -527,9 +611,22 @@ pub fn start_auto_capture_monitor(
                     }
                 }
                 Ok(None) => {
-                    // No selection — clear last text so next selection triggers
+                    // No selection — clear last text so the next selection triggers.
                     if !last_text.is_empty() {
                         last_text.clear();
+                    }
+                    // Auto-dismiss: if the user deselected / clicked away without
+                    // acting, hide the popup after two empty polls (~1s). The
+                    // popup is never auto-hidden while the user is interacting with
+                    // it (focusing it makes the foreground OMNIX, which is skipped
+                    // above before reaching this branch).
+                    if popup_shown {
+                        empty_polls = empty_polls.saturating_add(1);
+                        if empty_polls >= 2 {
+                            hide_popup(&app_handle);
+                            popup_shown = false;
+                            empty_polls = 0;
+                        }
                     }
                 }
                 Err(_) => {

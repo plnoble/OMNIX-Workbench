@@ -18,6 +18,8 @@
     "core:window:allow-close",
     "core:window:allow-center",
     "opener:default",
+    "opener:allow-open-path",
+    "opener:allow-open-url",
     "core:event:default",
     "core:event:allow-listen",
     "core:event:allow-emit",

@@ -4,7 +4,6 @@ import {
   ChevronLeft,
   ChevronRight,
   Eye,
-  EyeOff,
   Grid3X3,
   Monitor,
   Moon,
@@ -222,7 +221,7 @@ export function AppHeader({
             <div>
               <div className="text-sm font-semibold">应用宫格</div>
               <div className="text-xs text-muted-foreground">
-                固定会显示在标题栏；收纳会留在这个宫格；隐藏只在下方隐藏区恢复。
+                固定显示在标题栏；收纳留在这个应用宫格。
               </div>
             </div>
             <Button size="sm" variant="outline" onClick={onResetNavigation}>
@@ -250,7 +249,7 @@ export function AppHeader({
                   onReorder={onReorderEntry}
                   canMoveLeft={index > 0}
                   canMoveRight={index < pinnedEntries.length - 1}
-                  actions={entry.id === "work" ? [] : ["launcher", "hidden"]}
+                  actions={entry.id === "work" ? [] : ["launcher"]}
                   launcherLabel="收纳到宫格"
                 />
               ))}
@@ -274,37 +273,13 @@ export function AppHeader({
                       setLauncherOpen(false);
                     }}
                     onMove={onMoveEntry}
-                    actions={["pinned", "hidden"]}
+                    actions={["pinned"]}
                   />
                 ))}
               </div>
             </section>
           ))}
 
-          {hiddenEntries.length > 0 && (
-            <section>
-              <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-muted-foreground">
-                <EyeOff className="h-3.5 w-3.5" />
-                已隐藏
-              </div>
-              <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-4">
-                {hiddenEntries.map((entry) => (
-                  <LauncherItem
-                    key={entry.id}
-                    entry={entry}
-                    active={activeTab === entry.id}
-                    onOpen={() => {
-                      onNavigate(entry.id);
-                      setLauncherOpen(false);
-                    }}
-                    onMove={onMoveEntry}
-                    actions={["pinned", "launcher"]}
-                    launcherLabel="恢复到宫格"
-                  />
-                ))}
-              </div>
-            </section>
-          )}
         </div>
       )}
     </header>
@@ -391,12 +366,6 @@ function LauncherItem({
           <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => onMove(entry.id, "launcher")}>
             <Grid3X3 className="h-3 w-3" />
             {launcherLabel}
-          </Button>
-        )}
-        {actions.includes("hidden") && (
-          <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => onMove(entry.id, "hidden")}>
-            <EyeOff className="h-3 w-3" />
-            隐藏
           </Button>
         )}
       </div>

@@ -1,370 +1,306 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OMNIX Workbench 移动控制中心</title>
-    <style>
-        :root {
-            --bg-primary: #0a0b10;
-            --bg-secondary: rgba(18, 20, 32, 0.85);
-            --border-color: rgba(255, 255, 255, 0.08);
-            --color-primary: #00f2fe;
-            --color-secondary: #4facfe;
-            --color-success: #10b981;
-            --color-warning: #f59e0b;
-            --color-danger: #ef4444;
-            --text-primary: #f8fafc;
-            --text-secondary: #94a3b8;
-            --text-muted: #64748b;
-        }
-
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-        }
-
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            background-color: var(--bg-primary);
-            color: var(--text-primary);
-            padding: 16px;
-            line-height: 1.5;
-        }
-
-        header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            border-bottom: 1px solid var(--border-color);
-            padding-bottom: 16px;
-            margin-bottom: 20px;
-        }
-
-        h1 {
-            font-size: 20px;
-            font-weight: 600;
-            background: linear-gradient(135deg, var(--color-primary), var(--color-secondary));
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-
-        .status-dot {
-            width: 10px;
-            height: 10px;
-            border-radius: 50%;
-            background-color: var(--color-success);
-            box-shadow: 0 0 8px var(--color-success);
-        }
-
-        .card {
-            background: var(--bg-secondary);
-            border: 1px solid var(--border-color);
-            border-radius: 12px;
-            padding: 16px;
-            margin-bottom: 16px;
-            backdrop-filter: blur(10px);
-        }
-
-        .card-title {
-            font-size: 15px;
-            font-weight: 600;
-            margin-bottom: 12px;
-            color: var(--color-primary);
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .session-info {
-            font-size: 13px;
-            color: var(--text-secondary);
-            margin-bottom: 12px;
-        }
-
-        .task-list {
-            margin-top: 10px;
-            padding-left: 14px;
-            border-left: 2px solid rgba(255, 255, 255, 0.05);
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-        }
-
-        .task-item {
-            position: relative;
-            font-size: 13px;
-        }
-
-        .task-item::before {
-            content: '';
-            position: absolute;
-            left: -19px;
-            top: 5px;
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background-color: var(--text-muted);
-        }
-
-        .task-item.done {
-            text-decoration: line-through;
-            color: var(--text-muted);
-        }
-
-        .task-item.done::before {
-            background-color: var(--color-success);
-        }
-
-        .task-item.in_progress {
-            color: var(--color-warning);
-            font-weight: 500;
-        }
-
-        .task-item.in_progress::before {
-            background-color: var(--color-warning);
-            box-shadow: 0 0 6px var(--color-warning);
-        }
-
-        .btn {
-            display: inline-block;
-            width: 100%;
-            padding: 12px;
-            background: linear-gradient(135deg, var(--color-primary), var(--color-secondary));
-            border: none;
-            border-radius: 8px;
-            color: #000;
-            font-weight: 600;
-            font-size: 14px;
-            text-align: center;
-            cursor: pointer;
-            margin-top: 10px;
-        }
-
-        .btn-secondary {
-            background: rgba(255, 255, 255, 0.05);
-            border: 1px solid var(--border-color);
-            color: var(--text-primary);
-        }
-
-        .input-group {
-            display: flex;
-            gap: 8px;
-            margin-top: 12px;
-        }
-
-        input {
-            flex-grow: 1;
-            padding: 10px;
-            background: var(--bg-primary);
-            border: 1px solid var(--border-color);
-            border-radius: 6px;
-            color: #fff;
-            font-size: 13px;
-        }
-
-        .cron-item {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            border-bottom: 1px solid rgba(255,255,255,0.03);
-            padding: 8px 0;
-        }
-
-        .cron-info {
-            display: flex;
-            flex-direction: column;
-            gap: 2px;
-        }
-
-        .cron-title {
-            font-size: 13px;
-            font-weight: 500;
-        }
-
-        .cron-schedule {
-            font-size: 11px;
-            color: var(--text-secondary);
-        }
-
-        .cron-trigger-btn {
-            background: rgba(0, 242, 254, 0.15);
-            color: var(--color-primary);
-            border: 1px solid rgba(0, 242, 254, 0.25);
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-size: 11px;
-            font-weight: 500;
-            cursor: pointer;
-        }
-    </style>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>OMNIX Workbench · 远程</title>
+  <style>
+    :root {
+      --bg: #0a0b10; --panel: #141622; --panel2: #1b1e2e; --border: #262a3d;
+      --fg: #e8ecf5; --muted: #8a91a8; --accent: #00f2fe; --accent2: #2563eb;
+      --user: #1e3a5f; --ok: #34d399; --warn: #fbbf24; --danger: #f87171;
+    }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+      font-family: -apple-system, system-ui, "Segoe UI", Roboto, "PingFang SC", sans-serif; }
+    body { display: flex; flex-direction: column; height: 100dvh; overflow: hidden; }
+    header { display: flex; align-items: center; gap: 10px; padding: 12px 14px;
+      background: var(--panel); border-bottom: 1px solid var(--border); flex-shrink: 0; }
+    header .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+    header .title { font-weight: 700; font-size: 16px; }
+    header .sub { font-size: 11px; color: var(--muted); }
+    header .back { background: none; border: none; color: var(--accent); font-size: 22px; padding: 0 4px; }
+    .grow { flex: 1; }
+    .screen { flex: 1; min-height: 0; display: none; flex-direction: column; }
+    .screen.active { display: flex; }
+    /* Conversation list */
+    .list { flex: 1; overflow-y: auto; padding: 10px; }
+    .conv { background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+      padding: 12px 14px; margin-bottom: 10px; }
+    .conv .row { display: flex; align-items: center; gap: 8px; }
+    .conv .name { font-weight: 600; font-size: 15px; flex: 1;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .badge { font-size: 10px; padding: 2px 7px; border-radius: 99px; }
+    .badge.run { background: rgba(52,211,153,.15); color: var(--ok); }
+    .badge.idle { background: rgba(138,145,168,.15); color: var(--muted); }
+    .conv .meta { font-size: 11px; color: var(--muted); margin-top: 4px; }
+    .fab { position: absolute; right: 18px; bottom: 18px; width: 56px; height: 56px;
+      border-radius: 50%; background: linear-gradient(135deg, var(--accent), var(--accent2));
+      color: #002; font-size: 30px; border: none; box-shadow: 0 6px 20px rgba(0,242,254,.3); }
+    /* Chat */
+    .thread { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+    .msg { max-width: 86%; padding: 10px 13px; border-radius: 14px; font-size: 15px;
+      line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+    .msg.user { align-self: flex-end; background: var(--user); border-bottom-right-radius: 4px; }
+    .msg.assistant { align-self: flex-start; background: var(--panel2);
+      border: 1px solid var(--border); border-bottom-left-radius: 4px; }
+    .msg.system { align-self: center; background: transparent; color: var(--muted);
+      font-size: 12px; max-width: 92%; text-align: center; }
+    .msg .who { font-size: 10px; color: var(--muted); margin-bottom: 3px; }
+    .composer { display: flex; gap: 8px; padding: 10px; background: var(--panel);
+      border-top: 1px solid var(--border); flex-shrink: 0; }
+    .composer textarea { flex: 1; resize: none; max-height: 120px; min-height: 42px;
+      background: var(--panel2); border: 1px solid var(--border); border-radius: 12px;
+      color: var(--fg); padding: 10px 12px; font-size: 15px; font-family: inherit; }
+    .composer button { background: linear-gradient(135deg, var(--accent), var(--accent2));
+      color: #002; border: none; border-radius: 12px; padding: 0 18px; font-weight: 700; font-size: 15px; }
+    .composer button:disabled { opacity: .5; }
+    .empty { text-align: center; color: var(--muted); padding: 40px 20px; font-size: 14px; }
+    /* New-conversation sheet */
+    .sheet-bg { position: fixed; inset: 0; background: rgba(0,0,0,.5);
+      display: none; align-items: flex-end; z-index: 50; }
+    .sheet-bg.show { display: flex; }
+    .sheet { background: var(--panel); width: 100%; border-radius: 18px 18px 0 0;
+      padding: 18px 16px 26px; border-top: 1px solid var(--border); }
+    .sheet h3 { margin: 0 0 14px; font-size: 16px; }
+    .sheet label { display: block; font-size: 12px; color: var(--muted); margin: 12px 0 5px; }
+    .sheet select, .sheet input { width: 100%; background: var(--panel2);
+      border: 1px solid var(--border); color: var(--fg); border-radius: 10px; padding: 11px; font-size: 15px; }
+    .sheet .actions { display: flex; gap: 10px; margin-top: 18px; }
+    .sheet .actions button { flex: 1; padding: 12px; border-radius: 12px; border: none; font-size: 15px; font-weight: 600; }
+    .btn-primary { background: linear-gradient(135deg, var(--accent), var(--accent2)); color: #002; }
+    .btn-ghost { background: var(--panel2); color: var(--fg); border: 1px solid var(--border) !important; }
+  </style>
 </head>
 <body>
-    <header>
-        <h1>OMNIX 移动控制中心</h1>
-        <div id="conn-indicator" class="status-dot"></div>
-    </header>
-
-    <!-- Section 1: Active Terminal Session -->
-    <div id="session-card" class="card" style="display: none;">
-        <div class="card-title">🖥️ 活跃 Agent 控制台</div>
-        <div class="session-info" id="session-id-text">会话 ID: --</div>
-        
-        <!-- Live Task Checklist -->
-        <div class="task-list" id="remote-tasks-list">
-            <!-- Dynamic task items -->
-        </div>
-
-        <!-- Stdin approval inputs -->
-        <div class="input-group">
-            <input type="text" id="stdin-text-input" placeholder="输入审批指令（默认 y 确认）..." value="y">
-            <button class="btn" id="approve-btn" style="width: auto; margin-top: 0;">一键确认</button>
-        </div>
+  <header>
+    <button class="back" id="backBtn" style="display:none" onclick="showList()">‹</button>
+    <span class="dot" id="conn"></span>
+    <div>
+      <div class="title" id="hdrTitle">OMNIX 远程</div>
+      <div class="sub" id="hdrSub">查看并继续你电脑上的 Agent 对话</div>
     </div>
+    <span class="grow"></span>
+    <button class="back" id="refreshBtn" onclick="refreshCurrent()">⟳</button>
+  </header>
 
-    <div id="no-session-card" class="card">
-        <div class="card-title">💤 暂无活动 Agent 调试</div>
-        <p style="font-size: 12px; color: var(--text-secondary);">
-            宿主机控制台当前无运行中的 Agent 进程。
-        </p>
+  <!-- Conversation list -->
+  <section class="screen active" id="listScreen" style="position:relative">
+    <div class="list" id="convList"><div class="empty">加载中…</div></div>
+    <button class="fab" onclick="openSheet()">＋</button>
+  </section>
+
+  <!-- Chat -->
+  <section class="screen" id="chatScreen">
+    <div class="thread" id="thread"></div>
+    <div id="approvalBar" style="display:none; padding:10px; background:rgba(251,191,36,.1); border-top:1px solid var(--border)">
+      <div style="font-size:13px; color:var(--warn); margin-bottom:8px" id="approvalText">Agent 请求执行操作</div>
+      <div style="display:flex; gap:8px">
+        <button onclick="respond(true)" style="flex:1; padding:10px; border:none; border-radius:10px; background:var(--ok); color:#002; font-weight:700; font-size:15px">✓ 批准</button>
+        <button onclick="respond(false)" style="flex:1; padding:10px; border:none; border-radius:10px; background:var(--danger); color:#200; font-weight:700; font-size:15px">✗ 拒绝</button>
+      </div>
     </div>
-
-    <!-- Section 2: Cron Schedules -->
-    <div class="card">
-        <div class="card-title">⏰ 后台 Cron 任务调度</div>
-        <div id="cron-tasks-container">
-            <!-- Dynamic cron items -->
-        </div>
+    <div class="composer">
+      <textarea id="input" rows="1" placeholder="输入消息让 Agent 继续…"></textarea>
+      <button id="sendBtn" onclick="send()">发送</button>
     </div>
+  </section>
 
-    <script>
-        const token = "{{TOKEN}}";
-        let activeSessionId = null;
+  <!-- New conversation sheet -->
+  <div class="sheet-bg" id="sheetBg" onclick="if(event.target===this)closeSheet()">
+    <div class="sheet">
+      <h3>新建会话</h3>
+      <label>Agent</label>
+      <select id="agentSel"></select>
+      <label>工作区</label>
+      <select id="wsSel"></select>
+      <input id="wsCustom" placeholder="或粘贴一个工作区路径（留空=用户目录）" style="margin-top:8px" />
+      <div class="actions">
+        <button class="btn-ghost" onclick="closeSheet()">取消</button>
+        <button class="btn-primary" id="createBtn" onclick="createConv()">创建并开始</button>
+      </div>
+    </div>
+  </div>
 
-        async function fetchStatus() {
-            try {
-                const res = await fetch(`/api/remote/status?token=${token}`);
-                if (!res.ok) throw new Error("Unauthorized");
-                
-                const data = await res.json();
-                
-                // Connection indicator green
-                document.getElementById("conn-indicator").style.backgroundColor = "var(--color-success)";
-                document.getElementById("conn-indicator").style.boxShadow = "0 0 8px var(--color-success)";
+  <script>
+    const TOKEN = "{{TOKEN}}";
+    const q = (p) => p + (p.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(TOKEN);
+    async function api(path, opts) {
+      const res = await fetch(q(path), opts);
+      if (!res.ok) throw new Error("HTTP " + res.status + " " + (await res.text().catch(() => "")));
+      const ct = res.headers.get("content-type") || "";
+      return ct.includes("json") ? res.json() : res.text();
+    }
+    function setConn(ok) {
+      const d = document.getElementById("conn");
+      d.style.background = ok ? "var(--ok)" : "var(--danger)";
+      d.style.boxShadow = ok ? "0 0 8px var(--ok)" : "none";
+    }
 
-                // Active sessions handling
-                if (data.active_sessions && data.active_sessions.length > 0) {
-                    activeSessionId = data.active_sessions[0];
-                    document.getElementById("session-card").style.display = "block";
-                    document.getElementById("no-session-card").style.display = "none";
-                    document.getElementById("session-id-text").textContent = `会话 ID: ${activeSessionId}`;
-                    
-                    // Render tasks list
-                    const listContainer = document.getElementById("remote-tasks-list");
-                    listContainer.innerHTML = "";
-                    
-                    if (data.tasks && data.tasks.length > 0) {
-                        data.tasks.forEach(t => {
-                            const item = document.createElement("div");
-                            item.className = `task-item ${t.status}`;
-                            item.textContent = t.title;
-                            listContainer.appendChild(item);
-                        });
-                    } else {
-                        listContainer.innerHTML = "<p style='font-size: 12px; color: var(--text-muted);'>暂无进行中的子任务清单。</p>";
-                    }
-                } else {
-                    activeSessionId = null;
-                    document.getElementById("session-card").style.display = "none";
-                    document.getElementById("no-session-card").style.display = "block";
-                }
+    let currentConv = null;
+    let pollTimer = null;
+    let lastCount = -1;
+    let conversations = [];
 
-                // Render cron tasks list
-                const cronContainer = document.getElementById("cron-tasks-container");
-                cronContainer.innerHTML = "";
-                if (data.cron_tasks && data.cron_tasks.length > 0) {
-                    data.cron_tasks.forEach(task => {
-                        const item = document.createElement("div");
-                        item.className = "cron-item";
-                        
-                        const info = document.createElement("div");
-                        info.className = "cron-info";
-                        
-                        const title = document.createElement("div");
-                        title.className = "cron-title";
-                        title.textContent = task.title;
-                        if (!task.is_active) {
-                            title.style.color = "var(--text-muted)";
-                            title.textContent += " (已禁用)";
-                        }
-                        
-                        const schedule = document.createElement("div");
-                        schedule.className = "cron-schedule";
-                        schedule.textContent = `计划: ${task.schedule} | 运行: ${task.agent_name}`;
-                        
-                        info.appendChild(title);
-                        info.appendChild(schedule);
-                        
-                        const btn = document.createElement("button");
-                        btn.className = "cron-trigger-btn";
-                        btn.textContent = "立即执行";
-                        btn.onclick = () => triggerCronTask(task.id);
-                        
-                        item.appendChild(info);
-                        item.appendChild(btn);
-                        cronContainer.appendChild(item);
-                    });
-                }
-            } catch (err) {
-                console.error(err);
-                document.getElementById("conn-indicator").style.backgroundColor = "var(--color-danger)";
-                document.getElementById("conn-indicator").style.boxShadow = "0 0 8px var(--color-danger)";
-            }
+    // ── Conversation list ──
+    async function loadConversations() {
+      try {
+        const list = await api("/api/remote/conversations");
+        setConn(true);
+        conversations = list;
+        const el = document.getElementById("convList");
+        if (!list.length) { el.innerHTML = '<div class="empty">电脑上还没有会话。点右下角 ＋ 新建一个。</div>'; return; }
+        el.innerHTML = list.map((c) => `
+          <div class="conv" onclick="openConv('${c.id}')">
+            <div class="row">
+              <span class="name">${esc(c.title || "未命名")}</span>
+              <span class="badge ${c.running ? "run" : "idle"}">${c.running ? "运行中" : "空闲"}</span>
+            </div>
+            <div class="meta">${esc(c.agent || "")} · ${esc((c.workspace || "direct").split(/[\\/]/).pop())}</div>
+          </div>`).join("");
+      } catch (e) { setConn(false); }
+    }
+
+    function showList() {
+      stopPoll();
+      currentConv = null;
+      document.getElementById("chatScreen").classList.remove("active");
+      document.getElementById("listScreen").classList.add("active");
+      document.getElementById("backBtn").style.display = "none";
+      document.getElementById("hdrTitle").textContent = "OMNIX 远程";
+      document.getElementById("hdrSub").textContent = "查看并继续你电脑上的 Agent 对话";
+      loadConversations();
+    }
+
+    // ── Chat ──
+    function openConv(id, titleOverride) {
+      const title = titleOverride || (conversations.find((c) => c.id === id) || {}).title || "会话";
+      currentConv = id;
+      lastCount = -1;
+      document.getElementById("listScreen").classList.remove("active");
+      document.getElementById("chatScreen").classList.add("active");
+      document.getElementById("backBtn").style.display = "";
+      document.getElementById("hdrTitle").textContent = title || "会话";
+      document.getElementById("hdrSub").textContent = "实时刷新中…";
+      document.getElementById("thread").innerHTML = '<div class="empty">加载消息…</div>';
+      document.getElementById("approvalBar").style.display = "none";
+      pollMessages();
+      pollPending();
+      startPoll();
+    }
+
+    async function pollMessages() {
+      if (!currentConv) return;
+      try {
+        const msgs = await api("/api/remote/messages?conversation_id=" + encodeURIComponent(currentConv));
+        setConn(true);
+        document.getElementById("hdrSub").textContent = msgs.length + " 条消息 · 实时";
+        const thread = document.getElementById("thread");
+        if (msgs.length === lastCount) return; // nothing new
+        const atBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 80;
+        lastCount = msgs.length;
+        thread.innerHTML = msgs.length
+          ? msgs.map((m) => {
+              const role = m.role === "user" ? "user" : (m.role === "assistant" ? "assistant" : "system");
+              const who = role === "user" ? "你" : (role === "assistant" ? "Agent" : "");
+              return `<div class="msg ${role}">${who ? `<div class="who">${who}</div>` : ""}${esc(m.content)}</div>`;
+            }).join("")
+          : '<div class="empty">还没有消息。在下面输入开始。</div>';
+        if (atBottom || lastCount <= 1) thread.scrollTop = thread.scrollHeight;
+      } catch (e) { setConn(false); }
+    }
+
+    function startPoll() { stopPoll(); pollTimer = setInterval(() => { pollMessages(); pollPending(); }, 2000); }
+    function stopPoll() { if (pollTimer) clearInterval(pollTimer); pollTimer = null; }
+
+    async function pollPending() {
+      if (!currentConv) return;
+      const bar = document.getElementById("approvalBar");
+      try {
+        const p = await api("/api/remote/pending?conversation_id=" + encodeURIComponent(currentConv));
+        if (p && p.pending) {
+          document.getElementById("approvalText").textContent = p.title || "Agent 请求执行操作";
+          bar.style.display = "";
+        } else {
+          bar.style.display = "none";
         }
+      } catch (e) { bar.style.display = "none"; }
+    }
 
-        // Stdin Approve Trigger
-        document.getElementById("approve-btn").onclick = async () => {
-            if (!activeSessionId) return;
-            const inputVal = document.getElementById("stdin-text-input").value;
-            try {
-                const res = await fetch(`/api/remote/approve?token=${token}`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ session_id: activeSessionId, input: inputVal + "\n" })
-                });
-                if (res.ok) {
-                    alert("确认审批命令已成功发送到 Agent 进程！");
-                } else {
-                    alert("发送失败，进程可能已停止或异常。");
-                }
-            } catch (err) {
-                alert("发送发生错误: " + err);
-            }
-        };
+    async function respond(approved) {
+      if (!currentConv) return;
+      document.getElementById("approvalBar").style.display = "none";
+      try {
+        await api("/api/remote/respond", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ conversation_id: currentConv, approved }),
+        });
+        lastCount = -1; setTimeout(pollMessages, 300);
+      } catch (e) { alert("审批失败：" + e.message); }
+    }
 
-        // Cron Trigger
-        async function triggerCronTask(taskId) {
-            try {
-                const res = await fetch(`/api/remote/cron_trigger?token=${token}`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ task_id: taskId })
-                });
-                if (res.ok) {
-                    alert(`后台定时任务 ${taskId} 已被异步唤醒。`);
-                    fetchStatus();
-                } else {
-                    alert("唤醒定时任务失败。");
-                }
-            } catch (err) {
-                alert("网络请求发生错误: " + err);
-            }
-        }
+    async function send() {
+      const input = document.getElementById("input");
+      const text = input.value.trim();
+      if (!text || !currentConv) return;
+      const btn = document.getElementById("sendBtn");
+      btn.disabled = true; btn.textContent = "…";
+      try {
+        await api("/api/remote/chat", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ conversation_id: currentConv, text }),
+        });
+        input.value = ""; input.style.height = "auto";
+        lastCount = -1; setTimeout(pollMessages, 300);
+      } catch (e) {
+        alert("发送失败：" + e.message);
+      } finally { btn.disabled = false; btn.textContent = "发送"; }
+    }
 
-        // Poll every 3 seconds
-        setInterval(fetchStatus, 3000);
-        fetchStatus();
-    </script>
+    function refreshCurrent() { currentConv ? (lastCount = -1, pollMessages()) : loadConversations(); }
+
+    // ── New conversation ──
+    async function openSheet() {
+      try {
+        const [agents, workspaces] = await Promise.all([
+          api("/api/remote/agents"), api("/api/remote/workspaces"),
+        ]);
+        document.getElementById("agentSel").innerHTML = agents
+          .map((a) => `<option value="${esc(a.name)}" ${a.installed ? "" : "disabled"}>${esc(a.name)}${a.installed ? "" : "（未安装）"}</option>`).join("");
+        document.getElementById("wsSel").innerHTML =
+          '<option value="direct">直接对话（用户目录）</option>' +
+          workspaces.map((w) => `<option value="${esc(w)}">${esc(w.split(/[\\/]/).pop())} — ${esc(w)}</option>`).join("");
+        document.getElementById("sheetBg").classList.add("show");
+      } catch (e) { alert("加载失败：" + e.message); }
+    }
+    function closeSheet() { document.getElementById("sheetBg").classList.remove("show"); }
+
+    async function createConv() {
+      const agent = document.getElementById("agentSel").value;
+      const custom = document.getElementById("wsCustom").value.trim();
+      const workspace = custom || document.getElementById("wsSel").value;
+      const btn = document.getElementById("createBtn");
+      btn.disabled = true; btn.textContent = "启动中…";
+      try {
+        const r = await api("/api/remote/new", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ agent, workspace }),
+        });
+        closeSheet();
+        openConv(r.conversation_id, "📱 " + agent);
+      } catch (e) {
+        alert("创建失败：" + e.message);
+      } finally { btn.disabled = false; btn.textContent = "创建并开始"; }
+    }
+
+    // ── utils ──
+    function esc(s) { return String(s == null ? "" : s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])); }
+    const input = document.getElementById("input");
+    input.addEventListener("input", () => { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 120) + "px"; });
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } });
+
+    loadConversations();
+    setInterval(() => { if (!currentConv) loadConversations(); }, 4000);
+  </script>
 </body>
 </html>

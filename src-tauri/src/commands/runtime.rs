@@ -368,6 +368,44 @@ pub async fn runtime_start_session(
         .await
 }
 
+/// Start a runtime session from minimal inputs — used by the remote API to
+/// begin a new conversation from the phone. Mirrors `runtime_start_session` but
+/// takes plain `&Arc` handles (the proxy has them in `ProxyState`).
+pub async fn remote_start_session(
+    db: &Arc<DbManager>,
+    agent_manager: &Arc<AgentManager>,
+    runtime_manager: &Arc<RuntimeManager>,
+    agent: AgentId,
+    workspace_path: String,
+    conversation_id: String,
+) -> Result<AgentSessionRecord, String> {
+    let workspace_path = if workspace_path.trim().is_empty() || workspace_path == "direct" {
+        dirs::home_dir()
+            .ok_or_else(|| "无法确定当前用户目录".to_string())?
+            .to_string_lossy()
+            .into_owned()
+    } else {
+        workspace_path
+    };
+    let definition = agent_definition(agent);
+    let executable_path = agent_manager
+        .find_agent_path(definition.display_name)
+        .ok_or_else(|| format!("{} 尚未安装或未被检测到", definition.display_name))?;
+    let selected_model = resolve_default_model_selection(db, agent)?;
+    validate_runtime_model(db, agent, &selected_model)?;
+    runtime_manager
+        .start_session(AgentSessionConfig {
+            conversation_id,
+            agent,
+            executable_path,
+            workspace_path,
+            model: selected_model,
+            permission: PermissionPolicy::AskOnRisk,
+            work_mode: WorkMode::Direct,
+        })
+        .await
+}
+
 #[tauri::command]
 pub async fn runtime_send_message(
     session_id: String,

@@ -8,12 +8,15 @@ import {
   FlaskConical,
   GitCompare,
   Grid3X3,
+  Languages,
   MessageSquare,
   Plug,
   Search,
   Sparkles,
+  StickyNote,
   Users,
   Wand2,
+  Webhook,
 } from "lucide-react";
 
 import type { AppEntry, NavigationLayout } from "@/types";
@@ -130,6 +133,30 @@ export const APP_ENTRIES: AppEntry[] = [
     is_experimental: true,
   },
   {
+    id: "hooks",
+    label: "Hooks",
+    title: "事件 Hooks",
+    description: "Agent 事件触发的自动化规则：通知 / 执行命令 / 记录。",
+    group: "resource",
+    placement: "launcher",
+  },
+  {
+    id: "notes",
+    label: "笔记",
+    title: "笔记",
+    description: "本地 Markdown 笔记，可从划词助手一键存入。",
+    group: "resource",
+    placement: "launcher",
+  },
+  {
+    id: "translate",
+    label: "翻译",
+    title: "翻译",
+    description: "多语言 AI 翻译，源↔目标双栏，支持历史。",
+    group: "resource",
+    placement: "launcher",
+  },
+  {
     id: "compare",
     label: "Compare",
     title: "模型对比",
@@ -191,6 +218,9 @@ export const APP_ICON_MAP = {
   "quick-assistant": Bell,
   assistants: Wand2,
   cron: CalendarClock,
+  hooks: Webhook,
+  notes: StickyNote,
+  translate: Languages,
   compare: GitCompare,
   "code-analysis": Code2,
   labs: FlaskConical,
@@ -217,12 +247,12 @@ export function normalizeNavigationLayout(layout?: Partial<NavigationLayout> | n
 
   const pinned = clean(layout?.pinned);
   const launcher = clean(layout?.launcher);
-  const hidden = clean(layout?.hidden);
+  // The "隐藏" tier was removed — fold any previously-hidden apps into the grid.
+  for (const id of clean(layout?.hidden)) launcher.push(id);
 
   for (const entry of APP_ENTRIES) {
     if (!seen.has(entry.id)) {
       if (entry.placement === "pinned") pinned.push(entry.id);
-      else if (entry.placement === "hidden") hidden.push(entry.id);
       else launcher.push(entry.id);
       seen.add(entry.id);
     }
@@ -232,12 +262,10 @@ export function normalizeNavigationLayout(layout?: Partial<NavigationLayout> | n
   for (const required of ["work", "chat"]) {
     if (!pinned.includes(required)) {
       const fromLauncher = launcher.indexOf(required);
-      const fromHidden = hidden.indexOf(required);
       if (fromLauncher >= 0) launcher.splice(fromLauncher, 1);
-      if (fromHidden >= 0) hidden.splice(fromHidden, 1);
       pinned.unshift(required);
     }
   }
 
-  return { pinned, launcher, hidden };
+  return { pinned, launcher, hidden: [] };
 }

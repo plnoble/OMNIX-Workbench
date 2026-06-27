@@ -4,15 +4,18 @@
  * Shows: tip carousel, status overview cards, top models, env diagnostics, remote access
  */
 
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Lightbulb, Wifi, Cpu, Bot, Wrench, Globe, RefreshCw, BarChart3 } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
+import { Lightbulb, Wifi, Cpu, Bot, Wrench, RefreshCw, Copy, Smartphone } from "lucide-react";
 import { OMNIX_TIPS, DEFAULT_PROXY_PORT } from "@/lib/constants";
-import { requestLogApi } from "@/lib/tauri-api";
+import { TokenActivityPanel } from "@/components/TokenActivityPanel";
+import QRCode from "qrcode";
+import { remoteApi, settingsApi } from "@/lib/tauri-api";
+import { toast } from "@/components/ui/sonner";
 import type { DetectedAgent, RemoteAccessInfo } from "@/types";
-import type { ModelUsage } from "@/lib/tauri-api";
 
 interface DashboardTabProps {
   activeSessionsCount: number;
@@ -41,15 +44,36 @@ export function DashboardTab({
 }: DashboardTabProps) {
   const tip = OMNIX_TIPS[tipIndex];
 
-  // Model usage TOP 5 (AingDesk inspired)
-  const [topModels, setTopModels] = useState<ModelUsage[]>([]);
+  // Remote phone access (AionUi-style): toggle LAN binding + restart proxy.
+  const [remoteEnabled, setRemoteEnabled] = useState(false);
+  const [remoteBusy, setRemoteBusy] = useState(false);
+  const [qr, setQr] = useState("");
   useEffect(() => {
-    requestLogApi.getStats()
-      .then(stats => setTopModels(stats.top_models.slice(0, 5)))
-      .catch(() => {});
+    settingsApi.get("remote_access_enabled").then((v) => setRemoteEnabled(v === "true")).catch(() => {});
   }, []);
+  useEffect(() => {
+    if (remoteEnabled && remoteInfo?.url) {
+      QRCode.toDataURL(remoteInfo.url, { width: 200, margin: 1 }).then(setQr).catch(() => setQr(""));
+    } else {
+      setQr("");
+    }
+  }, [remoteEnabled, remoteInfo?.url]);
 
-  const maxCount = topModels.length > 0 ? Math.max(...topModels.map(m => m.request_count)) : 1;
+  const toggleRemote = async (enabled: boolean) => {
+    if (enabled && !window.confirm("启用远程访问：OMNIX 会把服务绑定到局域网(0.0.0.0)，同一网络内、持有令牌的设备可访问你的会话。确定开启？")) return;
+    setRemoteBusy(true);
+    try {
+      await remoteApi.setAccess(enabled);
+      setRemoteEnabled(enabled);
+      // Re-fetch the URL/token so the LAN address shows after re-binding.
+      setTimeout(() => onLoadRemoteAccess(), 1000);
+      toast.success(enabled ? "已启用远程访问" : "已关闭远程访问");
+    } catch (e) {
+      toast.error("切换失败", { description: String(e) });
+    } finally {
+      setRemoteBusy(false);
+    }
+  };
 
   return (
     <div className="p-6 overflow-y-auto w-full flex flex-col gap-5">
@@ -101,39 +125,8 @@ export function DashboardTab({
         </Card>
       </div>
 
-      {/* Model Usage TOP 5 (AingDesk inspired) */}
-      {topModels.length > 0 && (
-        <Card>
-          <CardHeader className="flex-row justify-between items-center mb-2">
-            <CardTitle className="flex items-center gap-2 text-sm">
-              <BarChart3 className="h-4 w-4" /> 常用模型 TOP 5
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="flex flex-col gap-2">
-              {topModels.map((m, i) => (
-                <div key={m.model} className="flex items-center gap-3">
-                  <span className="text-xs text-muted-foreground w-4 text-right">{i + 1}</span>
-                  <div className="flex-1">
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-xs font-medium truncate max-w-[200px]">{m.model}</span>
-                      <span className="text-xs text-muted-foreground">
-                        {m.request_count} 次 · {m.total_tokens.toLocaleString()} tokens
-                      </span>
-                    </div>
-                    <div className="h-1.5 bg-muted/20 rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-gradient-to-r from-cyan-500 to-blue-500 rounded-full transition-all"
-                        style={{ width: `${(m.request_count / maxCount) * 100}%` }}
-                      />
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      )}
+      {/* Token activity & cost (R4) — surfaces request_logs usage with cost + daily chart */}
+      <TokenActivityPanel />
 
       {/* Env Diagnostics */}
       <Card>
@@ -192,30 +185,48 @@ export function DashboardTab({
       <Card>
         <CardHeader className="flex-row justify-between items-center mb-4">
           <CardTitle className="flex items-center gap-2 text-sm">
-            <Globe className="h-4 w-4" /> 远程跨设备调试
+            <Smartphone className="h-4 w-4" /> 手机远程访问
           </CardTitle>
-          <Button size="sm" variant="outline" onClick={onLoadRemoteAccess}>
-            <RefreshCw className="h-3 w-3" /> 获取远程链接
-          </Button>
+          <div className="flex items-center gap-2">
+            <span className={`text-xs ${remoteEnabled ? "text-success" : "text-muted-foreground"}`}>{remoteEnabled ? "已启用" : "已关闭"}</span>
+            <Switch checked={remoteEnabled} disabled={remoteBusy} onCheckedChange={(v) => void toggleRemote(v)} />
+          </div>
         </CardHeader>
         <CardContent>
-          {remoteInfo ? (
-            <div className="flex flex-col gap-2 text-sm">
-              <div>
-                <span className="text-muted-foreground">局域网地址:</span>{" "}
-                <code className="text-foreground">{remoteInfo.ip}</code>
+          <p className="mb-3 text-xs text-muted-foreground">
+            开启后，手机用浏览器打开下面的链接即可<strong>查看并继续</strong>你电脑上的 Agent 对话。同一 Wi-Fi 直接可用；异地需你自己用 Tailscale / 内网穿透 / 端口转发打通（OMNIX 不内置穿透）。
+          </p>
+          {remoteEnabled ? (
+            remoteInfo ? (
+              <div className="flex flex-col gap-2 text-sm">
+                <div className="flex items-center gap-2">
+                  <span className="shrink-0 text-muted-foreground">手机访问链接:</span>
+                  <code className="min-w-0 flex-1 break-all text-foreground">{remoteInfo.url}</code>
+                  <button
+                    onClick={() => navigator.clipboard.writeText(remoteInfo.url).then(() => toast.success("已复制链接"), () => toast.error("复制失败"))}
+                    className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted/30 hover:text-foreground"
+                    title="复制链接"
+                  >
+                    <Copy className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  局域网 IP <code className="text-foreground">{remoteInfo.ip}</code> · 令牌 <code className="text-foreground">{remoteInfo.token}</code>
+                </div>
+                {qr && (
+                  <div className="mt-1 flex items-center gap-3">
+                    <img src={qr} alt="扫码访问" className="h-32 w-32 rounded-md bg-white p-1" />
+                    <span className="text-xs text-muted-foreground">手机扫这个二维码直接打开（同一 Wi-Fi）。</span>
+                  </div>
+                )}
               </div>
-              <div>
-                <span className="text-muted-foreground">身份凭证 Token:</span>{" "}
-                <code className="text-foreground">{remoteInfo.token}</code>
-              </div>
-              <div>
-                <span className="text-muted-foreground">完整网页控制端 URL:</span>{" "}
-                <code className="text-foreground break-all">{remoteInfo.url}</code>
-              </div>
-            </div>
+            ) : (
+              <Button size="sm" variant="outline" onClick={onLoadRemoteAccess}>
+                <RefreshCw className="h-3 w-3" /> 获取链接
+              </Button>
+            )
           ) : (
-            <p className="text-xs text-muted-foreground m-0">点击上方按钮获取远程调试链接</p>
+            <p className="m-0 text-xs text-muted-foreground">打开右上角开关以启用手机远程访问。</p>
           )}
         </CardContent>
       </Card>

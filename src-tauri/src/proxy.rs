@@ -23,6 +23,7 @@ use crate::db::DbManager;
 pub struct ProxyState {
     pub db: Arc<DbManager>,
     pub agent_manager: Arc<crate::agent::AgentManager>,
+    pub runtime_manager: Arc<crate::runtime_manager::RuntimeManager>,
     pub http_client: Client,
     pub request_counter: AtomicUsize,
     pub concurrency_semaphore: Arc<tokio::sync::Semaphore>,
@@ -130,6 +131,7 @@ impl ProxyServer {
         &mut self,
         db: Arc<DbManager>,
         agent_manager: Arc<crate::agent::AgentManager>,
+        runtime_manager: Arc<crate::runtime_manager::RuntimeManager>,
         port: u16,
     ) {
         let (tx, rx) = oneshot::channel::<()>();
@@ -140,7 +142,15 @@ impl ProxyServer {
             .unwrap_or(None)
             .unwrap_or_else(|| "false".to_string())
             == "true";
-        let bind_ip = if use_wsl {
+        // Remote phone access (AionUi-style): bind all interfaces only when the
+        // user has explicitly enabled it, so the gateway stays localhost-only by
+        // default. The remote endpoints are token-gated.
+        let remote_enabled = db
+            .get_setting("remote_access_enabled")
+            .unwrap_or(None)
+            .unwrap_or_else(|| "false".to_string())
+            == "true";
+        let bind_ip = if use_wsl || remote_enabled {
             [0, 0, 0, 0]
         } else {
             [127, 0, 0, 1]
@@ -176,6 +186,7 @@ impl ProxyServer {
         let state = Arc::new(ProxyState {
             db,
             agent_manager,
+            runtime_manager,
             http_client: client,
             request_counter: AtomicUsize::new(0),
             concurrency_semaphore: Arc::new(tokio::sync::Semaphore::new(20)), // max 20 concurrent proxy requests
@@ -203,10 +214,19 @@ impl ProxyServer {
             )
             .route("/remote", axum::routing::get(serve_remote_html))
             .route("/api/remote/status", axum::routing::get(get_remote_status))
+            .route("/api/remote/conversations", axum::routing::get(get_remote_conversations))
+            .route("/api/remote/messages", axum::routing::get(get_remote_messages))
+            .route("/api/remote/chat", axum::routing::post(post_remote_chat))
+            .route("/api/remote/agents", axum::routing::get(get_remote_agents))
+            .route("/api/remote/workspaces", axum::routing::get(get_remote_workspaces))
+            .route("/api/remote/new", axum::routing::post(post_remote_new))
+            .route("/api/remote/pending", axum::routing::get(get_remote_pending))
+            .route("/api/remote/respond", axum::routing::post(post_remote_respond))
             .route(
                 "/api/remote/approve",
                 axum::routing::post(post_remote_approve),
             )
+            .route("/api/remote/send", axum::routing::post(post_remote_send))
             .route(
                 "/api/remote/cron_trigger",
                 axum::routing::post(post_remote_cron_trigger),
@@ -1788,6 +1808,43 @@ async fn post_remote_approve(
 }
 
 #[derive(Debug, Deserialize)]
+struct SendPayload {
+    session_id: String,
+    message: String,
+}
+
+/// Remotely drive an active session: deliver a free-text instruction to the
+/// agent (same stdin channel the approval flow uses). Token-gated like the rest
+/// of the remote API.
+async fn post_remote_send(
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    State(state): State<Arc<ProxyState>>,
+    Json(body): Json<SendPayload>,
+) -> impl IntoResponse {
+    let token = params.get("token").cloned().unwrap_or_default();
+    let expected_token = state
+        .db
+        .get_setting("remote_token")
+        .unwrap_or(None)
+        .unwrap_or_default();
+
+    if token.is_empty() || token != expected_token {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+    if body.message.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "消息为空").into_response();
+    }
+
+    match state
+        .agent_manager
+        .send_stdin(&body.session_id, format!("{}\n", body.message.trim_end()))
+    {
+        Ok(_) => (StatusCode::OK, "Success").into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, format!("Failed: {}", e)).into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
 struct CronTriggerPayload {
     task_id: String,
 }
@@ -1838,6 +1895,352 @@ async fn post_remote_cron_trigger(
     }
 
     (StatusCode::BAD_REQUEST, "Task not found").into_response()
+}
+
+// ── Remote chat view + control (AionUi-style) ───────────────────────────────
+
+/// Token gate shared by the remote chat endpoints.
+fn remote_token_ok(state: &ProxyState, params: &std::collections::HashMap<String, String>) -> bool {
+    let token = params.get("token").cloned().unwrap_or_default();
+    let expected = state.db.get_setting("remote_token").unwrap_or(None).unwrap_or_default();
+    !token.is_empty() && token == expected
+}
+
+fn parse_agent_id(name: &str) -> Option<crate::runtime::AgentId> {
+    match name {
+        "Claude Code" | "claude_code" | "claude" => Some(crate::runtime::AgentId::ClaudeCode),
+        "Codex" | "codex" => Some(crate::runtime::AgentId::Codex),
+        _ => None,
+    }
+}
+
+#[derive(Serialize)]
+struct RemoteConversation {
+    id: String,
+    title: String,
+    agent: String,
+    workspace: String,
+    running: bool,
+    created_at: String,
+}
+
+async fn get_remote_conversations(
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    State(state): State<Arc<ProxyState>>,
+) -> impl IntoResponse {
+    if !remote_token_ok(&state, &params) {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+    let Ok(conn) = state.db.get_connection() else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "DB").into_response();
+    };
+    let mut out = Vec::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT c.id, c.title, c.active_agent, c.workspace_path, c.created_at,
+                (SELECT status FROM agent_sessions s WHERE s.conversation_id = c.id ORDER BY s.created_at DESC LIMIT 1)
+         FROM conversations c WHERE c.is_archived = 0 ORDER BY c.created_at DESC LIMIT 50",
+    ) {
+        if let Ok(rows) = stmt.query_map([], |row| {
+            let status: Option<String> = row.get(5)?;
+            Ok(RemoteConversation {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                agent: row.get(2)?,
+                workspace: row.get(3)?,
+                running: status.as_deref() == Some("running"),
+                created_at: row.get(4)?,
+            })
+        }) {
+            out = rows.flatten().collect();
+        }
+    }
+    Json(out).into_response()
+}
+
+#[derive(Serialize)]
+struct RemoteMessage {
+    role: String,
+    content: String,
+    timestamp: String,
+}
+
+async fn get_remote_messages(
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    State(state): State<Arc<ProxyState>>,
+) -> impl IntoResponse {
+    if !remote_token_ok(&state, &params) {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+    let conversation_id = params.get("conversation_id").cloned().unwrap_or_default();
+    if conversation_id.is_empty() {
+        return (StatusCode::BAD_REQUEST, "conversation_id required").into_response();
+    }
+    let Ok(conn) = state.db.get_connection() else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "DB").into_response();
+    };
+    let mut out = Vec::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT role, content, timestamp FROM messages
+         WHERE conversation_id = ?1 ORDER BY timestamp ASC, rowid ASC LIMIT 300",
+    ) {
+        if let Ok(rows) = stmt.query_map(params![conversation_id], |row| {
+            Ok(RemoteMessage { role: row.get(0)?, content: row.get(1)?, timestamp: row.get(2)? })
+        }) {
+            out = rows.flatten().collect();
+        }
+    }
+    Json(out).into_response()
+}
+
+#[derive(Deserialize)]
+struct ChatPayload {
+    conversation_id: String,
+    text: String,
+}
+
+async fn post_remote_chat(
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    State(state): State<Arc<ProxyState>>,
+    Json(body): Json<ChatPayload>,
+) -> impl IntoResponse {
+    if !remote_token_ok(&state, &params) {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+    if body.text.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "消息为空").into_response();
+    }
+    // Latest runtime session for this conversation.
+    let session_id: Option<String> = state
+        .db
+        .get_connection()
+        .ok()
+        .and_then(|conn| {
+            conn.query_row(
+                "SELECT id FROM agent_sessions WHERE conversation_id = ?1 ORDER BY created_at DESC LIMIT 1",
+                params![body.conversation_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+        });
+    let Some(session_id) = session_id else {
+        return (StatusCode::BAD_REQUEST, "该会话还没有运行过 Agent，请在电脑端先发起一次").into_response();
+    };
+
+    // Try to send; if the session isn't active, resume then retry (mirrors the desktop flow).
+    let text = body.text.trim();
+    let rt = &state.runtime_manager;
+    if rt.send_message_with_display(&session_id, text, text).await.is_ok() {
+        return (StatusCode::OK, "Success").into_response();
+    }
+    if let Err(e) = rt.resume_session(&session_id).await {
+        return (StatusCode::BAD_REQUEST, format!("无法恢复会话: {}", e)).into_response();
+    }
+    match rt.send_message_with_display(&session_id, text, text).await {
+        Ok(_) => (StatusCode::OK, "Success").into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, format!("发送失败: {}", e)).into_response(),
+    }
+}
+
+#[derive(Serialize)]
+struct RemoteAgent {
+    name: String,
+    installed: bool,
+}
+
+async fn get_remote_agents(
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    State(state): State<Arc<ProxyState>>,
+) -> impl IntoResponse {
+    if !remote_token_ok(&state, &params) {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+    let agents: Vec<RemoteAgent> = ["Claude Code", "Codex"]
+        .iter()
+        .map(|name| RemoteAgent {
+            name: name.to_string(),
+            installed: state.agent_manager.find_agent_path(name).is_some(),
+        })
+        .collect();
+    Json(agents).into_response()
+}
+
+async fn get_remote_workspaces(
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    State(state): State<Arc<ProxyState>>,
+) -> impl IntoResponse {
+    if !remote_token_ok(&state, &params) {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+    let Ok(conn) = state.db.get_connection() else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "DB").into_response();
+    };
+    let mut out: Vec<String> = Vec::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT DISTINCT workspace_path FROM conversations
+         WHERE workspace_path != '' AND workspace_path != 'direct'
+         ORDER BY created_at DESC LIMIT 20",
+    ) {
+        if let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) {
+            out = rows.flatten().collect();
+        }
+    }
+    Json(out).into_response()
+}
+
+#[derive(Deserialize)]
+struct NewPayload {
+    agent: String,
+    workspace: Option<String>,
+}
+
+async fn post_remote_new(
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    State(state): State<Arc<ProxyState>>,
+    Json(body): Json<NewPayload>,
+) -> impl IntoResponse {
+    if !remote_token_ok(&state, &params) {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+    let Some(agent) = parse_agent_id(&body.agent) else {
+        return (StatusCode::BAD_REQUEST, "不支持的 Agent").into_response();
+    };
+    let workspace = body.workspace.clone().unwrap_or_else(|| "direct".to_string());
+    let conversation_id = format!("conv_remote_{}", chrono::Utc::now().timestamp_micros());
+    let title = format!("📱 远程 · {}", agent.display_name());
+
+    // Create the conversation row first (the runtime persists messages against it).
+    if let Ok(conn) = state.db.get_connection() {
+        let _ = conn.execute(
+            "INSERT OR IGNORE INTO conversations (id, title, workspace_path, active_agent) VALUES (?1, ?2, ?3, ?4)",
+            params![conversation_id, title, workspace, agent.display_name()],
+        );
+    }
+
+    match crate::commands::remote_start_session(
+        &state.db,
+        &state.agent_manager,
+        &state.runtime_manager,
+        agent,
+        workspace,
+        conversation_id.clone(),
+    )
+    .await
+    {
+        Ok(_) => Json(serde_json::json!({ "conversation_id": conversation_id })).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, format!("启动失败: {}", e)).into_response(),
+    }
+}
+
+/// Most recent runtime session id for a conversation (or None).
+fn latest_session_for(db: &DbManager, conversation_id: &str) -> Option<String> {
+    db.get_connection().ok().and_then(|conn| {
+        conn.query_row(
+            "SELECT id FROM agent_sessions WHERE conversation_id = ?1 ORDER BY created_at DESC LIMIT 1",
+            params![conversation_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .ok()
+        .flatten()
+    })
+}
+
+#[derive(Serialize)]
+struct PendingApproval {
+    pending: bool,
+    request_id: String,
+    title: String,
+}
+
+/// Whether the conversation's session is awaiting an approval the phone can answer.
+async fn get_remote_pending(
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    State(state): State<Arc<ProxyState>>,
+) -> impl IntoResponse {
+    if !remote_token_ok(&state, &params) {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+    let none = || Json(PendingApproval { pending: false, request_id: String::new(), title: String::new() });
+    let conversation_id = params.get("conversation_id").cloned().unwrap_or_default();
+    let Some(session_id) = latest_session_for(&state.db, &conversation_id) else {
+        return none().into_response();
+    };
+    let Ok(conn) = state.db.get_connection() else {
+        return none().into_response();
+    };
+    let status: String = conn
+        .query_row("SELECT status FROM agent_sessions WHERE id = ?1", params![session_id], |r| r.get(0))
+        .unwrap_or_default();
+    if status != "awaiting_approval" {
+        return none().into_response();
+    }
+    let pending = conn
+        .query_row(
+            "SELECT request_id, text FROM runtime_events
+             WHERE session_id = ?1 AND kind = 'approval_requested'
+             ORDER BY sequence DESC LIMIT 1",
+            params![session_id],
+            |r| Ok((r.get::<_, Option<String>>(0)?.unwrap_or_default(), r.get::<_, Option<String>>(1)?.unwrap_or_default())),
+        )
+        .ok();
+    match pending {
+        Some((request_id, title)) if !request_id.is_empty() => {
+            Json(PendingApproval { pending: true, request_id, title }).into_response()
+        }
+        _ => none().into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct RespondPayload {
+    conversation_id: String,
+    approved: bool,
+}
+
+/// Approve/deny the pending approval from the phone (Codex sessions only —
+/// Claude Code structured approval回传 is not yet supported).
+async fn post_remote_respond(
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    State(state): State<Arc<ProxyState>>,
+    Json(body): Json<RespondPayload>,
+) -> impl IntoResponse {
+    if !remote_token_ok(&state, &params) {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+    let Some(session_id) = latest_session_for(&state.db, &body.conversation_id) else {
+        return (StatusCode::BAD_REQUEST, "无运行中的会话").into_response();
+    };
+    // Latest approval request + its method/permissions metadata.
+    let row = state.db.get_connection().ok().and_then(|conn| {
+        conn.query_row(
+            "SELECT request_id, metadata_json FROM runtime_events
+             WHERE session_id = ?1 AND kind = 'approval_requested'
+             ORDER BY sequence DESC LIMIT 1",
+            params![session_id],
+            |r| Ok((r.get::<_, Option<String>>(0)?.unwrap_or_default(), r.get::<_, Option<String>>(1)?.unwrap_or_default())),
+        )
+        .ok()
+    });
+    let Some((request_id, metadata_json)) = row else {
+        return (StatusCode::BAD_REQUEST, "没有待处理的审批").into_response();
+    };
+    if request_id.is_empty() {
+        return (StatusCode::BAD_REQUEST, "没有待处理的审批").into_response();
+    }
+    let meta: serde_json::Value = serde_json::from_str(&metadata_json).unwrap_or(serde_json::Value::Null);
+    let method = meta.get("method").and_then(|v| v.as_str()).unwrap_or("item/commandExecution/requestApproval");
+    let permissions = meta.get("params").and_then(|p| p.get("permissions")).cloned();
+
+    match state
+        .runtime_manager
+        .respond_approval(&session_id, &request_id, body.approved, false, method, permissions)
+        .await
+    {
+        Ok(_) => (StatusCode::OK, "Success").into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, format!("审批失败: {}", e)).into_response(),
+    }
 }
 
 // --- Dynamic Capability Routing Helpers ---

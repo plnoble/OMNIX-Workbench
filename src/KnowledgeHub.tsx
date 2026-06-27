@@ -10,7 +10,7 @@
  */
 
 import { useKnowledgeBase } from "@/hooks/useKnowledgeBase";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -19,11 +19,11 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "@/components/ui/sonner";
 import { cn } from "@/lib/utils";
-import { shellApi } from "@/lib/tauri-api";
+import { shellApi, knowledgeApi } from "@/lib/tauri-api";
 import {
   BookOpen, Search, Upload, Trash2, FileText, Code, Hash,
   Sparkles, Loader2, MessageSquare, Send,
-  ChevronRight, File, Brain, Zap, FolderOpen, FolderPlus,
+  ChevronRight, File, Brain, Zap, FolderOpen, FolderPlus, Quote, Download,
 } from "lucide-react";
 
 // ── Status Badge ────────────────────────────────────────
@@ -114,6 +114,38 @@ export function KnowledgeHub() {
       toast.success("知识库已删除");
     } catch (error) {
       toast.error(String(error));
+    }
+  };
+
+  const kbFileInputRef = useRef<HTMLInputElement>(null);
+
+  // Export the current KB (documents + chunks + embeddings) to a portable file.
+  const handleExportBase = async () => {
+    try {
+      const base = kb.knowledgeBases.find((b) => b.id === kb.selectedBaseId);
+      const json = await knowledgeApi.exportBase(kb.selectedBaseId);
+      const blob = new Blob([json], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${(base?.name || "knowledge-base").replace(/[\\/:*?"<>|]/g, "_")}.omnixkb.json`;
+      link.click();
+      URL.revokeObjectURL(url);
+      toast.success("知识库已导出（含嵌入向量）");
+    } catch (error) {
+      toast.error("导出失败", { description: String(error) });
+    }
+  };
+
+  const handleImportBase = async (file: File) => {
+    try {
+      const data = await file.text();
+      const imported = await knowledgeApi.importBase(data);
+      await kb.loadKnowledgeBases();
+      kb.selectKnowledgeBase(imported.id);
+      toast.success(`已导入知识库「${imported.name}」`, { description: "若用不同的嵌入模型，关键词(BM25)搜索可用，向量搜索建议重新嵌入" });
+    } catch (error) {
+      toast.error("导入失败", { description: String(error) });
     }
   };
 
@@ -222,6 +254,24 @@ export function KnowledgeHub() {
             >
               <FolderPlus className="h-4 w-4" />
             </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-8 w-8 p-0"
+              onClick={() => void handleExportBase()}
+              title="导出当前知识库（含嵌入，可迁移到别的电脑）"
+            >
+              <Download className="h-4 w-4" />
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-8 w-8 p-0"
+              onClick={() => kbFileInputRef.current?.click()}
+              title="导入知识库文件（.omnixkb.json）"
+            >
+              <Upload className="h-4 w-4" />
+            </Button>
             {kb.selectedBaseId !== "default" && (
               <Button
                 size="sm"
@@ -234,6 +284,17 @@ export function KnowledgeHub() {
               </Button>
             )}
           </div>
+          <input
+            ref={kbFileInputRef}
+            type="file"
+            accept="application/json,.json"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) void handleImportBase(file);
+              e.target.value = "";
+            }}
+          />
           {showBaseForm && (
             <div className="mt-2 flex items-center gap-1">
               <Input
@@ -493,6 +554,20 @@ export function KnowledgeHub() {
                         <Badge variant="outline" className="text-xs h-5 bg-cyan-500/10 text-cyan-400 border-cyan-500/30">
                           RRF: {result.rrf_score.toFixed(6)}
                         </Badge>
+                        <button
+                          className="ml-auto flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-muted/30 hover:text-foreground"
+                          title="复制为带出处的引用"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const citation = `> ${result.content}\n>\n> — ${result.knowledge_base_name} / ${result.document_title}`;
+                            navigator.clipboard.writeText(citation).then(
+                              () => toast.success("引用已复制（含出处）"),
+                              () => toast.error("复制失败"),
+                            );
+                          }}
+                        >
+                          <Quote className="h-3 w-3" /> 引用
+                        </button>
                       </div>
                       <p className="text-xs text-muted-foreground line-clamp-3">{result.content}</p>
                       <p className="mt-1 text-xs text-muted-foreground">

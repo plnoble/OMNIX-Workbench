@@ -57,7 +57,7 @@ export function useSelection(): UseSelectionReturn {
   const [captureMode, setCaptureMode] = useState<"hybrid" | "uia_only" | "clipboard_only">("hybrid");
   const [showOnCapture, setShowOnCapture] = useState(true);
   const [preserveClipboard, setPreserveClipboard] = useState(false);
-  const [autoCaptureEnabled, setAutoCaptureEnabled] = useState(false);
+  const [autoCaptureEnabled, setAutoCaptureEnabled] = useState(true);
   const [blacklist, setBlacklist] = useState<string[]>([]);
 
   // ── History state ─────────────────────────────────
@@ -117,7 +117,9 @@ export function useSelection(): UseSelectionReturn {
       const shouldAutoCapture = show !== "false";
       if (!shouldAutoCapture) setShowOnCapture(false);
       if (preserve === "true") setPreserveClipboard(true);
-      const autoCaptureIsEnabled = autoCapture === "true";
+      // Default ON (always-on like Cherry Studio): unset → enabled; only an
+      // explicit "false" disables it. Toggle remains in 划词助手 settings.
+      const autoCaptureIsEnabled = autoCapture !== "false";
       setAutoCaptureEnabled(autoCaptureIsEnabled);
       if (blacklistValue) {
         try {

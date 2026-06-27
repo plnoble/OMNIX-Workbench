@@ -267,9 +267,19 @@ export const previewApi = {
     invoke<string>("get_workspace_git_diff", { workspacePath }),
 };
 
+export interface FilePreview {
+  path: string;
+  kind: "text" | "markdown" | "image" | "pdf" | "binary";
+  language: string;
+  content: string;
+  size: number;
+  truncated: boolean;
+}
 export const workspaceApi = {
   snapshot: (workspacePath: string) =>
     invoke<WorkspaceSnapshot>("get_workspace_snapshot", { workspacePath }),
+  readFile: (workspacePath: string, relativePath: string) =>
+    invoke<FilePreview>("read_workspace_file", { workspacePath, relativePath }),
 };
 
 // ── Environment Diagnostics ───────────────────────────
@@ -283,6 +293,8 @@ export const diagnosticsApi = {
 
 export const remoteApi = {
   getInfo: () => invoke<RemoteAccessInfo>("get_remote_access_info"),
+  /** Enable/disable LAN binding for remote phone access (AionUi-style); restarts the proxy. */
+  setAccess: (enabled: boolean) => invoke<void>("set_remote_access", { enabled }),
 };
 
 // ── Knowledge Base ─────────────────────────────────────
@@ -294,6 +306,8 @@ export const knowledgeApi = {
   updateBase: (knowledgeBaseId: string, name: string, description = "") =>
     invoke("kb_update_base", { knowledgeBaseId, name, description }),
   deleteBase: (knowledgeBaseId: string) => invoke("kb_delete_base", { knowledgeBaseId }),
+  exportBase: (knowledgeBaseId: string) => invoke<string>("kb_export_base", { knowledgeBaseId }),
+  importBase: (data: string) => invoke<KnowledgeBase>("kb_import_base", { data }),
   listDocuments: (knowledgeBaseId?: string) =>
     invoke<KbDocument[]>("kb_list_documents", { knowledgeBaseId }),
   importDocument: (params: { knowledgeBaseId?: string; title: string; sourcePath: string; fileType: string; content: string; chunkConfig?: ChunkConfig }) =>
@@ -371,6 +385,109 @@ export const mcpApi = {
   list: () => invoke<McpServer[]>("get_mcp_servers"),
   save: (server: McpServer) => invoke("save_mcp_server", { server }),
   delete: (id: string) => invoke("delete_mcp_server", { id }),
+};
+
+// ── Workspace checkpoints + diff review (Claude Code / Codex desktop inspired) ──
+export interface Checkpoint {
+  id: string; workspace_path: string; session_id: string; label: string;
+  vcs: string; ref_name: string; created_at: string; skipped: boolean;
+}
+export interface FileDiff {
+  path: string; status: string; additions: number; deletions: number; unified_diff: string;
+}
+export const checkpointApi = {
+  create: (workspacePath: string, sessionId: string, label: string) =>
+    invoke<Checkpoint>("create_checkpoint", { workspacePath, sessionId, label }),
+  list: (workspacePath: string, sessionId?: string) =>
+    invoke<Checkpoint[]>("list_checkpoints", { workspacePath, sessionId }),
+  diff: (workspacePath: string, checkpointId?: string) =>
+    invoke<FileDiff[]>("get_workspace_diff", { workspacePath, checkpointId }),
+  restore: (checkpointId: string) =>
+    invoke<Checkpoint>("restore_checkpoint", { checkpointId }),
+  revertFile: (checkpointId: string, path: string) =>
+    invoke<void>("revert_file", { checkpointId, path }),
+};
+
+// ── Parallel sessions via Git worktrees (Codex / Claude Code desktop inspired) ──
+export interface Worktree {
+  id: string; repo_path: string; worktree_path: string; branch: string;
+  session_id: string; label: string; created_at: string;
+  is_main: boolean; exists: boolean; dirty: boolean; ahead: number;
+}
+export interface MergeResult { merged: boolean; conflict: boolean; message: string; }
+export const worktreeApi = {
+  create: (workspacePath: string, sessionId: string, label: string, branch?: string) =>
+    invoke<Worktree>("create_worktree", { workspacePath, sessionId, label, branch }),
+  list: (workspacePath: string) =>
+    invoke<Worktree[]>("list_worktrees", { workspacePath }),
+  remove: (worktreeId: string, deleteBranch: boolean, force: boolean) =>
+    invoke<void>("remove_worktree", { worktreeId, deleteBranch, force }),
+  merge: (worktreeId: string) =>
+    invoke<MergeResult>("merge_worktree", { worktreeId }),
+};
+
+// ── User-state hooks (Claude Code hooks inspired): event → action rules ──
+export interface Hook {
+  id: string; name: string; event: string; matcher: string;
+  action_type: string; action_payload: string; enabled: boolean;
+  created_at: string; fire_count: number; last_fired_at: string | null;
+}
+export interface HookRun {
+  id: number; hook_id: string; hook_name: string; session_id: string;
+  event: string; fired_at: string; ok: boolean; detail: string;
+}
+export const hooksApi = {
+  list: () => invoke<Hook[]>("list_hooks"),
+  save: (h: { id?: string; name: string; event: string; matcher: string; action_type: string; action_payload: string; enabled: boolean }) =>
+    invoke<Hook>("save_hook", h),
+  toggle: (id: string, enabled: boolean) => invoke<void>("toggle_hook", { id, enabled }),
+  remove: (id: string) => invoke<void>("delete_hook", { id }),
+  test: (id: string) => invoke<string>("test_hook", { id }),
+  runs: (limit?: number) => invoke<HookRun[]>("get_hook_runs", { limit }),
+  clearRuns: () => invoke<void>("clear_hook_runs"),
+};
+
+// ── Custom Quick Assistant actions (划词助手深挖) ──
+export interface QuickAction {
+  id: string; label: string; emoji: string; prompt_template: string;
+  enabled: boolean; order_num: number; created_at: string;
+}
+export const quickActionApi = {
+  list: () => invoke<QuickAction[]>("list_quick_actions"),
+  save: (a: { id?: string; label: string; emoji: string; promptTemplate: string; enabled: boolean; orderNum: number }) =>
+    invoke<QuickAction>("save_quick_action", { id: a.id, label: a.label, emoji: a.emoji, promptTemplate: a.promptTemplate, enabled: a.enabled, orderNum: a.orderNum }),
+  remove: (id: string) => invoke<void>("delete_quick_action", { id }),
+};
+
+// ── Notes (笔记) ──
+export interface Note {
+  id: string; title: string; content: string; tags: string;
+  source: string; created_at: string; updated_at: string;
+}
+export const notesApi = {
+  list: (query?: string) => invoke<Note[]>("list_notes", { query }),
+  save: (n: { id?: string; title: string; content: string; tags?: string; source?: string }) =>
+    invoke<Note>("save_note", n),
+  remove: (id: string) => invoke<void>("delete_note", { id }),
+  dir: () => invoke<string>("get_notes_dir"),
+  openFolder: () => invoke<void>("open_notes_folder"),
+};
+
+// ── In-session background tasks / sub-agents (own worktree, concurrent session) ──
+export interface SubAgent {
+  id: string; parent_conversation_id: string; title: string; prompt: string;
+  agent: string; child_conversation_id: string; child_session_id: string;
+  worktree_id: string; worktree_path: string; status: string;
+  created_at: string; updated_at: string;
+}
+export const subAgentApi = {
+  create: (r: { parentConversationId: string; title: string; prompt: string; agent: string; childConversationId: string; childSessionId: string; worktreeId: string; worktreePath: string }) =>
+    invoke<SubAgent>("create_subagent", r),
+  list: (parentConversationId: string) =>
+    invoke<SubAgent[]>("list_subagents", { parentConversationId }),
+  updateStatus: (id: string, status: string) =>
+    invoke<void>("update_subagent_status", { id, status }),
+  remove: (id: string) => invoke<void>("delete_subagent", { id }),
 };
 
 // ── MCP sync to Agent native config (AionUi / cc-switch inspired) ──
@@ -588,6 +705,18 @@ export const agentTemplateApi = {
     invoke<AgentTemplate | null>("get_agent_template", { slug }),
 };
 
+// ── Custom assistants (助手库: 自定义 + 分享) ──
+export interface CustomAssistant {
+  slug: string; name: string; description: string;
+  category: string; instructions: string; created_at: string;
+}
+export const customAssistantApi = {
+  list: () => invoke<CustomAssistant[]>("list_custom_assistants"),
+  save: (a: { slug?: string; name: string; description: string; category?: string; instructions: string }) =>
+    invoke<CustomAssistant>("save_custom_assistant", a),
+  remove: (slug: string) => invoke<void>("delete_custom_assistant", { slug }),
+};
+
 // ── Skills Lock File (Multica-inspired) ──────────────
 
 export interface SkillLockEntry {
@@ -711,6 +840,7 @@ export interface ModelUsage {
   model: string;
   request_count: number;
   total_tokens: number;
+  cost_usd: number;
 }
 
 export interface HourlyCount {
@@ -725,8 +855,17 @@ export interface UsageStats {
   avg_latency_ms: number;
   requests_today: number;
   tokens_today: number;
+  total_cost_usd: number;
+  cost_today_usd: number;
   top_models: ModelUsage[];
   hourly_distribution: HourlyCount[];
+}
+
+export interface DailyUsage {
+  date: string;
+  requests: number;
+  tokens: number;
+  cost_usd: number;
 }
 
 export const requestLogApi = {
@@ -736,6 +875,10 @@ export const requestLogApi = {
 
   /** Get usage statistics summary */
   getStats: () => invoke<UsageStats>("get_usage_stats"),
+
+  /** Get daily token/cost activity for the last N days (ascending) */
+  timeseries: (days?: number) =>
+    invoke<DailyUsage[]>("get_usage_timeseries", { days }),
 
   /** Delete old logs */
   cleanup: (keepDays?: number) =>
@@ -922,6 +1065,7 @@ export const checklistApi = {
 export interface ContextBudget {
   model_limit: number;
   estimated_tokens: number;
+  message_count: number;
   remaining_tokens: number;
   usage_percent: number;
   status: "ok" | "warning" | "critical";

@@ -69,6 +69,9 @@ const LabsTab = lazy(() => import("@/components/tabs/LabsTab").then(m => ({ defa
 const CronTab = lazy(() => import("@/components/tabs/CronTab").then(m => ({ default: m.CronTab })));
 const ModelsTab = lazy(() => import("@/components/tabs/ModelsTab").then(m => ({ default: m.ModelsTab })));
 const McpTab = lazy(() => import("@/components/tabs/McpTab").then(m => ({ default: m.McpTab })));
+const HooksTab = lazy(() => import("@/components/tabs/HooksTab").then(m => ({ default: m.HooksTab })));
+const NotesTab = lazy(() => import("@/components/tabs/NotesTab").then(m => ({ default: m.NotesTab })));
+const TranslateTab = lazy(() => import("@/components/tabs/TranslateTab").then(m => ({ default: m.TranslateTab })));
 const SearchResourceTab = lazy(() => import("@/components/tabs/SearchResourceTab").then(m => ({ default: m.SearchResourceTab })));
 const QuickAssistantTab = lazy(() => import("@/components/tabs/QuickAssistantTab").then(m => ({ default: m.QuickAssistantTab })));
 const AssistantsTab = lazy(() => import("@/components/tabs/AssistantsTab").then(m => ({ default: m.AssistantsTab })));
@@ -162,6 +165,9 @@ function MainApp() {
       void import("@/components/tabs/AgentHubTab");
       void import("@/components/tabs/ModelsTab");
       void import("@/components/tabs/McpTab");
+      void import("@/components/tabs/HooksTab");
+      void import("@/components/tabs/NotesTab");
+      void import("@/components/tabs/TranslateTab");
       void import("@/components/tabs/TeamTab");
       void import("@/components/tabs/SkillTab");
       void import("@/components/tabs/KnowledgeTab");
@@ -458,6 +464,8 @@ function MainApp() {
                   handleTabChange("team");
                   toast.message("已切到团队入口，队长计划仍需你确认后才会启动 Worker。");
                 }}
+                onReloadMessages={() => { if (convs.currentConvId) void convs.selectConversation(convs.currentConvId); }}
+                onSelectConversation={(id) => void convs.selectConversation(id)}
               />
             )}
 
@@ -480,6 +488,9 @@ function MainApp() {
             )}
 
             {activeTab === "compare" && <CompareTab />}
+            {activeTab === "hooks" && <HooksTab />}
+            {activeTab === "notes" && <NotesTab />}
+            {activeTab === "translate" && <TranslateTab />}
             {activeTab === "memories" && <MemoryTab />}
             {activeTab === "skills" && <SkillTab />}
             {activeTab === "knowledge" && <KnowledgeTab />}
@@ -605,6 +616,7 @@ function MainApp() {
                 onSaveSettings={handleSaveSettings}
                 selectionCaptureMode={selection.captureMode}
                 selectionShowOnCapture={selection.showOnCapture}
+                selectionAutoCaptureEnabled={selection.autoCaptureEnabled}
                 selectionPreserveClipboard={selection.preserveClipboard}
                 isSelectionCapturing={selection.isCapturing}
                 lastSelectionCapture={selection.lastCapture}
@@ -612,6 +624,7 @@ function MainApp() {
                 selectionHistory={selection.selectionHistory}
                 onSetSelectionCaptureMode={(v) => selection.saveSelectionSettings({ captureMode: v as "hybrid" | "uia_only" | "clipboard_only" })}
                 onSetSelectionShowOnCapture={(v) => selection.saveSelectionSettings({ showOnCapture: v })}
+                onSetSelectionAutoCaptureEnabled={(v) => selection.saveSelectionSettings({ autoCaptureEnabled: v })}
                 onSetSelectionPreserveClipboard={(v) => selection.saveSelectionSettings({ preserveClipboard: v })}
                 onTestSelectionCapture={selection.captureTextOnly}
                 onSaveSelectionSettings={async (updates) => {
@@ -751,6 +764,7 @@ function MainApp() {
                 onSaveSettings={handleSaveSettings}
                 selectionCaptureMode={selection.captureMode}
                 selectionShowOnCapture={selection.showOnCapture}
+                selectionAutoCaptureEnabled={selection.autoCaptureEnabled}
                 selectionPreserveClipboard={selection.preserveClipboard}
                 isSelectionCapturing={selection.isCapturing}
                 lastSelectionCapture={selection.lastCapture}
@@ -758,6 +772,7 @@ function MainApp() {
                 selectionHistory={selection.selectionHistory}
                 onSetSelectionCaptureMode={(v) => selection.saveSelectionSettings({ captureMode: v as "hybrid" | "uia_only" | "clipboard_only" })}
                 onSetSelectionShowOnCapture={(v) => selection.saveSelectionSettings({ showOnCapture: v })}
+                onSetSelectionAutoCaptureEnabled={(v) => selection.saveSelectionSettings({ autoCaptureEnabled: v })}
                 onSetSelectionPreserveClipboard={(v) => selection.saveSelectionSettings({ preserveClipboard: v })}
                 onTestSelectionCapture={selection.captureTextOnly}
                 onSaveSelectionSettings={async (updates) => {

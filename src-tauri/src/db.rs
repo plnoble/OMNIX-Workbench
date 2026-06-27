@@ -2006,7 +2006,7 @@ impl DbManager {
     pub fn get_translation_history(
         &self,
         limit: u32,
-    ) -> Result<Vec<crate::selection::SelectionHistoryEntry>> {
+    ) -> Result<Vec<crate::selection::TranslateHistoryEntry>> {
         let conn = self.get_connection()?;
         let mut stmt = conn.prepare(
             "SELECT id, source_text, target_text, source_lang, target_lang, created_at
@@ -2014,12 +2014,12 @@ impl DbManager {
         )?;
         let entries = stmt
             .query_map(params![limit], |row| {
-                Ok(crate::selection::SelectionHistoryEntry {
+                Ok(crate::selection::TranslateHistoryEntry {
                     id: row.get(0)?,
-                    captured_text: row.get(1)?,
-                    source: row.get(3)?,       // source_lang
-                    window_title: row.get(2)?, // target_text (repurposed field)
-                    process_name: row.get(4)?, // target_lang
+                    source_text: row.get(1)?,
+                    target_text: row.get(2)?,
+                    source_lang: row.get(3)?,
+                    target_lang: row.get(4)?,
                     created_at: row.get(5)?,
                 })
             })?
