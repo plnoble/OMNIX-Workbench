@@ -10,6 +10,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow, PhysicalSize } from "@tauri-apps/api/window";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { qaApi, settingsApi, modelApi, quickActionApi, notesApi, type QuickAction } from "@/lib/tauri-api";
@@ -109,9 +110,6 @@ export function QuickAssistant() {
 
   // Stream cleanup ref
   const unlistenStreamRef = useRef<(() => void) | null>(null);
-  // Latest streaming flag for the focus listener (avoids stale closures).
-  const isStreamingRef = useRef(false);
-  useEffect(() => { isStreamingRef.current = isStreaming; }, [isStreaming]);
 
   // Idle auto-dismiss: if the action bar pops up and the user takes no action,
   // hide it after a few seconds so it's never stuck on screen.
@@ -243,23 +241,56 @@ export function QuickAssistant() {
     dismissTimerRef.current = window.setTimeout(() => { void hideWindow(); }, ms);
   }, [cancelDismiss, hideWindow]);
 
-  // Dismiss the popup when it loses focus (the user clicked back to their work),
-  // Cherry-style — so it's never stuck on screen even if the small ✕ is awkward
-  // to hit. Not while streaming, so an in-flight answer isn't lost.
+  // NOTE: the popup is shown WITHOUT taking focus (Cherry Studio style), so we no
+  // longer dismiss on focus-loss — doing so would hide it instantly. Dismissal is
+  // handled by the backend (mouse-down outside the popup), Esc, the idle timeout,
+  // and the ✕ button.
+
+  // ── Resizable window (user-adjustable size, persisted) ──────────────
+  const startResize = useCallback(
+    (dir: "East" | "South" | "SouthEast") => (e: React.PointerEvent) => {
+      e.preventDefault();
+      getCurrentWindow().startResizeDragging(dir).catch(() => { /* not in a Tauri window */ });
+    },
+    [],
+  );
+
+  // Restore the user's saved popup size on mount.
+  useEffect(() => {
+    (async () => {
+      try {
+        const [w, h] = await Promise.all([
+          settingsApi.get("quick_assistant_width"),
+          settingsApi.get("quick_assistant_height"),
+        ]);
+        const width = Number(w);
+        const height = Number(h);
+        if (Number.isFinite(width) && Number.isFinite(height) && width >= 300 && height >= 180) {
+          await getCurrentWindow().setSize(new PhysicalSize(Math.round(width), Math.round(height)));
+        }
+      } catch { /* not in a Tauri window / no saved size */ }
+    })();
+  }, []);
+
+  // Persist the size after the user finishes resizing (debounced).
   useEffect(() => {
     let unlisten: (() => void) | undefined;
-    import("@tauri-apps/api/window")
-      .then(({ getCurrentWindow }) =>
-        getCurrentWindow().onFocusChanged(({ payload: focused }) => {
-          if (!focused && !isStreamingRef.current) {
-            void hideWindow();
-          }
-        }),
-      )
+    let timer: number | null = null;
+    getCurrentWindow()
+      .onResized(({ payload }) => {
+        if (timer !== null) window.clearTimeout(timer);
+        timer = window.setTimeout(() => {
+          void settingsApi.set("quick_assistant_width", String(payload.width));
+          void settingsApi.set("quick_assistant_height", String(payload.height));
+        }, 400);
+      })
       .then((fn) => { unlisten = fn; })
       .catch(() => { /* not in a Tauri window */ });
-    return () => unlisten?.();
-  }, [hideWindow]);
+    return () => {
+      unlisten?.();
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, []);
 
   // ── Stop streaming ───────────────────────────────────
 
@@ -421,7 +452,28 @@ export function QuickAssistant() {
   // ── Render ───────────────────────────────────────────
 
   return (
-    <div className="flex flex-col h-screen bg-background/95 backdrop-blur-xl border border-border/50 rounded-xl shadow-2xl overflow-hidden">
+    <div className="relative flex flex-col h-screen bg-background/95 backdrop-blur-xl border border-border/50 rounded-xl shadow-2xl overflow-hidden">
+      {/* Resize handles (frameless window — drag to resize; size is remembered) */}
+      <div
+        onPointerDown={startResize("East")}
+        className="absolute top-2 right-0 z-50 h-full w-1.5 cursor-ew-resize"
+        title="拖动调整宽度"
+      />
+      <div
+        onPointerDown={startResize("South")}
+        className="absolute bottom-0 left-2 z-50 h-1.5 w-full cursor-ns-resize"
+        title="拖动调整高度"
+      />
+      <div
+        onPointerDown={startResize("SouthEast")}
+        className="absolute bottom-0 right-0 z-50 h-3.5 w-3.5 cursor-nwse-resize"
+        title="拖动调整大小"
+        style={{
+          backgroundImage:
+            "repeating-linear-gradient(135deg, transparent, transparent 2px, rgba(130,130,130,0.55) 2px, rgba(130,130,130,0.55) 3px)",
+        }}
+      />
+
       {/* Header: captured text preview + action bar */}
       {showCaptureBar && capturedText ? (
         <div className="border-b border-border/50 bg-muted/30">

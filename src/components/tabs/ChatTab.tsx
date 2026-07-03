@@ -34,13 +34,14 @@ import { Textarea } from "@/components/ui/textarea";
 import { AGENT_NAMES } from "@/lib/constants";
 import { cn } from "@/lib/utils";
 import { knowledgeApi, runtimeApi, searchApi, workspaceApi, notesApi } from "@/lib/tauri-api";
+import { getRuntimeAgentId, isAcpAgent } from "@/lib/agentRegistry";
 import type {
   ConversationMessage,
   DetectedAgent,
+  AcpModelOption,
   EmbeddingModelInfo,
   KnowledgeBase,
   PermissionPolicy,
-  RuntimeAgentId,
   RuntimeApprovalRequest,
   RuntimeModelOption,
   RuntimePermissionPolicy,
@@ -71,6 +72,9 @@ export interface ChatTabProps {
   onSuggestTeam?: (prompt: string) => void;
   onReloadMessages?: () => void;
   onSelectConversation?: (id: string) => void;
+  /// The running ACP session's selectable model (opencode etc.), if any.
+  acpModelOption?: AcpModelOption;
+  onSetSessionModel?: (conversationId: string, model: string) => void;
 }
 
 const PERMISSION_OPTIONS: Array<{ id: PermissionPolicy; label: string; desc: string }> = [
@@ -84,11 +88,6 @@ const WORK_MODE_OPTIONS: Array<{ id: WorkMode; label: string; desc: string }> = 
   { id: "plan", label: "计划模式", desc: "只读分析并先给出计划" },
 ];
 
-function getRuntimeAgentId(agentName: string): RuntimeAgentId | null {
-  if (agentName === "Claude Code") return "claude_code";
-  if (agentName === "Codex") return "codex";
-  return null;
-}
 
 function MessageContent({ content }: { content: string }) {
   const parts: Array<{ type: "text" | "think"; content: string }> = [];
@@ -161,6 +160,8 @@ export function ChatTab({
   onSuggestTeam,
   onReloadMessages,
   onSelectConversation,
+  acpModelOption,
+  onSetSessionModel,
 }: ChatTabProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [permissionPolicy, setPermissionPolicy] = useState<PermissionPolicy>("ask_on_risk");
@@ -507,23 +508,55 @@ export function ChatTab({
             />
 
             <div className="mt-3 flex flex-wrap items-center gap-2">
-              <select
-                value={selectedModel?.id || ""}
-                onChange={(event) => setSelectedModelId(event.target.value)}
-                className="h-8 max-w-56 rounded-md border border-border bg-background px-2 text-sm"
-                disabled={!runtimeAgentId || runtimeModels.length === 0}
-                title={selectedModel?.compatibility.reason}
-              >
-                {!runtimeAgentId ? (
-                  <option value="">待适配</option>
-                ) : runtimeModels.length === 0 ? (
-                  <option value="">读取模型中...</option>
-                ) : runtimeModels.map((model) => (
-                  <option key={model.id} value={model.id} disabled={!model.compatibility.selectable}>
-                    {model.label}{model.compatibility.selectable ? "" : ` · 不可用：${model.compatibility.reason}`}
-                  </option>
-                ))}
-              </select>
+              {/* One model slot per agent kind: gateway agents pick from the
+                  OMNIX catalog; ACP agents pick from the agent's own list
+                  (session/set_config_option), with a stable placeholder before
+                  the session starts so the composer doesn't reflow. */}
+              {!isAcpAgent(activeAgent) ? (
+                <select
+                  value={selectedModel?.id || ""}
+                  onChange={(event) => setSelectedModelId(event.target.value)}
+                  className="h-8 max-w-56 rounded-md border border-border bg-background px-2 text-sm"
+                  disabled={!runtimeAgentId || runtimeModels.length === 0}
+                  title={selectedModel?.compatibility.reason}
+                >
+                  {!runtimeAgentId ? (
+                    <option value="">待适配</option>
+                  ) : runtimeModels.length === 0 ? (
+                    <option value="">读取模型中...</option>
+                  ) : runtimeModels.map((model) => (
+                    <option key={model.id} value={model.id} disabled={!model.compatibility.selectable}>
+                      {model.label}{model.compatibility.selectable ? "" : ` · 不可用：${model.compatibility.reason}`}
+                    </option>
+                  ))}
+                </select>
+              ) : acpModelOption && acpModelOption.options.length > 0 ? (
+                <select
+                  value={acpModelOption.current || ""}
+                  onChange={(event) =>
+                    currentConvId && onSetSessionModel?.(currentConvId, event.target.value)
+                  }
+                  className="h-8 max-w-56 rounded-md border border-primary/40 bg-background px-2 text-sm"
+                  title={`${activeAgent} 模型（由 Agent 提供）`}
+                >
+                  {acpModelOption.current
+                    && !acpModelOption.options.some((option) => option.value === acpModelOption.current) && (
+                    <option value={acpModelOption.current}>{acpModelOption.current}</option>
+                  )}
+                  {acpModelOption.options.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.name}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <span
+                  className="flex h-8 items-center rounded-md border border-border bg-background px-2 text-sm text-muted-foreground"
+                  title="ACP Agent 使用自身默认模型；会话启动后如 Agent 提供模型列表，可在此切换"
+                >
+                  模型：Agent 默认
+                </span>
+              )}
 
               <select
                 value={permissionPolicy}

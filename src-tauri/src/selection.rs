@@ -505,134 +505,155 @@ fn get_cursor_position() -> Option<(i32, i32)> {
     None
 }
 
-/// Show the Quick Assistant popup next to the cursor. It is shown focused so its
-/// buttons (翻译/总结/✕…) are clickable on the first click — a non-activating
-/// window made WebView2 eat the first click. To stay non-intrusive it instead
-/// auto-dismisses: the frontend hides it the moment it loses focus (you click
-/// back to your work) or after a short idle timeout, and the monitor hides it
-/// when you deselect.
-fn show_popup_near_cursor(app_handle: &tauri::AppHandle) {
-    if let Some(qa) = app_handle.get_webview_window("quick-assistant") {
-        if let Some((x, y)) = get_cursor_position() {
-            // Offset slightly down-right of the cursor.
-            let _ = qa.set_position(tauri::PhysicalPosition::new(x + 12, y + 18));
-        }
-        let _ = qa.show();
-        let _ = qa.set_focus();
-    }
+/// Show the Quick Assistant popup at a screen point **without taking focus**
+/// (Cherry Studio style). Stealing focus was what broke text selection and copy
+/// and caused the flicker, so we never call `set_focus` here. Returns the popup's
+/// screen rect (x, y, w, h) so the monitor can detect click-away.
+fn show_popup_at(app_handle: &tauri::AppHandle, x: i32, y: i32) -> Option<(i32, i32, i32, i32)> {
+    let qa = app_handle.get_webview_window("quick-assistant")?;
+    // Offset slightly down-right of the selection end.
+    let px = x + 12;
+    let py = y + 18;
+    let _ = qa.set_position(tauri::PhysicalPosition::new(px, py));
+    let _ = qa.show();
+    // Intentionally NO set_focus() — see doc above.
+    let (w, h) = qa
+        .outer_size()
+        .map(|s| (s.width as i32, s.height as i32))
+        .unwrap_or((360, 220));
+    Some((px, py, w, h))
 }
 
-/// Hide the popup (used when the user deselects / clicks away without acting).
+/// Hide the popup (used when the user clicks away / deselects without acting).
 fn hide_popup(app_handle: &tauri::AppHandle) {
     if let Some(qa) = app_handle.get_webview_window("quick-assistant") {
         let _ = qa.hide();
     }
 }
 
-/// Start a background auto-capture monitor that polls UIA every `interval_ms`
-/// for selected text changes. When new text is detected, it emits a
-/// `selection-auto-captured` event to the frontend.
+/// Is the left mouse button currently down? Read cheaply from the global key state
+/// (no UIA, no clipboard) so the monitor can watch for selection-completed (button
+/// release) without any side effects.
+#[cfg(windows)]
+fn left_button_down() -> bool {
+    use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+    // VK_LBUTTON = 0x01; high-order bit set => the button is currently down.
+    unsafe { (GetAsyncKeyState(0x01) as u16 & 0x8000) != 0 }
+}
+
+#[cfg(not(windows))]
+fn left_button_down() -> bool {
+    false
+}
+
+fn point_in_rect(p: (i32, i32), rect: (i32, i32, i32, i32), margin: i32) -> bool {
+    let (x, y, w, h) = rect;
+    p.0 >= x - margin && p.0 <= x + w + margin && p.1 >= y - margin && p.1 <= y + h + margin
+}
+
+/// Live popup geometry. The window is user-movable and user-resizable, so the
+/// rect captured at show time goes stale — click-away decisions must use the
+/// current bounds. Returns `None` when the window is missing or hidden.
+fn current_popup_rect(app_handle: &tauri::AppHandle) -> Option<(i32, i32, i32, i32)> {
+    let qa = app_handle.get_webview_window("quick-assistant")?;
+    if !qa.is_visible().unwrap_or(false) {
+        return None;
+    }
+    let pos = qa.outer_position().ok()?;
+    let size = qa.outer_size().ok()?;
+    Some((pos.x, pos.y, size.width as i32, size.height as i32))
+}
+
+/// Selection monitor — Cherry Studio parity.
 ///
-/// This runs on a dedicated Tokio task and stops when the returned `JoinHandle`
-/// is aborted or the app exits.
+/// Instead of continuously polling UIA (which made the popup flicker, follow the
+/// cursor, and steal focus mid-selection — breaking copy), this watches the left
+/// mouse button and acts only on **button release** (a completed selection). On
+/// mouse-up it does a *single* UIA read; if there's a non-empty selection it shows
+/// the popup **once**, **positioned once**, **without taking focus**. A mouse-down
+/// outside the popup dismisses it. The button state is read cheaply via
+/// GetAsyncKeyState — no UIA runs during a drag, so there's no flicker and the
+/// clipboard is never touched.
+///
+/// Runs on a dedicated Tokio task; stops when the returned `JoinHandle` is aborted.
 pub fn start_auto_capture_monitor(
     app_handle: tauri::AppHandle,
-    interval_ms: u64,
+    poll_ms: u64,
 ) -> tokio::task::JoinHandle<()> {
+    let poll_ms = poll_ms.clamp(30, 200);
     tokio::spawn(async move {
-        let mut last_text = String::new();
-        let mut last_window = String::new();
-        // Track whether WE auto-showed the popup, plus how many consecutive polls
-        // saw no selection, so we can auto-dismiss after the user clicks away
-        // (without flickering on a single UIA hiccup).
+        let mut was_down = false;
         let mut popup_shown = false;
-        let mut empty_polls: u8 = 0;
+        let mut popup_rect = (0i32, 0i32, 0i32, 0i32);
 
         loop {
-            tokio::time::sleep(tokio::time::Duration::from_millis(interval_ms)).await;
+            tokio::time::sleep(tokio::time::Duration::from_millis(poll_ms)).await;
+            let down = left_button_down();
+            let cursor = get_cursor_position().unwrap_or((0, 0));
 
-            // Try UIA capture on a blocking thread
-            let result = tokio::task::spawn_blocking(|| {
-                // Get window info first
-                let (window_title, process_name) = get_focused_window_info();
-                // Then try UIA
-                match get_selected_text_via_uia() {
-                    Ok(text) if !text.trim().is_empty() => Some((text, window_title, process_name)),
-                    _ => None,
+            if popup_shown {
+                // Refresh the live bounds every tick: the popup is draggable and
+                // resizable, so the rect captured at show time goes stale and a
+                // click inside the real window would otherwise dismiss it. This
+                // also syncs state when the frontend hid the popup itself (Esc).
+                match current_popup_rect(&app_handle) {
+                    Some(rect) => popup_rect = rect,
+                    None => popup_shown = false,
                 }
-            })
-            .await;
+            }
 
-            match result {
-                Ok(Some((text, window_title, process_name))) => {
-                    // Never capture OMNIX's own windows (the popup gains focus when
-                    // shown) — otherwise it would re-capture its own result text.
-                    if process_name.to_lowercase().contains("omnix")
-                        || window_title.contains("Quick Assistant")
-                    {
-                        continue;
+            if down && !was_down {
+                // Mouse down: if a popup is open and the click is outside it, the
+                // user is clicking away → dismiss.
+                if popup_shown && !point_in_rect(cursor, popup_rect, 8) {
+                    hide_popup(&app_handle);
+                    popup_shown = false;
+                }
+            } else if !down && was_down {
+                // Mouse up: a selection may have just completed. Let the app settle,
+                // then do a SINGLE UIA read (never Ctrl+C — the clipboard stays yours).
+                tokio::time::sleep(tokio::time::Duration::from_millis(90)).await;
+                let up = get_cursor_position().unwrap_or(cursor);
+                let cap = tokio::task::spawn_blocking(|| {
+                    let (window_title, process_name) = get_focused_window_info();
+                    match get_selected_text_via_uia() {
+                        Ok(text) if !text.trim().is_empty() => {
+                            Some((text.trim().to_string(), window_title, process_name))
+                        }
+                        _ => None,
                     }
+                })
+                .await
+                .ok()
+                .flatten();
+
+                if let Some((text, window_title, process_name)) = cap {
+                    // Never react to a selection inside our own popup.
+                    let is_omnix = process_name.to_lowercase().contains("omnix")
+                        || window_title.contains("Quick Assistant");
                     let blocked = app_handle
                         .try_state::<std::sync::Arc<crate::db::DbManager>>()
                         .and_then(|db| {
-                            db.get_setting("selection_assistant_blacklist")
-                                .ok()
-                                .flatten()
+                            db.get_setting("selection_assistant_blacklist").ok().flatten()
                         })
-                        .is_some_and(|blacklist| {
-                            is_capture_blocked(&blacklist, &process_name, &window_title)
-                        });
-                    if blocked {
-                        last_text.clear();
-                        continue;
-                    }
-                    let text = text.trim().to_string();
-                    // Only emit if text changed AND window changed (new selection in different focus)
-                    // OR if text is different from last capture
-                    empty_polls = 0;
-                    if text != last_text || window_title != last_window {
-                        last_text = text.clone();
-                        last_window = window_title.clone();
-
-                        // Show the popup next to the cursor BEFORE emitting so the
-                        // window is visible by the time React renders the action bar.
-                        // Shown without focus, so it never interrupts the user.
-                        show_popup_near_cursor(&app_handle);
-                        popup_shown = true;
-
-                        let _ = app_handle.emit(
-                            "selection-auto-captured",
-                            serde_json::json!({
-                                "text": text,
-                                "window_title": window_title,
-                                "process_name": process_name,
-                            }),
-                        );
-                    }
-                }
-                Ok(None) => {
-                    // No selection — clear last text so the next selection triggers.
-                    if !last_text.is_empty() {
-                        last_text.clear();
-                    }
-                    // Auto-dismiss: if the user deselected / clicked away without
-                    // acting, hide the popup after two empty polls (~1s). The
-                    // popup is never auto-hidden while the user is interacting with
-                    // it (focusing it makes the foreground OMNIX, which is skipped
-                    // above before reaching this branch).
-                    if popup_shown {
-                        empty_polls = empty_polls.saturating_add(1);
-                        if empty_polls >= 2 {
-                            hide_popup(&app_handle);
-                            popup_shown = false;
-                            empty_polls = 0;
+                        .is_some_and(|bl| is_capture_blocked(&bl, &process_name, &window_title));
+                    if !is_omnix && !blocked {
+                        if let Some(rect) = show_popup_at(&app_handle, up.0, up.1) {
+                            popup_rect = rect;
+                            popup_shown = true;
+                            let _ = app_handle.emit(
+                                "selection-auto-captured",
+                                serde_json::json!({
+                                    "text": text,
+                                    "window_title": window_title,
+                                    "process_name": process_name,
+                                }),
+                            );
                         }
                     }
                 }
-                Err(_) => {
-                    // Task error — ignore and continue
-                }
             }
+            was_down = down;
         }
     })
 }

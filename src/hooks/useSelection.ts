@@ -57,7 +57,7 @@ export function useSelection(): UseSelectionReturn {
   const [captureMode, setCaptureMode] = useState<"hybrid" | "uia_only" | "clipboard_only">("hybrid");
   const [showOnCapture, setShowOnCapture] = useState(true);
   const [preserveClipboard, setPreserveClipboard] = useState(false);
-  const [autoCaptureEnabled, setAutoCaptureEnabled] = useState(true);
+  const [autoCaptureEnabled, setAutoCaptureEnabled] = useState(false);
   const [blacklist, setBlacklist] = useState<string[]>([]);
 
   // ── History state ─────────────────────────────────
@@ -117,9 +117,10 @@ export function useSelection(): UseSelectionReturn {
       const shouldAutoCapture = show !== "false";
       if (!shouldAutoCapture) setShowOnCapture(false);
       if (preserve === "true") setPreserveClipboard(true);
-      // Default ON (always-on like Cherry Studio): unset → enabled; only an
-      // explicit "false" disables it. Toggle remains in 划词助手 settings.
-      const autoCaptureIsEnabled = autoCapture !== "false";
+      // Default OFF (opt-in): only an explicit "true" enables the always-on
+      // monitor. It caused focus-steal/flicker; keep it off until the user opts
+      // in from 划词助手 settings. Manual shortcut capture is unaffected.
+      const autoCaptureIsEnabled = autoCapture === "true";
       setAutoCaptureEnabled(autoCaptureIsEnabled);
       if (blacklistValue) {
         try {

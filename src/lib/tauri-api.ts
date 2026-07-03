@@ -112,10 +112,28 @@ export interface DistillationCandidate {
 export const distillationApi = {
   generate: (conversationId: string, modelId: string) =>
     invoke<DistillationCandidate[]>("distill_conversation_to_inbox", { conversationId, modelId }),
+  /** Distill an external/pre-existing workspace folder from its .omx/development records. */
+  generateFromWorkspace: (workspacePath: string, modelId: string) =>
+    invoke<DistillationCandidate[]>("distill_workspace_to_inbox", { workspacePath, modelId }),
   list: (status: "pending" | "approved" | "rejected" | "all" = "pending") =>
     invoke<DistillationCandidate[]>("list_distillation_inbox", { status }),
   review: (candidateId: string, approved: boolean) =>
     invoke<DistillationCandidate>("review_distillation_candidate", { candidateId, approved }),
+};
+
+// ── Evolution loop — experience auto-injected back into every agent ──
+export interface LessonsInfo { count: number; content: string; }
+export const evolutionApi = {
+  /** Preview the memory block OMNIX auto-injects into agents' context files (CLAUDE.md/AGENTS.md). */
+  preview: (workspacePath?: string) =>
+    invoke<LessonsInfo>("get_lessons_preview", { workspacePath }),
+  /** Embed experience memories lacking an embedding so injection can rank by relevance. */
+  reindex: () => invoke<number>("reindex_memory_embeddings", {}),
+  /** Merge near-duplicate memories (requires embeddings). Returns merged count. */
+  consolidate: () => invoke<number>("consolidate_memories"),
+  /** Cache a workspace's embedding/signals for relevance scoring. */
+  refreshWorkspace: (workspacePath: string) =>
+    invoke<boolean>("refresh_workspace_profile", { workspacePath }),
 };
 
 // ── Platform API Keys (multi-key, encrypted) ──────────
@@ -185,6 +203,8 @@ export const runtimeApi = {
     approvalMethod: string;
     requestedPermissions?: unknown;
   }) => invoke("runtime_respond_approval", params),
+  setSessionModel: (sessionId: string, model: string) =>
+    invoke("runtime_set_session_model", { sessionId, model }),
   stopSession: (sessionId: string) => invoke("runtime_stop_session", { sessionId }),
   resumeSession: (sessionId: string) =>
     invoke<AgentSessionRecord>("runtime_resume_session", { sessionId }),
@@ -1289,6 +1309,9 @@ export interface EvolutionProposal {
 export const projectProtocolApi = {
   getStatus: (workspacePath: string) =>
     invoke<ProjectProtocolStatus>("protocol_get_status", { workspacePath }),
+  listRuns: () => invoke<ProjectProtocolStatus[]>("protocol_list_runs"),
+  listEvents: (workspacePath: string, limit?: number) =>
+    invoke<ProjectProtocolEvent[]>("protocol_list_events", { workspacePath, limit }),
   previewInit: (workspacePath: string, projectName?: string) =>
     invoke<ProtocolInitPreview>("protocol_preview_init", { workspacePath, projectName }),
   initWorkspace: (workspacePath: string, projectName: string | undefined, enable: boolean) =>

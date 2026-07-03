@@ -458,14 +458,14 @@ export function PlatformSubTab({
                               }
                               className={cn(
                                 "w-2 h-2 rounded-full",
-                                testState === "success" && "bg-emerald-500 shadow-[0_0_8px_#10b981]",
-                                testState === "auth_error" && "bg-red-500 shadow-[0_0_8px_#ef4444]",
-                                testState === "no_api_key" && "bg-red-400 shadow-[0_0_8px_#f87171]",
-                                testState === "rate_limited" && "bg-amber-500 shadow-[0_0_8px_#f59e0b]",
-                                testState === "error" && "bg-red-500 shadow-[0_0_8px_#ef4444]",
-                                testState === "unreachable" && "bg-red-500 shadow-[0_0_8px_#ef4444]",
-                                testState === "testing" && "bg-amber-500 animate-pulse",
-                                testState === "idle" && "bg-gray-500"
+                                testState === "success" && "bg-success shadow-[0_0_8px_#10b981]",
+                                testState === "auth_error" && "bg-destructive shadow-[0_0_8px_#ef4444]",
+                                testState === "no_api_key" && "bg-destructive/70 shadow-[0_0_8px_#f87171]",
+                                testState === "rate_limited" && "bg-warning shadow-[0_0_8px_#f59e0b]",
+                                testState === "error" && "bg-destructive shadow-[0_0_8px_#ef4444]",
+                                testState === "unreachable" && "bg-destructive shadow-[0_0_8px_#ef4444]",
+                                testState === "testing" && "bg-warning animate-pulse",
+                                testState === "idle" && "bg-muted-foreground"
                               )}
                             />
                             <Button

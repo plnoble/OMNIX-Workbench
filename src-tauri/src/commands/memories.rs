@@ -10,7 +10,10 @@ pub fn get_all_memories(
     db: State<'_, Arc<DbManager>>,
 ) -> Result<Vec<Memory>, String> {
     let conn = db.get_connection().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare("SELECT id, incident_desc, code_pattern, remediation, keywords, created_at FROM memories ORDER BY created_at DESC")
+    let mut stmt = conn.prepare(
+        "SELECT id, incident_desc, code_pattern, remediation, keywords, created_at, \
+                confidence, seen_count, repeated_count, status \
+         FROM memories WHERE status IS NULL OR status != 'merged' ORDER BY created_at DESC")
         .map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], |row| {
         Ok(Memory {
@@ -20,6 +23,10 @@ pub fn get_all_memories(
             remediation: row.get(3)?,
             keywords: row.get(4)?,
             created_at: row.get(5)?,
+            confidence: row.get::<_, Option<f64>>(6)?.unwrap_or(1.0),
+            seen_count: row.get::<_, Option<i64>>(7)?.unwrap_or(0),
+            repeated_count: row.get::<_, Option<i64>>(8)?.unwrap_or(0),
+            status: row.get::<_, Option<String>>(9)?.unwrap_or_else(|| "active".into()),
         })
     }).map_err(|e| e.to_string())?;
 

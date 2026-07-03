@@ -7,7 +7,8 @@ use tauri::State;
 use crate::agent::AgentManager;
 use crate::db::DbManager;
 use crate::runtime::{
-    agent_definition, evaluate_model_compatibility, resolve_model_selection, AgentBinding, AgentId,
+    agent_definition, evaluate_model_compatibility, resolve_model_selection, AdapterKind,
+    AgentBinding, AgentId,
     AgentSessionConfig, AgentSessionRecord, ModelCompatibility, ModelCompatibilityLevel,
     ModelSelection, PermissionPolicy, RuntimeEvent, WorkMode,
 };
@@ -24,6 +25,10 @@ pub struct RuntimeAgentCatalogEntry {
     pub version: Option<String>,
     pub supports_structured_events: bool,
     pub supports_resume: bool,
+    /// Runtime adapter driving this agent ("claude_stream_json" /
+    /// "codex_app_server" / "acp") — lets the frontend adapt UI (e.g. model
+    /// pickers) without hardcoding per-agent knowledge.
+    pub adapter: String,
     pub detail: String,
 }
 
@@ -75,6 +80,9 @@ pub fn load_runtime_model_options(
     let builtins: &[&str] = match agent {
         AgentId::ClaudeCode => &["sonnet", "opus", "haiku"],
         AgentId::Codex => &["gpt-5-codex"],
+        // ACP agents run on their own account's default model; OMNIX does not
+        // enumerate builtin model choices for them (MVP uses AgentDefault).
+        AgentId::GeminiCli | AgentId::QwenCode | AgentId::OpenCode | AgentId::CopilotCli => &[],
     };
     options.extend(builtins.iter().map(|model_name| RuntimeModelOption {
         id: format!("builtin:{model_name}"),
@@ -198,6 +206,12 @@ fn resolve_default_model_selection(
     db: &DbManager,
     agent: AgentId,
 ) -> Result<ModelSelection, String> {
+    // ACP agents authenticate and choose their model through their own account.
+    // OMNIX must never substitute a gateway binding or the global default model
+    // for them — those are unusable and would fail validation, blocking start.
+    if agent.is_acp() {
+        return Ok(ModelSelection::AgentDefault);
+    }
     let resolved = resolve_model_selection(None, load_agent_binding(db, agent)?);
     if resolved == ModelSelection::AgentDefault {
         Ok(load_global_default_model(db)?.unwrap_or(ModelSelection::AgentDefault))
@@ -269,54 +283,81 @@ fn validate_runtime_model(
     }
 }
 
+/// Every runnable agent, in the order shown to users. This is the only place
+/// that enumerates `AgentId` for the frontend: the catalog below derives all
+/// display/capability data from `agent_definition`, so registering a new agent
+/// in `runtime.rs` automatically surfaces it here (and in the UI).
+const RUNNABLE_AGENTS: [AgentId; 6] = [
+    AgentId::ClaudeCode,
+    AgentId::Codex,
+    AgentId::GeminiCli,
+    AgentId::QwenCode,
+    AgentId::OpenCode,
+    AgentId::CopilotCli,
+];
+
 #[tauri::command]
 pub fn runtime_get_agent_catalog(
     agent_manager: State<'_, Arc<AgentManager>>,
 ) -> Result<Vec<RuntimeAgentCatalogEntry>, String> {
     let detected = agent_manager.detect_agents();
-    let entries = [
-        ("claude_code", "Claude Code", true),
-        ("codex", "Codex", true),
-        ("gemini_cli", "Gemini CLI", false),
-        ("opencode", "OpenCode", false),
-    ]
-    .into_iter()
-    .map(|(id, name, supported)| {
-        let installation = detected.iter().find(|candidate| candidate.name == name);
-        let path = installation
-            .filter(|candidate| candidate.status == "installed")
-            .map(|candidate| candidate.path.clone());
-        let source = path.as_deref().map(|path| {
-            let normalized = path.replace('\\', "/").to_lowercase();
-            if normalized.contains("/.omnix/agents/") {
-                "managed".to_string()
-            } else {
-                "system".to_string()
+    let entries = RUNNABLE_AGENTS
+        .into_iter()
+        .map(|agent| {
+            let definition = agent_definition(agent);
+            let name = definition.display_name;
+            let installation = detected.iter().find(|candidate| candidate.name == name);
+            let path = installation
+                .filter(|candidate| candidate.status == "installed")
+                .map(|candidate| candidate.path.clone());
+            let source = path.as_deref().map(|path| {
+                let normalized = path.replace('\\', "/").to_lowercase();
+                if normalized.contains("/.omnix/agents/") {
+                    "managed".to_string()
+                } else {
+                    "system".to_string()
+                }
+            });
+            RuntimeAgentCatalogEntry {
+                id: agent_id_wire_str(agent).into(),
+                name: name.into(),
+                status: installation
+                    .map(|candidate| candidate.status.clone())
+                    .unwrap_or_else(|| "not_installed".into()),
+                runtime_status: "supported".into(),
+                installation_source: source,
+                executable_path: path,
+                version: installation
+                    .filter(|candidate| !candidate.version.is_empty())
+                    .map(|candidate| candidate.version.clone()),
+                supports_structured_events: definition.supports_structured_events,
+                supports_resume: definition.supports_resume,
+                adapter: definition.runtime_adapter.as_str().into(),
+                detail: match definition.runtime_adapter {
+                    AdapterKind::Acp => {
+                        format!("{name} · 通用 ACP 适配器（自身鉴权与模型）")
+                    }
+                    AdapterKind::ClaudeStreamJson | AdapterKind::CodexAppServer => {
+                        format!("{name} 结构化运行适配器")
+                    }
+                },
             }
-        });
-        RuntimeAgentCatalogEntry {
-            id: id.into(),
-            name: name.into(),
-            status: installation
-                .map(|candidate| candidate.status.clone())
-                .unwrap_or_else(|| "not_installed".into()),
-            runtime_status: if supported { "supported" } else { "pending" }.into(),
-            installation_source: source,
-            executable_path: path,
-            version: installation
-                .filter(|candidate| !candidate.version.is_empty())
-                .map(|candidate| candidate.version.clone()),
-            supports_structured_events: supported,
-            supports_resume: supported,
-            detail: if supported {
-                format!("{} 结构化运行适配器", name)
-            } else {
-                "待完成结构化事件和恢复协议适配".into()
-            },
-        }
-    })
-    .collect();
+        })
+        .collect();
     Ok(entries)
+}
+
+/// The wire form of an `AgentId` as serde serializes it (snake_case) — the id
+/// the frontend sends back into `AgentId`-typed command parameters.
+fn agent_id_wire_str(agent: AgentId) -> &'static str {
+    match agent {
+        AgentId::ClaudeCode => "claude_code",
+        AgentId::Codex => "codex",
+        AgentId::GeminiCli => "gemini_cli",
+        AgentId::QwenCode => "qwen_code",
+        AgentId::OpenCode => "open_code",
+        AgentId::CopilotCli => "copilot_cli",
+    }
 }
 
 #[tauri::command]
@@ -442,6 +483,15 @@ pub async fn runtime_respond_approval(
             requested_permissions,
         )
         .await
+}
+
+#[tauri::command]
+pub async fn runtime_set_session_model(
+    session_id: String,
+    model: String,
+    runtime_manager: State<'_, Arc<RuntimeManager>>,
+) -> Result<(), String> {
+    runtime_manager.set_session_model(&session_id, &model).await
 }
 
 #[tauri::command]
@@ -617,6 +667,65 @@ mod tests {
             .find(|model| model.selection == ModelSelection::AgentDefault)
             .expect("agent default option");
         assert!(!agent_default.is_default);
+
+        drop(db);
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn acp_agents_ignore_global_default_model_when_starting() {
+        use super::resolve_default_model_selection;
+
+        let db_path = std::env::temp_dir().join(format!(
+            "omnix_acp_default_{}.sqlite",
+            chrono::Utc::now().timestamp_micros()
+        ));
+        let db = DbManager::new_runtime_test(db_path.clone());
+        let conn = db.get_connection().expect("db connection");
+        conn.execute_batch(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT, updated_at DATETIME);
+             CREATE TABLE agent_platform_bindings (
+                agent_name TEXT, binding_kind TEXT, builtin_model TEXT,
+                platform_id TEXT, model_name TEXT, enabled INTEGER NOT NULL DEFAULT 1
+             );
+             CREATE TABLE model_platforms (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL, api_type TEXT NOT NULL,
+                is_enabled INTEGER NOT NULL DEFAULT 1
+             );
+             CREATE TABLE platform_models (
+                id TEXT PRIMARY KEY, platform_id TEXT NOT NULL, model_name TEXT NOT NULL,
+                is_enabled INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'success'
+             );
+             INSERT INTO model_platforms (id, name, api_type) VALUES ('chat', 'Chat', 'openai-compatible');
+             INSERT INTO platform_models (id, platform_id, model_name) VALUES ('chat:m', 'chat', 'glm-4');
+             INSERT INTO settings (key, value) VALUES ('default_model', 'chat:glm-4');",
+        )
+        .expect("global default fixture");
+        drop(conn);
+
+        // A configured global default would otherwise be substituted for the
+        // Agent's own default — non-ACP agents (Codex) do inherit it...
+        assert_eq!(
+            resolve_default_model_selection(&db, AgentId::Codex).expect("codex default"),
+            ModelSelection::Omnix {
+                platform_id: "chat".into(),
+                model_name: "glm-4".into(),
+            }
+        );
+        // ...but ACP agents must keep AgentDefault so start doesn't fail on an
+        // unusable gateway model.
+        for agent in [
+            AgentId::GeminiCli,
+            AgentId::QwenCode,
+            AgentId::OpenCode,
+            AgentId::CopilotCli,
+        ] {
+            assert_eq!(
+                resolve_default_model_selection(&db, agent).expect("acp default"),
+                ModelSelection::AgentDefault,
+                "{agent:?} should keep AgentDefault"
+            );
+        }
 
         drop(db);
         let _ = std::fs::remove_file(db_path);

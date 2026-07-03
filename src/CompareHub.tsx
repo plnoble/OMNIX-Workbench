@@ -660,12 +660,12 @@ ${sources}
 
       {/* Selector Error Banner */}
       {selectorError && (
-        <div className="card p-3 flex justify-between items-center bg-red-500/[0.08] border border-dashed border-red-500/40 rounded-lg">
-          <span className="text-sm text-red-500 dark:text-red-400 font-medium">
+        <div className="card p-3 flex justify-between items-center bg-destructive/[0.08] border border-dashed border-destructive/40 rounded-lg">
+          <span className="text-sm text-destructive font-medium">
             ⚠️ {selectorError}
           </span>
           <button
-            className="btn btn-secondary px-2.5 py-1 text-xs border border-red-500/30 text-red-500 dark:text-red-400 bg-transparent cursor-pointer"
+            className="btn btn-secondary px-2.5 py-1 text-xs border border-destructive/30 text-destructive bg-transparent cursor-pointer"
             onClick={() => setSelectorError(null)}
           >
             我知道了

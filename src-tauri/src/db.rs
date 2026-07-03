@@ -1128,6 +1128,30 @@ impl DbManager {
             "ALTER TABLE memories ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
             [],
         );
+        // Evolution: relevance-based injection + dedup + effectiveness tracking.
+        for migration in [
+            "ALTER TABLE memories ADD COLUMN embedding BLOB NULL",
+            "ALTER TABLE memories ADD COLUMN dimensions INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE memories ADD COLUMN stack_tags TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE memories ADD COLUMN confidence REAL NOT NULL DEFAULT 1",
+            "ALTER TABLE memories ADD COLUMN seen_count INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE memories ADD COLUMN repeated_count INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE memories ADD COLUMN last_matched_at TEXT NULL",
+        ] {
+            let _ = conn.execute(migration, []);
+        }
+        // Cached per-workspace embedding/signals so the synchronous inject path
+        // can rank memories by relevance without making a network call.
+        let _ = conn.execute(
+            "CREATE TABLE IF NOT EXISTS workspace_profiles (
+                workspace_path TEXT PRIMARY KEY,
+                embedding BLOB NULL,
+                dimensions INTEGER NOT NULL DEFAULT 0,
+                signals TEXT NOT NULL DEFAULT '',
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        );
 
         Ok(())
     }

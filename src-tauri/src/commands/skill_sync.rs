@@ -41,7 +41,18 @@ pub fn sync_skill_to_tools(
     mode: String,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<Vec<SyncResult>, String> {
-    let sync_mode = match mode.as_str() {
+    sync_skill_core(&skill_name, &tool_ids, &mode, &db)
+}
+
+/// Reusable core so other backend code (e.g. the evolution "lessons" skill) can
+/// sync a skill without a Tauri `State`.
+pub(crate) fn sync_skill_core(
+    skill_name: &str,
+    tool_ids: &[String],
+    mode: &str,
+    db: &DbManager,
+) -> Result<Vec<SyncResult>, String> {
+    let sync_mode = match mode {
         "symlink" => SyncMode::Symlink,
         _ => SyncMode::Copy,
     };
@@ -65,9 +76,9 @@ pub fn sync_skill_to_tools(
     let registry = AdapterRegistry::new();
     let mut results = Vec::new();
 
-    for tool_id in &tool_ids {
+    for tool_id in tool_ids {
         if let Some(adapter) = registry.get(tool_id) {
-            let result = adapter.sync_skill(&skill_name, &content, &sync_mode);
+            let result = adapter.sync_skill(skill_name, &content, &sync_mode);
 
             // Update skill_targets table
             let status_str = if result.success { "synced" } else { "error" };

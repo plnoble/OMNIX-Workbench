@@ -168,8 +168,8 @@ impl AgentManager {
             ("Claude Code", "claude"),
             ("Gemini CLI", "gemini"),
             ("Codex", "codex"),
-            ("Qwen Code", "qwen-code"),
-            ("GitHub Copilot CLI", "github-copilot-cli"),
+            ("Qwen Code", "qwen"),
+            ("GitHub Copilot CLI", "copilot"),
             ("Google Antigravity", "agy"),
             ("OpenCode", "opencode"),
         ];
@@ -876,6 +876,10 @@ impl AgentManager {
         let core_agent = match agent_name {
             "Claude Code" => Some(AgentId::ClaudeCode),
             "Codex" => Some(AgentId::Codex),
+            "Gemini CLI" => Some(AgentId::GeminiCli),
+            "Qwen Code" => Some(AgentId::QwenCode),
+            "OpenCode" => Some(AgentId::OpenCode),
+            "GitHub Copilot CLI" => Some(AgentId::CopilotCli),
             _ => None,
         };
         let package = match agent_name {
@@ -1044,7 +1048,7 @@ impl AgentManager {
             let bin_name = if agent_name == "Codex" {
                 "codex"
             } else {
-                "qwen-code"
+                "qwen"
             };
             let mut bin_dir = sandbox_dir.clone();
             bin_dir.push("node_modules");
@@ -1079,7 +1083,7 @@ impl AgentManager {
             let bin_name = match agent_name {
                 "Claude Code" => "claude",
                 "Gemini CLI" => "gemini",
-                "GitHub Copilot CLI" => "github-copilot-cli",
+                "GitHub Copilot CLI" => "copilot",
                 "OpenCode" => "opencode",
                 _ => "",
             };
@@ -1219,49 +1223,12 @@ impl AgentManager {
         workspace_dir: &str,
         agent_name: &str,
     ) -> Result<(), String> {
-        let conn = self.db.get_connection().map_err(|e| e.to_string())?;
-        // Only inject experience-type memories (not preferences — those are queried on demand)
-        let mut stmt = conn.prepare(
-            "SELECT incident_desc, code_pattern, remediation, keywords FROM memories WHERE type = 'experience' ORDER BY created_at DESC"
-        ).map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                ))
-            })
-            .map_err(|e| e.to_string())?;
-
-        let mut memories_md = String::new();
-        memories_md.push_str("\n<!--- OMNIX MEMORY START --->\n");
-        memories_md.push_str("## 🧠 OMNIX Anti-Failure Guidelines & Memory Bank\n");
-        memories_md.push_str(
-            "以下是历史项目踩坑事故记录与规约，请在此工作区内严加防范，避免重犯相同错误：\n\n",
-        );
-
-        // Cap at 20 memories to avoid context bloat
-        const MAX_MEMORIES: usize = 20;
-        let mut count = 0;
-        for r in rows {
-            if count >= MAX_MEMORIES {
-                break;
-            }
-            if let Ok((desc, pattern, remediation, keywords)) = r {
-                count += 1;
-                memories_md.push_str(&format!("### ❌ 坑点 {}: {}\n", count, desc));
-                memories_md.push_str(&format!("* **危险模式/命令**: `{}`\n", pattern));
-                memories_md.push_str(&format!("* **安全修复方案**: {}\n", remediation));
-                memories_md.push_str(&format!("* **相关标签**: `{}`\n\n", keywords));
-            }
-        }
-        memories_md.push_str("<!--- OMNIX MEMORY END --->\n");
-
-        if count == 0 {
-            return Ok(());
-        }
+        // Build the managed memory block (relevance-ranked; shared with the
+        // evolution preview command). None when there are no experience memories.
+        let memories_md = match crate::commands::build_memory_block(&self.db, workspace_dir)? {
+            Some(block) => block,
+            None => return Ok(()),
+        };
 
         let workspace_path = PathBuf::from(workspace_dir);
         if !workspace_path.exists() {
@@ -1326,8 +1293,8 @@ impl AgentManager {
             ("Claude Code", "claude"),
             ("Gemini CLI", "gemini"),
             ("Codex", "codex"),
-            ("Qwen Code", "qwen-code"),
-            ("GitHub Copilot CLI", "github-copilot-cli"),
+            ("Qwen Code", "qwen"),
+            ("GitHub Copilot CLI", "copilot"),
             ("Google Antigravity", "agy"),
             ("OpenCode", "opencode"),
         ];

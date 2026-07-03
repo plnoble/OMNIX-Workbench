@@ -184,7 +184,15 @@ export type PermissionPolicy = "ask_every_time" | "ask_on_risk" | "full_access";
 /** Work behavior independent from permission policy */
 export type WorkMode = "direct" | "plan";
 
-export type RuntimeAgentId = "claude_code" | "codex";
+// Wire values match the Rust `AgentId` serde (rename_all = "snake_case"),
+// so `OpenCode` serializes as "open_code".
+export type RuntimeAgentId =
+  | "claude_code"
+  | "codex"
+  | "gemini_cli"
+  | "qwen_code"
+  | "open_code"
+  | "copilot_cli";
 
 export type RuntimeModelSelection =
   | { kind: "agent_default" }
@@ -272,6 +280,14 @@ export interface RuntimeSessionEvent {
   event: RuntimeEvent;
 }
 
+/// Model selection an ACP agent exposes via `session/new` configOptions.
+/// Captured from the SessionStarted event so OMNIX can render a picker.
+export interface AcpModelOption {
+  config_id: string;
+  current: string | null;
+  options: Array<{ value: string; name: string }>;
+}
+
 export interface RuntimeApprovalRequest {
   session_id: string;
   request_id: string;
@@ -291,6 +307,8 @@ export interface RuntimeAgentCatalogEntry {
   version: string | null;
   supports_structured_events: boolean;
   supports_resume: boolean;
+  /** Runtime adapter: "claude_stream_json" | "codex_app_server" | "acp". */
+  adapter: string;
   detail: string;
 }
 

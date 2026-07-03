@@ -52,7 +52,7 @@ import { Toaster, toast } from "@/components/ui/sonner";
 // Types
 import type { SettingsSubTab } from "@/types";
 import { APP_ENTRIES } from "@/lib/appRegistry";
-import { projectProtocolApi } from "@/lib/tauri-api";
+import { evolutionApi, projectProtocolApi } from "@/lib/tauri-api";
 
 // ── Lazy-loaded tabs (code-split per route) ──────────
 const StatusDock = lazy(() => import("./StatusDock"));
@@ -333,6 +333,9 @@ function MainApp() {
       if (options?.enableProjectProtocol) {
         await projectProtocolApi.initWorkspace(convs.workspaceFormPath, undefined, true);
         toast.success("项目协议已初始化");
+        // Pre-cache this workspace's relevance profile (best-effort, non-blocking)
+        // so injected experience is ranked by how well it fits this project's stack.
+        evolutionApi.refreshWorkspace(convs.workspaceFormPath).catch(() => {});
       }
       await convs.saveWorkspaceChat();
     } catch (e) {
@@ -466,6 +469,8 @@ function MainApp() {
                 }}
                 onReloadMessages={() => { if (convs.currentConvId) void convs.selectConversation(convs.currentConvId); }}
                 onSelectConversation={(id) => void convs.selectConversation(id)}
+                acpModelOption={convs.acpModelOptions[convs.currentConvId]}
+                onSetSessionModel={convs.setSessionModel}
               />
             )}
 

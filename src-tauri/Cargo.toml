@@ -57,4 +57,9 @@ regex = "1"
 whoami = "1"
 log = "0.4"
 env_logger = "0.11"
+# Typed ACP (Agent Client Protocol) message schema. We drive the transport over
+# our own stdin/stdout JSON-RPC loop (same as the Codex adapter) rather than the
+# full SDK's connection driver, which owns its own event loop and doesn't fit our
+# spawn-and-dispatch runtime model.
+agent-client-protocol-schema = "1"
 

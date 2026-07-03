@@ -11,18 +11,20 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { toast } from "sonner";
 import { listen, emit } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { conversationApi, ptyApi, agentApi, runtimeApi, checkpointApi } from "@/lib/tauri-api";
+import { getRuntimeAgentId, loadAgentRegistry } from "@/lib/agentRegistry";
 import { processTerminalStream, detectInteractivePrompts, detectMistakes } from "@/lib/terminal";
 import { AGENT_NAMES } from "@/lib/constants";
 import type {
+  AcpModelOption,
   ConversationInfo,
   ConversationMessage,
   DetectedAgent,
   PromptType,
   GatewayStatus,
-  RuntimeAgentId,
   RuntimeApprovalRequest,
   RuntimeModelSelection,
   RuntimePermissionPolicy,
@@ -36,11 +38,8 @@ export interface RuntimeSendConfig {
   workMode: WorkMode;
 }
 
-function runtimeAgentId(agentName: string): RuntimeAgentId | null {
-  if (agentName === "Claude Code") return "claude_code";
-  if (agentName === "Codex") return "codex";
-  return null;
-}
+// Single source: backend agent registry via src/lib/agentRegistry.
+const runtimeAgentId = getRuntimeAgentId;
 
 export interface UseConversationsReturn {
   // Conversation state
@@ -94,6 +93,8 @@ export interface UseConversationsReturn {
   sendStdinDirect: (input: string) => Promise<void>;
   stopAgentSession: (sessionId: string) => Promise<void>;
   startAgentSession: (sessionId: string) => Promise<void>;
+  acpModelOptions: Record<string, AcpModelOption>;
+  setSessionModel: (conversationId: string, model: string) => Promise<void>;
 }
 
 export function useConversations(
@@ -114,6 +115,9 @@ export function useConversations(
   const [collabStdin, setCollabStdin] = useState("");
   const [pendingApproval, setPendingApproval] = useState<RuntimeApprovalRequest | null>(null);
   const [startingConversations, setStartingConversations] = useState<string[]>([]);
+  // ACP agents expose their selectable model via the session start event; keyed
+  // by conversation id so the composer can show a model picker for that agent.
+  const [acpModelOptions, setAcpModelOptions] = useState<Record<string, AcpModelOption>>({});
   const [currentSurface, setCurrentSurface] = useState<"chat" | "work">("chat");
   const activeSessions = Array.from(new Set([...ptySessions, ...runtimeActiveConversations]));
 
@@ -130,6 +134,11 @@ export function useConversations(
   const activeRuntimeConversationsRef = useRef(runtimeActiveConversations);
   currentConvIdRef.current = currentConvId;
   activeRuntimeConversationsRef.current = runtimeActiveConversations;
+
+  // ── Agent registry (backend-driven, mount once) ────
+  useEffect(() => {
+    void loadAgentRegistry();
+  }, []);
 
   // ── PTY Event Listener (mount once) ────────────────
 
@@ -232,6 +241,23 @@ export function useConversations(
           setRuntimeActiveConversations((current) =>
             current.includes(conversationId) ? current : [...current, conversationId]
           );
+          // Capture the ACP agent's selectable model, if it advertised one, so
+          // the composer can offer a model picker for this conversation. A new
+          // session WITHOUT options (agent switched to Claude/Codex/Gemini)
+          // must clear the stale entry, or the previous agent's model dropdown
+          // keeps rendering for this conversation.
+          const modelOption = runtimeEvent.metadata?.acp_model_option as
+            | AcpModelOption
+            | undefined;
+          setAcpModelOptions((current) => {
+            const next = { ...current };
+            if (modelOption && Array.isArray(modelOption.options) && modelOption.options.length > 0) {
+              next[conversationId] = modelOption;
+            } else {
+              delete next[conversationId];
+            }
+            return next;
+          });
         }
         if (runtimeEvent.kind === "error") {
           setRuntimeActiveConversations((current) => current.filter((id) => id !== conversationId));
@@ -574,6 +600,27 @@ export function useConversations(
     }
   }, [detectedAgents, activeAgent, chatWorkspace]);
 
+  // Switch the model of a running ACP session (opencode etc.). The choice is
+  // applied live via `session/set_config_option` and remembered per-agent.
+  const setSessionModel = useCallback(async (conversationId: string, model: string) => {
+    const sessionId = runtimeSessionByConversationRef.current[conversationId];
+    if (!sessionId) {
+      toast.error("会话尚未启动，发一条消息后即可切换模型");
+      return;
+    }
+    try {
+      await runtimeApi.setSessionModel(sessionId, model);
+      setAcpModelOptions((current) => {
+        const existing = current[conversationId];
+        if (!existing) return current;
+        return { ...current, [conversationId]: { ...existing, current: model } };
+      });
+      toast.success(`模型已切换：${model}`);
+    } catch (error) {
+      toast.error("切换模型失败", { description: String(error) });
+    }
+  }, []);
+
   const sendMessage = useCallback(async (
     e: React.FormEvent,
     config: RuntimeSendConfig,
@@ -584,7 +631,7 @@ export function useConversations(
 
     const agent = runtimeAgentId(activeAgent);
     if (!agent) {
-      throw new Error(`${activeAgent} 尚未完成真实运行适配，请先选择 Claude Code 或 Codex`);
+      throw new Error(`${activeAgent} 尚未完成真实运行适配，请选择 Claude Code、Codex、Gemini CLI、Qwen Code、OpenCode 或 GitHub Copilot CLI`);
     }
 
     let convId = currentConvId;
@@ -774,5 +821,6 @@ export function useConversations(
     newConversation, saveWorkspaceChat, deleteConversation,
     archiveConversation, unarchiveConversation, loadArchivedConversations,
     sendMessage, respondToApproval, sendStdinDirect, stopAgentSession, startAgentSession,
+    acpModelOptions, setSessionModel,
   };
 }

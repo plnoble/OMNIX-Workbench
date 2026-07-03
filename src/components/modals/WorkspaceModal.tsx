@@ -123,6 +123,7 @@ export function WorkspaceModal({
               <span className="block text-sm font-medium">启用项目协议</span>
               <span className="mt-1 block text-xs leading-5 text-muted-foreground">
                 创建 AGENTS.md、.omx/development 记录和本地 Claude skill 桥接文件。已有文件只跳过，不覆盖。
+                以往项目蒸馏出的累计经验会在每次 Agent 启动时自动注入到 AGENTS.md / CLAUDE.md 的记忆块，少犯同样的错。
               </span>
             </span>
           </label>

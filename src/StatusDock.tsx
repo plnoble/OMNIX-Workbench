@@ -5,6 +5,8 @@ import { listen, emit } from "@tauri-apps/api/event";
 import { LogicalSize } from "@tauri-apps/api/dpi";
 import { cn } from "@/lib/utils";
 import { PRODUCT_NAME } from "@/lib/constants";
+import { settingsApi } from "@/lib/tauri-api";
+import { useTheme, type ThemeMode } from "@/hooks/useTheme";
 
 type DevStatus = "idle" | "busy" | "pending" | "error";
 
@@ -27,6 +29,17 @@ export default function StatusDock() {
   const [status, setStatus] = useState<DevStatus>("idle");
   const [activeAgentText, setActiveAgentText] = useState<string>("就绪");
   const [approvalMode, setApprovalMode] = useState<"auto" | "manual" | "plan">("auto");
+
+  // This is a separate window (App.tsx returns early for it before its own
+  // useTheme runs), so it must read + apply the saved theme itself — otherwise
+  // the dock stays on dark tokens while the main app is in light mode.
+  const [themeMode, setThemeMode] = useState<ThemeMode>("auto");
+  useTheme(themeMode);
+  useEffect(() => {
+    settingsApi.get("theme_mode").then((mode) => {
+      if (mode === "dark" || mode === "light" || mode === "auto") setThemeMode(mode);
+    }).catch(() => undefined);
+  }, []);
 
   // Context menu state
   const [menuVisible, setMenuVisible] = useState(false);

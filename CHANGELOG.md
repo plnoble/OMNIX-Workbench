@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-07-03
+
+The "self-evolution loop + multi-agent runtime" release: OMNIX now learns from every project and can drive four more coding agents.
+
+### Added
+- **Multi-agent runtime via a universal ACP adapter** — Gemini CLI, Qwen Code, OpenCode, and GitHub Copilot CLI are now first-class runnable agents (previously only Claude Code + Codex). All four speak the Agent Client Protocol (JSON-RPC 2.0 over stdio); a single adapter (`runtime_acp.rs`) drives them, so adding a future ACP agent is one `agent_definition` entry. The transport is bidirectional: OMNIX serves the agent's `fs/read|write_text_file` requests (workspace-constrained) and its `session/request_permission` requests (auto-approved under full access, auto-rejected in plan mode, otherwise surfaced for your decision).
+- **In-app model selection for ACP agents** — the composer shows the agent's own model list (from `session/new` config options) and switches it live via `session/set_config_option`; the choice is remembered per-agent for the next session.
+- **Self-evolution loop** — OMNIX records runtime errors/approvals as a project protocol, distills them (three sources: conversation + OMNIX-recorded signals + the agent's own protocol notes) into reusable "lessons", and injects the most relevant ones into every new workspace's agent-native context file (CLAUDE.md / AGENTS.md / GEMINI.md / …). Lessons are deduped by embedding similarity and their effectiveness is tracked. A new **进化中枢 (Evolution Hub)** panel reviews/applies proposals and shows protocol status & events.
+- **Agent process-crash detection** — if an agent process exits unexpectedly, the session is marked failed with an actionable message instead of hanging on "running" forever.
+- **Resizable Quick Assistant window** — the 划词 popup can be dragged and resized (East/South/SouthEast grips), with size persisted.
+
+### Changed
+- **Quick Assistant rewritten for Cherry Studio parity** — no flicker, no cursor-following, never steals focus mid-selection (fixes broken copy); reads the selection once on mouse-up. Click-away dismissal now tracks the live (draggable/resizable) window bounds.
+- **Embedding model is now a single fixed setting** shared by memory vectors, workspace profiles, and the knowledge base.
+- **Frontend agent registry is backend-driven** — the UI loads the runnable-agent list from `runtime_get_agent_catalog` instead of hardcoded per-component maps; runtime dispatch uses a typed `AdapterKind` enum so a new adapter fails to compile until every dispatch site handles it.
+- ACP reasoning ("thinking") now renders as a collapsible block instead of blending into the reply; the reply is consolidated and persisted so it survives a conversation reload.
+- Sidebar gained an explicit **历史与归档 (History & Archive)** entry (the icon-only entry point was undiscoverable).
+
+### Fixed
+- OpenCode produced empty turns because its default ACP model was unusable; OMNIX now fixes the default and lets you pick a working model in-app.
+- ACP sessions no longer fail with "Session not found" after an app restart (a dead in-memory session is replaced with a fresh one; the OMNIX transcript is preserved).
+- StatusDock now applies the light/dark theme (it was stuck on dark).
+- Removed a large amount of dead code and hardcoded colors (now design tokens).
+
+### Docs
+- Added `BORROWINGS.md` — registers each borrowed feature (Cherry Studio 划词, AingDesk search injection, ACP, Codex app-server) with its behavior contract, so re-borrowing after an upstream update is a contract-checked regression rather than a guess.
+
 ## [0.3.0] — 2026-06-27
 
 The "desktop-app roadmap" release (R1–R5) plus a phone remote-access feature and a large round of user-acceptance fixes.

@@ -108,6 +108,72 @@ fn get_candidate(db: &DbManager, candidate_id: &str) -> Result<DistillationCandi
     .map_err(|error| error.to_string())
 }
 
+/// Gather extra distillation evidence for a workspace: OMNIX-recorded protocol
+/// events (DB) + the agent's own `.omx/development/*.md` records. Returns a markdown
+/// block (possibly empty) appended to the conversation transcript so distillation
+/// sees all three sources together — the "三源合流" the evolution loop relies on.
+fn gather_workspace_evidence(db: &DbManager, workspace_path: &str) -> String {
+    if workspace_path.trim().is_empty() || workspace_path == "direct" {
+        return String::new();
+    }
+    let mut out = String::new();
+
+    // ① OMNIX-recorded protocol events (match the raw and canonical path forms,
+    //    since auto-recording stores a normalized/canonicalized workspace path).
+    let canonical = std::fs::canonicalize(workspace_path)
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    if let Ok(conn) = db.get_connection() {
+        if let Ok(mut stmt) = conn.prepare(
+            "SELECT created_at, event_type, summary FROM project_protocol_events
+             WHERE workspace_path = ?1 OR workspace_path = ?2
+             ORDER BY created_at DESC LIMIT 80",
+        ) {
+            let events: Vec<String> = stmt
+                .query_map(params![workspace_path, canonical], |r| {
+                    Ok(format!(
+                        "- [{}] {}: {}",
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?
+                    ))
+                })
+                .map(|rows| rows.flatten().collect())
+                .unwrap_or_default();
+            if !events.is_empty() {
+                out.push_str("\n\n## 项目协议记录（OMNIX 自动捕获的事件）\n");
+                out.push_str(&events.join("\n"));
+            }
+        }
+    }
+
+    // ② The agent's own development records (root-cause→fix it already curated).
+    //    Read every *.md under .omx/development/ so external/pre-existing protocol
+    //    projects distill fully, not just a fixed file list.
+    let dev_dir = std::path::Path::new(workspace_path).join(".omx/development");
+    if let Ok(entries) = std::fs::read_dir(&dev_dir) {
+        let mut files: Vec<std::path::PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("md"))
+            .collect();
+        files.sort();
+        for path in files {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                let trimmed = content.trim();
+                if !trimmed.is_empty() {
+                    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("record.md");
+                    out.push_str(&format!("\n\n## Agent 协议记录 — .omx/development/{name}\n"));
+                    let capped: String = trimmed.chars().take(4000).collect();
+                    out.push_str(&capped);
+                }
+            }
+        }
+    }
+    out
+}
+
 #[tauri::command]
 pub async fn distill_conversation_to_inbox(
     conversation_id: String,
@@ -156,7 +222,55 @@ pub async fn distill_conversation_to_inbox(
         return Err("该会话没有可蒸馏的真实消息".into());
     }
 
-    let system = r#"你是 OMNIX Workbench 的开发经验蒸馏器。只从给定会话中提取有证据支持、可复用的候选，不得臆造。
+    // 三源合流：会话 transcript + OMNIX 协议事件 + Agent 的 .omx/development 记录。
+    let extra = gather_workspace_evidence(&db, &workspace_path);
+    let evidence = if extra.is_empty() {
+        transcript
+    } else {
+        format!("{transcript}{extra}")
+    };
+
+    run_distillation(&db, &model_id, &evidence, &conversation_id, &workspace_path).await
+}
+
+/// Distill an external / pre-existing workspace folder from its `.omx/development/*.md`
+/// records (+ any OMNIX-recorded protocol events) — no OMNIX conversation required.
+/// For projects developed with the protocol before/outside OMNIX.
+#[tauri::command]
+pub async fn distill_workspace_to_inbox(
+    workspace_path: String,
+    model_id: String,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<Vec<DistillationCandidate>, String> {
+    input_validation::validate_workspace_path(&workspace_path, "workspace_path")?;
+    if model_id.trim().is_empty() {
+        return Err("请先选择用于蒸馏的模型".into());
+    }
+    crate::knowledge::resolve_chat_platform(&db, &model_id)?;
+
+    let evidence = gather_workspace_evidence(&db, &workspace_path);
+    if evidence.trim().is_empty() {
+        return Err(
+            "该工作区没有可蒸馏的开发记录（未找到 .omx/development/*.md，也没有协议事件）".into(),
+        );
+    }
+    let evidence = format!(
+        "以下是工作区「{workspace_path}」的历史开发记录（无对话，仅协议/开发日志）：\n{evidence}"
+    );
+    run_distillation(&db, &model_id, &evidence, "", &workspace_path).await
+}
+
+/// Shared distillation core: send the evidence to the model, parse candidates, and
+/// persist them into the inbox. Used by both conversation- and workspace-based
+/// distillation. The DB connection is opened only after the network await.
+async fn run_distillation(
+    db: &DbManager,
+    model_id: &str,
+    evidence: &str,
+    conversation_id: &str,
+    workspace_path: &str,
+) -> Result<Vec<DistillationCandidate>, String> {
+    let system = r#"你是 OMNIX Workbench 的开发经验蒸馏器。只从给定材料（开发会话、OMNIX 自动捕获的协议事件、Agent 写的 .omx/development 记录）中提取有证据支持、可复用的候选，不得臆造。
 返回严格 JSON：{"candidates":[{"type":"memory|skill|protocol","title":"...","summary":"...","payload":{},"evidence_message_ids":["..."]}]}。
 memory payload 必须包含 incident_desc、code_pattern、remediation、keywords；skill payload 必须包含 name、description、content；protocol payload 必须包含 target_file、proposed_change、rationale。没有足够证据时返回较少候选。"#;
     let proxy_port = db
@@ -173,7 +287,7 @@ memory payload 必须包含 incident_desc、code_pattern、remediation、keyword
             "model": model_id,
             "messages": [
                 {"role": "system", "content": system},
-                {"role": "user", "content": transcript}
+                {"role": "user", "content": evidence}
             ],
             "temperature": 0.2
         }))
@@ -215,7 +329,7 @@ memory payload 必须包含 incident_desc、code_pattern、remediation、keyword
             ],
         )
         .map_err(|error| error.to_string())?;
-        saved.push(get_candidate(&db, &id)?);
+        saved.push(get_candidate(db, &id)?);
     }
     Ok(saved)
 }

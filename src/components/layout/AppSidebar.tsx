@@ -4,7 +4,7 @@ import {
   Archive,
   CalendarClock,
   FolderOpen,
-  Maximize2,
+  History,
   MessageSquare,
   Plus,
   Search,
@@ -90,12 +90,12 @@ export function AppSidebar({
           </div>
           {onOpenHistoryFullscreen && (
             <button
-              title="展开历史"
-              aria-label="展开历史"
+              title="历史与归档"
+              aria-label="历史与归档"
               onClick={onOpenHistoryFullscreen}
               className="rounded-md border border-border p-2 text-muted-foreground hover:bg-muted/20 hover:text-foreground"
             >
-              <Maximize2 className="h-4 w-4" />
+              <History className="h-4 w-4" />
             </button>
           )}
         </div>
@@ -155,6 +155,17 @@ export function AppSidebar({
               onDelete={(conv) => setPendingDelete({ id: conv.id, title: conv.title })}
               onArchiveConversation={onArchiveConversation}
             />
+            )}
+            {/* Explicit entry: archived conversations live in the fullscreen
+                history view — an icon-only entry point proved undiscoverable. */}
+            {onOpenHistoryFullscreen && (
+              <button
+                className="mx-3 mb-2 flex items-center gap-2 rounded-md px-3 py-2 text-left text-xs text-muted-foreground hover:bg-muted/20 hover:text-foreground"
+                onClick={onOpenHistoryFullscreen}
+              >
+                <History className="h-3.5 w-3.5" />
+                历史与归档…
+              </button>
             )}
           </div>
 

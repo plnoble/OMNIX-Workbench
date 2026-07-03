@@ -1910,6 +1910,12 @@ fn parse_agent_id(name: &str) -> Option<crate::runtime::AgentId> {
     match name {
         "Claude Code" | "claude_code" | "claude" => Some(crate::runtime::AgentId::ClaudeCode),
         "Codex" | "codex" => Some(crate::runtime::AgentId::Codex),
+        "Gemini CLI" | "gemini_cli" | "gemini" => Some(crate::runtime::AgentId::GeminiCli),
+        "Qwen Code" | "qwen_code" | "qwen" => Some(crate::runtime::AgentId::QwenCode),
+        "OpenCode" | "opencode" => Some(crate::runtime::AgentId::OpenCode),
+        "GitHub Copilot CLI" | "copilot_cli" | "copilot" => {
+            Some(crate::runtime::AgentId::CopilotCli)
+        }
         _ => None,
     }
 }
@@ -2056,13 +2062,20 @@ async fn get_remote_agents(
     if !remote_token_ok(&state, &params) {
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
-    let agents: Vec<RemoteAgent> = ["Claude Code", "Codex"]
-        .iter()
-        .map(|name| RemoteAgent {
-            name: name.to_string(),
-            installed: state.agent_manager.find_agent_path(name).is_some(),
-        })
-        .collect();
+    let agents: Vec<RemoteAgent> = [
+        "Claude Code",
+        "Codex",
+        "Gemini CLI",
+        "Qwen Code",
+        "OpenCode",
+        "GitHub Copilot CLI",
+    ]
+    .iter()
+    .map(|name| RemoteAgent {
+        name: name.to_string(),
+        installed: state.agent_manager.find_agent_path(name).is_some(),
+    })
+    .collect();
     Json(agents).into_response()
 }
 

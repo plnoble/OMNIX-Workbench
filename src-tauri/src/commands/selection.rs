@@ -381,8 +381,9 @@ pub fn clear_translation_history(db: State<'_, Arc<DbManager>>) -> Result<(), St
 
 // ── Auto-Capture Commands ────────────────────────────────
 
-/// Start or stop the auto-capture monitor.
-/// When enabled, it polls UIA every ~500ms and emits `selection-auto-captured` events.
+/// Start or stop the selection monitor.
+/// When enabled, it watches the mouse button and, on release with a non-empty
+/// selection, shows the popup once (no focus steal) and emits `selection-auto-captured`.
 #[tauri::command]
 pub async fn toggle_selection_auto_capture(
     app_handle: AppHandle,
@@ -405,8 +406,8 @@ pub async fn toggle_selection_auto_capture(
         if let Some(h) = guard.take() {
             h.abort();
         }
-        // Start new monitor — poll every 500ms
-        let h = crate::selection::start_auto_capture_monitor(app_handle.clone(), 500);
+        // Start new monitor — watch the mouse button at ~60ms (cheap, no UIA).
+        let h = crate::selection::start_auto_capture_monitor(app_handle.clone(), 60);
         *guard = Some(h);
         Ok(true)
     } else {

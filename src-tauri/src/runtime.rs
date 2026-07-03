@@ -11,6 +11,10 @@ use crate::db::DbManager;
 pub enum AgentId {
     ClaudeCode,
     Codex,
+    GeminiCli,
+    QwenCode,
+    OpenCode,
+    CopilotCli,
 }
 
 impl AgentId {
@@ -18,7 +22,19 @@ impl AgentId {
         match self {
             Self::ClaudeCode => "Claude Code",
             Self::Codex => "Codex",
+            Self::GeminiCli => "Gemini CLI",
+            Self::QwenCode => "Qwen Code",
+            Self::OpenCode => "OpenCode",
+            Self::CopilotCli => "GitHub Copilot CLI",
         }
+    }
+
+    /// Whether this agent is driven over the universal ACP adapter.
+    pub fn is_acp(self) -> bool {
+        matches!(
+            self,
+            Self::GeminiCli | Self::QwenCode | Self::OpenCode | Self::CopilotCli
+        )
     }
 }
 
@@ -126,6 +142,21 @@ pub fn evaluate_model_compatibility(
                 }
             }
         }
+        // ACP agents authenticate and pick models through their own login
+        // (Gemini/Qwen/Copilot accounts, OpenCode config). They do not route
+        // through the OMNIX gateway, so OMNIX-managed provider models are not
+        // selectable for them — the session runs on the agent's own default.
+        AgentId::GeminiCli | AgentId::QwenCode | AgentId::OpenCode | AgentId::CopilotCli => {
+            let _ = provider_type;
+            ModelCompatibility {
+                level: ModelCompatibilityLevel::Unsupported,
+                selectable: false,
+                reason: format!(
+                    "{} 使用自身账户鉴权与默认模型，暂不通过 OMNIX 网关选择模型",
+                    agent.display_name()
+                ),
+            }
+        }
     }
 }
 
@@ -192,13 +223,34 @@ pub struct AgentSessionConfig {
     pub work_mode: WorkMode,
 }
 
+/// The wire protocol OMNIX speaks with an agent process. Typed (rather than a
+/// string tag) so dispatch sites are exhaustive: adding an adapter forces every
+/// match to be updated at compile time instead of silently falling through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdapterKind {
+    ClaudeStreamJson,
+    CodexAppServer,
+    Acp,
+}
+
+impl AdapterKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ClaudeStreamJson => "claude_stream_json",
+            Self::CodexAppServer => "codex_app_server",
+            Self::Acp => "acp",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AgentDefinition {
     pub id: AgentId,
     pub display_name: &'static str,
     pub executable_names: Vec<&'static str>,
     pub managed_package: Option<&'static str>,
-    pub runtime_adapter: &'static str,
+    pub runtime_adapter: AdapterKind,
     pub supports_structured_events: bool,
     pub supports_resume: bool,
 }
@@ -210,7 +262,7 @@ pub fn agent_definition(agent: AgentId) -> AgentDefinition {
             display_name: agent.display_name(),
             executable_names: vec!["claude", "claude.cmd"],
             managed_package: Some("@anthropic-ai/claude-code@latest"),
-            runtime_adapter: "claude_stream_json",
+            runtime_adapter: AdapterKind::ClaudeStreamJson,
             supports_structured_events: true,
             supports_resume: true,
         },
@@ -219,7 +271,45 @@ pub fn agent_definition(agent: AgentId) -> AgentDefinition {
             display_name: agent.display_name(),
             executable_names: vec!["codex", "codex.cmd"],
             managed_package: Some("@openai/codex@latest"),
-            runtime_adapter: "codex_app_server",
+            runtime_adapter: AdapterKind::CodexAppServer,
+            supports_structured_events: true,
+            supports_resume: true,
+        },
+        AgentId::GeminiCli => AgentDefinition {
+            id: agent,
+            display_name: agent.display_name(),
+            executable_names: vec!["gemini", "gemini.cmd"],
+            managed_package: Some("@google/gemini-cli@latest"),
+            runtime_adapter: AdapterKind::Acp,
+            supports_structured_events: true,
+            supports_resume: true,
+        },
+        AgentId::QwenCode => AgentDefinition {
+            id: agent,
+            display_name: agent.display_name(),
+            // The real Qwen Code binary is `qwen` (not `qwen-code`).
+            executable_names: vec!["qwen", "qwen.cmd"],
+            managed_package: Some("@qwen-code/qwen-code@latest"),
+            runtime_adapter: AdapterKind::Acp,
+            supports_structured_events: true,
+            supports_resume: true,
+        },
+        AgentId::OpenCode => AgentDefinition {
+            id: agent,
+            display_name: agent.display_name(),
+            executable_names: vec!["opencode", "opencode.cmd"],
+            managed_package: Some("opencode-ai@latest"),
+            runtime_adapter: AdapterKind::Acp,
+            supports_structured_events: true,
+            supports_resume: true,
+        },
+        AgentId::CopilotCli => AgentDefinition {
+            id: agent,
+            display_name: agent.display_name(),
+            // The real GitHub Copilot CLI binary is `copilot`.
+            executable_names: vec!["copilot", "copilot.cmd"],
+            managed_package: Some("@github/copilot-cli@latest"),
+            runtime_adapter: AdapterKind::Acp,
             supports_structured_events: true,
             supports_resume: true,
         },
@@ -400,7 +490,7 @@ pub fn create_agent_session_record(
             session_id,
             config.conversation_id,
             agent_id_str(config.agent),
-            agent_definition(config.agent).runtime_adapter,
+            agent_definition(config.agent).runtime_adapter.as_str(),
             config.executable_path,
             config.workspace_path,
             model_json,
@@ -686,10 +776,14 @@ pub fn list_runtime_events(db: &DbManager, session_id: &str) -> Result<Vec<Runti
     .collect()
 }
 
-fn agent_id_str(agent: AgentId) -> &'static str {
+pub(crate) fn agent_id_str(agent: AgentId) -> &'static str {
     match agent {
         AgentId::ClaudeCode => "claude_code",
         AgentId::Codex => "codex",
+        AgentId::GeminiCli => "gemini_cli",
+        AgentId::QwenCode => "qwen_code",
+        AgentId::OpenCode => "opencode",
+        AgentId::CopilotCli => "copilot_cli",
     }
 }
 
@@ -697,6 +791,10 @@ fn parse_agent_id(value: &str) -> Result<AgentId, String> {
     match value {
         "claude_code" => Ok(AgentId::ClaudeCode),
         "codex" => Ok(AgentId::Codex),
+        "gemini_cli" => Ok(AgentId::GeminiCli),
+        "qwen_code" => Ok(AgentId::QwenCode),
+        "opencode" => Ok(AgentId::OpenCode),
+        "copilot_cli" => Ok(AgentId::CopilotCli),
         other => Err(format!("unknown Agent id: {other}")),
     }
 }
@@ -750,7 +848,7 @@ fn parse_runtime_event_kind(value: &str) -> Result<RuntimeEventKind, String> {
 }
 
 impl RuntimeEvent {
-    fn new(kind: RuntimeEventKind, metadata: serde_json::Value) -> Self {
+    pub(crate) fn new(kind: RuntimeEventKind, metadata: serde_json::Value) -> Self {
         Self {
             kind,
             text: None,
@@ -1179,7 +1277,9 @@ pub fn parse_codex_message(line: &str) -> Result<Vec<RuntimeEvent>, String> {
     Ok(events)
 }
 
-fn json_id_to_string(value: &serde_json::Value) -> String {
+/// Renders a JSON-RPC id as the string OMNIX stores on approval events. Shared
+/// by the Codex and ACP adapters so id round-tripping stays consistent.
+pub(crate) fn json_id_to_string(value: &serde_json::Value) -> String {
     match value {
         serde_json::Value::String(value) => value.clone(),
         other => other.to_string(),
@@ -1266,6 +1366,12 @@ pub fn build_launch_spec(config: &AgentSessionConfig) -> Result<LaunchSpec, Stri
                     .map(str::to_string),
             );
         }
+        // ACP agents launch into their JSON-RPC-over-stdio mode. Model and auth
+        // are the agent's own responsibility (MVP), and plan-mode / permissions
+        // are enforced at runtime by the ACP adapter rather than via CLI flags.
+        AgentId::GeminiCli => args.push("--experimental-acp".into()),
+        AgentId::QwenCode | AgentId::CopilotCli => args.push("--acp".into()),
+        AgentId::OpenCode => args.push("acp".into()),
     }
 
     Ok(LaunchSpec {
@@ -1273,7 +1379,7 @@ pub fn build_launch_spec(config: &AgentSessionConfig) -> Result<LaunchSpec, Stri
         args,
         env,
         cwd: config.workspace_path.clone(),
-        adapter: agent_definition(config.agent).runtime_adapter.into(),
+        adapter: agent_definition(config.agent).runtime_adapter.as_str().into(),
     })
 }
 
@@ -1295,7 +1401,7 @@ pub fn build_resume_launch_spec(
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_definition, build_claude_user_message, build_codex_approval_response,
+        agent_definition, build_claude_user_message, build_codex_approval_response, AdapterKind,
         build_codex_initialize_request, build_codex_thread_resume_request,
         build_codex_thread_start_request, build_launch_spec, build_resume_launch_spec,
         create_agent_session_record, evaluate_model_compatibility, get_agent_session_record,
@@ -1671,5 +1777,60 @@ mod tests {
             .args
             .windows(2)
             .any(|pair| { pair == ["--resume", "claude-persisted-session"] }));
+    }
+
+    #[test]
+    fn acp_agents_use_acp_adapter_and_support_resume() {
+        for agent in [
+            AgentId::GeminiCli,
+            AgentId::QwenCode,
+            AgentId::OpenCode,
+            AgentId::CopilotCli,
+        ] {
+            let definition = agent_definition(agent);
+            assert_eq!(definition.runtime_adapter, AdapterKind::Acp, "{:?}", agent);
+            assert!(definition.supports_resume, "{:?}", agent);
+            assert!(agent.is_acp(), "{:?}", agent);
+        }
+        assert!(!AgentId::ClaudeCode.is_acp());
+        assert!(!AgentId::Codex.is_acp());
+    }
+
+    #[test]
+    fn acp_launch_specs_use_each_agents_stdio_flag() {
+        let cases = [
+            (AgentId::GeminiCli, "gemini.cmd", vec!["--experimental-acp"]),
+            (AgentId::QwenCode, "qwen.cmd", vec!["--acp"]),
+            (AgentId::CopilotCli, "copilot.cmd", vec!["--acp"]),
+            (AgentId::OpenCode, "opencode.cmd", vec!["acp"]),
+        ];
+        for (agent, executable, expected_args) in cases {
+            let spec = build_launch_spec(&AgentSessionConfig {
+                conversation_id: "conv-acp".into(),
+                agent,
+                executable_path: executable.into(),
+                workspace_path: "D:/work/project".into(),
+                model: ModelSelection::AgentDefault,
+                permission: PermissionPolicy::AskOnRisk,
+                work_mode: WorkMode::Direct,
+            })
+            .expect("acp launch spec");
+            assert_eq!(spec.adapter, "acp", "{:?}", agent);
+            assert_eq!(spec.args, expected_args, "{:?}", agent);
+            assert_eq!(spec.cwd, "D:/work/project");
+        }
+    }
+
+    #[test]
+    fn acp_models_are_agent_default_only() {
+        // ACP agents authenticate themselves; OMNIX gateway models are not
+        // selectable, so provider models come back Unsupported for them.
+        let compatibility =
+            evaluate_model_compatibility(AgentId::GeminiCli, "anthropic", "healthy");
+        assert_eq!(
+            compatibility.level,
+            ModelCompatibilityLevel::Unsupported
+        );
+        assert!(!compatibility.selectable);
     }
 }

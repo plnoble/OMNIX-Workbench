@@ -5,8 +5,12 @@ import {
   Brain,
   Check,
   Code2,
+  Combine,
   FileDiff,
+  FolderOpen,
+  GraduationCap,
   Plus,
+  RefreshCw,
   Search,
   Sparkles,
   Trash2,
@@ -16,11 +20,16 @@ import {
 import { Button } from "@/components/ui/button";
 import { toast } from "@/components/ui/sonner";
 import { cn } from "@/lib/utils";
+import { EvolutionPanel } from "@/components/EvolutionPanel";
 import {
   conversationApi,
   distillationApi,
+  evolutionApi,
   modelApi,
+  projectProtocolApi,
+  shellApi,
   type DistillationCandidate,
+  type LessonsInfo,
 } from "@/lib/tauri-api";
 import type { ConversationInfo, ConversationMessage, PlatformModel } from "@/types";
 
@@ -31,6 +40,10 @@ interface MemoryRecord {
   remediation: string;
   keywords: string;
   created_at: string;
+  confidence?: number;
+  seen_count?: number;
+  repeated_count?: number;
+  status?: string;
 }
 
 type InboxFilter = "pending" | "approved" | "rejected" | "all";
@@ -50,8 +63,10 @@ function safeJson(value: string): Record<string, unknown> {
 }
 
 export function MemoryHub() {
-  const [activeView, setActiveView] = useState<"memory" | "inbox">("memory");
+  const [activeView, setActiveView] = useState<"memory" | "inbox" | "lessons" | "evolution">("memory");
   const [memories, setMemories] = useState<MemoryRecord[]>([]);
+  const [lessons, setLessons] = useState<LessonsInfo | null>(null);
+  const [maintaining, setMaintaining] = useState(false);
   const [query, setQuery] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [form, setForm] = useState({ incident: "", pattern: "", remediation: "", keywords: "" });
@@ -74,6 +89,14 @@ export function MemoryHub() {
     setCandidates(await distillationApi.list(nextFilter));
   };
 
+  const loadLessons = async () => {
+    try {
+      setLessons(await evolutionApi.preview());
+    } catch {
+      /* lessons preview is best-effort */
+    }
+  };
+
   useEffect(() => {
     Promise.all([loadMemories(), conversationApi.list(), modelApi.getActive(), distillationApi.list("pending")])
       .then(([, conversationList, modelList, inbox]) => {
@@ -84,7 +107,9 @@ export function MemoryHub() {
         if (modelList[0]) setSelectedModel(`${modelList[0].platform_id}:${modelList[0].model_name}`);
       })
       .catch((error) => toast.error(`读取记忆数据失败：${error}`));
+    loadLessons();
   }, []);
+
 
   useEffect(() => {
     if (!selectedConversation) {
@@ -147,11 +172,94 @@ export function MemoryHub() {
     }
   };
 
+  const reindexEmbeddings = async () => {
+    setMaintaining(true);
+    try {
+      const n = await evolutionApi.reindex();
+      toast.success(n > 0 ? `已为 ${n} 条经验建立语义索引` : "经验索引已是最新");
+      await loadLessons();
+    } catch (error) {
+      toast.error(`重建索引失败：${error}`);
+    } finally {
+      setMaintaining(false);
+    }
+  };
+
+  const consolidate = async () => {
+    setMaintaining(true);
+    try {
+      const n = await evolutionApi.consolidate();
+      toast.success(n > 0 ? `已合并 ${n} 条近似重复经验` : "没有发现可合并的重复经验");
+      await Promise.all([loadMemories(), loadLessons()]);
+    } catch (error) {
+      toast.error(`整理去重失败：${error}`);
+    } finally {
+      setMaintaining(false);
+    }
+  };
+
+  const distillExternalWorkspace = async () => {
+    if (!selectedModel) {
+      toast.warning("请先选择蒸馏模型");
+      return;
+    }
+    let folder: string | null = null;
+    try {
+      folder = await shellApi.pickDirectory();
+    } catch (error) {
+      toast.error(`打开文件夹选择器失败：${error}`);
+      return;
+    }
+    if (!folder) return;
+    setIsGenerating(true);
+    try {
+      const created = await distillationApi.generateFromWorkspace(folder, selectedModel);
+      setFilter("pending");
+      await loadInbox("pending");
+      toast.success(`已从外部工作区蒸馏出 ${created.length} 个待审候选`);
+    } catch (error) {
+      toast.error(`蒸馏外部工作区失败：${error}`);
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  const archiveAndDistill = async () => {
+    const conv = conversations.find((item) => item.id === selectedConversation);
+    if (!conv) {
+      toast.warning("请先选择一个会话");
+      return;
+    }
+    if (!conv.workspace_path || conv.workspace_path === "direct") {
+      toast.warning("该会话没有关联工作区；可直接用「生成候选」蒸馏对话。");
+      return;
+    }
+    setIsGenerating(true);
+    try {
+      const run = await projectProtocolApi.archiveAndDistill(conv.workspace_path);
+      let llmCount = 0;
+      if (selectedModel) {
+        const created = await distillationApi.generate(selectedConversation, selectedModel);
+        llmCount = created.length;
+      }
+      setFilter("pending");
+      await loadInbox("pending");
+      toast.success(
+        `已归档项目并蒸馏：协议记忆 ${run.memory_count} 条、协议提案 ${run.proposal_count} 条` +
+          (selectedModel ? `、模型候选 ${llmCount} 条` : "") + " 进入待审",
+      );
+    } catch (error) {
+      toast.error(`归档蒸馏失败：${error}`);
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
   const reviewCandidate = async (candidateId: string, approved: boolean) => {
     setReviewingId(candidateId);
     try {
       await distillationApi.review(candidateId, approved);
-      await Promise.all([loadInbox(), loadMemories()]);
+      await Promise.all([loadInbox(), loadMemories(), loadLessons()]);
       toast.success(approved ? "候选已批准" : "候选已拒绝");
     } catch (error) {
       toast.error(`处理候选失败：${error}`);
@@ -174,7 +282,12 @@ export function MemoryHub() {
         </header>
 
         <div className="mt-5 flex gap-1 border-b border-border">
-          {([ ["memory", "长期记忆"], ["inbox", "蒸馏收件箱"] ] as const).map(([value, label]) => (
+          {([
+            ["memory", "长期记忆"],
+            ["inbox", "蒸馏收件箱"],
+            ["lessons", `经验回注${lessons && lessons.count ? ` (${lessons.count})` : ""}`],
+            ["evolution", "进化中枢"],
+          ] as Array<["memory" | "inbox" | "lessons" | "evolution", string]>).map(([value, label]) => (
             <button
               key={value}
               type="button"
@@ -240,13 +353,20 @@ export function MemoryHub() {
                   </div>
                   {memory.code_pattern && <pre className="mt-3 overflow-x-auto rounded-md bg-muted p-3 text-xs">{memory.code_pattern}</pre>}
                   <p className="mt-3 text-sm leading-6 text-muted-foreground">{memory.remediation}</p>
-                  <div className="mt-3 text-xs text-muted-foreground">{memory.keywords || "无标签"}</div>
+                  <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                    <span>{memory.keywords || "无标签"}</span>
+                    {(memory.repeated_count ?? 0) > 0 && (
+                      <span className="rounded-full bg-destructive/15 px-2 py-0.5 font-medium text-destructive" title="该经验注入后又发生了同类错误，可能需要改写或加强">
+                        失效 ×{memory.repeated_count}
+                      </span>
+                    )}
+                  </div>
                 </article>
               ))}
             </div>
             {filteredMemories.length === 0 && <div className="py-16 text-center text-sm text-muted-foreground">暂无长期记忆</div>}
           </section>
-        ) : (
+        ) : activeView === "inbox" ? (
           <section className="py-5">
             <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(280px,0.7fr)]">
               <div>
@@ -260,9 +380,21 @@ export function MemoryHub() {
                   <option value="">选择 Models 中已启用的模型</option>
                   {models.map((model) => <option key={model.id} value={`${model.platform_id}:${model.model_name}`}>{model.model_name} · {model.platform_id}</option>)}
                 </select>
-                <Button className="mt-4" onClick={generateCandidates} disabled={isGenerating || !selectedConversation || !selectedModel}>
-                  <Sparkles className="h-4 w-4" /> {isGenerating ? "正在蒸馏" : "生成候选"}
-                </Button>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <Button onClick={generateCandidates} disabled={isGenerating || !selectedConversation || !selectedModel}>
+                    <Sparkles className="h-4 w-4" /> {isGenerating ? "正在蒸馏" : "生成候选"}
+                  </Button>
+                  <Button variant="outline" onClick={archiveAndDistill} disabled={isGenerating || !selectedConversation}>
+                    <Brain className="h-4 w-4" /> 结束项目并蒸馏
+                  </Button>
+                  <Button variant="outline" onClick={distillExternalWorkspace} disabled={isGenerating || !selectedModel}>
+                    <FolderOpen className="h-4 w-4" /> 蒸馏外部工作区
+                  </Button>
+                </div>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  「结束项目并蒸馏」会把该工作区的协议记录归档为防错记忆与协议提案；若已选模型，还会同时对对话做模型蒸馏。
+                  「蒸馏外部工作区」用于本软件之前就已用协议开发的项目——选择该文件夹，直接从它的 .omx/development 记录蒸馏，无需会话。
+                </p>
               </div>
               <div className="border-l border-border pl-4">
                 <div className="text-sm font-medium">会话证据预览</div>
@@ -310,6 +442,44 @@ export function MemoryHub() {
               {candidates.length === 0 && <div className="py-16 text-center text-sm text-muted-foreground">当前筛选条件下没有候选</div>}
             </div>
           </section>
+        ) : activeView === "lessons" ? (
+          <section className="py-5">
+            <div className="rounded-lg border border-border bg-muted/20 p-5">
+              <div className="flex items-start gap-3">
+                <GraduationCap className="mt-0.5 h-5 w-5 text-primary" />
+                <div className="flex-1">
+                  <h3 className="font-semibold">经验回注 — 让下次开发少犯同样的错</h3>
+                  <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                    已批准的长期经验（{lessons?.count ?? 0} 条）会在<strong className="text-foreground">每次 Agent 启动时自动注入</strong>到该工作区的上下文文件
+                    （Claude Code → <code className="rounded bg-muted px-1">CLAUDE.md</code>、Codex → <code className="rounded bg-muted px-1">AGENTS.md</code>）顶部的
+                    <code className="rounded bg-muted px-1">OMNIX MEMORY</code> 受管块里。Agent 会自动加载这段内容——无需手动同步、也不依赖 Agent 主动去读某个文件。
+                    这是「开发 → 记录 → 蒸馏 → 下次少犯错」闭环的最后一环。
+                  </p>
+                  <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                    注入时按<strong className="text-foreground">与当前工作区的相关性</strong>排序（栈/语言/标签），只放最相关的前 20 条。
+                    「重建索引」为经验建立语义向量；「整理去重」合并近似重复，避免越积越乱。
+                  </p>
+                </div>
+              </div>
+              <div className="mt-4 flex flex-wrap items-center gap-2">
+                <Button variant="outline" size="sm" onClick={reindexEmbeddings} disabled={maintaining}>
+                  <RefreshCw className={cn("h-4 w-4", maintaining && "animate-spin")} /> 重建索引
+                </Button>
+                <Button variant="outline" size="sm" onClick={consolidate} disabled={maintaining}>
+                  <Combine className="h-4 w-4" /> 整理去重
+                </Button>
+              </div>
+            </div>
+
+            <div className="mt-5">
+              <div className="text-sm font-medium">将注入到 Agent 的记忆块预览</div>
+              <pre className="mt-2 max-h-[420px] overflow-auto rounded-md border border-border bg-muted p-4 text-xs whitespace-pre-wrap">
+                {lessons?.content || "暂无内容"}
+              </pre>
+            </div>
+          </section>
+        ) : (
+          <EvolutionPanel />
         )}
       </div>
     </div>

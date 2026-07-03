@@ -6,7 +6,7 @@
  */
 
 import { useState, useCallback, useEffect } from "react";
-import { knowledgeApi } from "@/lib/tauri-api";
+import { knowledgeApi, settingsApi } from "@/lib/tauri-api";
 import type {
   KnowledgeBase, KbDocument, KbChunk, SearchResult,
   EmbeddingModelInfo,
@@ -185,15 +185,21 @@ export function useKnowledgeBase(): UseKnowledgeBaseReturn {
     try {
       const models = await knowledgeApi.getEmbeddingModels();
       setEmbeddingModels(models);
-      // Use a functional update to read the latest selectedEmbedModel
-      // without adding it as a dependency, preventing infinite re-render loops.
-      setSelectedEmbedModel((prev) => {
-        if (!prev && models.length > 0) return models[0].model_name;
-        return prev;
-      });
+      // Default to the persisted app-wide embedding model (shared with the
+      // evolution/memory vectors) so the choice is fixed across restarts; fall
+      // back to the first available model only if nothing is saved yet.
+      const saved = await settingsApi.get("embedding_model").catch(() => null);
+      setSelectedEmbedModel((prev) => prev || saved || models[0]?.model_name || "");
     } catch (e) {
       console.error("[useKnowledgeBase] Failed to load embedding models:", e);
     }
+  }, []);
+
+  // Persisting setter: the UI's model dropdown calls this, so the user's choice
+  // sticks and stays consistent with the memory/workspace vectors.
+  const chooseEmbedModel = useCallback((model: string) => {
+    setSelectedEmbedModel(model);
+    void settingsApi.set("embedding_model", model).catch(() => {});
   }, []);
 
   // Auto-load on mount
@@ -425,7 +431,7 @@ export function useKnowledgeBase(): UseKnowledgeBaseReturn {
     loadDocuments, loadKnowledgeBases, loadChunks, loadEmbeddingModels,
     selectDocument, selectKnowledgeBase, createKnowledgeBase, deleteKnowledgeBase, selectChunk,
     importDocument, importFile, importDirectory, deleteDocument, setShowImportForm, updateImportForm,
-    generateEmbeddings, batchEmbedAll, setSelectedEmbedModel,
+    generateEmbeddings, batchEmbedAll, setSelectedEmbedModel: chooseEmbedModel,
     hybridSearch, setSearchQuery,
     sendRagQuery, setRagQuery, setRagChatModel,
     setActiveSubTab,

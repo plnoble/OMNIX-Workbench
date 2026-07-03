@@ -188,7 +188,7 @@ fn protocol_file_templates(
             "AGENTS.md",
             "Project agent guide",
             format!(
-                "# {project_name} Agent Guide\n\n## Working Agreement\n- Read this file before changing code.\n- Record important development events under `.omx/development/`.\n- Do not overwrite user changes.\n\n## Product Direction\nThis workspace uses the OMNIX project protocol: plan, implement, verify, record, distill.\n"
+                "# {project_name} Agent Guide\n\n## Working Agreement\n- Read this file before changing code.\n- Past lessons are auto-injected by OMNIX into the `OMNIX MEMORY` block of this file — heed them; do not repeat those mistakes. (No need to look them up elsewhere.)\n- **Record discipline (this is what powers distillation — do it every task/turn):** when you hit a bug, append an entry to `.omx/development/errors.md` using the template there (symptom → root cause → fix → reusable rule); log notable choices in `decisions.md`; keep the current goal/next-step in `current.md`. Be concise but concrete (include the exact command/pattern that failed).\n- Do not overwrite user changes.\n\n## Product Direction\nThis workspace uses the OMNIX project protocol: plan, implement, verify, record, distill.\n"
             ),
             "Main instructions for coding agents in this workspace.",
         ),
@@ -215,13 +215,13 @@ fn protocol_file_templates(
         (
             ".omx/development/errors.md",
             "Errors and lessons",
-            "# Errors And Lessons\n\nRecord bugs, root causes, fixes, and reusable lessons here.\n".to_string(),
+            "# Errors And Lessons\n\n> OMNIX distills entries below into reusable anti-failure memories. One entry per bug.\n> Copy the template and fill it in every time you hit (and fix) a problem.\n\n## Entry template\n```\n### <short title>\n- 危险模式/命令 (the exact pattern/command that failed):\n- 根因 (root cause):\n- 修复 (fix / correct approach):\n- 可复用规则 (reusable rule):\n- 标签 (tags, comma-separated): \n```\n".to_string(),
             "Anti-failure memory source.",
         ),
         (
             ".claude/skills/omnix-project-protocol/SKILL.md",
             "Claude skill bridge",
-            "# OMNIX Project Protocol\n\nUse this skill when working inside this project. Read AGENTS.md and `.omx/development/current.md`, keep the worklog updated, verify before claiming completion, and propose protocol improvements as drafts instead of silently editing global rules.\n".to_string(),
+            "# OMNIX Project Protocol\n\nUse this skill when working inside this project. Past cross-project lessons are auto-injected into the `OMNIX MEMORY` block of AGENTS.md / CLAUDE.md — heed them. Read AGENTS.md and `.omx/development/current.md` before starting. Keep the worklog updated, record bugs+root-causes+fixes under `.omx/development/errors.md`, verify before claiming completion, and propose protocol improvements as drafts instead of silently editing global rules.\n".to_string(),
             "Optional local skill bridge for Claude-compatible tools.",
         ),
     ]
@@ -428,6 +428,120 @@ pub fn protocol_record_event(
         },
     )
     .map_err(|e| e.to_string())
+}
+
+/// Auto-record key runtime events (errors, approval requests) as project-protocol
+/// events for workspaces with the protocol enabled — so "problems encountered"
+/// are captured without relying solely on the agent. Called from the runtime
+/// event loop in `lib.rs`; holds no DB guard across an await (the caller doesn't
+/// await while this runs).
+pub fn protocol_auto_record(
+    db: &DbManager,
+    envelope: &crate::runtime_manager::SessionEventEnvelope,
+) {
+    use crate::runtime::RuntimeEventKind;
+    let event_type = match envelope.event.kind {
+        RuntimeEventKind::Error => "error",
+        RuntimeEventKind::ApprovalRequested => "approval_requested",
+        _ => return,
+    };
+    let Ok(conn) = db.get_connection() else { return };
+    // session → conversation → workspace
+    let raw_workspace: Option<String> = conn
+        .query_row(
+            "SELECT c.workspace_path FROM agent_sessions s
+             JOIN conversations c ON s.conversation_id = c.id WHERE s.id = ?1",
+            params![envelope.session_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .ok()
+        .flatten();
+    let Some(raw_workspace) = raw_workspace else { return };
+    if raw_workspace.trim().is_empty() || raw_workspace == "direct" {
+        return;
+    }
+    let workspace_str = match normalize_workspace(&raw_workspace) {
+        Ok(path) => path.to_string_lossy().to_string(),
+        Err(_) => return,
+    };
+    let enabled: i64 = conn
+        .query_row(
+            "SELECT enabled FROM project_protocol_runs WHERE workspace_path = ?1",
+            params![workspace_str],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if enabled == 0 {
+        return;
+    }
+    let text = envelope.event.text.clone().unwrap_or_default();
+    let summary: String = if text.trim().is_empty() {
+        format!("Agent {event_type}")
+    } else {
+        text.chars().take(200).collect()
+    };
+    let _ = conn.execute(
+        "INSERT INTO project_protocol_events (id, workspace_path, event_type, summary, details_json)
+         VALUES (?1, ?2, ?3, ?4, '{\"source\":\"auto\"}')",
+        params![make_id("protocol_event"), workspace_str, event_type, summary],
+    );
+
+    // Effectiveness tracking: an error that matches an existing lesson means the
+    // lesson didn't prevent the repeat — bump its repeated_count so ineffective
+    // lessons surface in the evolution hub.
+    if event_type == "error" {
+        bump_repeated_lessons(&conn, &summary);
+    }
+}
+
+/// If the error text matches an active experience memory (by its code_pattern or
+/// keyword overlap), increment that memory's `repeated_count`. Best-effort, single
+/// best match per error to avoid over-counting.
+fn bump_repeated_lessons(conn: &rusqlite::Connection, error_text: &str) {
+    let needle = error_text.to_lowercase();
+    let mut stmt = match conn.prepare(
+        "SELECT id, code_pattern, keywords FROM memories
+         WHERE type = 'experience' AND (status = 'active' OR status IS NULL OR status = '')",
+    ) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let rows: Vec<(String, String, String)> = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+            ))
+        })
+        .map(|rs| rs.flatten().collect())
+        .unwrap_or_default();
+
+    let mut best: Option<String> = None;
+    for (id, pattern, keywords) in &rows {
+        let p = pattern.trim().to_lowercase();
+        let hit_pattern = p.len() >= 4 && needle.contains(&p);
+        let kw_hits = keywords
+            .split(',')
+            .filter(|k| {
+                let k = k.trim().to_lowercase();
+                k.len() >= 3 && needle.contains(&k)
+            })
+            .count();
+        if hit_pattern || kw_hits >= 2 {
+            best = Some(id.clone());
+            if hit_pattern {
+                break; // strongest signal
+            }
+        }
+    }
+    if let Some(id) = best {
+        let _ = conn.execute(
+            "UPDATE memories SET repeated_count = repeated_count + 1, last_matched_at = datetime('now') WHERE id = ?1",
+            params![id],
+        );
+    }
 }
 
 #[tauri::command]
@@ -714,4 +828,165 @@ pub fn protocol_apply_evolution_proposal(
         },
     )
     .map_err(|e| e.to_string())
+}
+
+/// List every workspace that has the project protocol initialized, with its live
+/// status (enabled/initialized, last event time, pending proposal/action counts).
+/// Powers the evolution hub's workspace list.
+#[tauri::command]
+pub fn protocol_list_runs(
+    db: State<'_, Arc<DbManager>>,
+) -> Result<Vec<ProjectProtocolStatus>, String> {
+    let conn = db.get_connection().map_err(|e| e.to_string())?;
+    let runs: Vec<(String, String, String, i32, i32)> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, workspace_path, project_name, enabled, initialized
+                 FROM project_protocol_runs ORDER BY updated_at DESC",
+            )
+            .map_err(|e| e.to_string())?;
+        let collected: Vec<(String, String, String, i32, i32)> = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, i32>(3)?,
+                    r.get::<_, i32>(4)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?
+            .flatten()
+            .collect();
+        collected
+    };
+
+    let mut out = Vec::new();
+    for (run_id, workspace_str, project_name, enabled, initialized) in runs {
+        let last_event_at = conn
+            .query_row(
+                "SELECT MAX(created_at) FROM project_protocol_events WHERE workspace_path = ?1",
+                params![workspace_str],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .unwrap_or(None);
+        let pending_actions = conn
+            .query_row(
+                "SELECT COUNT(*) FROM protocol_actions WHERE workspace_path = ?1 AND status = 'pending'",
+                params![workspace_str],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap_or(0);
+        let pending_proposals = conn
+            .query_row(
+                "SELECT COUNT(*) FROM evolution_proposals WHERE workspace_path = ?1 AND status = 'pending'",
+                params![workspace_str],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap_or(0);
+        out.push(ProjectProtocolStatus {
+            workspace_path: workspace_str,
+            project_name,
+            enabled: enabled != 0,
+            initialized: initialized != 0,
+            run_id: Some(run_id),
+            last_event_at,
+            pending_actions,
+            pending_proposals,
+        });
+    }
+    Ok(out)
+}
+
+/// List recorded protocol events for a workspace (newest first). The event viewer.
+/// Uses the stored workspace path as-is (no filesystem check) so it still works if
+/// the folder was moved/deleted.
+#[tauri::command]
+pub fn protocol_list_events(
+    workspace_path: String,
+    limit: Option<u32>,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<Vec<ProjectProtocolEvent>, String> {
+    let limit = limit.unwrap_or(100).min(500);
+    let conn = db.get_connection().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, workspace_path, event_type, summary, details_json, created_at
+             FROM project_protocol_events WHERE workspace_path = ?1
+             ORDER BY created_at DESC LIMIT ?2",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![workspace_path, limit], |r| {
+            Ok(ProjectProtocolEvent {
+                id: r.get(0)?,
+                workspace_path: r.get(1)?,
+                event_type: r.get(2)?,
+                summary: r.get(3)?,
+                details_json: r.get(4)?,
+                created_at: r.get(5)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(rows.flatten().collect())
+}
+
+#[cfg(test)]
+mod protocol_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn temp_db() -> Arc<DbManager> {
+        let p = std::env::temp_dir().join(format!(
+            "omnix_proto_{}_{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&p);
+        let db = DbManager::new_runtime_test(p);
+        db.get_connection()
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS memories (
+                    id TEXT PRIMARY KEY, incident_desc TEXT, code_pattern TEXT, remediation TEXT,
+                    keywords TEXT, type TEXT DEFAULT 'experience', status TEXT DEFAULT 'active',
+                    confidence REAL DEFAULT 1, seen_count INTEGER DEFAULT 0,
+                    repeated_count INTEGER DEFAULT 0, last_matched_at TEXT,
+                    stack_tags TEXT DEFAULT '', embedding BLOB, dimensions INTEGER DEFAULT 0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                );",
+            )
+            .unwrap();
+        Arc::new(db)
+    }
+
+    #[test]
+    fn error_matching_bumps_repeated_count() {
+        let db = temp_db();
+        let conn = db.get_connection().unwrap();
+        conn.execute("DELETE FROM memories", []).unwrap();
+        conn.execute(
+            "INSERT INTO memories (id, incident_desc, code_pattern, remediation, keywords, type, status)
+             VALUES ('m1','CORS preflight','credentials include with wildcard origin','set explicit origin','cors,fetch,credentials','experience','active')",
+            [],
+        )
+        .unwrap();
+
+        // An error whose text contains the lesson's code_pattern → should match.
+        bump_repeated_lessons(&conn, "Request blocked: credentials include with wildcard origin not allowed");
+        let n: i64 = conn
+            .query_row("SELECT repeated_count FROM memories WHERE id='m1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "matching error should bump repeated_count");
+
+        // An unrelated error → no bump.
+        bump_repeated_lessons(&conn, "totally unrelated compile error E0599 method not found");
+        let n2: i64 = conn
+            .query_row("SELECT repeated_count FROM memories WHERE id='m1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n2, 1, "unrelated error should not bump");
+    }
 }

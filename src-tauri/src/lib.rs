@@ -15,6 +15,7 @@ mod prompt_guard;
 mod proxy;
 mod responses_bridge;
 mod runtime;
+mod runtime_acp;
 mod runtime_manager;
 mod selection;
 mod skill_dag;
@@ -163,6 +164,9 @@ pub fn run() {
                     // engine drops its DB guard before any action/spawn, so it
                     // never holds a lock across the loop's await.
                     commands::evaluate_hooks(&hooks_db, &runtime_app, &envelope);
+                    // Auto-record key events (errors/approvals) into the project
+                    // protocol for workspaces that have it enabled.
+                    commands::protocol_auto_record(&hooks_db, &envelope);
                     let _ = runtime_app.emit("agent-session-event", envelope);
                 }
             });
@@ -257,10 +261,11 @@ pub fn run() {
             )
             .title("OMNIX Quick Assistant")
             .inner_size(420.0, 520.0)
+            .min_inner_size(300.0, 180.0)
             .decorations(false)
             .transparent(true)
             .always_on_top(true)
-            .resizable(false)
+            .resizable(true)
             .skip_taskbar(true)
             .visible(false)
             .build();
@@ -290,6 +295,8 @@ pub fn run() {
             commands::protocol_init_workspace,
             commands::protocol_record_event,
             commands::protocol_archive_and_distill,
+            commands::protocol_list_runs,
+            commands::protocol_list_events,
             commands::protocol_list_actions,
             commands::protocol_apply_action,
             commands::protocol_list_evolution_proposals,
@@ -300,6 +307,7 @@ pub fn run() {
             commands::runtime_start_session,
             commands::runtime_send_message,
             commands::runtime_respond_approval,
+            commands::runtime_set_session_model,
             commands::runtime_stop_session,
             commands::runtime_resume_session,
             commands::runtime_get_session,
@@ -336,8 +344,14 @@ pub fn run() {
             commands::create_memory,
             commands::delete_memory,
             commands::distill_conversation_to_inbox,
+            commands::distill_workspace_to_inbox,
             commands::list_distillation_inbox,
             commands::review_distillation_candidate,
+            // Evolution loop — preview what gets auto-injected back to agents
+            commands::get_lessons_preview,
+            commands::reindex_memory_embeddings,
+            commands::refresh_workspace_profile,
+            commands::consolidate_memories,
             commands::get_all_conversations,
             commands::get_conversation_tasks,
             commands::get_mailbox_messages,
