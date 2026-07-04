@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use base64::Engine;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -452,13 +453,51 @@ pub async fn runtime_send_message(
     session_id: String,
     prompt: String,
     display_text: Option<String>,
+    handoff: Option<bool>,
+    images: Option<Vec<crate::runtime::ImageAttachment>>,
     runtime_manager: State<'_, Arc<RuntimeManager>>,
 ) -> Result<(), String> {
+    let images = images.unwrap_or_default();
+    // Persist attachments as files (the transcript row only stores paths — the
+    // base64 payload goes to the agent, never into the DB).
+    let mut attachment_paths = Vec::new();
+    if !images.is_empty() {
+        let dir = crate::commands::media::attachments_dir()?;
+        for (index, image) in images.iter().enumerate() {
+            let extension = match image.mime.as_str() {
+                "image/jpeg" => "jpg",
+                "image/webp" => "webp",
+                "image/gif" => "gif",
+                _ => "png",
+            };
+            let mut path = dir.clone();
+            path.push(format!(
+                "att_{}_{index}.{extension}",
+                chrono::Utc::now().timestamp_micros()
+            ));
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(image.data.as_bytes())
+                .map_err(|error| format!("附件 base64 解码失败: {error}"))?;
+            std::fs::write(&path, bytes).map_err(|error| format!("保存附件失败: {error}"))?;
+            attachment_paths.push(path.to_string_lossy().into_owned());
+        }
+    }
+    let metadata = if attachment_paths.is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::json!({ "attachments": attachment_paths })
+    };
+
     runtime_manager
-        .send_message_with_display(
+        .send_user_message(
             &session_id,
-            &prompt,
-            display_text.as_deref().unwrap_or(&prompt),
+            crate::runtime_manager::OutgoingUserMessage {
+                prompt: &prompt,
+                display_text: display_text.as_deref().unwrap_or(&prompt),
+                with_handoff: handoff.unwrap_or(false),
+                images: &images,
+                metadata,
+            },
         )
         .await
 }

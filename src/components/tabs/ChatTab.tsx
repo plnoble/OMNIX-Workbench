@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { toast } from "sonner";
 import {
@@ -15,6 +15,7 @@ import {
   Loader2,
   PanelRightClose,
   PanelRightOpen,
+  Paperclip,
   Send,
   Shield,
   Sparkles,
@@ -22,6 +23,7 @@ import {
   Users,
   RefreshCw,
   StickyNote,
+  X,
 } from "lucide-react";
 import { WorkspaceCheckpoints } from "@/components/WorkspaceCheckpoints";
 import { WorktreePanel } from "@/components/WorktreePanel";
@@ -33,12 +35,13 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { AGENT_NAMES } from "@/lib/constants";
 import { cn } from "@/lib/utils";
-import { knowledgeApi, runtimeApi, searchApi, workspaceApi, notesApi } from "@/lib/tauri-api";
+import { knowledgeApi, mediaApi, runtimeApi, searchApi, workspaceApi, notesApi } from "@/lib/tauri-api";
 import { getRuntimeAgentId, isAcpAgent } from "@/lib/agentRegistry";
 import type {
   ConversationMessage,
   DetectedAgent,
   AcpModelOption,
+  ChatImageAttachment,
   EmbeddingModelInfo,
   KnowledgeBase,
   PermissionPolicy,
@@ -66,7 +69,7 @@ export interface ChatTabProps {
   setChatInput: (val: string) => void;
   setChatWorkspace: (val: string) => void;
   onOpenWorkspaceModal?: () => void;
-  onSendMessage: (e: React.FormEvent, config: RuntimeSendConfig, searchContext?: string) => void;
+  onSendMessage: (e: React.FormEvent, config: RuntimeSendConfig, searchContext?: string, images?: ChatImageAttachment[]) => void;
   onRespondApproval: (approved: boolean, forSession?: boolean) => void;
   onStopSession: (id: string) => void;
   onSuggestTeam?: (prompt: string) => void;
@@ -88,6 +91,52 @@ const WORK_MODE_OPTIONS: Array<{ id: WorkMode; label: string; desc: string }> = 
   { id: "plan", label: "计划模式", desc: "只读分析并先给出计划" },
 ];
 
+
+/// Renders a message's image attachments: live previews (data URLs sent at
+/// send time) or persisted file paths (loaded lazily via the backend).
+function AttachmentStrip({ metadataJson }: { metadataJson?: string | null }) {
+  const meta = useMemo(() => {
+    if (!metadataJson) return null;
+    try {
+      return JSON.parse(metadataJson) as {
+        attachment_previews?: string[];
+        attachments?: string[];
+      };
+    } catch {
+      return null;
+    }
+  }, [metadataJson]);
+  const [loaded, setLoaded] = useState<string[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const paths = meta?.attachments;
+    if (!paths || paths.length === 0) {
+      setLoaded([]);
+      return;
+    }
+    Promise.all(paths.map((path) => mediaApi.readAttachment(path).catch(() => "")))
+      .then((urls) => {
+        if (!cancelled) setLoaded(urls.filter(Boolean));
+      });
+    return () => { cancelled = true; };
+  }, [meta]);
+
+  const previews = meta?.attachment_previews?.length ? meta.attachment_previews : loaded;
+  if (!previews || previews.length === 0) return null;
+  return (
+    <div className="mb-2 flex flex-wrap gap-2">
+      {previews.map((src, index) => (
+        <img
+          key={index}
+          src={src}
+          alt={`附件 ${index + 1}`}
+          className="max-h-40 max-w-48 rounded-md border border-border object-contain"
+        />
+      ))}
+    </div>
+  );
+}
 
 function MessageContent({ content }: { content: string }) {
   const parts: Array<{ type: "text" | "think"; content: string }> = [];
@@ -166,6 +215,13 @@ export function ChatTab({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [permissionPolicy, setPermissionPolicy] = useState<PermissionPolicy>("ask_on_risk");
   const [workMode, setWorkMode] = useState<WorkMode>("direct");
+  // When on, switching a conversation to a different agent carries the prior
+  // transcript to the new agent (read at send time from localStorage).
+  const [handoffOn, setHandoffOn] = useState(
+    () => (localStorage.getItem("omnix_agent_handoff") ?? "true") !== "false"
+  );
+  // Image attachments for the next message (vision input).
+  const [attachments, setAttachments] = useState<ChatImageAttachment[]>([]);
   const [runtimeModels, setRuntimeModels] = useState<RuntimeModelOption[]>([]);
   const [selectedModelId, setSelectedModelId] = useState("agent_default");
   const [fullAccessConfirmed, setFullAccessConfirmed] = useState(false);
@@ -316,7 +372,7 @@ export function ChatTab({
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!chatInput.trim() || !runtimeAgentId || !selectedModel) return;
+    if ((!chatInput.trim() && attachments.length === 0) || !runtimeAgentId || !selectedModel) return;
     if (needsWorkspace) {
       onOpenWorkspaceModal?.();
       return;
@@ -349,7 +405,46 @@ export function ChatTab({
       model: selectedModel.selection,
       permission,
       workMode,
-    }, context);
+    }, context, attachments.length > 0 ? attachments : undefined);
+    setAttachments([]);
+  };
+
+  /** Reads a picked/pasted image file into a chat attachment (≤5MB, ≤4 张). */
+  const addAttachmentFile = (file: File) => {
+    if (!file.type.startsWith("image/")) return;
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error(`图片过大（>5MB）：${file.name}`);
+      return;
+    }
+    setAttachments((current) => {
+      if (current.length >= 4) {
+        toast.error("最多附带 4 张图片");
+        return current;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = String(reader.result || "");
+        const base64 = dataUrl.split(",", 2)[1] ?? "";
+        if (!base64) return;
+        setAttachments((latest) => latest.length >= 4 ? latest : [
+          ...latest,
+          { mime: file.type, data: base64, preview: dataUrl, name: file.name || "粘贴的图片" },
+        ]);
+      };
+      reader.readAsDataURL(file);
+      return current;
+    });
+  };
+
+  const handlePaste = (event: React.ClipboardEvent) => {
+    const items = Array.from(event.clipboardData?.items ?? []);
+    const imageItems = items.filter((item) => item.type.startsWith("image/"));
+    if (imageItems.length === 0) return;
+    event.preventDefault();
+    for (const item of imageItems) {
+      const file = item.getAsFile();
+      if (file) addAttachmentFile(file);
+    }
   };
 
   const openWorkspace = async () => {
@@ -460,6 +555,7 @@ export function ChatTab({
                         </button>
                       )}
                     </div>
+                    <AttachmentStrip metadataJson={message.metadata_json} />
                     <div className="whitespace-pre-wrap break-words">
                       <MessageContent content={message.content} />
                     </div>
@@ -492,17 +588,35 @@ export function ChatTab({
 
         <form onSubmit={handleSubmit} className="shrink-0 border-t border-border bg-background/95 p-5">
           <div className="mx-auto max-w-5xl rounded-md border border-border bg-card/60 p-3 shadow-lg">
+            {attachments.length > 0 && (
+              <div className="mb-2 flex flex-wrap gap-2">
+                {attachments.map((attachment, index) => (
+                  <div key={index} className="group relative h-16 w-16 overflow-hidden rounded-md border border-border">
+                    <img src={attachment.preview} alt={attachment.name} className="h-full w-full object-cover" />
+                    <button
+                      type="button"
+                      className="absolute right-0.5 top-0.5 rounded bg-background/80 p-0.5 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
+                      title="移除"
+                      onClick={() => setAttachments((current) => current.filter((_, i) => i !== index))}
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
             <Textarea
               ref={textareaRef}
               value={chatInput}
               onChange={(event) => setChatInput(event.target.value)}
+              onPaste={handlePaste}
               onKeyDown={(event) => {
                 if (event.key === "Enter" && !event.shiftKey) {
                   event.preventDefault();
                   event.currentTarget.form?.requestSubmit();
                 }
               }}
-              placeholder={`${activeAgent}，输入你要做的事情...`}
+              placeholder={`${activeAgent}，输入你要做的事情...（Ctrl+V 可粘贴截图）`}
               className="min-h-28 resize-none border-0 bg-transparent text-base leading-7 focus-visible:ring-0 focus-visible:ring-offset-0"
               style={{ maxHeight: "50vh" }}
             />
@@ -577,6 +691,44 @@ export function ChatTab({
                   <option key={option.id} value={option.id}>{option.label}</option>
                 ))}
               </select>
+
+              <button
+                type="button"
+                className={cn(
+                  "flex h-8 items-center gap-1.5 rounded-md border px-2 text-sm",
+                  handoffOn ? "border-primary/40 bg-primary/10 text-primary" : "border-border text-muted-foreground hover:text-foreground"
+                )}
+                title="切换 Agent 时，把此前对话的上下文一并交接给新 Agent"
+                onClick={() => {
+                  const next = !handoffOn;
+                  setHandoffOn(next);
+                  localStorage.setItem("omnix_agent_handoff", String(next));
+                }}
+              >
+                <GitBranch className="h-3.5 w-3.5" />
+                交接{handoffOn ? "开" : "关"}
+              </button>
+
+              <label
+                className={cn(
+                  "flex h-8 cursor-pointer items-center gap-1.5 rounded-md border px-2 text-sm",
+                  attachments.length > 0 ? "border-primary/40 bg-primary/10 text-primary" : "border-border text-muted-foreground hover:text-foreground"
+                )}
+                title="附带图片（也可直接 Ctrl+V 粘贴截图）"
+              >
+                <Paperclip className="h-3.5 w-3.5" />
+                {attachments.length > 0 ? `图片×${attachments.length}` : "图片"}
+                <input
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                  onChange={(event) => {
+                    for (const file of Array.from(event.target.files ?? [])) addAttachmentFile(file);
+                    event.target.value = "";
+                  }}
+                />
+              </label>
 
               {!isWorkspaceMode && (
                 <KnowledgePicker

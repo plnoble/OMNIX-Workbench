@@ -20,6 +20,7 @@ import { apiKeyApi } from "@/lib/tauri-api";
 // Quick-add presets (ZCF inspired): correct protocol + endpoint so users don't
 // mis-configure (e.g. Volcano as Anthropic). The user only adds the API Key.
 const PROVIDER_PRESETS: { id: string; label: string; api_type: ProviderType; api_address: string }[] = [
+  { id: "agnes", label: "Agnes AI（多模态：文本/生图/生视频）", api_type: "openai", api_address: "https://apihub.agnes-ai.com/v1" },
   { id: "deepseek", label: "DeepSeek", api_type: "openai", api_address: "https://api.deepseek.com/v1" },
   { id: "volcengine", label: "火山引擎（OpenAI 兼容）", api_type: "openai", api_address: "https://ark.cn-beijing.volces.com/api/v3" },
   { id: "openai", label: "OpenAI", api_type: "openai", api_address: "https://api.openai.com/v1" },

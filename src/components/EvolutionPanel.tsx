@@ -13,7 +13,9 @@ import {
   FolderGit2,
   GitPullRequestArrow,
   ListChecks,
+  Power,
   RefreshCw,
+  Trash2,
   X,
 } from "lucide-react";
 
@@ -51,6 +53,7 @@ export function EvolutionPanel() {
   const [proposals, setProposals] = useState<EvolutionProposal[]>([]);
   const [actions, setActions] = useState<ProtocolActionDraft[]>([]);
   const [busyId, setBusyId] = useState("");
+  const [pendingRemove, setPendingRemove] = useState<ProjectProtocolStatus | null>(null);
 
   // Embedding model (used for relevance/dedup of experience memories)
   const [embedModels, setEmbedModels] = useState<PlatformModel[]>([]);
@@ -140,6 +143,36 @@ export function EvolutionPanel() {
     }
   };
 
+  // Enable/disable a workspace's protocol without touching any disk files.
+  const toggleEnabled = async (r: ProjectProtocolStatus) => {
+    setBusyId(r.workspace_path);
+    try {
+      await projectProtocolApi.setEnabled(r.workspace_path, !r.enabled);
+      await loadRuns();
+      toast.success(r.enabled ? `已停用「${r.project_name}」的项目协议` : `已启用「${r.project_name}」的项目协议`);
+    } catch (error) {
+      toast.error(`切换失败：${error}`);
+    } finally {
+      setBusyId("");
+    }
+  };
+
+  // Remove a workspace from the Evolution Hub (DB records only — never disk files).
+  const removeWorkspace = async (r: ProjectProtocolStatus) => {
+    setBusyId(r.workspace_path);
+    try {
+      await projectProtocolApi.removeWorkspace(r.workspace_path);
+      if (selected === r.workspace_path) setSelected("");
+      await loadRuns();
+      toast.success(`已从进化中枢移除「${r.project_name}」`);
+    } catch (error) {
+      toast.error(`移除失败：${error}`);
+    } finally {
+      setBusyId("");
+      setPendingRemove(null);
+    }
+  };
+
   return (
     <section className="py-5">
       {/* Embedding model picker */}
@@ -188,13 +221,21 @@ export function EvolutionPanel() {
           <div className="space-y-2">
             {runs.map((r) => {
               const pending = r.pending_proposals + r.pending_actions;
+              const busy = busyId === r.workspace_path;
               return (
-                <button
+                <div
                   key={r.workspace_path}
-                  type="button"
+                  role="button"
+                  tabIndex={0}
                   onClick={() => setSelected(r.workspace_path)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      setSelected(r.workspace_path);
+                    }
+                  }}
                   className={cn(
-                    "w-full rounded-lg border p-3 text-left transition-colors",
+                    "group w-full cursor-pointer rounded-lg border p-3 text-left transition-colors",
                     selected === r.workspace_path
                       ? "border-primary bg-primary/5"
                       : "border-border hover:bg-muted/30",
@@ -202,11 +243,42 @@ export function EvolutionPanel() {
                 >
                   <div className="flex items-center justify-between gap-2">
                     <span className="truncate text-sm font-medium">{r.project_name}</span>
-                    {pending > 0 && (
-                      <span className="rounded-full bg-primary px-2 py-0.5 text-xs text-primary-foreground">
-                        {pending} 待办
-                      </span>
-                    )}
+                    <div className="flex shrink-0 items-center gap-1">
+                      {pending > 0 && (
+                        <span className="rounded-full bg-primary px-2 py-0.5 text-xs text-primary-foreground">
+                          {pending} 待办
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        title={r.enabled ? "停用项目协议" : "启用项目协议"}
+                        aria-label={r.enabled ? "停用项目协议" : "启用项目协议"}
+                        disabled={busy}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void toggleEnabled(r);
+                        }}
+                        className={cn(
+                          "rounded p-1 opacity-0 transition-opacity hover:bg-muted/40 group-hover:opacity-100 disabled:opacity-40",
+                          r.enabled ? "text-emerald-500" : "text-muted-foreground",
+                        )}
+                      >
+                        <Power className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        title="从进化中枢移除（不删除磁盘文件）"
+                        aria-label="移除工作区"
+                        disabled={busy}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setPendingRemove(r);
+                        }}
+                        className="rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100 disabled:opacity-40"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
                   </div>
                   <div className="mt-1 truncate text-xs text-muted-foreground" title={r.workspace_path}>
                     {shortPath(r.workspace_path)}
@@ -217,7 +289,7 @@ export function EvolutionPanel() {
                     </span>
                     {r.last_event_at && <span>· 最近事件 {r.last_event_at.slice(0, 16)}</span>}
                   </div>
-                </button>
+                </div>
               );
             })}
             {runs.length === 0 && (
@@ -342,6 +414,38 @@ export function EvolutionPanel() {
           )}
         </div>
       </div>
+
+      {/* Confirm remove-from-hub modal (DB records only, never disk files) */}
+      {pendingRemove && (
+        <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-lg border border-border bg-card p-5 shadow-xl">
+            <h3 className="m-0 mb-2 text-base font-semibold text-foreground">从进化中枢移除工作区？</h3>
+            <p className="mb-1 truncate text-sm text-muted-foreground" title={pendingRemove.workspace_path}>
+              「{pendingRemove.project_name}」· {shortPath(pendingRemove.workspace_path)}
+            </p>
+            <p className="mb-4 text-xs leading-5 text-muted-foreground">
+              仅从进化中枢的列表中移除，并清除 OMNIX 数据库里该工作区的协议事件、进化提案与动作。
+              <span className="text-foreground/80">不会删除磁盘上的任何文件</span>
+              （包括工作区里的 <code>.omx/</code> 记录和代码）。如只是暂时不用，建议改用「停用」。
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                className="rounded-md border border-border bg-muted/10 px-3 py-1.5 text-sm text-foreground hover:bg-muted/30"
+                onClick={() => setPendingRemove(null)}
+              >
+                取消
+              </button>
+              <button
+                className="rounded-md bg-destructive px-3 py-1.5 text-sm text-destructive-foreground hover:bg-destructive/90 disabled:opacity-50"
+                disabled={busyId === pendingRemove.workspace_path}
+                onClick={() => void removeWorkspace(pendingRemove)}
+              >
+                确认移除
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }

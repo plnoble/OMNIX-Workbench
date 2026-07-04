@@ -41,6 +41,10 @@ pub struct AnthropicContentBlock {
     #[serde(rename = "type")]
     pub block_type: String,
     pub text: Option<String>,
+    /// Anthropic image source (`{type:"base64", media_type, data}`) — kept as
+    /// raw JSON so vision content survives the gateway translation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<serde_json::Value>,
 }
 
 impl AnthropicMessageContent {
@@ -59,6 +63,53 @@ impl AnthropicMessageContent {
                 text_parts.join("\n")
             }
         }
+    }
+
+    /// OpenAI chat-completions content: a plain string for text-only messages
+    /// (identical to the old behavior), or a parts array when image blocks are
+    /// present — base64 sources become `image_url` data URLs so vision inputs
+    /// are no longer dropped by the gateway translation.
+    pub fn to_openai_content(&self) -> serde_json::Value {
+        let AnthropicMessageContent::Blocks(blocks) = self else {
+            return serde_json::Value::String(self.to_string_content());
+        };
+        let has_images = blocks.iter().any(|block| block.block_type == "image");
+        if !has_images {
+            return serde_json::Value::String(self.to_string_content());
+        }
+        let mut parts = Vec::new();
+        for block in blocks {
+            match block.block_type.as_str() {
+                "text" => {
+                    if let Some(text) = &block.text {
+                        parts.push(serde_json::json!({ "type": "text", "text": text }));
+                    }
+                }
+                "image" => {
+                    if let Some(source) = &block.source {
+                        let media_type = source
+                            .get("media_type")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("image/png");
+                        if let Some(data) = source.get("data").and_then(|value| value.as_str()) {
+                            parts.push(serde_json::json!({
+                                "type": "image_url",
+                                "image_url": { "url": format!("data:{media_type};base64,{data}") },
+                            }));
+                        } else if let Some(url) =
+                            source.get("url").and_then(|value| value.as_str())
+                        {
+                            parts.push(serde_json::json!({
+                                "type": "image_url",
+                                "image_url": { "url": url },
+                            }));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        serde_json::Value::Array(parts)
     }
 }
 
@@ -93,7 +144,9 @@ struct OpenAIRequestMessage {
 #[derive(Debug, Serialize)]
 struct OpenAIRequest {
     model: String,
-    messages: Vec<OpenAIRequestMessage>,
+    /// Plain-string content for text messages; a parts array when images ride
+    /// along (see `AnthropicMessageContent::to_openai_content`).
+    messages: Vec<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -568,19 +621,21 @@ async fn handle_messages_impl(
                 })
         }
     } else {
-        // Translate to OpenAI format (For OpenAI or Ollama)
+        // Translate to OpenAI format (For OpenAI or Ollama). Content becomes a
+        // parts array only when image blocks are present, so text-only flows
+        // keep their old plain-string shape.
         let mut messages = Vec::new();
         if let Some(sys_prompt) = payload.system {
-            messages.push(OpenAIRequestMessage {
-                role: "system".to_string(),
-                content: sys_prompt.to_string_content(),
-            });
+            messages.push(serde_json::json!({
+                "role": "system",
+                "content": sys_prompt.to_string_content(),
+            }));
         }
         for msg in payload.messages {
-            messages.push(OpenAIRequestMessage {
-                role: msg.role,
-                content: msg.content.to_string_content(),
-            });
+            messages.push(serde_json::json!({
+                "role": msg.role,
+                "content": msg.content.to_openai_content(),
+            }));
         }
 
         let openai_req = OpenAIRequest {
@@ -2037,13 +2092,13 @@ async fn post_remote_chat(
     // Try to send; if the session isn't active, resume then retry (mirrors the desktop flow).
     let text = body.text.trim();
     let rt = &state.runtime_manager;
-    if rt.send_message_with_display(&session_id, text, text).await.is_ok() {
+    if rt.send_message_with_display(&session_id, text, text, false).await.is_ok() {
         return (StatusCode::OK, "Success").into_response();
     }
     if let Err(e) = rt.resume_session(&session_id).await {
         return (StatusCode::BAD_REQUEST, format!("无法恢复会话: {}", e)).into_response();
     }
-    match rt.send_message_with_display(&session_id, text, text).await {
+    match rt.send_message_with_display(&session_id, text, text, false).await {
         Ok(_) => (StatusCode::OK, "Success").into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, format!("发送失败: {}", e)).into_response(),
     }

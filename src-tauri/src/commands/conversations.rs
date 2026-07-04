@@ -121,6 +121,9 @@ pub struct MessageInfo {
     pub role: String,
     pub content: String,
     pub timestamp: String,
+    /// Runtime enrichment (e.g. image attachment paths); "{}" when absent.
+    #[serde(default)]
+    pub metadata_json: Option<String>,
 }
 
 #[tauri::command]
@@ -130,7 +133,7 @@ pub fn get_conversation_messages(
 ) -> Result<Vec<MessageInfo>, String> {
     input_validation::validate_id(&conversation_id, "conversation_id")?;
     let conn = db.get_connection().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare("SELECT id, conversation_id, role, content, timestamp FROM messages WHERE conversation_id = ?1 ORDER BY timestamp ASC")
+    let mut stmt = conn.prepare("SELECT id, conversation_id, role, content, timestamp, metadata_json FROM messages WHERE conversation_id = ?1 ORDER BY timestamp ASC")
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map(params![conversation_id], |row| {
@@ -140,6 +143,7 @@ pub fn get_conversation_messages(
                 role: row.get(2)?,
                 content: row.get(3)?,
                 timestamp: row.get(4)?,
+                metadata_json: row.get(5).ok(),
             })
         })
         .map_err(|e| e.to_string())?;

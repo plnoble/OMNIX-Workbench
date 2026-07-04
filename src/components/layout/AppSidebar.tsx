@@ -27,7 +27,7 @@ interface AppSidebarProps {
   activeSessions: string[];
   onSelectConversation: (id: string) => void;
   onDeleteConversation: (id: string, e: MouseEvent) => void;
-  onArchiveConversation?: (id: string, e: MouseEvent) => void;
+  onArchiveConversation?: (id: string, title: string) => void;
   onOpenHistoryFullscreen?: () => void;
   onNewConversation: () => void;
   onOpenWorkspaceModal: () => void;
@@ -251,7 +251,7 @@ function ConversationSection({
   activeSessions: string[];
   onSelectConversation: (id: string) => void;
   onDelete: (conv: ConversationInfo) => void;
-  onArchiveConversation?: (id: string, e: MouseEvent) => void;
+  onArchiveConversation?: (id: string, title: string) => void;
 }) {
   return (
     <section className="min-h-0 flex-1 overflow-hidden border-b border-border last:border-b-0">
@@ -296,7 +296,7 @@ function ConversationSection({
                       aria-label="归档"
                       onClick={(e) => {
                         e.stopPropagation();
-                        onArchiveConversation(conv.id, e);
+                        onArchiveConversation(conv.id, conv.title);
                       }}
                       className="rounded p-1 text-muted-foreground hover:bg-warning/10 hover:text-warning"
                     >

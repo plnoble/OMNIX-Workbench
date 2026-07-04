@@ -10,7 +10,11 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AgentUpdateInfo,
   DetectedAgent,
+  MediaModelSuggestions,
+  MediaTask,
+  ProfileStats,
   AgentAccount,
   ConversationInfo,
   ConversationMessage,
@@ -193,8 +197,13 @@ export const runtimeApi = {
     permission: RuntimePermissionPolicy;
     work_mode: WorkMode;
   }) => invoke<AgentSessionRecord>("runtime_start_session", { request }),
-  sendMessage: (sessionId: string, prompt: string, displayText?: string) =>
-    invoke("runtime_send_message", { sessionId, prompt, displayText }),
+  sendMessage: (
+    sessionId: string,
+    prompt: string,
+    displayText?: string,
+    handoff?: boolean,
+    images?: Array<{ mime: string; data: string }>,
+  ) => invoke("runtime_send_message", { sessionId, prompt, displayText, handoff, images }),
   respondApproval: (params: {
     sessionId: string;
     requestId: string;
@@ -222,6 +231,34 @@ export const agentApi = {
   detectInstalled: () => invoke<DetectedAgent[]>("detect_installed_agents"),
   install: (agentName: string) => invoke("install_agent_cli", { agentName }),
   update: (agentName: string) => invoke("repair_installed_agent", { agentName }),
+  checkUpdates: () => invoke<AgentUpdateInfo[]>("check_agent_updates"),
+};
+
+export const profileApi = {
+  getStats: () => invoke<ProfileStats>("get_profile_stats"),
+};
+
+export const mediaApi = {
+  generateImage: (platformId: string, model: string, prompt: string, size: string) =>
+    invoke<MediaTask>("media_generate_image", { platformId, model, prompt, size }),
+  createVideoTask: (
+    platformId: string,
+    model: string,
+    prompt: string,
+    width: number,
+    height: number,
+    numFrames: number,
+    frameRate: number,
+    imageTaskId: string | null,
+  ) =>
+    invoke<MediaTask>("media_create_video_task", {
+      platformId, model, prompt, width, height, numFrames, frameRate, imageTaskId,
+    }),
+  listTasks: () => invoke<MediaTask[]>("media_list_tasks"),
+  deleteTask: (taskId: string) => invoke("media_delete_task", { taskId }),
+  readFile: (taskId: string) => invoke<string>("media_read_file", { taskId }),
+  readAttachment: (path: string) => invoke<string>("media_read_attachment", { path }),
+  modelSuggestions: () => invoke<MediaModelSuggestions>("media_model_suggestions"),
 };
 
 // Team and workspace runs
@@ -1316,6 +1353,10 @@ export const projectProtocolApi = {
     invoke<ProtocolInitPreview>("protocol_preview_init", { workspacePath, projectName }),
   initWorkspace: (workspacePath: string, projectName: string | undefined, enable: boolean) =>
     invoke<ProjectProtocolStatus>("protocol_init_workspace", { workspacePath, projectName, enable }),
+  setEnabled: (workspacePath: string, enabled: boolean) =>
+    invoke<void>("protocol_set_enabled", { workspacePath, enabled }),
+  removeWorkspace: (workspacePath: string) =>
+    invoke<void>("protocol_remove_workspace", { workspacePath }),
   recordEvent: (workspacePath: string, eventType: string, summary: string, detailsJson?: string) =>
     invoke<ProjectProtocolEvent>("protocol_record_event", { workspacePath, eventType, summary, detailsJson }),
   archiveAndDistill: (workspacePath: string, summary?: string) =>

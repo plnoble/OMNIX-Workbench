@@ -72,6 +72,8 @@ const McpTab = lazy(() => import("@/components/tabs/McpTab").then(m => ({ defaul
 const HooksTab = lazy(() => import("@/components/tabs/HooksTab").then(m => ({ default: m.HooksTab })));
 const NotesTab = lazy(() => import("@/components/tabs/NotesTab").then(m => ({ default: m.NotesTab })));
 const TranslateTab = lazy(() => import("@/components/tabs/TranslateTab").then(m => ({ default: m.TranslateTab })));
+const ProfileTab = lazy(() => import("@/components/tabs/ProfileTab").then(m => ({ default: m.ProfileTab })));
+const StudioTab = lazy(() => import("@/components/tabs/StudioTab").then(m => ({ default: m.StudioTab })));
 const SearchResourceTab = lazy(() => import("@/components/tabs/SearchResourceTab").then(m => ({ default: m.SearchResourceTab })));
 const QuickAssistantTab = lazy(() => import("@/components/tabs/QuickAssistantTab").then(m => ({ default: m.QuickAssistantTab })));
 const AssistantsTab = lazy(() => import("@/components/tabs/AssistantsTab").then(m => ({ default: m.AssistantsTab })));
@@ -142,6 +144,10 @@ function MainApp() {
   const [settingsSubTab, setSettingsSubTab] = useState<SettingsSubTab>("system");
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   const [showHistoryFullscreen, setShowHistoryFullscreen] = useState(false);
+  // Archive intent: both the sidebar and history view request archive here, and
+  // this shared dialog lets the user distill-then-archive or just archive.
+  const [pendingArchive, setPendingArchive] = useState<{ id: string; title: string } | null>(null);
+  const [archiving, setArchiving] = useState(false);
 
   // ── Initialization ────────────────────────────────
 
@@ -419,7 +425,7 @@ function MainApp() {
         activeSessions={convs.activeSessions}
         onSelectConversation={convs.selectConversation}
         onDeleteConversation={convs.deleteConversation}
-        onArchiveConversation={convs.archiveConversation}
+        onArchiveConversation={(id, title) => setPendingArchive({ id, title })}
         onOpenHistoryFullscreen={() => setShowHistoryFullscreen(true)}
         onNewConversation={convs.newConversation}
         onOpenWorkspaceModal={() => convs.setIsWorkspaceModalOpen(true)}
@@ -496,6 +502,8 @@ function MainApp() {
             {activeTab === "hooks" && <HooksTab />}
             {activeTab === "notes" && <NotesTab />}
             {activeTab === "translate" && <TranslateTab />}
+            {activeTab === "profile" && <ProfileTab />}
+            {activeTab === "studio" && <StudioTab />}
             {activeTab === "memories" && <MemoryTab />}
             {activeTab === "skills" && <SkillTab />}
             {activeTab === "knowledge" && <KnowledgeTab />}
@@ -963,12 +971,58 @@ function MainApp() {
           activeSessions={convs.activeSessions}
           onSelectConversation={convs.selectConversation}
           onDeleteConversation={convs.deleteConversation}
-          onArchiveConversation={convs.archiveConversation}
+          onArchiveConversation={(id, title) => setPendingArchive({ id, title })}
           onUnarchiveConversation={convs.unarchiveConversation}
           onNewConversation={convs.newConversation}
           onLoadArchived={convs.loadArchivedConversations}
           onClose={() => setShowHistoryFullscreen(false)}
         />
+      )}
+
+      {/* Archive confirm — distill-then-archive, or archive only. */}
+      {pendingArchive && (
+        <div className="fixed inset-0 z-[1100] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-md border border-border bg-card p-5 shadow-xl">
+            <h3 className="m-0 mb-2 text-base font-semibold text-foreground">归档会话</h3>
+            <p className="mb-1 break-words text-sm text-muted-foreground line-clamp-3">"{pendingArchive.title}"</p>
+            <p className="mb-4 text-xs leading-5 text-muted-foreground">
+              可先把这次对话蒸馏成经验（进入进化中枢待审），再归档。没什么营养的对话直接归档即可。
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                className="rounded-md border border-border bg-muted/10 px-3 py-1.5 text-sm text-foreground hover:bg-muted/30 disabled:opacity-50"
+                disabled={archiving}
+                onClick={() => setPendingArchive(null)}
+              >
+                取消
+              </button>
+              <button
+                className="rounded-md border border-border px-3 py-1.5 text-sm text-foreground hover:bg-muted/30 disabled:opacity-50"
+                disabled={archiving}
+                onClick={async () => {
+                  const target = pendingArchive;
+                  setArchiving(true);
+                  try { await convs.archiveConversation(target.id, false); }
+                  finally { setArchiving(false); setPendingArchive(null); }
+                }}
+              >
+                只归档
+              </button>
+              <button
+                className="rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                disabled={archiving}
+                onClick={async () => {
+                  const target = pendingArchive;
+                  setArchiving(true);
+                  try { await convs.archiveConversation(target.id, true); }
+                  finally { setArchiving(false); setPendingArchive(null); }
+                }}
+              >
+                {archiving ? "处理中…" : "蒸馏并归档"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

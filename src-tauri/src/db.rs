@@ -1152,6 +1152,27 @@ impl DbManager {
             )",
             [],
         );
+        // Media generation tasks (image + async video). Files live under
+        // ~/.omnix/media/; only paths and provider metadata are stored here.
+        let _ = conn.execute(
+            "CREATE TABLE IF NOT EXISTS media_tasks (
+                id TEXT PRIMARY KEY,
+                platform_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                model TEXT NOT NULL,
+                prompt TEXT NOT NULL,
+                params_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'pending',
+                progress INTEGER NOT NULL DEFAULT 0,
+                external_id TEXT NULL,
+                result_path TEXT NULL,
+                raw_response TEXT NULL,
+                error TEXT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        );
 
         Ok(())
     }

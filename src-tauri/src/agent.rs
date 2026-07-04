@@ -108,6 +108,75 @@ pub struct DetectedAgent {
     pub status: String, // "installed", "not_installed", "broken"
 }
 
+/// Update status of an installed agent CLI: its installed version vs the latest
+/// published on npm. (Borrowed from Nezha's agent-version awareness.)
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentUpdateInfo {
+    pub name: String,
+    pub current: String,
+    pub latest: Option<String>,
+    pub has_update: bool,
+    /// npm package name, or `None` for agents not distributed via npm.
+    pub package: Option<String>,
+}
+
+/// The npm package an agent CLI ships as (without the `@latest` tag), or `None`
+/// for agents installed by a non-npm mechanism (e.g. Antigravity's installer).
+pub fn npm_package_for_agent(display_name: &str) -> Option<&'static str> {
+    match display_name {
+        "Claude Code" => Some("@anthropic-ai/claude-code"),
+        "Codex" => Some("@openai/codex"),
+        "Gemini CLI" => Some("@google/gemini-cli"),
+        "Qwen Code" => Some("@qwen-code/qwen-code"),
+        "OpenCode" => Some("opencode-ai"),
+        "GitHub Copilot CLI" => Some("@github/copilot-cli"),
+        _ => None,
+    }
+}
+
+/// Extracts the first `x.y.z` semver from a CLI `--version` string, which often
+/// carries extra text (e.g. "codex-cli 0.9.1 (rust)").
+pub fn extract_semver(raw: &str) -> Option<String> {
+    let bytes = raw.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_digit() {
+            let start = i;
+            let mut dots = 0;
+            while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
+                if bytes[i] == b'.' {
+                    dots += 1;
+                }
+                i += 1;
+            }
+            if dots >= 2 {
+                return Some(raw[start..i].trim_end_matches('.').to_string());
+            }
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
+/// True when `current` is a strictly older semver than `latest`. Missing/unparsable
+/// components compare as 0; a parse failure returns false (never nags spuriously).
+pub fn semver_is_older(current: &str, latest: &str) -> bool {
+    fn parts(v: &str) -> [u64; 3] {
+        let mut out = [0u64; 3];
+        for (i, seg) in v.split('.').take(3).enumerate() {
+            out[i] = seg
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect::<String>()
+                .parse()
+                .unwrap_or(0);
+        }
+        out
+    }
+    parts(current) < parts(latest)
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AcpTask {
     pub id: String,
@@ -1750,6 +1819,41 @@ async fn log_cron_run_failure(db: &DbManager, task_id: &str, err_msg: &str) {
 mod tests {
     use super::*;
     use std::time::SystemTime;
+
+    #[test]
+    fn extract_semver_pulls_version_from_noisy_output() {
+        assert_eq!(extract_semver("0.9.1").as_deref(), Some("0.9.1"));
+        assert_eq!(
+            extract_semver("codex-cli 0.9.1 (rust)").as_deref(),
+            Some("0.9.1")
+        );
+        assert_eq!(
+            extract_semver("gemini-cli version 0.46.0").as_deref(),
+            Some("0.46.0")
+        );
+        assert_eq!(extract_semver("no version here").as_deref(), None);
+        // Two-component strings are not a semver we act on.
+        assert_eq!(extract_semver("v1.2").as_deref(), None);
+    }
+
+    #[test]
+    fn semver_older_detects_available_update() {
+        assert!(semver_is_older("0.46.0", "0.47.0"));
+        assert!(semver_is_older("1.2.3", "1.2.4"));
+        assert!(semver_is_older("1.9.0", "2.0.0"));
+        assert!(!semver_is_older("0.47.0", "0.47.0"));
+        assert!(!semver_is_older("1.0.0", "0.9.9"));
+    }
+
+    #[test]
+    fn npm_package_map_covers_acp_agents() {
+        assert_eq!(npm_package_for_agent("OpenCode"), Some("opencode-ai"));
+        assert_eq!(
+            npm_package_for_agent("Qwen Code"),
+            Some("@qwen-code/qwen-code")
+        );
+        assert_eq!(npm_package_for_agent("Google Antigravity"), None);
+    }
 
     #[tokio::test]
     #[ignore = "manual integration test; depends on full seeded database initialization"]

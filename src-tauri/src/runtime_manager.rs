@@ -13,13 +13,14 @@ use serde_json::Value;
 use crate::db::DbManager;
 use crate::runtime::{
     agent_definition, build_claude_user_message, build_codex_approval_response,
-    build_codex_initialize_request, build_codex_thread_resume_request,
+    build_conversation_handoff_context, build_codex_initialize_request,
+    build_codex_thread_resume_request,
     build_codex_thread_start_request, build_codex_turn_start_request, build_launch_spec,
     build_resume_launch_spec, create_agent_session_record, get_agent_session_record,
     list_runtime_events, parse_claude_event, parse_codex_message, record_runtime_event,
     record_user_message, update_agent_session_status, AdapterKind, AgentId, AgentSessionConfig,
-    AgentSessionRecord, AgentSessionStatus, PermissionPolicy, RuntimeEvent, RuntimeEventKind,
-    WorkMode,
+    AgentSessionRecord, AgentSessionStatus, ImageAttachment, PermissionPolicy, RuntimeEvent,
+    RuntimeEventKind, WorkMode,
 };
 use crate::runtime_acp::{
     build_acp_cancel_notification, build_acp_error_response, build_acp_initialize_request,
@@ -52,12 +53,25 @@ struct ActiveSession {
     /// JSON-RPC request id string. Lets `respond_approval` map an approve/reject
     /// back to an option id without scanning the whole event table.
     acp_pending_approvals: AsyncMutex<HashMap<String, Value>>,
+    /// Whether the ACP agent declared `promptCapabilities.image` at initialize —
+    /// gates image attachments per-agent (gemini/opencode declare it).
+    acp_supports_images: AtomicBool,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionEventEnvelope {
     pub session_id: String,
     pub event: RuntimeEvent,
+}
+
+/// Everything that makes up one outgoing user turn (see `send_user_message`).
+pub struct OutgoingUserMessage<'a> {
+    pub prompt: &'a str,
+    pub display_text: &'a str,
+    pub with_handoff: bool,
+    pub images: &'a [ImageAttachment],
+    /// Persisted onto the transcript row (e.g. attachment file paths).
+    pub metadata: serde_json::Value,
 }
 
 pub struct RuntimeManager {
@@ -160,6 +174,7 @@ impl RuntimeManager {
             acp_model_config_id: RwLock::new(None),
             acp_in_thought: AtomicBool::new(false),
             acp_pending_approvals: AsyncMutex::new(HashMap::new()),
+            acp_supports_images: AtomicBool::new(false),
         });
         self.active
             .write()
@@ -268,23 +283,67 @@ impl RuntimeManager {
 
     #[cfg(test)]
     pub async fn send_message(&self, session_id: &str, prompt: &str) -> Result<(), String> {
-        self.send_message_with_display(session_id, prompt, prompt)
+        self.send_message_with_display(session_id, prompt, prompt, false)
             .await
     }
 
+    /// Back-compat wrapper for text-only senders (team runs, phone remote).
     pub async fn send_message_with_display(
         &self,
         session_id: &str,
         prompt: &str,
         display_text: &str,
+        with_handoff: bool,
+    ) -> Result<(), String> {
+        self.send_user_message(
+            session_id,
+            OutgoingUserMessage {
+                prompt,
+                display_text,
+                with_handoff,
+                images: &[],
+                metadata: serde_json::json!({}),
+            },
+        )
+        .await
+    }
+
+    /// Sends a user message to the running agent.
+    /// - `with_handoff`: the user just switched this conversation to a different
+    ///   agent — the prior transcript is prepended (sent to the agent, never
+    ///   shown in the bubble; only `display_text` + `metadata` are recorded).
+    /// - `images`: inline attachments, translated per adapter (Claude base64
+    ///   blocks / ACP image blocks, capability-gated). Codex has no known image
+    ///   input on the app-server protocol yet and rejects with a clear error.
+    pub async fn send_user_message(
+        &self,
+        session_id: &str,
+        message: OutgoingUserMessage<'_>,
     ) -> Result<(), String> {
         let active = self.active_session(session_id).await?;
-        record_user_message(&self.db, session_id, display_text)?;
+        // Build the handoff block from the earlier exchange BEFORE recording this
+        // turn, so it never contains the message being sent right now.
+        let owned_prompt;
+        let prompt: &str = if message.with_handoff {
+            match build_conversation_handoff_context(&self.db, &active.config.conversation_id) {
+                Some(context) => {
+                    owned_prompt = format!("{context}\n\n{}", message.prompt);
+                    &owned_prompt
+                }
+                None => message.prompt,
+            }
+        } else {
+            message.prompt
+        };
+        record_user_message(&self.db, session_id, message.display_text, message.metadata)?;
         match agent_definition(active.config.agent).runtime_adapter {
             AdapterKind::ClaudeStreamJson => {
-                write_json_line(&active, &build_claude_user_message(prompt)).await
+                write_json_line(&active, &build_claude_user_message(prompt, message.images)).await
             }
             AdapterKind::CodexAppServer => {
+                if !message.images.is_empty() {
+                    return Err("Codex 暂不支持图片输入；请改用 Claude Code 或 Gemini CLI".into());
+                }
                 let thread_id = wait_for_external_session(&active).await?;
                 let request_id = active.next_request_id.fetch_add(1, Ordering::Relaxed);
                 let request =
@@ -292,9 +351,22 @@ impl RuntimeManager {
                 write_json_line(&active, &request).await
             }
             AdapterKind::Acp => {
+                if !message.images.is_empty()
+                    && !active.acp_supports_images.load(Ordering::SeqCst)
+                {
+                    return Err(format!(
+                        "{} 未声明图片输入能力，无法带图发送",
+                        active.config.agent.display_name()
+                    ));
+                }
                 let session_id_ext = wait_for_external_session(&active).await?;
                 let request_id = active.next_request_id.fetch_add(1, Ordering::Relaxed);
-                let request = build_acp_prompt_request(request_id, &session_id_ext, prompt);
+                let request = build_acp_prompt_request(
+                    request_id,
+                    &session_id_ext,
+                    prompt,
+                    message.images,
+                );
                 write_json_line(&active, &request).await
             }
         }
@@ -636,6 +708,15 @@ async fn handle_acp_line(
                     .and_then(|value| value.as_str())
                 {
                     *active.acp_model_config_id.write().await = Some(config_id.to_string());
+                }
+                // Capture the agent's prompt capabilities (initialize response)
+                // so image attachments can be gated per-agent.
+                if let Some(image) = event
+                    .metadata
+                    .pointer("/acp_prompt_capabilities/image")
+                    .and_then(|value| value.as_bool())
+                {
+                    active.acp_supports_images.store(image, Ordering::SeqCst);
                 }
                 if let Some(external_id) = event.external_session_id.clone() {
                     *active.external_session_id.write().await = Some(external_id);

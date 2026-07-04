@@ -210,7 +210,7 @@ async fn execute_turn(
         update_worker(&db, worker_id, "running", Some(&session_id), None, false)?;
     }
     runtime
-        .send_message_with_display(&session_id, &prompt, &prompt)
+        .send_message_with_display(&session_id, &prompt, &prompt, false)
         .await?;
     let future = async {
         let mut answer = String::new();

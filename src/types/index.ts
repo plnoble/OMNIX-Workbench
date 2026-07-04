@@ -13,6 +13,58 @@ export interface DetectedAgent {
   status: "installed" | "not_installed" | "not_found" | "broken";
 }
 
+/** An installed agent CLI's version vs the latest published on npm. */
+export interface AgentUpdateInfo {
+  name: string;
+  current: string;
+  latest: string | null;
+  has_update: boolean;
+  package: string | null;
+}
+
+/** Personal AI-coding activity stats (heatmap + streaks + share card). */
+export interface ProfileDay {
+  day: string;
+  count: number;
+}
+export interface ProfileAgentCount {
+  agent: string;
+  count: number;
+}
+export interface ProfileStats {
+  total_prompts: number;
+  total_conversations: number;
+  total_sessions: number;
+  total_tokens: number;
+  active_days: number;
+  current_streak: number;
+  longest_streak: number;
+  first_active: string | null;
+  per_agent: ProfileAgentCount[];
+  daily: ProfileDay[];
+}
+
+/** A media generation task (image or async video) shown in the 创作 Studio. */
+export interface MediaTask {
+  id: string;
+  platform_id: string;
+  kind: "image" | "video";
+  model: string;
+  prompt: string;
+  params_json: string;
+  status: "pending" | "running" | "completed" | "failed";
+  progress: number;
+  external_id: string | null;
+  result_path: string | null;
+  error: string | null;
+  created_at: string;
+}
+
+export interface MediaModelSuggestions {
+  image: string[];
+  video: string[];
+}
+
 /** An agent account with API credentials for model routing */
 export interface AgentAccount {
   id: string;
@@ -41,6 +93,18 @@ export interface ConversationMessage {
   role: "user" | "assistant" | "system";
   content: string;
   timestamp: string;
+  /** Runtime enrichment, e.g. {"attachments": [paths]} for vision inputs. */
+  metadata_json?: string | null;
+}
+
+/** An image the user attaches to a chat message (vision input). */
+export interface ChatImageAttachment {
+  mime: string;
+  /** Raw base64 (no data-URL prefix) — sent to the agent. */
+  data: string;
+  /** Data URL for composer/bubble preview (frontend only). */
+  preview: string;
+  name: string;
 }
 
 /** A top-level workspace or team run */

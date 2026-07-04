@@ -1,6 +1,6 @@
 [package]
 name = "omnix-workbench"
-version = "0.3.0"
+version = "0.5.0"
 description = "Multi-Agent development and collaboration workbench"
 authors = ["OMNIX Workbench Contributors"]
 edition = "2021"
@@ -18,7 +18,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+# `protocol-asset` serves ~/.omnix/media files to <img>/<video> via asset://
+# (scoped in tauri.conf.json security.assetProtocol).
+tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-opener = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-clipboard-manager = "2"

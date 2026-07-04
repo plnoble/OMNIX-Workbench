@@ -898,6 +898,55 @@ pub fn protocol_list_runs(
     Ok(out)
 }
 
+/// Enables or disables the project protocol for a workspace without touching
+/// disk files. Disabled workspaces stop auto-recording and memory injection but
+/// stay in the Evolution Hub list (as "未启用"). Matches the stored path as-is.
+#[tauri::command]
+pub fn protocol_set_enabled(
+    workspace_path: String,
+    enabled: bool,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<(), String> {
+    let conn = db.get_connection().map_err(|e| e.to_string())?;
+    let affected = conn
+        .execute(
+            "UPDATE project_protocol_runs SET enabled = ?2, updated_at = CURRENT_TIMESTAMP
+             WHERE workspace_path = ?1",
+            params![workspace_path, if enabled { 1 } else { 0 }],
+        )
+        .map_err(|e| e.to_string())?;
+    if affected == 0 {
+        return Err(format!("未找到协议工作区: {workspace_path}"));
+    }
+    Ok(())
+}
+
+/// Removes a workspace from the Evolution Hub: deletes its protocol run, events,
+/// evolution proposals and actions from OMNIX's database. Does NOT delete any
+/// files on disk (the workspace's `.omx/` records and code are left untouched).
+#[tauri::command]
+pub fn protocol_remove_workspace(
+    workspace_path: String,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<(), String> {
+    let mut conn = db.get_connection().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    for table in [
+        "project_protocol_events",
+        "evolution_proposals",
+        "protocol_actions",
+        "project_protocol_runs",
+    ] {
+        tx.execute(
+            &format!("DELETE FROM {table} WHERE workspace_path = ?1"),
+            params![workspace_path],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// List recorded protocol events for a workspace (newest first). The event viewer.
 /// Uses the stored workspace path as-is (no filesystem check) so it still works if
 /// the folder was moved/deleted.

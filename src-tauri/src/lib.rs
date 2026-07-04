@@ -10,6 +10,7 @@ mod event_bus;
 mod hash;
 mod input_validation;
 mod knowledge;
+mod media;
 mod model_knowledge;
 mod prompt_guard;
 mod proxy;
@@ -174,6 +175,10 @@ pub fn run() {
             // Start background tasks once the Tokio runtime is fully initialized by Tauri
             agent_manager.start_services();
 
+            // Poll pending video-generation tasks (Agnes AI etc.) and push
+            // progress to the Studio via `media-task-update` events.
+            commands::start_media_poller(app.handle().clone(), Arc::clone(&db));
+
             // Fit the initial logical size to the current monitor. Windows can otherwise
             // clamp a 1280x800 window at high DPI while WebView keeps the oversized layout.
             if let Some(main) = app.get_webview_window("main") {
@@ -293,6 +298,8 @@ pub fn run() {
             commands::protocol_get_status,
             commands::protocol_preview_init,
             commands::protocol_init_workspace,
+            commands::protocol_set_enabled,
+            commands::protocol_remove_workspace,
             commands::protocol_record_event,
             commands::protocol_archive_and_distill,
             commands::protocol_list_runs,
@@ -317,6 +324,15 @@ pub fn run() {
             commands::send_agent_stdin,
             commands::stop_agent_session,
             commands::install_agent_cli,
+            commands::check_agent_updates,
+            commands::get_profile_stats,
+            commands::media_generate_image,
+            commands::media_create_video_task,
+            commands::media_list_tasks,
+            commands::media_delete_task,
+            commands::media_read_file,
+            commands::media_read_attachment,
+            commands::media_model_suggestions,
             commands::uninstall_agent_cli,
             commands::repair_installed_agent,
             commands::sync_external_agent_configs,

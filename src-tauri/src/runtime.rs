@@ -683,7 +683,12 @@ pub fn record_runtime_event(
     transaction.commit().map_err(|error| error.to_string())
 }
 
-pub fn record_user_message(db: &DbManager, session_id: &str, text: &str) -> Result<(), String> {
+pub fn record_user_message(
+    db: &DbManager,
+    session_id: &str,
+    text: &str,
+    metadata: serde_json::Value,
+) -> Result<(), String> {
     if text.trim().is_empty() {
         return Err("user message must not be empty".into());
     }
@@ -697,9 +702,78 @@ pub fn record_user_message(db: &DbManager, session_id: &str, text: &str) -> Resu
             external_turn_id: None,
             item_id: None,
             request_id: None,
-            metadata: serde_json::json!({}),
+            metadata,
         },
     )
+}
+
+/// Most recent turns included when handing a conversation to another agent.
+const HANDOFF_MAX_MESSAGES: i64 = 24;
+/// Per-message character cap in the handoff block (long replies are truncated).
+const HANDOFF_PER_MESSAGE_CHARS: usize = 1200;
+/// Overall character budget for the handoff block.
+const HANDOFF_TOTAL_CHARS: usize = 8000;
+
+/// Builds a transcript context block from a conversation's prior messages so a
+/// newly-switched-to agent can continue seamlessly. Returns `None` when the
+/// conversation has no prior messages. (Borrowed from Synara's provider handoff.)
+///
+/// Call this BEFORE recording the current user turn so the block contains only
+/// the earlier exchange, not the message being sent now.
+pub fn build_conversation_handoff_context(
+    db: &DbManager,
+    conversation_id: &str,
+) -> Option<String> {
+    let conn = db.get_connection().ok()?;
+    let mut statement = conn
+        .prepare(
+            "SELECT role, content FROM messages
+             WHERE conversation_id = ?1 AND role IN ('user', 'assistant')
+             ORDER BY timestamp DESC, rowid DESC
+             LIMIT ?2",
+        )
+        .ok()?;
+    let rows = statement
+        .query_map(params![conversation_id, HANDOFF_MAX_MESSAGES], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .ok()?;
+    let mut recent: Vec<(String, String)> = rows.filter_map(Result::ok).collect();
+    recent.reverse(); // oldest → newest
+
+    let mut lines = Vec::new();
+    let mut total = 0usize;
+    for (role, content) in recent {
+        let who = match role.as_str() {
+            "user" => "用户",
+            "assistant" => "助手",
+            _ => continue,
+        };
+        let content = content.trim();
+        if content.is_empty() {
+            continue;
+        }
+        let snippet = if content.chars().count() > HANDOFF_PER_MESSAGE_CHARS {
+            format!(
+                "{} …",
+                content.chars().take(HANDOFF_PER_MESSAGE_CHARS).collect::<String>()
+            )
+        } else {
+            content.to_string()
+        };
+        total += snippet.chars().count();
+        lines.push(format!("{who}：{snippet}"));
+        if total >= HANDOFF_TOTAL_CHARS {
+            break;
+        }
+    }
+    if lines.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "【交接上下文】以下是本次对话此前与另一个 Agent 的记录。请阅读后无缝接手继续，不要重复已完成的工作，也不要重新自我介绍：\n\n{}\n\n【以上为历史记录，下面是用户发给你的新消息】",
+        lines.join("\n")
+    ))
 }
 
 pub fn update_agent_session_status(
@@ -887,12 +961,30 @@ pub fn build_codex_initialize_request(id: u64) -> serde_json::Value {
     )
 }
 
-pub fn build_claude_user_message(prompt: &str) -> serde_json::Value {
+/// An inline image the user attached to a chat message (base64, no data URL
+/// prefix). Adapters translate it into their protocol's image block.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageAttachment {
+    pub mime: String,
+    pub data: String,
+}
+
+pub fn build_claude_user_message(prompt: &str, images: &[ImageAttachment]) -> serde_json::Value {
+    let mut content = Vec::with_capacity(images.len() + 1);
+    // Anthropic-standard image blocks; Claude Code stream-json accepts them in
+    // user messages the same way the Messages API does.
+    for image in images {
+        content.push(serde_json::json!({
+            "type": "image",
+            "source": { "type": "base64", "media_type": image.mime, "data": image.data },
+        }));
+    }
+    content.push(serde_json::json!({ "type": "text", "text": prompt }));
     serde_json::json!({
         "type": "user",
         "message": {
             "role": "user",
-            "content": [{ "type": "text", "text": prompt }],
+            "content": content,
         }
     })
 }
@@ -1401,7 +1493,8 @@ pub fn build_resume_launch_spec(
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_definition, build_claude_user_message, build_codex_approval_response, AdapterKind,
+        agent_definition, build_claude_user_message, build_codex_approval_response,
+        build_conversation_handoff_context, AdapterKind,
         build_codex_initialize_request, build_codex_thread_resume_request,
         build_codex_thread_start_request, build_launch_spec, build_resume_launch_spec,
         create_agent_session_record, evaluate_model_compatibility, get_agent_session_record,
@@ -1539,6 +1632,50 @@ mod tests {
     }
 
     #[test]
+    fn handoff_context_summarizes_prior_transcript() {
+        let db_path = std::env::temp_dir().join(format!(
+            "omnix_handoff_{}.sqlite",
+            chrono::Utc::now().timestamp_micros()
+        ));
+        let db = DbManager::new_runtime_test(db_path.clone());
+        let conn = db.get_connection().expect("db connection");
+        conn.execute(
+            "INSERT INTO conversations (id, title, workspace_path, active_agent) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["conv-h", "Handoff", "D:/work", "Claude Code"],
+        )
+        .expect("conversation seed");
+        for (i, (role, content)) in [
+            ("user", "帮我实现登录接口"),
+            ("assistant", "已完成 login handler，返回 JWT"),
+            ("user", "再加上限流"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            conn.execute(
+                "INSERT INTO messages (id, conversation_id, role, content) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![format!("m{i}"), "conv-h", role, content],
+            )
+            .expect("message seed");
+        }
+        drop(conn);
+
+        let context = build_conversation_handoff_context(&db, "conv-h").expect("handoff context");
+        assert!(context.contains("交接上下文"));
+        assert!(context.contains("用户：帮我实现登录接口"));
+        assert!(context.contains("助手：已完成 login handler"));
+        // Chronological order: the first turn appears before the last.
+        assert!(
+            context.find("帮我实现登录接口").unwrap() < context.find("再加上限流").unwrap()
+        );
+        // A conversation with no messages yields no block.
+        assert!(build_conversation_handoff_context(&db, "conv-empty").is_none());
+
+        drop(db);
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
     fn session_and_assistant_event_survive_database_round_trip() {
         let db_path = std::env::temp_dir().join(format!(
             "omnix_runtime_session_{}.sqlite",
@@ -1625,7 +1762,8 @@ mod tests {
         create_agent_session_record(&db, "session-state", &config).expect("session record");
         update_agent_session_status(&db, "session-state", AgentSessionStatus::Starting, None)
             .expect("mark starting");
-        record_user_message(&db, "session-state", "运行测试").expect("persist user message");
+        record_user_message(&db, "session-state", "运行测试", serde_json::json!({}))
+            .expect("persist user message");
         update_agent_session_status(&db, "session-state", AgentSessionStatus::Cancelled, None)
             .expect("cancel session");
 
@@ -1716,8 +1854,26 @@ mod tests {
     }
 
     #[test]
+    fn claude_user_message_places_image_blocks_before_text() {
+        let with_image = build_claude_user_message(
+            "看图",
+            &[super::ImageAttachment {
+                mime: "image/png".into(),
+                data: "aGVsbG8=".into(),
+            }],
+        );
+        let blocks = with_image["message"]["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0]["type"], "image");
+        assert_eq!(blocks[0]["source"]["type"], "base64");
+        assert_eq!(blocks[0]["source"]["media_type"], "image/png");
+        assert_eq!(blocks[0]["source"]["data"], "aGVsbG8=");
+        assert_eq!(blocks[1]["type"], "text");
+    }
+
+    #[test]
     fn structured_input_and_resume_requests_match_agent_protocols() {
-        let claude = build_claude_user_message("修复测试");
+        let claude = build_claude_user_message("修复测试", &[]);
         let resume = build_codex_thread_resume_request(7, "thread-existing");
         let approval = build_codex_approval_response(
             "19",

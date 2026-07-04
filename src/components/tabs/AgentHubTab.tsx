@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Bot,
   CheckCircle2,
@@ -19,7 +19,7 @@ import { AGENT_NAMES } from "@/lib/constants";
 import { agentApi, agentBindingApi, runtimeApi } from "@/lib/tauri-api";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/sonner";
-import type { AgentAccount, DetectedAgent, PlatformModel, RuntimeAgentCatalogEntry } from "@/types";
+import type { AgentAccount, AgentUpdateInfo, DetectedAgent, PlatformModel, RuntimeAgentCatalogEntry } from "@/types";
 import type { AgentPlatformBinding } from "@/lib/tauri-api";
 
 interface AgentHubTabProps {
@@ -83,6 +83,8 @@ export function AgentHubTab({
   const [selectedAgent, setSelectedAgent] = useState(activeAgent || FEATURED_AGENTS[0]);
   const [busyAgent, setBusyAgent] = useState<string | null>(null);
   const [runtimeCatalog, setRuntimeCatalog] = useState<RuntimeAgentCatalogEntry[]>([]);
+  const [updates, setUpdates] = useState<Record<string, AgentUpdateInfo>>({});
+  const [checkingUpdates, setCheckingUpdates] = useState(false);
 
   useEffect(() => {
     setLocalAgents(detectedAgents);
@@ -92,6 +94,23 @@ export function AgentHubTab({
     agentBindingApi.getAll().then(setBindings).catch(() => setBindings([]));
     runtimeApi.getAgentCatalog().then(setRuntimeCatalog).catch(() => setRuntimeCatalog([]));
   }, []);
+
+  // Check installed agents against npm latest so we can flag available updates.
+  const checkUpdates = useCallback(async () => {
+    setCheckingUpdates(true);
+    try {
+      const list = await agentApi.checkUpdates();
+      setUpdates(Object.fromEntries(list.map((info) => [info.name, info])));
+    } catch (error) {
+      toast.error(`检查更新失败：${error}`);
+    } finally {
+      setCheckingUpdates(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void checkUpdates();
+  }, [checkUpdates, localAgents.length]);
 
   const agents = useMemo(() => {
     const names = [...FEATURED_AGENTS, ...AGENT_NAMES.filter((name) => !FEATURED_AGENTS.includes(name))];
@@ -140,6 +159,7 @@ export function AgentHubTab({
         const list = await agentApi.detectInstalled();
         setLocalAgents(list);
         setRuntimeCatalog(await runtimeApi.getAgentCatalog());
+        void checkUpdates();
         toast.success(`${agentName} 已更新`);
       }
     } catch (error) {
@@ -194,6 +214,10 @@ export function AgentHubTab({
             {busyAgent ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
             重新检测
           </Button>
+          <Button variant="outline" onClick={() => void checkUpdates()} disabled={checkingUpdates} title="检查各 Agent CLI 是否有新版本">
+            {checkingUpdates ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+            检查更新
+          </Button>
         </div>
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -221,17 +245,27 @@ export function AgentHubTab({
                   {agent.runtime?.runtime_status === "pending" ? "待适配" : agent.installed ? "已检测" : "未安装"}
                 </Badge>
               </div>
-              <div className="mt-5 text-xl font-semibold">{agent.name}</div>
+              <div className="mt-5 flex items-center gap-2 text-xl font-semibold">
+                {agent.name}
+                {updates[agent.name]?.has_update && (
+                  <Badge variant="warning" className="text-[10px]">可更新</Badge>
+                )}
+              </div>
               <div className="mt-2 text-sm text-muted-foreground">
                 {agent.installed
                   ? `${agent.runtime?.installation_source === "managed" ? "OMNIX 托管" : "系统安装"} · ${agent.detected?.version || "版本未知"}`
                   : "需要安装对应 CLI 后才能启动"}
               </div>
+              {updates[agent.name]?.has_update && (
+                <div className="mt-1 text-xs text-warning">
+                  有新版本 {updates[agent.name].latest} （当前 {updates[agent.name].current}）
+                </div>
+              )}
               <div className="mt-4 rounded-md border border-border bg-background/50 p-3">
                 <div className="text-xs text-muted-foreground">当前模型</div>
                 <div className="mt-1 truncate text-sm font-medium">{agent.currentModel}</div>
               </div>
-              <div className="mt-4 flex gap-2">
+              <div className="mt-4 flex flex-wrap gap-2">
                 <Button
                   size="sm"
                   type="button"
@@ -245,6 +279,26 @@ export function AgentHubTab({
                   <Play className="h-3.5 w-3.5" />
                   开始工作
                 </Button>
+                {agent.installed && updates[agent.name]?.has_update && (
+                  <Button
+                    size="sm"
+                    type="button"
+                    variant="outline"
+                    disabled={busyAgent === agent.name}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void runAgentAction(agent.name, "update");
+                    }}
+                    title={`更新到 ${updates[agent.name].latest}`}
+                  >
+                    {busyAgent === agent.name ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Download className="h-3.5 w-3.5" />
+                    )}
+                    更新
+                  </Button>
+                )}
                 <Button
                   size="sm"
                   type="button"

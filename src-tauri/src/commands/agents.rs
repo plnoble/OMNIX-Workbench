@@ -110,6 +110,71 @@ pub async fn install_agent_cli(
     agent_manager.install_agent(&agent_name).await
 }
 
+/// Checks each installed agent CLI's version against the latest published on
+/// npm, so the UI can surface an "update available" badge. npm registry queries
+/// run concurrently; a query failure (offline, private package) yields
+/// `has_update: false` rather than a spurious prompt.
+#[tauri::command]
+pub async fn check_agent_updates(
+    agent_manager: State<'_, Arc<AgentManager>>,
+) -> Result<Vec<crate::agent::AgentUpdateInfo>, String> {
+    use crate::agent::{extract_semver, npm_package_for_agent, semver_is_older, AgentUpdateInfo};
+
+    let installed: Vec<(String, String, &'static str)> = agent_manager
+        .detect_agents()
+        .into_iter()
+        .filter(|agent| agent.status == "installed")
+        .filter_map(|agent| {
+            npm_package_for_agent(&agent.name).map(|package| (agent.name, agent.version, package))
+        })
+        .collect();
+
+    let mut handles = Vec::new();
+    for (name, version, package) in installed {
+        handles.push(tokio::task::spawn_blocking(move || {
+            let current = extract_semver(&version).unwrap_or(version);
+            let latest = npm_latest_version(package);
+            let has_update = latest
+                .as_deref()
+                .is_some_and(|latest| semver_is_older(&current, latest));
+            AgentUpdateInfo {
+                name,
+                current,
+                latest,
+                has_update,
+                package: Some(package.to_string()),
+            }
+        }));
+    }
+
+    let mut results = Vec::new();
+    for handle in handles {
+        if let Ok(info) = handle.await {
+            results.push(info);
+        }
+    }
+    Ok(results)
+}
+
+/// Returns the latest published version of an npm package via `npm view`, or
+/// `None` if the query fails (offline, not found, timeout).
+fn npm_latest_version(package: &str) -> Option<String> {
+    let npm = if cfg!(windows) { "npm.cmd" } else { "npm" };
+    let output = std::process::Command::new(npm)
+        .args(["view", package, "version"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if version.is_empty() {
+        None
+    } else {
+        Some(version)
+    }
+}
+
 #[tauri::command]
 pub async fn uninstall_agent_cli(
     agent_name: String,

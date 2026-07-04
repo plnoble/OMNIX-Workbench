@@ -269,7 +269,20 @@ fn parse_response(value: &Value, line: &str) -> Vec<RuntimeEvent> {
             .map(str::to_string);
         return vec![event];
     }
-    // `initialize` response and any other successful result: keep as raw log.
+    // `initialize` response: surface the agent's prompt capabilities so the
+    // manager can gate image attachments per-agent.
+    if let Some(capabilities) = value.pointer("/result/agentCapabilities/promptCapabilities") {
+        let mut event = RuntimeEvent::new(
+            RuntimeEventKind::RawLog,
+            json!({
+                "acp_prompt_capabilities": capabilities.clone(),
+                "raw": value,
+            }),
+        );
+        event.text = Some(line.to_string());
+        return vec![event];
+    }
+    // Any other successful result: keep as raw log.
     let mut event = RuntimeEvent::new(RuntimeEventKind::RawLog, value.clone());
     event.text = Some(line.to_string());
     vec![event]
@@ -390,14 +403,25 @@ pub fn build_acp_new_session_request(id: u64, cwd: &str) -> Value {
     })
 }
 
-pub fn build_acp_prompt_request(id: u64, session_id: &str, prompt: &str) -> Value {
+pub fn build_acp_prompt_request(
+    id: u64,
+    session_id: &str,
+    prompt: &str,
+    images: &[crate::runtime::ImageAttachment],
+) -> Value {
+    let mut blocks = Vec::with_capacity(images.len() + 1);
+    // ACP ImageContent (schema v1, camelCase): { type:"image", data, mimeType }.
+    for image in images {
+        blocks.push(json!({ "type": "image", "data": image.data, "mimeType": image.mime }));
+    }
+    blocks.push(json!({ "type": "text", "text": prompt }));
     json!({
         "jsonrpc": "2.0",
         "id": id,
         "method": "session/prompt",
         "params": {
             "sessionId": session_id,
-            "prompt": [ { "type": "text", "text": prompt } ]
+            "prompt": blocks
         }
     })
 }
@@ -520,11 +544,40 @@ mod tests {
 
     #[test]
     fn prompt_request_carries_text_content_block() {
-        let request = build_acp_prompt_request(7, "sess-1", "hello");
+        let request = build_acp_prompt_request(7, "sess-1", "hello", &[]);
         assert_eq!(request["method"], "session/prompt");
         assert_eq!(request["params"]["sessionId"], "sess-1");
         assert_eq!(request["params"]["prompt"][0]["type"], "text");
         assert_eq!(request["params"]["prompt"][0]["text"], "hello");
+    }
+
+    #[test]
+    fn prompt_request_places_image_blocks_before_text() {
+        let images = vec![crate::runtime::ImageAttachment {
+            mime: "image/png".into(),
+            data: "aGVsbG8=".into(),
+        }];
+        let request = build_acp_prompt_request(7, "sess-1", "看看这张图", &images);
+        let blocks = request["params"]["prompt"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0]["type"], "image");
+        assert_eq!(blocks[0]["mimeType"], "image/png");
+        assert_eq!(blocks[0]["data"], "aGVsbG8=");
+        assert_eq!(blocks[1]["type"], "text");
+    }
+
+    #[test]
+    fn initialize_response_surfaces_prompt_capabilities() {
+        let line = r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true,"promptCapabilities":{"image":true,"audio":false}}}}"#;
+        match classify_acp_message(line).expect("classify") {
+            AcpInbound::Emit(events) => {
+                assert_eq!(
+                    events[0].metadata.pointer("/acp_prompt_capabilities/image"),
+                    Some(&Value::Bool(true))
+                );
+            }
+            other => panic!("expected Emit, got {other:?}"),
+        }
     }
 
     #[test]

@@ -14,12 +14,13 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { toast } from "sonner";
 import { listen, emit } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import { conversationApi, ptyApi, agentApi, runtimeApi, checkpointApi } from "@/lib/tauri-api";
+import { conversationApi, ptyApi, agentApi, runtimeApi, checkpointApi, modelApi, distillationApi } from "@/lib/tauri-api";
 import { getRuntimeAgentId, loadAgentRegistry } from "@/lib/agentRegistry";
 import { processTerminalStream, detectInteractivePrompts, detectMistakes } from "@/lib/terminal";
 import { AGENT_NAMES } from "@/lib/constants";
 import type {
   AcpModelOption,
+  ChatImageAttachment,
   ConversationInfo,
   ConversationMessage,
   DetectedAgent,
@@ -84,11 +85,11 @@ export interface UseConversationsReturn {
   newConversation: () => void;
   saveWorkspaceChat: () => Promise<void>;
   deleteConversation: (id: string, event: React.MouseEvent) => Promise<void>;
-  archiveConversation: (id: string, event: React.MouseEvent) => Promise<void>;
+  archiveConversation: (id: string, distill: boolean) => Promise<void>;
   unarchiveConversation: (id: string) => Promise<void>;
   loadArchivedConversations: () => Promise<void>;
   archivedConversations: ConversationInfo[];
-  sendMessage: (e: React.FormEvent, config: RuntimeSendConfig, searchContext?: string) => Promise<void>;
+  sendMessage: (e: React.FormEvent, config: RuntimeSendConfig, searchContext?: string, images?: ChatImageAttachment[]) => Promise<void>;
   respondToApproval: (approved: boolean, forSession?: boolean) => Promise<void>;
   sendStdinDirect: (input: string) => Promise<void>;
   stopAgentSession: (sessionId: string) => Promise<void>;
@@ -539,8 +540,28 @@ export function useConversations(
     await loadConversations();
   }, [currentConvId, loadConversations, newConversation]);
 
-  const archiveConversation = useCallback(async (id: string, event: React.MouseEvent) => {
-    event.stopPropagation();
+  const archiveConversation = useCallback(async (id: string, distill: boolean) => {
+    // Optionally distill the conversation into the evolution inbox before
+    // archiving. Distillation is best-effort: a failure (or no model) never
+    // blocks the archive, so a low-value chat can always just be archived.
+    if (distill) {
+      try {
+        const models = await modelApi.getActive();
+        const model = models[0];
+        if (!model) {
+          toast.warning("没有可用模型，已直接归档（未蒸馏）");
+        } else {
+          const modelId = `${model.platform_id}:${model.model_name}`;
+          toast.info("正在蒸馏后归档…");
+          const candidates = await distillationApi.generate(id, modelId);
+          toast.success(candidates.length > 0
+            ? `已蒸馏 ${candidates.length} 条候选（进化中枢待审），并归档`
+            : "本次对话无可蒸馏内容，已归档");
+        }
+      } catch (e) {
+        toast.error(`蒸馏失败，仍已归档：${e}`);
+      }
+    }
     try {
       await conversationApi.archive(id);
     } catch (e) {
@@ -625,9 +646,10 @@ export function useConversations(
     e: React.FormEvent,
     config: RuntimeSendConfig,
     searchContext?: string,
+    images?: ChatImageAttachment[],
   ) => {
     e.preventDefault();
-    if (!chatInput.trim()) return;
+    if (!chatInput.trim() && !(images && images.length > 0)) return;
 
     const agent = runtimeAgentId(activeAgent);
     if (!agent) {
@@ -640,18 +662,23 @@ export function useConversations(
     }
 
     // Build message content — inject search context if provided (AingDesk inspired)
-    const displayContent = chatInput;
+    const displayContent = chatInput.trim() || "（图片）";
     const agentContent = searchContext
       ? `${chatInput}\n\n---\n[联网搜索结果]\n${searchContext}`
       : chatInput;
 
-    // Append user message immediately (display original question)
+    // Append user message immediately (display original question). Attachment
+    // previews ride in metadata so the bubble shows thumbnails right away; the
+    // persisted row later carries file paths instead.
     const userMsg: ConversationMessage = {
       id: `msg_u_${Date.now()}`,
       conversation_id: convId,
       role: "user",
       content: displayContent,
       timestamp: new Date().toISOString(),
+      metadata_json: images && images.length > 0
+        ? JSON.stringify({ attachment_previews: images.map((image) => image.preview) })
+        : undefined,
     };
     setMessages((prev) => [...prev, userMsg]);
     // Show a waiting indicator until the session starts and the first token arrives.
@@ -666,7 +693,7 @@ export function useConversations(
       checkpointApi.create(chatWorkspace, convId, snippet || "改动前检查点").catch(() => undefined);
     }
 
-    const inputMsg = agentContent;
+    const inputMsg = agentContent.trim() || "请查看附带的图片。";
     setChatInput("");
 
     const startRuntimeSession = async () => {
@@ -701,6 +728,12 @@ export function useConversations(
         || session.config.permission.kind !== config.permission.kind
         || JSON.stringify(session.config.model) !== JSON.stringify(config.model)
       );
+      // Hand off the prior transcript when the user switched this conversation to
+      // a DIFFERENT agent, so the new agent continues with context. Gated by a
+      // persisted toggle; the backend no-ops if there's no prior transcript.
+      const priorAgent = session?.config.agent;
+      const handoffEnabled = (localStorage.getItem("omnix_agent_handoff") ?? "true") !== "false";
+      const isHandoff = handoffEnabled && !!priorAgent && priorAgent !== agent;
       if (!session || configChanged || !sessionId) {
         if (configChanged && sessionId && activeRuntimeConversationsRef.current.includes(convId)) {
           await runtimeApi.stopSession(sessionId).catch((error) => {
@@ -714,8 +747,12 @@ export function useConversations(
         conversationByRuntimeSessionRef.current[sessionId] = convId;
       }
 
+      if (isHandoff) {
+        toast.info(`已把此前对话的上下文交接给 ${activeAgent}`);
+      }
+      const wireImages = images?.map((image) => ({ mime: image.mime, data: image.data }));
       try {
-        await runtimeApi.sendMessage(sessionId, inputMsg, displayContent);
+        await runtimeApi.sendMessage(sessionId, inputMsg, displayContent, isHandoff, wireImages);
       } catch (error) {
         const canResume = !!session.external_session_id;
         if (!canResume || !String(error).includes("not running")) throw error;
@@ -723,7 +760,7 @@ export function useConversations(
         setRuntimeActiveConversations((current) =>
           current.includes(convId) ? current : [...current, convId]
         );
-        await runtimeApi.sendMessage(sessionId, inputMsg, displayContent);
+        await runtimeApi.sendMessage(sessionId, inputMsg, displayContent, isHandoff, wireImages);
       }
     } catch (err) {
       console.error("[useConversations] Failed to send runtime message:", err);

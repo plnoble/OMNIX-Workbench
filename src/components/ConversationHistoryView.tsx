@@ -18,7 +18,7 @@ interface ConversationHistoryViewProps {
   activeSessions: string[];
   onSelectConversation: (id: string) => void;
   onDeleteConversation: (id: string, e: React.MouseEvent) => void;
-  onArchiveConversation: (id: string, e: React.MouseEvent) => void;
+  onArchiveConversation: (id: string, title: string) => void;
   onUnarchiveConversation: (id: string) => void;
   onNewConversation: () => void;
   onLoadArchived: () => void;
@@ -202,7 +202,7 @@ export function ConversationHistoryView({
                     {tab === "active" ? (
                       <button
                         type="button"
-                        onClick={(e) => onArchiveConversation(conv.id, e)}
+                        onClick={() => onArchiveConversation(conv.id, conv.title)}
                         className="text-xs px-2.5 py-1 rounded border border-border bg-muted/10 hover:bg-amber-500/10 hover:border-amber-500/30 hover:text-amber-500 text-muted-foreground transition-colors cursor-pointer flex items-center gap-1"
                       >
                         <Archive className="h-3 w-3" /> 归档
