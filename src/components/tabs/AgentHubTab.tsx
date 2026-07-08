@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { AGENT_NAMES } from "@/lib/constants";
 import { agentApi, agentBindingApi, runtimeApi } from "@/lib/tauri-api";
+import { getRuntimeAgentId, isAcpAgent } from "@/lib/agentRegistry";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/sonner";
 import type { AgentAccount, AgentUpdateInfo, DetectedAgent, PlatformModel, RuntimeAgentCatalogEntry } from "@/types";
@@ -85,6 +86,10 @@ export function AgentHubTab({
   const [runtimeCatalog, setRuntimeCatalog] = useState<RuntimeAgentCatalogEntry[]>([]);
   const [updates, setUpdates] = useState<Record<string, AgentUpdateInfo>>({});
   const [checkingUpdates, setCheckingUpdates] = useState(false);
+  // Free-form custom model (per agent). For ACP agents it maps to the ACP model
+  // preference (session/set_config_option); for others to a builtin binding.
+  const [customModel, setCustomModel] = useState("");
+  const [savingCustom, setSavingCustom] = useState(false);
 
   useEffect(() => {
     setLocalAgents(detectedAgents);
@@ -132,6 +137,48 @@ export function AgentHubTab({
   }, [accounts, bindings, localAgents, runtimeCatalog]);
 
   const selected = agents.find((agent) => agent.name === selectedAgent) ?? agents[0];
+  const selectedIsAcp = selected ? isAcpAgent(selected.name) : false;
+
+  // Load the current custom model for the selected agent (ACP: preference key;
+  // others: the builtin binding value).
+  useEffect(() => {
+    if (!selected) { setCustomModel(""); return; }
+    if (isAcpAgent(selected.name)) {
+      const wireId = getRuntimeAgentId(selected.name);
+      if (wireId) {
+        runtimeApi.getAgentModelPreference(wireId).then(setCustomModel).catch(() => setCustomModel(""));
+        return;
+      }
+    }
+    setCustomModel(selected.binding?.binding_kind === "builtin" ? selected.binding.builtin_model ?? "" : "");
+  }, [selected]);
+
+  const saveCustomModel = async () => {
+    if (!selected) return;
+    const model = customModel.trim();
+    setSavingCustom(true);
+    try {
+      if (selectedIsAcp) {
+        const wireId = getRuntimeAgentId(selected.name);
+        if (!wireId) throw new Error("无法解析 Agent 运行时 ID");
+        await runtimeApi.setAgentModelPreference(wireId, model);
+        toast.success(model ? `已为 ${selected.name} 设置自定义模型：${model}` : "已清除自定义模型（用 Agent 默认）");
+      } else if (model) {
+        await agentBindingApi.setBuiltin(selected.name, model);
+        setBindings(await agentBindingApi.getAll());
+        toast.success(`已为 ${selected.name} 绑定自定义模型：${model}`);
+      } else {
+        await agentBindingApi.remove(selected.name);
+        setBindings(await agentBindingApi.getAll());
+        toast.success("已清除模型绑定（用 Agent 默认）");
+      }
+    } catch (error) {
+      toast.error("保存自定义模型失败", { description: String(error) });
+    } finally {
+      setSavingCustom(false);
+    }
+  };
+
   const savedModelOptions = activeModels.map((model) => ({
     value: `omnix::${model.platform_id}::${model.model_name}`,
     label: `${model.model_name} · ${model.platform_id}`,
@@ -358,6 +405,29 @@ export function AgentHubTab({
                 <p className="mt-2 text-xs leading-5 text-muted-foreground">
                   Agent 默认沿用 CLI 自己的配置；Agent 官方模型由 CLI 直连；OMNIX 模型使用模型中心中已启用的供应商。运行时仍会检查协议兼容性。
                 </p>
+
+                {/* Free-form custom model — beyond the preset dropdown above. */}
+                <div className="mt-3 border-t border-border pt-3">
+                  <div className="mb-1.5 text-xs font-medium">自定义模型</div>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={customModel}
+                      onChange={(event) => setCustomModel(event.target.value)}
+                      placeholder={selectedIsAcp ? "如 gemini-2.5-pro / glm-4.6，直接填写" : "如 claude-opus-4，作为 --model 传入"}
+                      className="h-9 min-w-0 flex-1 rounded-md border border-border bg-background px-2 text-sm"
+                      onKeyDown={(event) => { if (event.key === "Enter") void saveCustomModel(); }}
+                    />
+                    <Button size="sm" variant="outline" disabled={savingCustom} onClick={() => void saveCustomModel()}>
+                      保存
+                    </Button>
+                  </div>
+                  <p className="mt-1.5 text-xs leading-5 text-muted-foreground">
+                    {selectedIsAcp
+                      ? "ACP Agent（Gemini/Qwen/OpenCode/Copilot）：下次会话经 set_config_option 下发，可填 Agent 未在列表里声明的模型。留空＝用 Agent 默认。"
+                      : "Claude Code / Codex：作为自带模型（--model）绑定。留空并保存＝清除绑定，回到 Agent 默认。"}
+                  </p>
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-2">

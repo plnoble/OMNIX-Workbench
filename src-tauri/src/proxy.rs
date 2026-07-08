@@ -385,9 +385,10 @@ async fn handle_messages_impl(
         },
         None => None,
     };
-    let key_health = session_upstream.as_ref().map(|upstream| KeyHealthContext {
+    let mut key_health = session_upstream.as_ref().map(|upstream| KeyHealthContext {
         db: Arc::clone(&state.db),
         key_ids: upstream.key_ids.clone(),
+        platform_id: Some(upstream.platform_id.clone()),
     });
 
     let target_account_id = headers
@@ -428,7 +429,8 @@ async fn handle_messages_impl(
                 "SELECT pm.model_name, pm.platform_id, pm.has_vision, pm.has_reasoning, pm.has_coding, mp.api_key, mp.api_address, mp.api_type
                  FROM platform_models pm
                  JOIN model_platforms mp ON pm.platform_id = mp.id
-                 WHERE pm.is_enabled = 1 AND mp.is_enabled = 1"
+                 WHERE pm.is_enabled = 1 AND mp.is_enabled = 1
+                   AND (mp.is_healthy = 1 OR mp.circuit_opened_at <= datetime('now', '-60 seconds'))"
             )?;
             let rows = stmt.query_map([], |row| {
                 let has_vis: i32 = row.get(2)?;
@@ -480,12 +482,13 @@ async fn handle_messages_impl(
         }
     }
 
-    let (api_host, api_type, actual_model_name, keys) = if let Some(upstream) = session_upstream {
+    let (api_host, api_type, actual_model_name, keys, circuit_platform_id) = if let Some(upstream) = session_upstream {
         (
             upstream.api_address,
             upstream.api_type,
             upstream.model_name,
             upstream.keys,
+            Some(upstream.platform_id),
         )
     } else {
         match resolve_model_upstream_for_agent(
@@ -493,7 +496,7 @@ async fn handle_messages_impl(
             &resolved_model,
             Some(&agent_name_for_routing),
         ) {
-            Ok((api_key_raw, api_host, api_type, actual_model_name)) => (
+            Ok((api_key_raw, api_host, api_type, actual_model_name, platform_id)) => (
                 api_host,
                 api_type,
                 actual_model_name,
@@ -503,6 +506,7 @@ async fn handle_messages_impl(
                     .filter(|key| !key.is_empty())
                     .map(str::to_string)
                     .collect(),
+                Some(platform_id),
             ),
             Err(e) => {
                 return (
@@ -513,6 +517,17 @@ async fn handle_messages_impl(
             }
         }
     };
+    // On the agent-routing path key_health was None (built only for sessions);
+    // backfill it so circuit outcomes are recorded against the resolved platform.
+    if key_health.is_none() {
+        if let Some(platform_id) = circuit_platform_id.clone() {
+            key_health = Some(KeyHealthContext {
+                db: Arc::clone(&state.db),
+                key_ids: Vec::new(),
+                platform_id: Some(platform_id),
+            });
+        }
+    }
 
     if keys.is_empty() && api_type != "ollama" {
         return (
@@ -825,6 +840,9 @@ enum ApiKeyHeader {
 struct KeyHealthContext {
     db: Arc<DbManager>,
     key_ids: Vec<Option<String>>,
+    /// Platform behind this request, for per-platform circuit breaking. `None`
+    /// when the upstream isn't an OMNIX-managed platform (e.g. bare relay).
+    platform_id: Option<String>,
 }
 
 fn record_key_health(
@@ -845,6 +863,36 @@ fn record_key_health(
              WHERE id = ?4",
             params![status, error, latency_ms, key_id],
         );
+    }
+}
+
+/// Feed a request's final outcome into the platform circuit breaker: a 2xx
+/// closes/keeps the circuit healthy, a 5xx or network error trips it toward
+/// open. 4xx (auth/rate/bad-request) is a key/client issue — left neutral so a
+/// bad key never marks the whole platform down. Called once per request.
+fn record_circuit_outcome(context: &KeyHealthContext, status: Option<reqwest::StatusCode>, error: Option<&str>) {
+    let Some(platform_id) = context.platform_id.as_deref() else {
+        return;
+    };
+    match status {
+        Some(code) if code.is_success() => {
+            crate::circuit_breaker::record_success(&context.db, platform_id);
+        }
+        Some(code) if code.is_server_error() => {
+            crate::circuit_breaker::record_failure(
+                &context.db,
+                platform_id,
+                &format!("HTTP {code}"),
+            );
+        }
+        Some(_) => {} // 4xx: not a platform-health signal.
+        None => {
+            crate::circuit_breaker::record_failure(
+                &context.db,
+                platform_id,
+                error.unwrap_or("upstream network error"),
+            );
+        }
     }
 }
 
@@ -891,6 +939,9 @@ async fn send_with_key_failover(
                     last_error = Some(format!("upstream returned {status}"));
                     continue;
                 }
+                if let Some(context) = health.as_ref() {
+                    record_circuit_outcome(context, Some(status), None);
+                }
                 return Ok(response);
             }
             Err(error) if index + 1 < attempts.len() => {
@@ -914,10 +965,15 @@ async fn send_with_key_failover(
                         Some(&error.to_string()),
                         started_at.elapsed().as_millis() as i64,
                     );
+                    record_circuit_outcome(context, None, Some(&error.to_string()));
                 }
                 return Err(format!("Upstream request failed: {error}"));
             }
         }
+    }
+    // Every attempt exhausted without a returnable response (all keys failed).
+    if let Some(context) = health.as_ref() {
+        record_circuit_outcome(context, None, last_error.as_deref());
     }
     Err(last_error.unwrap_or_else(|| "No upstream API key attempt was made".into()))
 }
@@ -944,6 +1000,7 @@ async fn handle_responses_for_session(
     let health = KeyHealthContext {
         db: Arc::clone(&state.db),
         key_ids: upstream.key_ids.clone(),
+        platform_id: Some(upstream.platform_id.clone()),
     };
 
     if upstream.api_type == "openai-response" {
@@ -1226,7 +1283,8 @@ async fn handle_openai_forward_impl(
                 "SELECT pm.model_name, pm.platform_id, pm.has_vision, pm.has_reasoning, pm.has_coding, mp.api_key, mp.api_address, mp.api_type
                  FROM platform_models pm
                  JOIN model_platforms mp ON pm.platform_id = mp.id
-                 WHERE pm.is_enabled = 1 AND mp.is_enabled = 1"
+                 WHERE pm.is_enabled = 1 AND mp.is_enabled = 1
+                   AND (mp.is_healthy = 1 OR mp.circuit_opened_at <= datetime('now', '-60 seconds'))"
             )?;
             let rows = stmt.query_map([], |row| {
                 let has_vis: i32 = row.get(2)?;
@@ -1278,7 +1336,7 @@ async fn handle_openai_forward_impl(
         }
     }
 
-    let (api_key_raw, api_host, api_type, actual_model_name) =
+    let (api_key_raw, api_host, api_type, actual_model_name, circuit_platform_id) =
         match resolve_model_upstream_for_agent(
             &state.db,
             &resolved_model,
@@ -1396,6 +1454,7 @@ async fn handle_openai_forward_impl(
             }
             Err(e) => {
                 log::warn!("OMNIX Proxy (OpenAI Route): Upstream request failed: {}", e);
+                crate::circuit_breaker::record_failure(&state.db, &circuit_platform_id, &e.to_string());
                 return (
                     StatusCode::BAD_GATEWAY,
                     format!("Failed to connect to upstream LLM API: {}", e),
@@ -1405,6 +1464,12 @@ async fn handle_openai_forward_impl(
         };
 
         let status = upstream_res.status();
+        // Feed the platform circuit breaker: 2xx heals, 5xx trips; 4xx is neutral.
+        if status.is_success() {
+            crate::circuit_breaker::record_success(&state.db, &circuit_platform_id);
+        } else if status.is_server_error() {
+            crate::circuit_breaker::record_failure(&state.db, &circuit_platform_id, &format!("HTTP {status}"));
+        }
         if !status.is_success() {
             let err_body = upstream_res.text().await.unwrap_or_default();
             log::warn!(
@@ -2513,16 +2578,18 @@ fn resolve_session_model_upstream(
 fn resolve_model_upstream(
     db: &DbManager,
     target_model_name: &str,
-) -> Result<(String, String, String, String), String> {
+) -> Result<(String, String, String, String, String), String> {
     resolve_model_upstream_for_agent(db, target_model_name, None)
 }
 
-/// Resolve upstream with optional agent name for per-agent routing (CC Switch inspired)
+/// Resolve upstream with optional agent name for per-agent routing (CC Switch inspired).
+/// Returns `(api_key, api_host, api_type, actual_model_name, platform_id)` — the
+/// trailing `platform_id` lets the caller attribute circuit-breaker outcomes.
 fn resolve_model_upstream_for_agent(
     db: &DbManager,
     target_model_name: &str,
     agent_name: Option<&str>,
-) -> Result<(String, String, String, String), String> {
+) -> Result<(String, String, String, String, String), String> {
     let conn = db.get_connection().map_err(|e| e.to_string())?;
 
     // 0. Check per-agent platform binding (CC Switch inspired)
@@ -2546,7 +2613,7 @@ fn resolve_model_upstream_for_agent(
             let (platform_id, model_name, api_key, api_address, api_type) = row;
             let decrypted_key = crate::crypto::decrypt(&api_key);
             println!("OMNIX Router: Agent '{}' bound to platform '{}' → {}", agent, platform_id, model_name);
-            return Ok((decrypted_key, api_address, api_type, model_name));
+            return Ok((decrypted_key, api_address, api_type, model_name, platform_id));
         }
     }
 
@@ -2573,7 +2640,7 @@ fn resolve_model_upstream_for_agent(
         let platform_opt = platform_opt.map(|(k, a, t)| (crate::crypto::decrypt(&k), a, t));
 
         if let Some((api_key, api_address, api_type)) = platform_opt {
-            return Ok((api_key, api_address, api_type, model_name.to_string()));
+            return Ok((api_key, api_address, api_type, model_name.to_string(), platform_id.to_string()));
         }
     }
 
@@ -2650,18 +2717,19 @@ fn resolve_model_upstream_for_agent(
                     candidate.2.clone(),
                     candidate.3.clone(),
                     candidate.6.clone(),
+                    candidate.0.clone(),
                 ));
             }
         }
 
         // Fallback to first candidate
         let c = &same_priority[0];
-        return Ok((c.1.clone(), c.2.clone(), c.3.clone(), c.6.clone()));
+        return Ok((c.1.clone(), c.2.clone(), c.3.clone(), c.6.clone(), c.0.clone()));
     }
 
     // 3. Fallback to any healthy active platform
     let mut stmt = conn.prepare(
-        "SELECT api_key, api_address, api_type, name FROM model_platforms WHERE is_enabled = 1 AND is_healthy = 1 ORDER BY priority DESC, weight DESC LIMIT 1"
+        "SELECT id, api_key, api_address, api_type FROM model_platforms WHERE is_enabled = 1 AND is_healthy = 1 ORDER BY priority DESC, weight DESC LIMIT 1"
     ).map_err(|e| e.to_string())?;
 
     let fallback_opt = stmt
@@ -2675,12 +2743,13 @@ fn resolve_model_upstream_for_agent(
         })
         .ok();
 
-    if let Some((api_key, api_address, api_type, _name)) = fallback_opt {
+    if let Some((platform_id, api_key, api_address, api_type)) = fallback_opt {
         return Ok((
             api_key,
             api_address,
             api_type,
             target_model_name.to_string(),
+            platform_id,
         ));
     }
 
@@ -2848,7 +2917,7 @@ async fn handle_embeddings(
     };
 
     // Resolve the model to an upstream platform
-    let (api_key, api_address, api_type, actual_model) =
+    let (api_key, api_address, api_type, actual_model, _circuit_platform_id) =
         match resolve_model_upstream(&state.db, &model_name) {
             Ok(res) => res,
             Err(e) => {

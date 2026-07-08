@@ -99,6 +99,16 @@ pub struct DailyUsage {
     pub cost_usd: f64,
 }
 
+/// Per-platform usage rollup for the cost dashboard's by-platform breakdown.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlatformUsage {
+    pub platform: String,
+    pub request_count: i64,
+    pub total_tokens: i64,
+    pub error_count: i64,
+    pub cost_usd: f64,
+}
+
 /// Sum estimated cost across every model in a query that yields
 /// `(model, SUM(prompt_tokens), SUM(completion_tokens))` rows.
 fn sum_cost(conn: &rusqlite::Connection, sql: &str) -> f64 {
@@ -222,6 +232,57 @@ pub fn get_usage_stats(db: State<'_, Arc<DbManager>>) -> Result<UsageStats, Stri
         top_models,
         hourly_distribution,
     })
+}
+
+/// Per-platform usage rollup (requests, tokens, errors, estimated cost). Cost is
+/// summed per-model within each platform so each model uses its own rate; the
+/// empty platform (direct/unknown upstream) is labelled for display.
+#[tauri::command]
+pub fn get_platform_usage(db: State<'_, Arc<DbManager>>) -> Result<Vec<PlatformUsage>, String> {
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT platform, model, COUNT(*), SUM(total_tokens), SUM(prompt_tokens),
+                    SUM(completion_tokens), SUM(is_error)
+             FROM request_logs GROUP BY platform, model",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, Option<i64>>(3)?.unwrap_or(0),
+                row.get::<_, Option<i64>>(4)?.unwrap_or(0),
+                row.get::<_, Option<i64>>(5)?.unwrap_or(0),
+                row.get::<_, Option<i64>>(6)?.unwrap_or(0),
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut agg: std::collections::HashMap<String, PlatformUsage> = std::collections::HashMap::new();
+    for (platform, model, count, tokens, prompt, completion, errors) in rows.flatten() {
+        let key = if platform.trim().is_empty() {
+            "(直连/未知)".to_string()
+        } else {
+            platform
+        };
+        let entry = agg.entry(key.clone()).or_insert_with(|| PlatformUsage {
+            platform: key,
+            request_count: 0,
+            total_tokens: 0,
+            error_count: 0,
+            cost_usd: 0.0,
+        });
+        entry.request_count += count;
+        entry.total_tokens += tokens;
+        entry.error_count += errors;
+        entry.cost_usd += crate::circuit_breaker::estimate_cost(&model, prompt, completion);
+    }
+    let mut out: Vec<PlatformUsage> = agg.into_values().collect();
+    out.sort_by(|a, b| b.cost_usd.partial_cmp(&a.cost_usd).unwrap_or(std::cmp::Ordering::Equal));
+    Ok(out)
 }
 
 /// Daily token / request / cost activity for the last `days` days (ascending).

@@ -159,14 +159,141 @@ export const accountApi = {
   delete: (id: string) => invoke("delete_agent_account", { id }),
 };
 
+// ── Write (Markdown writing workspace) — DeepSeek-GUI inspired ──
+
+export interface WriteSpace {
+  name: string;
+  path: string;
+  is_default: boolean;
+}
+export interface WriteFile {
+  name: string;
+  relative_path: string;
+  updated_at: string;
+}
+export const writeApi = {
+  listSpaces: () => invoke<WriteSpace[]>("write_list_spaces"),
+  addSpace: (path: string) => invoke<WriteSpace>("write_add_space", { path }),
+  removeSpace: (path: string) => invoke("write_remove_space", { path }),
+  listFiles: (spacePath: string) => invoke<WriteFile[]>("write_list_files", { spacePath }),
+  readFile: (spacePath: string, relativePath: string) =>
+    invoke<string>("write_read_file", { spacePath, relativePath }),
+  saveFile: (spacePath: string, relativePath: string, content: string) =>
+    invoke("write_save_file", { spacePath, relativePath, content }),
+  createFile: (spacePath: string, name: string) =>
+    invoke<string>("write_create_file", { spacePath, name }),
+  renameFile: (spacePath: string, relativePath: string, newName: string) =>
+    invoke<string>("write_rename_file", { spacePath, relativePath, newName }),
+  deleteFile: (spacePath: string, relativePath: string) =>
+    invoke("write_delete_file", { spacePath, relativePath }),
+  exportHtml: (spacePath: string, relativePath: string, html: string) =>
+    invoke<string>("write_export_html", { spacePath, relativePath, html }),
+};
+
+// ── Autopilots (scheduled agent work) — Multica inspired ──
+
+export interface Autopilot {
+  id: string;
+  title: string;
+  prompt: string;
+  agent_name: string;
+  workspace_path: string;
+  schedule: string;
+  permission: string;
+  work_mode: string;
+  enabled: boolean;
+  last_run: string | null;
+  created_at: string;
+}
+export interface QueuedAutopilotRun {
+  run_id: string;
+  autopilot_id: string;
+  title: string;
+  conversation_id: string;
+  prompt: string;
+  agent_name: string;
+  workspace_path: string;
+  permission: string;
+  work_mode: string;
+}
+export interface AutopilotRunInfo {
+  id: string;
+  autopilot_id: string;
+  conversation_id: string;
+  status: string;
+  trigger_source: string;
+  created_at: string;
+}
+export const autopilotApi = {
+  list: () => invoke<Autopilot[]>("autopilot_list"),
+  create: (p: { title: string; prompt: string; agentName: string; workspacePath: string; schedule: string; permission: string; workMode: string }) =>
+    invoke<Autopilot>("autopilot_create", p),
+  update: (p: { id: string; title: string; prompt: string; agentName: string; workspacePath: string; schedule: string; permission: string; workMode: string }) =>
+    invoke<Autopilot>("autopilot_update", p),
+  setEnabled: (id: string, enabled: boolean) => invoke("autopilot_set_enabled", { id, enabled }),
+  delete: (id: string) => invoke("autopilot_delete", { id }),
+  runNow: (id: string) => invoke<string>("autopilot_run_now", { id }),
+  takeQueuedRuns: () => invoke<QueuedAutopilotRun[]>("autopilot_take_queued_runs"),
+  markRun: (runId: string, status: "done" | "failed") => invoke("autopilot_mark_run", { runId, status }),
+  listRuns: (autopilotId: string) => invoke<AutopilotRunInfo[]>("autopilot_list_runs", { autopilotId }),
+};
+
+// ── SDD (requirement → plan) — DeepSeek-GUI inspired ──
+
+export interface PlanTodo {
+  line_index: number;
+  done: boolean;
+  text: string;
+}
+export interface PlanFile {
+  relative_path: string;
+  title: string;
+  updated_at: string;
+  todo_total: number;
+  todo_done: number;
+}
+export const sddApi = {
+  reservePlanPath: (workspacePath: string, title: string) =>
+    invoke<string>("sdd_reserve_plan_path", { workspacePath, title }),
+  writePlan: (workspacePath: string, title: string, markdown: string) =>
+    invoke<string>("sdd_write_plan", { workspacePath, title, markdown }),
+  listPlans: (workspacePath: string) =>
+    invoke<PlanFile[]>("sdd_list_plans", { workspacePath }),
+  readPlan: (workspacePath: string, relativePath: string) =>
+    invoke<[string, PlanTodo[]]>("sdd_read_plan", { workspacePath, relativePath }),
+  toggleTodo: (workspacePath: string, relativePath: string, lineIndex: number, done: boolean) =>
+    invoke<PlanTodo[]>("sdd_toggle_plan_todo", { workspacePath, relativePath, lineIndex, done }),
+  clarifyPrompt: (draft: string) => invoke<string>("sdd_clarify_prompt", { draft }),
+  planPrompt: (draft: string, planRelativePath: string) =>
+    invoke<string>("sdd_plan_prompt", { draft, planRelativePath }),
+};
+
 // ── Conversations ─────────────────────────────────────
+
+export type ConversationGoalStatus = "active" | "paused" | "complete";
+export interface ConversationGoal {
+  conversation_id: string;
+  objective: string;
+  status: ConversationGoalStatus;
+  created_at: string;
+  updated_at: string;
+}
 
 export const conversationApi = {
   list: () => invoke<ConversationInfo[]>("get_all_conversations"),
-  create: (params: { id: string; title: string; workspacePath: string; activeAgent: string }) =>
+  create: (params: { id: string; title: string; workspacePath: string; activeAgent: string; parentConversationId?: string }) =>
     invoke("create_conversation", params),
   delete: (id: string) => invoke("delete_conversation", { conversationId: id }),
   archive: (id: string) => invoke("archive_conversation", { conversationId: id }),
+  // Long-term goal (/goal) — DeepSeek-GUI inspired
+  getGoal: (conversationId: string) =>
+    invoke<ConversationGoal | null>("get_conversation_goal", { conversationId }),
+  setGoal: (conversationId: string, objective: string) =>
+    invoke<ConversationGoal>("set_conversation_goal", { conversationId, objective }),
+  setGoalStatus: (conversationId: string, status: ConversationGoalStatus) =>
+    invoke<ConversationGoal>("set_conversation_goal_status", { conversationId, status }),
+  clearGoal: (conversationId: string) =>
+    invoke("clear_conversation_goal", { conversationId }),
   unarchive: (id: string) => invoke("unarchive_conversation", { conversationId: id }),
   listArchived: () => invoke<ConversationInfo[]>("get_archived_conversations"),
   getMessages: (conversationId: string) =>
@@ -189,6 +316,10 @@ export const runtimeApi = {
   getAgentCatalog: () => invoke<RuntimeAgentCatalogEntry[]>("runtime_get_agent_catalog"),
   getModelOptions: (agent: RuntimeAgentId) =>
     invoke<RuntimeModelOption[]>("runtime_get_model_options", { agent }),
+  getAgentModelPreference: (agent: RuntimeAgentId) =>
+    invoke<string>("runtime_get_agent_model_preference", { agent }),
+  setAgentModelPreference: (agent: RuntimeAgentId, model: string) =>
+    invoke<void>("runtime_set_agent_model_preference", { agent, model }),
   startSession: (request: {
     conversation_id: string;
     agent: RuntimeAgentId;
@@ -556,6 +687,8 @@ export const mcpSyncApi = {
     invoke<McpSyncReport[]>("mcp_sync_to_agents", { agents, serverIds }),
   removeFromAgent: (agent: string, serverName: string) =>
     invoke<string | null>("mcp_remove_from_agent", { agent, serverName }),
+  importFromAgent: (agent: string) =>
+    invoke<string[]>("mcp_import_from_agent", { agent }),
 };
 
 // ── Data Backup ─────────────────────────────────────────
@@ -833,7 +966,10 @@ export interface AutopilotConfig {
   webhook_url: string | null;
 }
 
-export const autopilotApi = {
+// NOTE: legacy config-on-cron-task autopilot (never surfaced in the UI). The
+// active, standalone Autopilot feature is `autopilotApi` above. Kept only so the
+// registered backend commands remain reachable; rename avoids the name clash.
+export const autopilotConfigApi = {
   /** Get autopilot config for a cron task */
   getConfig: (taskId: string) =>
     invoke<AutopilotConfig>("get_autopilot_config", { taskId }),
@@ -925,6 +1061,14 @@ export interface DailyUsage {
   cost_usd: number;
 }
 
+export interface PlatformUsage {
+  platform: string;
+  request_count: number;
+  total_tokens: number;
+  error_count: number;
+  cost_usd: number;
+}
+
 export const requestLogApi = {
   /** Get request logs with pagination */
   getLogs: (page?: number, limit?: number, modelFilter?: string) =>
@@ -932,6 +1076,9 @@ export const requestLogApi = {
 
   /** Get usage statistics summary */
   getStats: () => invoke<UsageStats>("get_usage_stats"),
+
+  /** Get per-platform usage rollup (cost/tokens/errors) */
+  platformUsage: () => invoke<PlatformUsage[]>("get_platform_usage"),
 
   /** Get daily token/cost activity for the last N days (ascending) */
   timeseries: (days?: number) =>
@@ -1453,6 +1600,36 @@ export const circuitBreakerApi = {
   getModelPricing: () => invoke<Record<string, [number, number]>>("get_model_pricing"),
   estimateCost: (model: string, promptTokens: number, completionTokens: number) =>
     invoke<number>("estimate_model_cost", { model, promptTokens, completionTokens }),
+};
+
+// OAuth Auth Center (sub2api inspired) — use your subscriptions in agents
+export type OAuthProvider = "anthropic_claude" | "openai_codex" | "google_gemini";
+export interface OAuthStartResult {
+  authorize_url: string; state: string; manual_paste: boolean; redirect_uri: string;
+}
+export interface OAuthAccountView {
+  id: string; provider: OAuthProvider; provider_name: string; label: string;
+  scope: string | null; expires_at: string | null; has_refresh: boolean;
+  expired: boolean; created_at: string;
+}
+export const oauthApi = {
+  start: (provider: OAuthProvider) => invoke<OAuthStartResult>("oauth_start", { provider }),
+  complete: (provider: OAuthProvider, callbackInput: string, label: string) =>
+    invoke<OAuthAccountView>("oauth_complete", { provider, callbackInput, label }),
+  listAccounts: () => invoke<OAuthAccountView[]>("oauth_list_accounts"),
+  deleteAccount: (id: string) => invoke<void>("oauth_delete_account", { id }),
+  refreshAccount: (id: string) => invoke<void>("oauth_refresh_account", { id }),
+};
+
+// CLI 配置接管 (cc-switch inspired) — point native CLIs at a chosen target
+export interface TakeoverTarget { kind: "gateway" | "platform" | "oauth"; ref_id?: string; model?: string; }
+export interface TakeoverReport { agent: string; config_path: string; applied: boolean; backup_path: string | null; detail: string; }
+export interface AgentTakeoverState { agent: string; config_path: string; config_exists: boolean; current_base_url: string | null; has_backup: boolean; }
+export const cliTakeoverApi = {
+  status: () => invoke<AgentTakeoverState[]>("cli_takeover_status"),
+  apply: (agents: string[], target: TakeoverTarget) =>
+    invoke<TakeoverReport[]>("cli_takeover_apply", { agents, target }),
+  revert: (agent: string) => invoke<string>("cli_takeover_revert", { agent }),
 };
 
 // Skill DAG (SkillDAG inspired)

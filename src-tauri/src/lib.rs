@@ -12,6 +12,7 @@ mod input_validation;
 mod knowledge;
 mod media;
 mod model_knowledge;
+mod oauth;
 mod prompt_guard;
 mod proxy;
 mod responses_bridge;
@@ -179,6 +180,9 @@ pub fn run() {
             // progress to the Studio via `media-task-update` events.
             commands::start_media_poller(app.handle().clone(), Arc::clone(&db));
 
+            // OAuth auth center: refresh subscription tokens before they expire.
+            commands::start_oauth_refresher(app.handle().clone());
+
             // Fit the initial logical size to the current monitor. Windows can otherwise
             // clamp a 1280x800 window at high DPI while WebView keeps the oversized layout.
             if let Some(main) = app.get_webview_window("main") {
@@ -311,6 +315,8 @@ pub fn run() {
             commands::detect_installed_agents,
             commands::runtime_get_agent_catalog,
             commands::runtime_get_model_options,
+            commands::runtime_get_agent_model_preference,
+            commands::runtime_set_agent_model_preference,
             commands::runtime_start_session,
             commands::runtime_send_message,
             commands::runtime_respond_approval,
@@ -326,6 +332,14 @@ pub fn run() {
             commands::install_agent_cli,
             commands::check_agent_updates,
             commands::get_profile_stats,
+            commands::oauth_start,
+            commands::oauth_complete,
+            commands::oauth_list_accounts,
+            commands::oauth_delete_account,
+            commands::oauth_refresh_account,
+            commands::cli_takeover_apply,
+            commands::cli_takeover_revert,
+            commands::cli_takeover_status,
             commands::media_generate_image,
             commands::media_create_video_task,
             commands::media_list_tasks,
@@ -410,6 +424,36 @@ pub fn run() {
             commands::reveal_platform_api_key,
             commands::get_conversation_messages,
             commands::create_conversation,
+            commands::get_conversation_goal,
+            commands::set_conversation_goal,
+            commands::set_conversation_goal_status,
+            commands::clear_conversation_goal,
+            commands::sdd_reserve_plan_path,
+            commands::sdd_write_plan,
+            commands::sdd_list_plans,
+            commands::sdd_read_plan,
+            commands::sdd_toggle_plan_todo,
+            commands::sdd_clarify_prompt,
+            commands::sdd_plan_prompt,
+            commands::autopilot_list,
+            commands::autopilot_create,
+            commands::autopilot_update,
+            commands::autopilot_set_enabled,
+            commands::autopilot_delete,
+            commands::autopilot_run_now,
+            commands::autopilot_take_queued_runs,
+            commands::autopilot_mark_run,
+            commands::autopilot_list_runs,
+            commands::write_list_spaces,
+            commands::write_add_space,
+            commands::write_remove_space,
+            commands::write_list_files,
+            commands::write_read_file,
+            commands::write_save_file,
+            commands::write_create_file,
+            commands::write_rename_file,
+            commands::write_delete_file,
+            commands::write_export_html,
             commands::add_conversation_message,
             commands::delete_conversation,
             commands::get_archived_conversations,
@@ -526,6 +570,7 @@ pub fn run() {
             // Request Logs & Usage Stats (New API/Sub2API inspired)
             commands::get_request_logs,
             commands::get_usage_stats,
+            commands::get_platform_usage,
             commands::get_usage_timeseries,
             commands::cleanup_request_logs,
             // Platform Health Management (New API/Sub2API inspired)
@@ -586,6 +631,7 @@ pub fn run() {
             // MCP sync to Agent native config (AionUi / cc-switch inspired)
             commands::mcp_sync_to_agents,
             commands::mcp_remove_from_agent,
+            commands::mcp_import_from_agent,
             commands::mcp_get_agent_states,
             // Workspace checkpoints + diff review (Claude Code / Codex desktop inspired)
             commands::create_checkpoint,

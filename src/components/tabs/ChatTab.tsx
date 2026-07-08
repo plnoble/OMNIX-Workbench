@@ -7,6 +7,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  ClipboardList,
   FileCode2,
   Folder,
   FolderOpen,
@@ -16,10 +17,13 @@ import {
   PanelRightClose,
   PanelRightOpen,
   Paperclip,
+  Pause,
+  Play,
   Send,
   Shield,
   Sparkles,
   Square,
+  Target,
   Users,
   RefreshCw,
   StickyNote,
@@ -30,12 +34,14 @@ import { WorktreePanel } from "@/components/WorktreePanel";
 import { FilePreviewPanel } from "@/components/FilePreviewPanel";
 import { ContextMeter } from "@/components/ContextMeter";
 import { SubAgentPanel } from "@/components/SubAgentPanel";
+import { PlanPanel } from "@/components/PlanPanel";
+import { RequirementModal } from "@/components/modals/RequirementModal";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { AGENT_NAMES } from "@/lib/constants";
 import { cn } from "@/lib/utils";
-import { knowledgeApi, mediaApi, runtimeApi, searchApi, workspaceApi, notesApi } from "@/lib/tauri-api";
+import { knowledgeApi, mediaApi, runtimeApi, searchApi, workspaceApi, notesApi, sddApi, type ConversationGoal, type ConversationGoalStatus } from "@/lib/tauri-api";
 import { getRuntimeAgentId, isAcpAgent } from "@/lib/agentRegistry";
 import type {
   ConversationMessage,
@@ -78,6 +84,12 @@ export interface ChatTabProps {
   /// The running ACP session's selectable model (opencode etc.), if any.
   acpModelOption?: AcpModelOption;
   onSetSessionModel?: (conversationId: string, model: string) => void;
+  /// Long-term goal for the current conversation (DeepSeek-GUI /goal).
+  activeGoal?: ConversationGoal | null;
+  onSetGoalStatus?: (status: ConversationGoalStatus) => void;
+  onClearGoal?: () => void;
+  /// Send assembled text as a turn (SDD clarify / plan prompts).
+  onSendPrepared?: (agentText: string, displayText: string, config: RuntimeSendConfig) => void;
 }
 
 const PERMISSION_OPTIONS: Array<{ id: PermissionPolicy; label: string; desc: string }> = [
@@ -211,6 +223,10 @@ export function ChatTab({
   onSelectConversation,
   acpModelOption,
   onSetSessionModel,
+  activeGoal,
+  onSetGoalStatus,
+  onClearGoal,
+  onSendPrepared,
 }: ChatTabProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [permissionPolicy, setPermissionPolicy] = useState<PermissionPolicy>("ask_on_risk");
@@ -230,6 +246,10 @@ export function ChatTab({
   const [workspacePanelOpen, setWorkspacePanelOpen] = useState(
     chatWorkspace !== "direct" && window.innerWidth >= 1000
   );
+  // SDD (requirement → plan) — DeepSeek-GUI inspired
+  const [requirementOpen, setRequirementOpen] = useState(false);
+  const [planPanelOpen, setPlanPanelOpen] = useState(false);
+  const [planRefreshKey, setPlanRefreshKey] = useState(0);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [embeddingModels, setEmbeddingModels] = useState<EmbeddingModelInfo[]>([]);
   const [selectedKnowledgeIds, setSelectedKnowledgeIds] = useState<string[]>([]);
@@ -409,6 +429,70 @@ export function ChatTab({
     setAttachments([]);
   };
 
+  // Builds a send config from the composer's current model/permission/mode, for
+  // prepared sends (SDD) that bypass the composer input.
+  const buildSendConfig = (): RuntimeSendConfig | null => {
+    if (!selectedModel) return null;
+    const permission: RuntimePermissionPolicy = permissionPolicy === "full_access"
+      ? { kind: "full_access", confirmed: fullAccessConfirmed }
+      : { kind: permissionPolicy };
+    return { model: selectedModel.selection, permission, workMode };
+  };
+
+  // SDD: ask the agent to clarify the requirement draft (a conversational turn).
+  const handleClarifyRequirement = async (draft: string, title: string) => {
+    const config = buildSendConfig();
+    if (!config) { toast.error("请先选择一个可用模型"); return; }
+    try {
+      const prompt = await sddApi.clarifyPrompt(draft);
+      onSendPrepared?.(prompt, `🔍 澄清需求：${title || "未命名"}`, config);
+    } catch (error) {
+      toast.error(`发起澄清失败：${String(error)}`);
+    }
+  };
+
+  // SDD: reserve a plan file and ask the agent to write the plan there.
+  const handleGeneratePlan = async (draft: string, title: string) => {
+    const config = buildSendConfig();
+    if (!config) { toast.error("请先选择一个可用模型"); return; }
+    if (!isWorkspaceMode) { toast.error("生成计划需要先选择工作区"); return; }
+    // The plan-generation turn WRITES the plan file, so it can't run in the
+    // read-only 计划模式 sandbox (the agent would be blocked from writing). Force
+    // write posture — the prompt itself keeps the agent from touching other files.
+    const planConfig: RuntimeSendConfig = { ...config, workMode: "direct" };
+    if (config.workMode === "plan") {
+      toast.info("计划模式为只读，已临时用「直接执行」写入计划文件");
+    }
+    try {
+      const planPath = await sddApi.reservePlanPath(chatWorkspace, title || "plan");
+      const prompt = await sddApi.planPrompt(draft, planPath);
+      onSendPrepared?.(prompt, `📋 生成实施计划：${title || "未命名"}`, planConfig);
+      setPlanPanelOpen(true);
+      // Refresh shortly after so the panel picks up the file once the agent writes it.
+      setTimeout(() => setPlanRefreshKey((k) => k + 1), 4000);
+    } catch (error) {
+      toast.error(`生成计划失败：${String(error)}`);
+    }
+  };
+
+  // Relay: crystallize a plan the agent produced in chat (e.g. under 计划模式,
+  // where the agent itself can't write files) into a tracked .omx/plans file.
+  const crystallizeToPlan = async (content: string) => {
+    if (!isWorkspaceMode) { toast.error("固化为计划需要先选择工作区"); return; }
+    try {
+      const lines = content.split("\n");
+      const heading = lines.find((line) => line.trim().startsWith("# "));
+      const firstLine = lines.map((line) => line.trim()).find((line) => line.length > 0);
+      const title = (heading?.replace(/^#\s+/, "") || firstLine || "计划").slice(0, 40);
+      const planPath = await sddApi.writePlan(chatWorkspace, title, content);
+      setPlanPanelOpen(true);
+      setPlanRefreshKey((k) => k + 1);
+      toast.success(`已固化为计划：${planPath.replace(".omx/plans/", "")}`);
+    } catch (error) {
+      toast.error(`固化为计划失败：${String(error)}`);
+    }
+  };
+
   /** Reads a picked/pasted image file into a chat attachment (≤5MB, ≤4 张). */
   const addAttachmentFile = (file: File) => {
     if (!file.type.startsWith("image/")) return;
@@ -486,6 +570,15 @@ export function ChatTab({
               <Button
                 variant="outline"
                 size="sm"
+                onClick={() => setRequirementOpen(true)}
+                title="把一个需求整理成草稿，让 Agent 澄清或生成计划"
+              >
+                <ClipboardList className="h-3.5 w-3.5" />
+                <span className="hidden md:inline">需求</span>
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
                 onClick={() => onOpenWorkspaceModal?.()}
                 title={isWorkspaceMode ? chatWorkspace : "选择工作区"}
               >
@@ -493,6 +586,16 @@ export function ChatTab({
                 <span className="hidden md:inline max-w-32 truncate">
                   {isWorkspaceMode ? chatWorkspace.split(/[\\/]/).pop() : "选择工作区"}
                 </span>
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className={cn("h-8 w-8 p-0", planPanelOpen && "text-accent")}
+                onClick={() => setPlanPanelOpen((open) => !open)}
+                title={planPanelOpen ? "收起计划面板" : "展开计划面板"}
+                disabled={!isWorkspaceMode}
+              >
+                <ClipboardList className="h-4 w-4" />
               </Button>
               <Button
                 variant="ghost"
@@ -546,13 +649,24 @@ export function ChatTab({
                     <div className="mb-1 flex items-center gap-2 text-xs text-muted-foreground">
                       <span>{message.role === "user" ? "你" : activeAgent}</span>
                       {message.role !== "user" && message.content.trim() && (
-                        <button
-                          onClick={() => void saveMessageAsNote(message.content)}
-                          title="存为笔记（计划/建议/待办，方便回查）"
-                          className="ml-auto flex items-center gap-1 rounded px-1 py-0.5 opacity-60 hover:bg-muted/30 hover:text-foreground hover:opacity-100"
-                        >
-                          <StickyNote className="h-3 w-3" /> 存为笔记
-                        </button>
+                        <div className="ml-auto flex items-center gap-1">
+                          {isWorkspaceMode && (
+                            <button
+                              onClick={() => void crystallizeToPlan(message.content)}
+                              title="把这段回复固化成 .omx/plans 下的可跟踪计划文件"
+                              className="flex items-center gap-1 rounded px-1 py-0.5 opacity-60 hover:bg-muted/30 hover:text-foreground hover:opacity-100"
+                            >
+                              <ClipboardList className="h-3 w-3" /> 固化为计划
+                            </button>
+                          )}
+                          <button
+                            onClick={() => void saveMessageAsNote(message.content)}
+                            title="存为笔记（计划/建议/待办，方便回查）"
+                            className="flex items-center gap-1 rounded px-1 py-0.5 opacity-60 hover:bg-muted/30 hover:text-foreground hover:opacity-100"
+                          >
+                            <StickyNote className="h-3 w-3" /> 存为笔记
+                          </button>
+                        </div>
                       )}
                     </div>
                     <AttachmentStrip metadataJson={message.metadata_json} />
@@ -588,6 +702,83 @@ export function ChatTab({
 
         <form onSubmit={handleSubmit} className="shrink-0 border-t border-border bg-background/95 p-5">
           <div className="mx-auto max-w-5xl rounded-md border border-border bg-card/60 p-3 shadow-lg">
+            {/* Long-term goal bar (DeepSeek-GUI /goal) — visible whenever the
+                current conversation has a goal; while active it is re-injected
+                into every turn. */}
+            {activeGoal && (
+              <div
+                className={cn(
+                  "mb-2 flex items-start gap-2 rounded-md border px-3 py-2 text-xs",
+                  activeGoal.status === "active"
+                    ? "border-primary/30 bg-primary/5"
+                    : activeGoal.status === "paused"
+                      ? "border-amber-500/30 bg-amber-500/5"
+                      : "border-border bg-muted/20",
+                )}
+              >
+                <Target
+                  className={cn(
+                    "mt-0.5 h-3.5 w-3.5 shrink-0",
+                    activeGoal.status === "active"
+                      ? "text-primary"
+                      : activeGoal.status === "paused"
+                        ? "text-amber-500"
+                        : "text-muted-foreground",
+                  )}
+                />
+                <div className="min-w-0 flex-1">
+                  <span className="font-medium text-foreground">长期目标</span>
+                  <span className="ml-1.5 text-muted-foreground">
+                    {activeGoal.status === "active"
+                      ? "· 每轮注入中"
+                      : activeGoal.status === "paused"
+                        ? "· 已暂停"
+                        : "· 已完成"}
+                  </span>
+                  <p className="mt-0.5 line-clamp-2 text-muted-foreground">{activeGoal.objective}</p>
+                </div>
+                <div className="flex shrink-0 items-center gap-0.5">
+                  {activeGoal.status === "active" && (
+                    <button
+                      type="button"
+                      title="暂停（暂不注入）"
+                      onClick={() => onSetGoalStatus?.("paused")}
+                      className="rounded p-1 text-muted-foreground hover:bg-muted/40 hover:text-amber-500"
+                    >
+                      <Pause className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                  {activeGoal.status !== "active" && (
+                    <button
+                      type="button"
+                      title="继续（恢复注入）"
+                      onClick={() => onSetGoalStatus?.("active")}
+                      className="rounded p-1 text-muted-foreground hover:bg-muted/40 hover:text-primary"
+                    >
+                      <Play className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                  {activeGoal.status !== "complete" && (
+                    <button
+                      type="button"
+                      title="标记完成"
+                      onClick={() => onSetGoalStatus?.("complete")}
+                      className="rounded p-1 text-muted-foreground hover:bg-muted/40 hover:text-emerald-500"
+                    >
+                      <Check className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    title="清除目标"
+                    onClick={() => onClearGoal?.()}
+                    className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+            )}
             {attachments.length > 0 && (
               <div className="mb-2 flex flex-wrap gap-2">
                 {attachments.map((attachment, index) => (
@@ -616,7 +807,7 @@ export function ChatTab({
                   event.currentTarget.form?.requestSubmit();
                 }
               }}
-              placeholder={`${activeAgent}，输入你要做的事情...（Ctrl+V 可粘贴截图）`}
+              placeholder={`${activeAgent}，输入你要做的事情...（/goal 设目标 · /btw 开旁支 · Ctrl+V 贴图）`}
               className="min-h-28 resize-none border-0 bg-transparent text-base leading-7 focus-visible:ring-0 focus-visible:ring-offset-0"
               style={{ maxHeight: "50vh" }}
             />
@@ -908,6 +1099,14 @@ export function ChatTab({
         </aside>
       )}
 
+      {surface === "work" && planPanelOpen && isWorkspaceMode && (
+        <PlanPanel
+          workspacePath={chatWorkspace}
+          refreshKey={planRefreshKey}
+          onClose={() => setPlanPanelOpen(false)}
+        />
+      )}
+
       {previewPath && isWorkspaceMode && (
         <FilePreviewPanel
           workspacePath={chatWorkspace}
@@ -915,6 +1114,13 @@ export function ChatTab({
           onClose={() => setPreviewPath(null)}
         />
       )}
+
+      <RequirementModal
+        open={requirementOpen}
+        onClose={() => setRequirementOpen(false)}
+        onClarify={handleClarifyRequirement}
+        onGeneratePlan={handleGeneratePlan}
+      />
     </div>
   );
 }

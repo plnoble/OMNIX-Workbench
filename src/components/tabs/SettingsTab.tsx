@@ -142,6 +142,7 @@ export interface SettingsTabProps {
   onUpdateMcpForm: (field: string, value: string | boolean) => void;
   onSaveMcpServer: () => Promise<void>;
   onDeleteMcpServer: (id: string) => Promise<void>;
+  onReloadMcpServers?: () => Promise<void>;
 
   // Backup
   backupTableInfo: BackupTableInfo[];
@@ -1122,27 +1123,48 @@ export function McpSubTab({
   onCloseMcpModal,
   onUpdateMcpForm,
   onSaveMcpServer,
+  onReloadMcpServers,
 }: SettingsTabProps) {
   const [agentStates, setAgentStates] = useState<AgentMcpState[]>([]);
   const [syncBusy, setSyncBusy] = useState("");
+  const [importBusy, setImportBusy] = useState("");
   const loadAgentStates = () => mcpSyncApi.getAgentStates().then(setAgentStates).catch(() => {});
   useEffect(() => { loadAgentStates(); }, []);
 
-  const agentLabel = (agent: string) => (agent === "claude_code" ? "Claude" : "Codex");
+  // Sync targets: OMNIX-managed MCP → each agent's native config.
+  const SYNC_TARGETS = ["claude_code", "codex", "gemini", "opencode"];
+  const AGENT_LABELS: Record<string, string> = {
+    claude_code: "Claude", codex: "Codex", gemini: "Gemini", opencode: "OpenCode",
+  };
+  const agentLabel = (agent: string) => AGENT_LABELS[agent] ?? agent;
   const isSynced = (serverName: string, agent: string) =>
     agentStates.find((state) => state.agent === agent)?.server_names.includes(serverName) ?? false;
 
   const syncServer = async (server: McpServer) => {
     setSyncBusy(server.id);
     try {
-      const reports = await mcpSyncApi.syncToAgents(["claude_code", "codex"], [server.id]);
+      const reports = await mcpSyncApi.syncToAgents(SYNC_TARGETS, [server.id]);
       await loadAgentStates();
       const skipped = reports.flatMap((report) => report.skipped);
-      toast.success(`已同步「${server.name}」到 Claude / Codex${skipped.length ? `（部分跳过：${skipped.join("；")}）` : ""}`);
+      toast.success(`已同步「${server.name}」到各 Agent${skipped.length ? `（部分跳过：${skipped.join("；")}）` : ""}`);
     } catch (error) {
       toast.error(`同步失败：${error}`);
     } finally {
       setSyncBusy("");
+    }
+  };
+
+  // Reverse import: pull an agent's native MCP servers into OMNIX.
+  const importFromAgent = async (agent: string) => {
+    setImportBusy(agent);
+    try {
+      const names = await mcpSyncApi.importFromAgent(agent);
+      await Promise.all([loadAgentStates(), onReloadMcpServers?.()]);
+      toast.success(names.length ? `已从 ${agentLabel(agent)} 导入 ${names.length} 个 MCP：${names.join("、")}` : `${agentLabel(agent)} 没有可导入的 MCP`);
+    } catch (error) {
+      toast.error(`导入失败：${error}`);
+    } finally {
+      setImportBusy("");
     }
   };
 
@@ -1165,13 +1187,27 @@ export function McpSubTab({
         <CardHeader className="flex-row justify-between items-center mb-4">
           <div>
             <CardTitle className="text-sm">🔌 MCP 服务器管理</CardTitle>
-            <p className="mt-1 text-xs text-muted-foreground">配一次，点「同步」即可写入 Claude Code 和 Codex 的原生配置（写前自动备份，可单独撤销）。</p>
+            <p className="mt-1 text-xs text-muted-foreground">配一次，点「同步」即可写入 Claude Code / Codex / Gemini / OpenCode 的原生配置（写前自动备份，可单独撤销）。</p>
           </div>
           <Button size="sm" variant="outline" onClick={() => onOpenMcpModal()}>
             <Plus className="h-3 w-3" /> 新增
           </Button>
         </CardHeader>
         <CardContent>
+          {/* Reverse import: pull each agent's native MCP servers into OMNIX. */}
+          <div className="mb-3 flex flex-wrap items-center gap-2 rounded-md border border-dashed border-border px-3 py-2">
+            <span className="text-xs text-muted-foreground">从 Agent 导入现有 MCP：</span>
+            {SYNC_TARGETS.map((agent) => (
+              <button
+                key={agent}
+                disabled={importBusy === agent}
+                onClick={() => importFromAgent(agent)}
+                className="rounded border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-muted/30 hover:text-foreground disabled:opacity-50"
+              >
+                {importBusy === agent ? "导入中…" : agentLabel(agent)}
+              </button>
+            ))}
+          </div>
           {mcpServers.length === 0 ? (
             <div className="py-2.5 text-center text-muted-foreground text-xs">
               暂无 MCP 服务器配置。点击"新增"添加。
@@ -1200,7 +1236,7 @@ export function McpSubTab({
                     )}
                   </div>
                   <div className="flex items-center gap-1.5">
-                    {["claude_code", "codex"].map((agent) => {
+                    {SYNC_TARGETS.map((agent) => {
                       const synced = isSynced(srv.name, agent);
                       return (
                         <button
@@ -1218,7 +1254,7 @@ export function McpSubTab({
                         </button>
                       );
                     })}
-                    <Button size="sm" variant="outline" disabled={syncBusy === srv.id} onClick={() => syncServer(srv)} title="同步到 Claude Code 和 Codex">
+                    <Button size="sm" variant="outline" disabled={syncBusy === srv.id} onClick={() => syncServer(srv)} title="同步到 Claude Code / Codex / Gemini / OpenCode">
                       <Plug className="h-3 w-3" /> 同步
                     </Button>
                     <Badge variant={srv.is_enabled ? "default" : "secondary"}>

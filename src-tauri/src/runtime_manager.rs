@@ -12,11 +12,13 @@ use serde_json::Value;
 
 use crate::db::DbManager;
 use crate::runtime::{
-    agent_definition, build_claude_user_message, build_codex_approval_response,
-    build_conversation_handoff_context, build_codex_initialize_request,
+    agent_definition, build_branch_seed_context, build_claude_user_message,
+    build_codex_approval_response, build_conversation_handoff_context, build_codex_initialize_request,
     build_codex_thread_resume_request,
-    build_codex_thread_start_request, build_codex_turn_start_request, build_launch_spec,
-    build_resume_launch_spec, create_agent_session_record, get_agent_session_record,
+    build_codex_thread_start_request, build_codex_turn_start_request, build_goal_reminder,
+    build_launch_spec, conversation_has_no_messages, conversation_parent_id,
+    build_resume_launch_spec, create_agent_session_record, get_active_goal_objective,
+    get_agent_session_record,
     list_runtime_events, parse_claude_event, parse_codex_message, record_runtime_event,
     record_user_message, update_agent_session_status, AdapterKind, AgentId, AgentSessionConfig,
     AgentSessionRecord, AgentSessionStatus, ImageAttachment, PermissionPolicy, RuntimeEvent,
@@ -321,19 +323,34 @@ impl RuntimeManager {
         message: OutgoingUserMessage<'_>,
     ) -> Result<(), String> {
         let active = self.active_session(session_id).await?;
-        // Build the handoff block from the earlier exchange BEFORE recording this
-        // turn, so it never contains the message being sent right now.
-        let owned_prompt;
-        let prompt: &str = if message.with_handoff {
-            match build_conversation_handoff_context(&self.db, &active.config.conversation_id) {
-                Some(context) => {
-                    owned_prompt = format!("{context}\n\n{}", message.prompt);
-                    &owned_prompt
-                }
-                None => message.prompt,
+        let conversation_id = active.config.conversation_id.clone();
+        // Compose prompt prefixes from the earlier exchange BEFORE recording this
+        // turn, so they never contain the message being sent right now. Order:
+        // handoff context (agent switch) → branch seed (/btw first turn) → goal.
+        let mut prefixes: Vec<String> = Vec::new();
+        if message.with_handoff {
+            if let Some(context) = build_conversation_handoff_context(&self.db, &conversation_id) {
+                prefixes.push(context);
             }
-        } else {
+        }
+        // A `/btw` branch inherits its parent's transcript on its opening turn.
+        if conversation_has_no_messages(&self.db, &conversation_id) {
+            if let Some(parent) = conversation_parent_id(&self.db, &conversation_id) {
+                if let Some(seed) = build_branch_seed_context(&self.db, &parent) {
+                    prefixes.push(seed);
+                }
+            }
+        }
+        // An active `/goal` re-injects its objective every turn.
+        if let Some(objective) = get_active_goal_objective(&self.db, &conversation_id) {
+            prefixes.push(build_goal_reminder(&objective));
+        }
+        let owned_prompt;
+        let prompt: &str = if prefixes.is_empty() {
             message.prompt
+        } else {
+            owned_prompt = format!("{}\n\n{}", prefixes.join("\n\n"), message.prompt);
+            &owned_prompt
         };
         record_user_message(&self.db, session_id, message.display_text, message.metadata)?;
         match agent_definition(active.config.agent).runtime_adapter {
@@ -950,13 +967,13 @@ fn apply_line_window(content: &str, start: Option<u32>, limit: Option<u32>) -> S
 
 /// Settings key holding the user's preferred model for an ACP agent. Keyed by
 /// the stable wire id (not the display name, which is free to change).
-fn acp_model_setting_key(agent: AgentId) -> String {
+pub(crate) fn acp_model_setting_key(agent: AgentId) -> String {
     format!("acp_model_{}", crate::runtime::agent_id_str(agent))
 }
 
 /// Reads the user's saved model preference for an ACP agent, if any. Falls back
 /// to the legacy display-name key written by earlier builds.
-fn acp_model_preference(db: &Arc<DbManager>, agent: AgentId) -> Option<String> {
+pub(crate) fn acp_model_preference(db: &Arc<DbManager>, agent: AgentId) -> Option<String> {
     let read = |key: String| {
         db.get_setting(&key)
             .ok()

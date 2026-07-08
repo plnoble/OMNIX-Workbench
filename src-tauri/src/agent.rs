@@ -228,6 +228,55 @@ impl AgentManager {
     pub fn start_services(&self) {
         self.start_idle_reaper();
         self.start_cron_scheduler();
+        self.start_autopilot_scheduler();
+    }
+
+    /// Polls active autopilots (Multica-inspired) and, when one is due, enqueues
+    /// a reviewable run (creates a conversation + a `queued` autopilot_run). The
+    /// frontend claims queued runs and executes them through the real runtime.
+    /// DB-only, mirroring `start_cron_scheduler`; reuses `match_schedule`.
+    fn start_autopilot_scheduler(&self) {
+        let db = Arc::clone(&self.db);
+        tauri::async_runtime::handle().spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(15)).await;
+                // Scope the connection/statement so they drop before we fire (which
+                // opens its own connection); avoids holding the read across writes.
+                let due: Vec<String> = {
+                    let Ok(conn) = db.get_connection() else { continue };
+                    let mut stmt = match conn.prepare(
+                        "SELECT id, schedule, last_run FROM autopilots WHERE enabled = 1",
+                    ) {
+                        Ok(s) => s,
+                        Err(_) => continue,
+                    };
+                    let rows = stmt.query_map([], |row| {
+                        let last_run_str: Option<String> = row.get(2)?;
+                        let last_run = last_run_str.and_then(|s| {
+                            chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S")
+                                .ok()
+                                .and_then(|ndt| chrono::Local.from_local_datetime(&ndt).single())
+                        });
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, last_run))
+                    });
+                    match rows {
+                        Ok(rows) => rows
+                            .flatten()
+                            .filter(|(_, schedule, last_run)| match_schedule(schedule, *last_run))
+                            .map(|(id, _, _)| id)
+                            .collect(),
+                        Err(_) => continue,
+                    }
+                };
+                for id in due {
+                    if let Err(e) = crate::commands::fire_autopilot_run(&db, &id, "schedule") {
+                        log::warn!("autopilot scheduler: failed to fire {id}: {e}");
+                    } else {
+                        log::info!("autopilot scheduler: enqueued run for {id}");
+                    }
+                }
+            }
+        });
     }
 
     // --- 1. Agent Detection logic ---

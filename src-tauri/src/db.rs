@@ -268,6 +268,26 @@ impl DbManager {
             "ALTER TABLE messages ADD COLUMN runtime_session_id TEXT NULL",
             [],
         );
+        // Branch lineage for `/btw` side conversations (DeepSeek-GUI inspired):
+        // a branched conversation remembers its parent so the parent's transcript
+        // can seed the branch's first turn. NULL for normal conversations.
+        let _ = conn.execute(
+            "ALTER TABLE conversations ADD COLUMN parent_conversation_id TEXT NULL",
+            [],
+        );
+        // Per-conversation long-term goal (DeepSeek-GUI `/goal`): while status is
+        // 'active' the objective is re-injected into every turn's prompt.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS conversation_goals (
+                conversation_id TEXT PRIMARY KEY,
+                objective TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active', -- 'active' | 'paused' | 'complete'
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+            )",
+            [],
+        )?;
         Ok(())
     }
 
@@ -675,6 +695,13 @@ impl DbManager {
             )",
             [],
         )?;
+        // Circuit breaker: timestamp the platform's circuit tripped open, so the
+        // proxy can allow a half-open probe once the cooldown elapses (borrowed
+        // from cc-switch's failover). Idempotent — ignored if already present.
+        let _ = conn.execute(
+            "ALTER TABLE model_platforms ADD COLUMN circuit_opened_at DATETIME NULL",
+            [],
+        );
 
         // 6e. Platform Models Table
         conn.execute(
@@ -759,6 +786,38 @@ impl DbManager {
                 log_path TEXT NOT NULL,
                 started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 finished_at DATETIME
+            )",
+            [],
+        )?;
+
+        // 9b. Autopilots (Multica-inspired): scheduled definitions that create a
+        // reviewable agent conversation on fire (not a headless CLI run like cron).
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS autopilots (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                prompt TEXT NOT NULL,
+                agent_name TEXT NOT NULL,
+                workspace_path TEXT NOT NULL,
+                schedule TEXT NOT NULL,          -- reuses cron match_schedule format
+                permission TEXT NOT NULL DEFAULT 'ask_on_risk',
+                work_mode TEXT NOT NULL DEFAULT 'direct',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                last_run DATETIME,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )?;
+        // A fired autopilot enqueues a run; the frontend claims queued runs and
+        // executes them through the real runtime (reviewable conversation).
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS autopilot_runs (
+                id TEXT PRIMARY KEY,
+                autopilot_id TEXT NOT NULL,
+                conversation_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'queued',   -- queued | claimed | done | failed
+                trigger_source TEXT NOT NULL DEFAULT 'schedule', -- schedule | manual
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )",
             [],
         )?;
@@ -1170,6 +1229,32 @@ impl DbManager {
                 error TEXT NULL,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        );
+
+        // OAuth auth center: subscription accounts (tokens AES-GCM encrypted,
+        // never stored plaintext) + short-lived PKCE sessions for in-flight logins.
+        let _ = conn.execute(
+            "CREATE TABLE IF NOT EXISTS oauth_accounts (
+                id TEXT PRIMARY KEY,
+                provider TEXT NOT NULL,
+                label TEXT NOT NULL DEFAULT '',
+                access_enc TEXT NOT NULL,
+                refresh_enc TEXT NULL,
+                expires_at DATETIME NULL,
+                scope TEXT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        );
+        let _ = conn.execute(
+            "CREATE TABLE IF NOT EXISTS oauth_pkce_sessions (
+                state TEXT PRIMARY KEY,
+                provider TEXT NOT NULL,
+                code_verifier TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )",
             [],
         );

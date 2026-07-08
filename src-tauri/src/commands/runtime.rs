@@ -369,6 +369,29 @@ pub fn runtime_get_model_options(
     load_runtime_model_options(&db, agent)
 }
 
+/// The user's saved model preference for an ACP agent (free-form; may be a model
+/// the agent didn't declare). Empty string = no preference (use agent default).
+#[tauri::command]
+pub fn runtime_get_agent_model_preference(
+    agent: AgentId,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<String, String> {
+    Ok(crate::runtime_manager::acp_model_preference(&db, agent).unwrap_or_default())
+}
+
+/// Persist a free-form custom model for an ACP agent (applied via
+/// `session/set_config_option` on the next session). Empty clears the preference.
+/// Lets the user pick a model the agent didn't advertise at `session/new`.
+#[tauri::command]
+pub fn runtime_set_agent_model_preference(
+    agent: AgentId,
+    model: String,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<(), String> {
+    let key = crate::runtime_manager::acp_model_setting_key(agent);
+    db.set_setting(&key, model.trim()).map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 pub async fn runtime_start_session(
     request: CreateRuntimeSessionRequest,

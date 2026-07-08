@@ -163,15 +163,21 @@ pub fn create_conversation(
     title: String,
     workspace_path: String,
     active_agent: String,
+    // Set for `/btw` side conversations: the parent whose transcript seeds this
+    // branch's first turn (DeepSeek-GUI inspired). None for normal conversations.
+    parent_conversation_id: Option<String>,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<(), String> {
     input_validation::validate_id(&id, "id")?;
     input_validation::validate_content(&title, "title")?;
     input_validation::validate_workspace_path(&workspace_path, "workspace_path")?;
+    if let Some(parent) = parent_conversation_id.as_deref() {
+        input_validation::validate_id(parent, "parent_conversation_id")?;
+    }
     let conn = db.get_connection().map_err(|e| e.to_string())?;
     conn.execute(
-        "INSERT OR REPLACE INTO conversations (id, title, workspace_path, active_agent) VALUES (?1, ?2, ?3, ?4)",
-        params![id, title, workspace_path, active_agent],
+        "INSERT OR REPLACE INTO conversations (id, title, workspace_path, active_agent, parent_conversation_id) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![id, title, workspace_path, active_agent, parent_conversation_id],
     ).map_err(|e| e.to_string())?;
     Ok(())
 }

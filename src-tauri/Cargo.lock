@@ -3095,7 +3095,7 @@ dependencies = [
 
 [[package]]
 name = "omnix-workbench"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "aes-gcm",
  "agent-client-protocol-schema",
@@ -3115,6 +3115,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "strip-ansi-escapes",
  "tauri",
  "tauri-build",

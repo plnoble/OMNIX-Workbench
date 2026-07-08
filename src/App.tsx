@@ -20,6 +20,7 @@ import { useSettings } from "@/hooks/useSettings";
 import { usePlatforms } from "@/hooks/usePlatforms";
 import { useAccounts } from "@/hooks/useAccounts";
 import { useConversations } from "@/hooks/useConversations";
+import { useAutopilotRunner } from "@/hooks/useAutopilotRunner";
 import { useCron } from "@/hooks/useCron";
 import { usePreview } from "@/hooks/usePreview";
 import { useDiagnostics } from "@/hooks/useDiagnostics";
@@ -74,6 +75,10 @@ const NotesTab = lazy(() => import("@/components/tabs/NotesTab").then(m => ({ de
 const TranslateTab = lazy(() => import("@/components/tabs/TranslateTab").then(m => ({ default: m.TranslateTab })));
 const ProfileTab = lazy(() => import("@/components/tabs/ProfileTab").then(m => ({ default: m.ProfileTab })));
 const StudioTab = lazy(() => import("@/components/tabs/StudioTab").then(m => ({ default: m.StudioTab })));
+const AutopilotsTab = lazy(() => import("@/components/tabs/AutopilotsTab").then(m => ({ default: m.AutopilotsTab })));
+const WriteTab = lazy(() => import("@/components/tabs/WriteTab").then(m => ({ default: m.WriteTab })));
+const UsageDashboardTab = lazy(() => import("@/components/tabs/UsageDashboardTab").then(m => ({ default: m.UsageDashboardTab })));
+const AuthCenterTab = lazy(() => import("@/components/tabs/AuthCenterTab").then(m => ({ default: m.AuthCenterTab })));
 const SearchResourceTab = lazy(() => import("@/components/tabs/SearchResourceTab").then(m => ({ default: m.SearchResourceTab })));
 const QuickAssistantTab = lazy(() => import("@/components/tabs/QuickAssistantTab").then(m => ({ default: m.QuickAssistantTab })));
 const AssistantsTab = lazy(() => import("@/components/tabs/AssistantsTab").then(m => ({ default: m.AssistantsTab })));
@@ -123,6 +128,8 @@ function MainApp() {
   const platforms = usePlatforms();
   const accounts = useAccounts(platforms.activeModels);
   const convs = useConversations(settings.gatewayStatus);
+  // Execute due autopilot runs (Multica-inspired) through the real runtime.
+  useAutopilotRunner(convs.loadConversations);
   const cron = useCron(convs.detectedAgents);
   const preview = usePreview(convs.chatWorkspace);
   const diagnostics = useDiagnostics();
@@ -477,6 +484,10 @@ function MainApp() {
                 onSelectConversation={(id) => void convs.selectConversation(id)}
                 acpModelOption={convs.acpModelOptions[convs.currentConvId]}
                 onSetSessionModel={convs.setSessionModel}
+                activeGoal={convs.activeGoal}
+                onSetGoalStatus={convs.setGoalStatus}
+                onClearGoal={convs.clearActiveGoal}
+                onSendPrepared={convs.sendPreparedMessage}
               />
             )}
 
@@ -504,6 +515,10 @@ function MainApp() {
             {activeTab === "translate" && <TranslateTab />}
             {activeTab === "profile" && <ProfileTab />}
             {activeTab === "studio" && <StudioTab />}
+            {activeTab === "autopilot" && <AutopilotsTab />}
+            {activeTab === "write" && <WriteTab />}
+            {activeTab === "usage" && <UsageDashboardTab />}
+            {activeTab === "auth-center" && <AuthCenterTab />}
             {activeTab === "memories" && <MemoryTab />}
             {activeTab === "skills" && <SkillTab />}
             {activeTab === "knowledge" && <KnowledgeTab />}
@@ -697,6 +712,7 @@ function MainApp() {
                 onUpdateMcpForm={mcpServers.updateMcpForm}
                 onSaveMcpServer={mcpServers.saveMcpServer}
                 onDeleteMcpServer={mcpServers.deleteMcpServer}
+                onReloadMcpServers={mcpServers.loadMcpServers}
                 backupTableInfo={backup.tableInfo}
                 backupSelectedTables={backup.selectedTables}
                 isBackupExporting={backup.isExporting}
@@ -845,6 +861,7 @@ function MainApp() {
                 onUpdateMcpForm={mcpServers.updateMcpForm}
                 onSaveMcpServer={mcpServers.saveMcpServer}
                 onDeleteMcpServer={mcpServers.deleteMcpServer}
+                onReloadMcpServers={mcpServers.loadMcpServers}
                 backupTableInfo={backup.tableInfo}
                 backupSelectedTables={backup.selectedTables}
                 isBackupExporting={backup.isExporting}

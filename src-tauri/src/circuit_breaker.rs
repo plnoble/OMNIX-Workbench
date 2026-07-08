@@ -56,21 +56,51 @@ impl Default for CircuitBreakerStatus {
     }
 }
 
-/// Record a successful request for a platform
+/// Consecutive upstream failures that trip a platform's circuit open.
+pub const CIRCUIT_FAILURE_THRESHOLD: i32 = 5;
+/// Seconds an Open circuit waits before a single half-open probe is allowed.
+pub const CIRCUIT_COOLDOWN_SECS: i64 = 60;
+
+/// Derive the circuit state from stored fields — pure so it is unit-tested and
+/// shared by status reads and the proxy's platform-availability filter.
+/// `opened_ago_secs` is how long ago the circuit tripped open (None = not open).
+pub fn derive_circuit_state(
+    is_healthy: bool,
+    consecutive_failures: i32,
+    opened_ago_secs: Option<i64>,
+) -> CircuitState {
+    if !is_healthy {
+        // Tripped open; eligible for a half-open probe once the cooldown elapses.
+        match opened_ago_secs {
+            Some(secs) if secs >= CIRCUIT_COOLDOWN_SECS => CircuitState::HalfOpen,
+            _ => CircuitState::Open,
+        }
+    } else if consecutive_failures > 0 {
+        // Healthy but degraded (some recent failures, not yet tripped).
+        CircuitState::HalfOpen
+    } else {
+        CircuitState::Closed
+    }
+}
+
+/// Record a successful request for a platform — closes the circuit.
 pub fn record_success(db: &crate::db::DbManager, platform_id: &str) {
     if let Ok(conn) = db.get_connection() {
         let _ = conn.execute(
             "UPDATE model_platforms SET
                 consecutive_failures = 0,
                 is_healthy = 1,
-                last_error = NULL
+                last_error = NULL,
+                circuit_opened_at = NULL
             WHERE id = ?1",
             rusqlite::params![platform_id],
         );
     }
 }
 
-/// Record a failed request for a platform
+/// Record a failed request for a platform. Trips the circuit open after
+/// `CIRCUIT_FAILURE_THRESHOLD` consecutive failures and (re)stamps the open time
+/// so a failed half-open probe restarts the cooldown instead of hammering.
 pub fn record_failure(db: &crate::db::DbManager, platform_id: &str, error: &str) {
     if let Ok(conn) = db.get_connection() {
         let _ = conn.execute(
@@ -80,10 +110,11 @@ pub fn record_failure(db: &crate::db::DbManager, platform_id: &str, error: &str)
             WHERE id = ?2",
             rusqlite::params![error, platform_id],
         );
-        // Auto-disable after 5 consecutive failures
         let _ = conn.execute(
-            "UPDATE model_platforms SET is_healthy = 0 WHERE id = ?1 AND consecutive_failures >= 5",
-            rusqlite::params![platform_id],
+            "UPDATE model_platforms
+                SET is_healthy = 0, circuit_opened_at = datetime('now')
+                WHERE id = ?1 AND consecutive_failures >= ?2",
+            rusqlite::params![platform_id, CIRCUIT_FAILURE_THRESHOLD],
         );
     }
 }
@@ -92,7 +123,9 @@ pub fn record_failure(db: &crate::db::DbManager, platform_id: &str, error: &str)
 pub fn get_all_circuit_status(db: &crate::db::DbManager) -> Vec<CircuitBreakerStatus> {
     let conn = match db.get_connection() { Ok(c) => c, Err(_) => return Vec::new() };
     let mut stmt = match conn.prepare(
-        "SELECT id, is_healthy, consecutive_failures, last_error FROM model_platforms WHERE is_enabled = 1"
+        "SELECT id, is_healthy, consecutive_failures, last_error,
+                CAST((julianday('now') - julianday(circuit_opened_at)) * 86400 AS INTEGER)
+         FROM model_platforms WHERE is_enabled = 1"
     ) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
@@ -103,18 +136,11 @@ pub fn get_all_circuit_status(db: &crate::db::DbManager) -> Vec<CircuitBreakerSt
         let is_healthy: i32 = row.get(1)?;
         let consecutive_failures: i32 = row.get(2)?;
         let last_error: Option<String> = row.get(3)?;
-
-        let state = if is_healthy == 0 {
-            CircuitState::Open
-        } else if consecutive_failures > 0 {
-            CircuitState::HalfOpen
-        } else {
-            CircuitState::Closed
-        };
+        let opened_ago_secs: Option<i64> = row.get(4)?;
 
         Ok(CircuitBreakerStatus {
             platform_id: id,
-            state,
+            state: derive_circuit_state(is_healthy != 0, consecutive_failures, opened_ago_secs),
             consecutive_failures,
             total_failures: 0,
             total_successes: 0,
@@ -122,7 +148,7 @@ pub fn get_all_circuit_status(db: &crate::db::DbManager) -> Vec<CircuitBreakerSt
             last_success_at: None,
             last_error,
             half_open_threshold: 2,
-            failure_threshold: 5,
+            failure_threshold: CIRCUIT_FAILURE_THRESHOLD,
         })
     });
 
@@ -184,4 +210,39 @@ pub fn estimate_cost(model: &str, prompt_tokens: i64, completion_tokens: i64) ->
 
     (prompt_tokens as f64 / 1_000_000.0 * input_rate) +
     (completion_tokens as f64 / 1_000_000.0 * output_rate)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn circuit_state_machine_covers_closed_degraded_open_halfopen() {
+        // Healthy, no failures → Closed.
+        assert_eq!(derive_circuit_state(true, 0, None), CircuitState::Closed);
+        // Healthy but recent failures (not tripped) → HalfOpen (degraded).
+        assert_eq!(derive_circuit_state(true, 3, None), CircuitState::HalfOpen);
+        // Tripped open, still within cooldown → Open (skipped by the proxy).
+        assert_eq!(derive_circuit_state(false, 6, Some(10)), CircuitState::Open);
+        assert_eq!(derive_circuit_state(false, 6, None), CircuitState::Open);
+        // Tripped open, cooldown elapsed → HalfOpen (one probe allowed through).
+        assert_eq!(
+            derive_circuit_state(false, 6, Some(CIRCUIT_COOLDOWN_SECS)),
+            CircuitState::HalfOpen
+        );
+        assert_eq!(
+            derive_circuit_state(false, 6, Some(CIRCUIT_COOLDOWN_SECS + 120)),
+            CircuitState::HalfOpen
+        );
+    }
+
+    #[test]
+    fn cost_estimate_uses_table_then_default() {
+        // Known model uses its rate (gpt-4o: 2.50 in / 10.00 out per 1M).
+        let known = estimate_cost("gpt-4o", 1_000_000, 1_000_000);
+        assert!((known - 12.50).abs() < 1e-9);
+        // Unknown model falls back to default (1.0 in / 3.0 out).
+        let unknown = estimate_cost("mystery-model", 1_000_000, 1_000_000);
+        assert!((unknown - 4.0).abs() < 1e-9);
+    }
 }

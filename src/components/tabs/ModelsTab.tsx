@@ -1,5 +1,6 @@
 import { Database, KeyRound, RefreshCw, ShieldCheck } from "lucide-react";
 
+import { GatewayHealthCard } from "@/components/GatewayHealthCard";
 import { PlatformSubTab, type PlatformSubTabProps } from "@/components/tabs/SettingsTab";
 
 export function ModelsTab(props: PlatformSubTabProps) {
@@ -33,8 +34,11 @@ export function ModelsTab(props: PlatformSubTabProps) {
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-hidden p-5">
-        <PlatformSubTab {...props} />
+      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden p-5">
+        <GatewayHealthCard />
+        <div className="min-h-0 flex-1 overflow-hidden">
+          <PlatformSubTab {...props} />
+        </div>
       </div>
     </div>
   );

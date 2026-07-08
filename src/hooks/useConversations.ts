@@ -14,9 +14,10 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { toast } from "sonner";
 import { listen, emit } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import { conversationApi, ptyApi, agentApi, runtimeApi, checkpointApi, modelApi, distillationApi } from "@/lib/tauri-api";
+import { conversationApi, ptyApi, agentApi, runtimeApi, checkpointApi, modelApi, distillationApi, type ConversationGoal, type ConversationGoalStatus } from "@/lib/tauri-api";
 import { getRuntimeAgentId, loadAgentRegistry } from "@/lib/agentRegistry";
 import { processTerminalStream, detectInteractivePrompts, detectMistakes } from "@/lib/terminal";
+import { parseGoalCommand, parseBtwCommand, type GoalCommand } from "@/lib/slashCommands";
 import { AGENT_NAMES } from "@/lib/constants";
 import type {
   AcpModelOption,
@@ -26,6 +27,7 @@ import type {
   DetectedAgent,
   PromptType,
   GatewayStatus,
+  RuntimeAgentId,
   RuntimeApprovalRequest,
   RuntimeModelSelection,
   RuntimePermissionPolicy,
@@ -90,6 +92,12 @@ export interface UseConversationsReturn {
   loadArchivedConversations: () => Promise<void>;
   archivedConversations: ConversationInfo[];
   sendMessage: (e: React.FormEvent, config: RuntimeSendConfig, searchContext?: string, images?: ChatImageAttachment[]) => Promise<void>;
+  // Long-term goal for the current conversation (DeepSeek-GUI /goal)
+  activeGoal: ConversationGoal | null;
+  setGoalStatus: (status: ConversationGoalStatus) => Promise<void>;
+  clearActiveGoal: () => Promise<void>;
+  // Send assembled text as a turn (SDD clarify / plan prompts)
+  sendPreparedMessage: (agentText: string, displayText: string, config: RuntimeSendConfig) => Promise<void>;
   respondToApproval: (approved: boolean, forSession?: boolean) => Promise<void>;
   sendStdinDirect: (input: string) => Promise<void>;
   stopAgentSession: (sessionId: string) => Promise<void>;
@@ -105,6 +113,7 @@ export function useConversations(
   const [archivedConversations, setArchivedConversations] = useState<ConversationInfo[]>([]);
   const [currentConvId, setCurrentConvId] = useState("");
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
+  const [activeGoal, setActiveGoal] = useState<ConversationGoal | null>(null);
   const [chatInput, setChatInput] = useState("");
   const [chatWorkspace, setChatWorkspace] = useState("direct");
   const [detectedAgents, setDetectedAgents] = useState<DetectedAgent[]>([]);
@@ -418,6 +427,14 @@ export function useConversations(
       setMessages([]);
     }
 
+    // Load this conversation's long-term goal (DeepSeek-GUI /goal) so the badge
+    // and the per-turn injection reflect it.
+    try {
+      setActiveGoal(await conversationApi.getGoal(id));
+    } catch {
+      setActiveGoal(null);
+    }
+
     try {
       const runtimeSessions = await runtimeApi.listConversationSessions(id);
       const latestRuntimeSession = runtimeSessions[runtimeSessions.length - 1];
@@ -442,6 +459,7 @@ export function useConversations(
   const newConversation = useCallback(() => {
     setCurrentConvId("");
     setMessages([]);
+    setActiveGoal(null);
     setChatInput("");
     setPromptType("none");
     setPendingApproval(null);
@@ -642,31 +660,17 @@ export function useConversations(
     }
   }, []);
 
-  const sendMessage = useCallback(async (
-    e: React.FormEvent,
+  // Core turn delivery: append the user bubble, ensure a runtime session, and
+  // send. Shared by sendMessage and the /btw branch handler so a branched
+  // conversation reuses the exact same session/handoff/resume logic.
+  const deliverTurn = useCallback(async (
+    convId: string,
+    agent: RuntimeAgentId,
+    displayContent: string,
+    agentContent: string,
     config: RuntimeSendConfig,
-    searchContext?: string,
     images?: ChatImageAttachment[],
   ) => {
-    e.preventDefault();
-    if (!chatInput.trim() && !(images && images.length > 0)) return;
-
-    const agent = runtimeAgentId(activeAgent);
-    if (!agent) {
-      throw new Error(`${activeAgent} 尚未完成真实运行适配，请选择 Claude Code、Codex、Gemini CLI、Qwen Code、OpenCode 或 GitHub Copilot CLI`);
-    }
-
-    let convId = currentConvId;
-    if (!convId) {
-      convId = await createConversationFromPrompt(chatInput);
-    }
-
-    // Build message content — inject search context if provided (AingDesk inspired)
-    const displayContent = chatInput.trim() || "（图片）";
-    const agentContent = searchContext
-      ? `${chatInput}\n\n---\n[联网搜索结果]\n${searchContext}`
-      : chatInput;
-
     // Append user message immediately (display original question). Attachment
     // previews ride in metadata so the bubble shows thumbnails right away; the
     // persisted row later carries file paths instead.
@@ -689,12 +693,11 @@ export function useConversations(
     // workspace), so the user can review the diff and rewind. No-op / skipped
     // for non-Git workspaces; never blocks the turn.
     if (config.workMode === "direct" && chatWorkspace && chatWorkspace !== "direct") {
-      const snippet = chatInput.trim().slice(0, 40);
+      const snippet = displayContent.slice(0, 40);
       checkpointApi.create(chatWorkspace, convId, snippet || "改动前检查点").catch(() => undefined);
     }
 
     const inputMsg = agentContent.trim() || "请查看附带的图片。";
-    setChatInput("");
 
     const startRuntimeSession = async () => {
       const session = await runtimeApi.startSession({
@@ -777,7 +780,165 @@ export function useConversations(
       ]);
       throw err;
     }
-  }, [activeAgent, chatInput, chatWorkspace, currentConvId]);
+  }, [activeAgent, chatWorkspace]);
+
+  // ── /goal controls (exposed for the goal badge buttons) ──
+  const setGoalStatus = useCallback(async (status: ConversationGoalStatus) => {
+    if (!currentConvId) return;
+    try {
+      setActiveGoal(await conversationApi.setGoalStatus(currentConvId, status));
+    } catch (error) {
+      toast.error(`目标操作失败：${error}`);
+    }
+  }, [currentConvId]);
+
+  const clearActiveGoal = useCallback(async () => {
+    if (!currentConvId) return;
+    try {
+      await conversationApi.clearGoal(currentConvId);
+      setActiveGoal(null);
+      toast.success("已清除长期目标");
+    } catch (error) {
+      toast.error(`清除目标失败：${error}`);
+    }
+  }, [currentConvId]);
+
+  // ── /goal slash command (DeepSeek-GUI) — never sent to the agent ──
+  const handleGoalCommand = useCallback(async (cmd: GoalCommand) => {
+    if (!currentConvId) {
+      toast.error("先开始一段对话，再设定长期目标");
+      return;
+    }
+    setChatInput("");
+    try {
+      if (cmd.action === "menu") {
+        toast.info(
+          activeGoal
+            ? `当前目标（${activeGoal.status}）：${activeGoal.objective}`
+            : "用法：/goal <目标>　·　/goal pause|resume|complete|clear",
+        );
+      } else if (cmd.action === "set") {
+        setActiveGoal(await conversationApi.setGoal(currentConvId, cmd.objective));
+        toast.success("已设定长期目标，之后每轮都会提醒 Agent 朝它推进");
+      } else if (cmd.action === "clear") {
+        await conversationApi.clearGoal(currentConvId);
+        setActiveGoal(null);
+        toast.success("已清除长期目标");
+      } else {
+        const status: ConversationGoalStatus =
+          cmd.action === "pause" ? "paused" : cmd.action === "resume" ? "active" : "complete";
+        setActiveGoal(await conversationApi.setGoalStatus(currentConvId, status));
+        toast.success(
+          status === "paused" ? "目标已暂停（暂不注入）"
+            : status === "active" ? "目标已继续"
+            : "目标已标记完成（不再注入）",
+        );
+      }
+    } catch (error) {
+      toast.error(`目标操作失败：${error}`);
+    }
+  }, [currentConvId, activeGoal]);
+
+  // ── /btw slash command (DeepSeek-GUI) — open a side conversation that
+  // inherits the current context, then send the question into it ──
+  const handleBtwCommand = useCallback(async (question: string | null, config: RuntimeSendConfig) => {
+    if (!currentConvId) {
+      toast.error("先在一段对话里，才能开旁支");
+      return;
+    }
+    if (!question) {
+      toast.info("用法：/btw 你想岔开讨论的问题");
+      return;
+    }
+    const agent = runtimeAgentId(activeAgent);
+    if (!agent) {
+      toast.error("当前 Agent 尚未完成真实运行适配");
+      return;
+    }
+    const branchId = `conv_${Date.now()}`;
+    const title = `↳ ${question.length > 14 ? question.slice(0, 14) + "…" : question}`;
+    try {
+      await conversationApi.create({
+        id: branchId,
+        title,
+        workspacePath: chatWorkspace,
+        activeAgent,
+        parentConversationId: currentConvId,
+      });
+      await loadConversations();
+      setCurrentConvId(branchId);
+      currentConvIdRef.current = branchId;
+      setMessages([]);      // the branch view starts fresh (parent context is agent-only)
+      setActiveGoal(null);  // a fresh branch carries no goal
+      setChatInput("");
+      toast.info("已开旁支，带着主对话的上下文继续");
+      // Backend seeds the parent's transcript into this first turn (parent link + empty branch).
+      await deliverTurn(branchId, agent, question, question, config);
+    } catch (error) {
+      toast.error(`开旁支失败：${error}`);
+    }
+  }, [currentConvId, activeAgent, chatWorkspace, loadConversations, deliverTurn]);
+
+  // Sends a prepared message (assembled text, not from the composer) as a turn.
+  // Used by the SDD flow to send the clarify / plan-generation prompts while
+  // showing a short summary in the bubble. Creates a conversation if needed.
+  const sendPreparedMessage = useCallback(async (
+    agentText: string,
+    displayText: string,
+    config: RuntimeSendConfig,
+  ) => {
+    const agent = runtimeAgentId(activeAgent);
+    if (!agent) {
+      toast.error(`${activeAgent} 尚未完成真实运行适配`);
+      return;
+    }
+    let convId = currentConvId;
+    if (!convId) {
+      convId = await createConversationFromPrompt(displayText);
+    }
+    await deliverTurn(convId, agent, displayText, agentText, config);
+  }, [activeAgent, currentConvId, deliverTurn]);
+
+  const sendMessage = useCallback(async (
+    e: React.FormEvent,
+    config: RuntimeSendConfig,
+    searchContext?: string,
+    images?: ChatImageAttachment[],
+  ) => {
+    e.preventDefault();
+    if (!chatInput.trim() && !(images && images.length > 0)) return;
+
+    // Slash-command interception (DeepSeek-GUI): /goal and /btw are handled
+    // locally and never forwarded to the agent as a normal message.
+    const goalCmd = parseGoalCommand(chatInput);
+    if (goalCmd) {
+      await handleGoalCommand(goalCmd);
+      return;
+    }
+    const btwCmd = parseBtwCommand(chatInput);
+    if (btwCmd) {
+      await handleBtwCommand(btwCmd.question, config);
+      return;
+    }
+
+    const agent = runtimeAgentId(activeAgent);
+    if (!agent) {
+      throw new Error(`${activeAgent} 尚未完成真实运行适配，请选择 Claude Code、Codex、Gemini CLI、Qwen Code、OpenCode 或 GitHub Copilot CLI`);
+    }
+
+    let convId = currentConvId;
+    if (!convId) {
+      convId = await createConversationFromPrompt(chatInput);
+    }
+
+    // Build message content — inject search context if provided (AingDesk inspired)
+    const displayContent = chatInput.trim() || "（图片）";
+    const agentContent = searchContext
+      ? `${chatInput}\n\n---\n[联网搜索结果]\n${searchContext}`
+      : chatInput;
+    setChatInput("");
+    await deliverTurn(convId, agent, displayContent, agentContent, config, images);
+  }, [activeAgent, chatInput, currentConvId, deliverTurn, handleGoalCommand, handleBtwCommand]);
 
   const respondToApproval = useCallback(async (approved: boolean, forSession = false) => {
     if (!pendingApproval) return;
@@ -859,5 +1020,7 @@ export function useConversations(
     archiveConversation, unarchiveConversation, loadArchivedConversations,
     sendMessage, respondToApproval, sendStdinDirect, stopAgentSession, startAgentSession,
     acpModelOptions, setSessionModel,
+    activeGoal, setGoalStatus, clearActiveGoal,
+    sendPreparedMessage,
   };
 }

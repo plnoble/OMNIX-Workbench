@@ -1,6 +1,6 @@
 [package]
 name = "omnix-workbench"
-version = "0.5.0"
+version = "0.6.0"
 description = "Multi-Agent development and collaboration workbench"
 authors = ["OMNIX Workbench Contributors"]
 edition = "2021"
@@ -55,6 +55,7 @@ windows = { version = "0.58", features = [
 aes-gcm = "0.10"
 getrandom = "0.2"
 base64 = "0.22"
+sha2 = "0.10"
 regex = "1"
 whoami = "1"
 log = "0.4"
