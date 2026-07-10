@@ -159,6 +159,32 @@ export const accountApi = {
   delete: (id: string) => invoke("delete_agent_account", { id }),
 };
 
+// F1: unified per-agent upstream account switcher (OAuth + api-key)
+export interface UpstreamAccountOption {
+  account_ref: string; kind: "oauth" | "apikey"; label: string;
+  provider: string | null; expired: boolean; is_active: boolean;
+}
+export const upstreamAccountApi = {
+  list: (agentName: string) =>
+    invoke<UpstreamAccountOption[]>("list_agent_upstream_accounts", { agentName }),
+  setActive: (agentName: string, accountRef: string) =>
+    invoke<void>("set_active_upstream_account", { agentName, accountRef }),
+  getActive: (agentName: string) =>
+    invoke<string>("get_active_upstream_account", { agentName }),
+};
+
+// F-C: local model fit ranking (whichllm inspired)
+export interface HardwareInfo { cpu_cores: number; cpu_brand: string; ram_gb: number; }
+export interface ModelRecommendation {
+  name: string; family: string; params_b: number; best_quant: string;
+  needed_gb: number; fit: "fits" | "tight" | "wont_run";
+}
+export const localModelApi = {
+  detectHardware: () => invoke<HardwareInfo>("detect_hardware"),
+  recommend: (budgetGb: number) =>
+    invoke<ModelRecommendation[]>("recommend_local_models", { budgetGb }),
+};
+
 // ── Write (Markdown writing workspace) — DeepSeek-GUI inspired ──
 
 export interface WriteSpace {

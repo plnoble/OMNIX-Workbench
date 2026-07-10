@@ -1,0 +1,55 @@
+name: Release
+
+# Tag-triggered auto-release: push a `v*` tag (matching the version in
+# tauri.conf.json) and this builds, signs, and publishes a GitHub Release with
+# the installers + `latest.json` so in-app updates pick it up.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Build, sign & publish release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Update-signing key (NOT a Windows code-signing cert). Set these two as
+          # repo secrets — see docs/RELEASING.md.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          # __VERSION__ is replaced with the version from tauri.conf.json, so the
+          # tag, release name and app version always agree.
+          tagName: v__VERSION__
+          releaseName: "OMNIX Workbench v__VERSION__"
+          releaseBody: "自动发布。软件内会自动检测并提示更新。详见 CHANGELOG。"
+          releaseDraft: false
+          prerelease: false
+          # Emit latest.json alongside the installers for the in-app updater.
+          includeUpdaterJson: true

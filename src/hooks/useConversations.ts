@@ -931,10 +931,12 @@ export function useConversations(
       convId = await createConversationFromPrompt(chatInput);
     }
 
-    // Build message content — inject search context if provided (AingDesk inspired)
+    // Build message content — inject extra context if provided (search results,
+    // knowledge, cross-agent @ references). The caller already labels each block
+    // ([联网搜索结果] / [引用…]), so we just append it under the user's text.
     const displayContent = chatInput.trim() || "（图片）";
     const agentContent = searchContext
-      ? `${chatInput}\n\n---\n[联网搜索结果]\n${searchContext}`
+      ? `${chatInput}\n\n---\n${searchContext}`
       : chatInput;
     setChatInput("");
     await deliverTurn(convId, agent, displayContent, agentContent, config, images);

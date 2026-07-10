@@ -49,6 +49,7 @@ import { WorkspaceModal } from "@/components/modals/WorkspaceModal";
 
 // Toast
 import { Toaster, toast } from "@/components/ui/sonner";
+import { UpdateManager } from "@/components/UpdateManager";
 
 // Types
 import type { SettingsSubTab } from "@/types";
@@ -79,6 +80,8 @@ const AutopilotsTab = lazy(() => import("@/components/tabs/AutopilotsTab").then(
 const WriteTab = lazy(() => import("@/components/tabs/WriteTab").then(m => ({ default: m.WriteTab })));
 const UsageDashboardTab = lazy(() => import("@/components/tabs/UsageDashboardTab").then(m => ({ default: m.UsageDashboardTab })));
 const AuthCenterTab = lazy(() => import("@/components/tabs/AuthCenterTab").then(m => ({ default: m.AuthCenterTab })));
+const LocalModelPickerTab = lazy(() => import("@/components/tabs/LocalModelPickerTab").then(m => ({ default: m.LocalModelPickerTab })));
+const CodeMapTab = lazy(() => import("@/components/tabs/CodeMapTab").then(m => ({ default: m.CodeMapTab })));
 const SearchResourceTab = lazy(() => import("@/components/tabs/SearchResourceTab").then(m => ({ default: m.SearchResourceTab })));
 const QuickAssistantTab = lazy(() => import("@/components/tabs/QuickAssistantTab").then(m => ({ default: m.QuickAssistantTab })));
 const AssistantsTab = lazy(() => import("@/components/tabs/AssistantsTab").then(m => ({ default: m.AssistantsTab })));
@@ -519,6 +522,8 @@ function MainApp() {
             {activeTab === "write" && <WriteTab />}
             {activeTab === "usage" && <UsageDashboardTab />}
             {activeTab === "auth-center" && <AuthCenterTab />}
+            {activeTab === "local-models" && <LocalModelPickerTab />}
+            {activeTab === "code-map" && <CodeMapTab />}
             {activeTab === "memories" && <MemoryTab />}
             {activeTab === "skills" && <SkillTab />}
             {activeTab === "knowledge" && <KnowledgeTab />}
@@ -966,6 +971,9 @@ function MainApp() {
 
       {/* Toast Container */}
       <Toaster />
+
+      {/* In-app software updates (startup check + dialog + deferred pill) */}
+      <UpdateManager />
 
       {/* Command Palette */}
       <CommandPalette

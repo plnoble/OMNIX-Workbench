@@ -9,7 +9,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
-import { Lightbulb, Wifi, Cpu, Bot, Wrench, RefreshCw, Copy, Smartphone } from "lucide-react";
+import { Lightbulb, Wifi, Cpu, Bot, Wrench, RefreshCw, Copy, Smartphone, Rocket } from "lucide-react";
+import { getVersion } from "@tauri-apps/api/app";
 import { OMNIX_TIPS, DEFAULT_PROXY_PORT } from "@/lib/constants";
 import { TokenActivityPanel } from "@/components/TokenActivityPanel";
 import QRCode from "qrcode";
@@ -48,6 +49,8 @@ export function DashboardTab({
   const [remoteEnabled, setRemoteEnabled] = useState(false);
   const [remoteBusy, setRemoteBusy] = useState(false);
   const [qr, setQr] = useState("");
+  const [appVersion, setAppVersion] = useState("");
+  useEffect(() => { getVersion().then(setAppVersion).catch(() => {}); }, []);
   useEffect(() => {
     settingsApi.get("remote_access_enabled").then((v) => setRemoteEnabled(v === "true")).catch(() => {});
   }, []);
@@ -127,6 +130,23 @@ export function DashboardTab({
 
       {/* Token activity & cost (R4) — surfaces request_logs usage with cost + daily chart */}
       <TokenActivityPanel />
+
+      {/* Software update — check for a newer signed release from GitHub */}
+      <Card>
+        <CardHeader className="flex-row justify-between items-center mb-4">
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <Rocket className="h-4 w-4" /> 软件更新
+          </CardTitle>
+          <Button size="sm" variant="outline" onClick={() => window.dispatchEvent(new Event("omnix:check-updates"))}>
+            <RefreshCw className="h-3 w-3" /> 检查更新
+          </Button>
+        </CardHeader>
+        <CardContent>
+          <p className="m-0 text-xs text-muted-foreground">
+            当前版本 <code className="text-foreground">v{appVersion || "…"}</code>。有新版本时会自动弹窗提示，也可随时点右上角手动检查。更新从 GitHub 发布，下载后自动安装并重启。
+          </p>
+        </CardContent>
+      </Card>
 
       {/* Env Diagnostics */}
       <Card>

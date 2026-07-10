@@ -301,6 +301,81 @@
   上游 key）；供应商基址按 Agent API 形态适配（Codex 补 `/v1`）；备份分类 `cli_takeover_<agent>` 隔离，
   还原取该类最新（`list_backups` 已按 created_at 倒序）。**OAuth 直连各家 API 的 header 细节待活体固化**。
 
+### 20. 多账号 · 同对话切换 · 不丢上下文（自定义，2A 之上）
+- **借鉴对象**：用户需求（Claude Code/Codex 多账号）+ tutti「账号/上下文流动」理念
+- **对齐日期**：2026-07-06
+- **行为契约**：Agent 的「当前上游」可在 { OAuth 订阅 / api-key 账号 / 默认平台 } 间切换（设置键
+  `active_upstream_<agent>`）。会话网关 `resolve_session_model_upstream` **每请求读该设置**：命中
+  `oauth:<id>` → `resolve_oauth_access_token` + 该家 API 基址（Claude 走 Bearer + `anthropic-beta`
+  header，`is_oauth` 标记）；命中 `apikey:<id>` → agent_accounts 的 host+key。**切换只改上游，不动
+  conversation/session** → 同一对话下一回合即用新账号，上下文不断。composer 加账号下拉，仅在有可切
+  账号时显示。
+- **涉及文件**：`commands/accounts.rs`（`list_agent_upstream_accounts`/`set|get_active_upstream_account`
+  + `active_upstream_setting_key`）、`commands/oauth.rs`（`resolve_oauth_access_token` 改 `&DbManager`）、
+  `proxy.rs`（`SessionUpstream.is_oauth` + `active_account_override` + 主 handler 按 is_oauth 用
+  Bearer+beta）、`lib.rs`（3 命令）、`tauri-api.ts`（upstreamAccountApi）、`ChatTab.tsx`（切换器）。
+- **注意**：仅对**走 OMNIX 网关**的 agent 生效（ModelSelection::Omnix 的 `/session/<conv>` 路由）；
+  ACP/CLI 自带凭据的 agent 需配合 CLI 接管。**OAuth 直连 header 同 #18/#19 待活体固化**。
+
+### 21. 跨 Agent @ 引用
+- **借鉴对象**：tutti（Agent-Agent 实时共享工作空间的「@ / 引用」）
+- **对齐日期**：2026-07-06
+- **行为契约**：composer 加「@引用」→ 选另一个对话（**任意 Agent**）→ 发送时把其近 24 条 transcript
+  （截断 ~8000 字）作为 `[引用对话：<标题>]` 块拼进 agent prompt（**复用 searchContext 注入范式**，
+  BORROWINGS #2）；气泡只显示用户原文 + 可删引用芯片；发送后清空引用。这样「在 Codex 里接着 Claude
+  的产出干」无需复制粘贴。
+- **涉及文件**：`ChatTab.tsx`（引用选择器 + 芯片 + `buildContext` 注入引用块）、`useConversations.ts`
+  （注入去掉硬编码 `[联网搜索结果]` 标签，改由 caller 各自标注，兼顾搜索/知识/引用）。复用
+  `conversationApi.list/getMessages`，**无新后端命令**。
+- **注意**：当前引用源=对话（最贴「接另一个 Agent」）；文件/产物/计划源 API 已在，后续可加。
+
+### 22. 本地模型选型（whichllm）
+- **借鉴对象**：whichllm（硬件感知的本地模型排序）
+- **对齐日期**：2026-07-06
+- **行为契约**：`sysinfo` 检测 CPU 核数/品牌 + 总内存（GPU 显存跨平台不可靠 → 用户填预算，默认内存）；
+  纯排序 `local_models::rank_models(budget_gb)`——模型目录 × 量化档估显存需求（参数量 × 量化字节 ×
+  1.2 开销）→ fit/tight/wont_run 三档，能跑的大模型优先。**只推荐不安装**（承接
+  [[deferred-local-model-installer]]）。
+- **涉及文件**：`local_models.rs`（目录 + 估算 + 排序，4 单测）、`commands/local_models.rs`
+  （`detect_hardware`/`recommend_local_models`）、`Cargo.toml`（sysinfo）、`lib.rs`、`tauri-api.ts`
+  （localModelApi）、`LocalModelPickerTab.tsx`、`appRegistry.tsx`（local-models 入口）。
+
+### 23. SkillDAG 冲突可见（深化）
+- **借鉴对象**：SkillDAG（已借鉴，本次露出冲突信号）
+- **对齐日期**：2026-07-06
+- **行为契约**：技能融合炉放入 ≥2 个技能时调 `skillDagApi.checkSet` → 若有 `conflicts_with` 边，
+  在熔炉下方显示冲突告警（哪两个技能冲突 + 原因）。后端冲突检测（`skill_dag.rs`）已完整，仅前端露出。
+- **涉及文件**：`SkillHub.tsx`（furnacePot 变化时 checkSet + 冲突 banner）。
+
+### 24. 代码库依赖图（代码地图）
+- **借鉴对象**：Understand-Anything（代码库知识图谱，本次做轻量文件+import 层）
+- **对齐日期**：2026-07-06
+- **行为契约**：`code_graph::build_graph` 静态遍历工作区（`.omnixignore` 过滤）→ 文件/目录节点 +
+  Contains/**Imports** 边（import 提取器覆盖 JS/TS `import from`、Rust `use crate::`、Python
+  `from . import`；`resolve_import` 词法解析到仓库内文件）。后端 + 命令
+  （`build/save/load_architecture_graph`）+ 前端 API（architectureApi）**本已存在**，本轮补：①
+  提取器单测（含跨平台路径）②修两个真 bug：`import '...';` 结尾分号残留引号、`resolve_import`
+  Windows `\` 与 import `/` 分隔符不匹配（导致依赖边解析不到）③ **CodeMapTab** d3-force 可视化。
+- **涉及文件**：`code_graph.rs`（+`normalize_join` + 4 单测 + 两处 bug 修）、`CodeMapTab.tsx`
+  （d3-force 力导图：缩放/拖拽/点节点看信息并打开，节点上限 400、按度数+行数筛，层色）、
+  `appRegistry.tsx`/`App.tsx`（code-map 入口）。复用 `shellApi.pickDirectory`、`d3@7.9`（无新依赖）。
+- **注意**：仅 import 级、词法提取近似（漏动态 import）→ UI 标「近似」；大仓库节点截断防卡；
+  函数/类级与 Agent 分析管线是后续可选深化。
+
+### 25. 统一技能中枢 · 一键统一（SkillsLM 口述）
+- **借鉴对象**：SkillsLM（仅二进制，按用户口述：扫描全盘技能 → 迁到统一文件夹 → 所有 agent 调取）
+- **对齐日期**：2026-07-06
+- **行为契约**：SkillHub「同步」区加**「一键统一技能库」**——一个闭环编排既有零件：① `scanDiskSkills`
+  扫全盘 → ② `importUnmanaged` 把未纳管技能收进中央库 `~/.omnix/skills` → ③ `syncBatch(所有技能,
+  **symlink**, overwrite)` 让**所有已安装 agent 软链共享同一份**（`sync_batch` 已对所有 installed
+  tool 生效；Windows 无软链权限自动回退复制）。改中央库一处，各 agent 侧同步生效。
+- **涉及文件**：`SkillHub.tsx`（`handleUnifyAll` + 「一键统一」按钮 + 说明）。**全复用既有后端命令**
+  （`scan_disk_skills`/`import_unmanaged_skills`/`sync_skills_batch` + `tool_adapters` 的 Symlink），
+  无新后端。
+- **注意**：既有「同步」默认用 copy（各 agent 独立副本），统一用 **symlink** 才是「共享单一真源」；
+  Windows 回退 copy 时改中央库不自动反映，需重新统一。**多模型一问多答（ChatClaw）已存在**
+  （`CompareHub`：API 并行流式比对 + 多模型同对话 + 熔炼炉 + Web 原生比对），本轮无需重做。
+
 ---
 
 ## 架构约定（让「再借鉴」永远是局部手术）

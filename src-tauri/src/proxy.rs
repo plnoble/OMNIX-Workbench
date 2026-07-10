@@ -482,13 +482,14 @@ async fn handle_messages_impl(
         }
     }
 
-    let (api_host, api_type, actual_model_name, keys, circuit_platform_id) = if let Some(upstream) = session_upstream {
+    let (api_host, api_type, actual_model_name, keys, circuit_platform_id, upstream_is_oauth) = if let Some(upstream) = session_upstream {
         (
             upstream.api_address,
             upstream.api_type,
             upstream.model_name,
             upstream.keys,
             Some(upstream.platform_id),
+            upstream.is_oauth,
         )
     } else {
         match resolve_model_upstream_for_agent(
@@ -507,6 +508,7 @@ async fn handle_messages_impl(
                     .map(str::to_string)
                     .collect(),
                 Some(platform_id),
+                false,
             ),
             Err(e) => {
                 return (
@@ -550,17 +552,22 @@ async fn handle_messages_impl(
             upstream_url, is_stream
         );
 
-        let req_builder = state
+        let mut req_builder = state
             .http_client
             .post(&upstream_url)
             .header("Content-Type", "application/json")
             .header("anthropic-version", "2023-06-01")
             .json(&native_req);
+        // OAuth subscription tokens authenticate with Bearer + the OAuth beta,
+        // not x-api-key (F1 active-account override; header live-verify pending).
+        if upstream_is_oauth {
+            req_builder = req_builder.header("anthropic-beta", "oauth-2025-04-20");
+        }
 
         let upstream_res = match send_with_key_failover(
             req_builder,
             &keys,
-            ApiKeyHeader::Anthropic,
+            if upstream_is_oauth { ApiKeyHeader::Bearer } else { ApiKeyHeader::Anthropic },
             key_health.clone(),
         )
         .await
@@ -2486,6 +2493,9 @@ struct SessionUpstream {
     api_type: String,
     keys: Vec<String>,
     key_ids: Vec<Option<String>>,
+    /// True when `keys[0]` is an OAuth access token (Bearer + provider betas),
+    /// not a platform api-key. Set by the F1 active-account override.
+    is_oauth: bool,
 }
 
 fn resolve_session_model_upstream(
@@ -2493,22 +2503,22 @@ fn resolve_session_model_upstream(
     session_key: &str,
 ) -> Result<SessionUpstream, String> {
     let conn = db.get_connection().map_err(|error| error.to_string())?;
-    let model_json: Option<String> = conn
+    let session_row: Option<(String, String)> = conn
         .query_row(
-            "SELECT model_json
+            "SELECT model_json, agent_id
              FROM agent_sessions
              WHERE id = ?1 OR conversation_id = ?1
              ORDER BY CASE WHEN id = ?1 THEN 0 ELSE 1 END, created_at DESC
              LIMIT 1",
             params![session_key],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()
         .map_err(|error| error.to_string())?;
-    let selection: crate::runtime::ModelSelection = serde_json::from_str(
-        &model_json.ok_or_else(|| format!("Agent session not found: {session_key}"))?,
-    )
-    .map_err(|error| error.to_string())?;
+    let (model_json, agent_id) =
+        session_row.ok_or_else(|| format!("Agent session not found: {session_key}"))?;
+    let selection: crate::runtime::ModelSelection =
+        serde_json::from_str(&model_json).map_err(|error| error.to_string())?;
     let (platform_id, model_name) = match selection {
         crate::runtime::ModelSelection::Omnix {
             platform_id,
@@ -2516,6 +2526,12 @@ fn resolve_session_model_upstream(
         } => (platform_id, model_name),
         _ => return Err("该会话没有选择 OMNIX 模型，不应进入会话网关".into()),
     };
+    // F1: if the agent switched its active upstream to a specific OAuth / api-key
+    // account, use that account as the upstream — same conversation & session
+    // gateway URL, only the next turn's upstream changes (context preserved).
+    if let Some(upstream) = active_account_override(db, &agent_id, &model_name) {
+        return Ok(upstream);
+    }
     let platform: Option<(String, String, String)> = conn
         .query_row(
             "SELECT api_key, api_address, api_type
@@ -2572,7 +2588,72 @@ fn resolve_session_model_upstream(
         api_type,
         keys,
         key_ids,
+        is_oauth: false,
     })
+}
+
+/// F1: resolve an agent's active upstream account (OAuth subscription or api-key
+/// account) into a session upstream override. `None` = no override (use the
+/// session's platform). Keeps the session's `model_name`.
+fn active_account_override(
+    db: &DbManager,
+    agent_id: &str,
+    model_name: &str,
+) -> Option<SessionUpstream> {
+    let active = db
+        .get_setting(&crate::commands::active_upstream_setting_key(agent_id))
+        .ok()
+        .flatten()
+        .filter(|value| !value.trim().is_empty())?;
+
+    if let Some(oauth_id) = active.strip_prefix("oauth:") {
+        let (kind, token) = crate::commands::resolve_oauth_access_token(db, oauth_id).ok()?;
+        // Provider-native API base + type; Claude speaks anthropic, others openai.
+        let (api_address, api_type) = match kind {
+            crate::oauth::OAuthProviderKind::AnthropicClaude => {
+                ("https://api.anthropic.com".to_string(), "anthropic".to_string())
+            }
+            crate::oauth::OAuthProviderKind::OpenAiCodex => {
+                ("https://api.openai.com/v1".to_string(), "openai".to_string())
+            }
+            crate::oauth::OAuthProviderKind::GoogleGemini => (
+                "https://generativelanguage.googleapis.com".to_string(),
+                "openai".to_string(),
+            ),
+        };
+        return Some(SessionUpstream {
+            platform_id: active,
+            model_name: model_name.to_string(),
+            api_address,
+            api_type,
+            keys: vec![token],
+            key_ids: vec![None],
+            is_oauth: true,
+        });
+    }
+
+    if let Some(apikey_id) = active.strip_prefix("apikey:") {
+        let conn = db.get_connection().ok()?;
+        let (api_key, api_host): (String, String) = conn
+            .query_row(
+                "SELECT api_key, api_host FROM agent_accounts WHERE id = ?1",
+                params![apikey_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .ok()?;
+        let key = crate::crypto::decrypt(&api_key);
+        let key = if key.trim().is_empty() { api_key } else { key };
+        return Some(SessionUpstream {
+            platform_id: active,
+            model_name: model_name.to_string(),
+            api_address: api_host,
+            api_type: "openai".to_string(),
+            keys: vec![key],
+            key_ids: vec![None],
+            is_oauth: false,
+        });
+    }
+    None
 }
 
 fn resolve_model_upstream(

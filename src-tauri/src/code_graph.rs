@@ -517,8 +517,9 @@ fn walk_directory(
 
 /// Build import edges by matching import statements to known node paths
 fn build_import_edges(edges: &mut Vec<GraphEdge>, nodes: &[GraphNode]) {
+    // Normalize keys to forward slashes so Windows `\` paths still match imports.
     let path_map: HashMap<String, &str> = nodes.iter()
-        .map(|n| (n.path.clone(), n.id.as_str()))
+        .map(|n| (n.path.replace('\\', "/"), n.id.as_str()))
         .collect();
 
     for node in nodes {
@@ -542,28 +543,44 @@ fn build_import_edges(edges: &mut Vec<GraphEdge>, nodes: &[GraphNode]) {
     }
 }
 
-/// Resolve an import path to a node ID
+/// Lexically join a relative import onto a directory, normalizing separators to
+/// `/` and collapsing `.` / `..` (no filesystem access, cross-platform).
+fn normalize_join(from_dir: &str, import: &str) -> String {
+    let mut parts: Vec<&str> = from_dir.split(['/', '\\']).filter(|s| !s.is_empty()).collect();
+    for comp in import.split(['/', '\\']) {
+        match comp {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            other => parts.push(other),
+        }
+    }
+    parts.join("/")
+}
+
+/// Resolve a relative import to a node ID. `path_map` keys are forward-slash
+/// normalized. External (bare) package imports are skipped.
 fn resolve_import<'a>(import: &str, from_path: &str, path_map: &'a HashMap<String, &'a str>) -> Option<&'a str> {
-    // Skip external packages
     if !import.starts_with('.') && !import.starts_with('/') {
         return None;
     }
-
-    // Try common extensions
     let base = if import.starts_with('.') {
-        let from_dir = std::path::Path::new(from_path).parent()?;
-        from_dir.join(import).to_string_lossy().to_string()
+        let from_dir = std::path::Path::new(from_path)
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        normalize_join(&from_dir, import)
     } else {
-        import.to_string()
+        import.trim_start_matches('/').replace('\\', "/")
     };
 
     for ext in &["", ".ts", ".tsx", ".js", ".jsx", ".rs", ".py", "/index.ts", "/index.tsx", "/index.js", "/mod.rs"] {
         let candidate = format!("{}{}", base, ext);
-        if path_map.contains_key(&candidate) {
-            return path_map.get(&candidate).copied();
+        if let Some(id) = path_map.get(&candidate) {
+            return Some(*id);
         }
     }
-
     None
 }
 
@@ -672,10 +689,11 @@ fn extract_imports(content: &str) -> Vec<String> {
     let mut imports = Vec::new();
     for line in content.lines() {
         let trimmed = line.trim();
-        // JS/TS: import ... from '...'
+        // JS/TS: import ... from '...';  (strip the trailing ; before the quotes)
         if trimmed.starts_with("import ") && trimmed.contains(" from ") {
             if let Some(from_pos) = trimmed.find(" from ") {
-                let path_part = &trimmed[from_pos + 6..].trim().trim_matches('\'').trim_matches('"').trim_end_matches(';');
+                let raw = trimmed[from_pos + 6..].trim().trim_end_matches(';').trim();
+                let path_part = raw.trim_matches('\'').trim_matches('"');
                 if path_part.starts_with('.') || path_part.starts_with('/') {
                     imports.push(path_part.to_string());
                 }
@@ -742,4 +760,59 @@ pub fn load_graph(project_name: &str) -> Result<ArchitectureGraph, String> {
 
     let json = fs::read_to_string(&path).map_err(|e| e.to_string())?;
     serde_json::from_str(&json).map_err(|e| format!("Failed to parse graph: {}", e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn imports_extracted_per_language() {
+        let ts = "import { foo } from './utils/foo';\nimport React from 'react';\nconst x = 1;";
+        // Only relative imports are kept (external 'react' skipped).
+        assert_eq!(extract_imports(ts), vec!["./utils/foo".to_string()]);
+
+        let rust = "use crate::commands::media;\nuse std::fs;\npub fn x() {}";
+        assert_eq!(extract_imports(rust), vec!["crate::commands::media".to_string()]);
+
+        let py = "from .models import User\nfrom os import path\n";
+        assert_eq!(extract_imports(py), vec![".models".to_string()]);
+    }
+
+    #[test]
+    fn resolve_import_maps_relative_to_known_file_and_skips_external() {
+        let mut map: HashMap<String, &str> = HashMap::new();
+        map.insert("src/utils/foo.ts".into(), "file:src/utils/foo.ts");
+        map.insert("src/index/mod.rs".into(), "file:src/index/mod.rs");
+
+        // Relative TS import resolves via the .ts extension.
+        assert_eq!(
+            resolve_import("./foo", "src/utils/bar.ts", &map),
+            Some("file:src/utils/foo.ts"),
+        );
+        // Directory import resolves via /index.ts or /mod.rs candidates.
+        assert_eq!(
+            resolve_import("./index", "src/main.rs", &map),
+            Some("file:src/index/mod.rs"),
+        );
+        // Bare package name is external → not resolved.
+        assert_eq!(resolve_import("react", "src/app.tsx", &map), None);
+    }
+
+    #[test]
+    fn functions_and_classes_extracted() {
+        let src = "pub fn build_graph() {}\nfn helper() {}\npub struct GraphNode {}\n";
+        let funcs = extract_functions(src);
+        assert!(funcs.contains(&"build_graph".to_string()));
+        assert!(funcs.contains(&"helper".to_string()));
+        assert!(extract_classes(src).contains(&"GraphNode".to_string()));
+    }
+
+    #[test]
+    fn ignore_matches_defaults_and_globs() {
+        let patterns = load_omnixignore(&PathBuf::from("/nonexistent-xyz"));
+        assert!(is_ignored("node_modules/react/index.js", &patterns));
+        assert!(is_ignored("target/debug/foo", &patterns));
+        assert!(!is_ignored("src/app.tsx", &patterns));
+    }
 }

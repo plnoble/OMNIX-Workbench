@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { toast } from "sonner";
 import {
@@ -12,6 +12,7 @@ import {
   Folder,
   FolderOpen,
   GitBranch,
+  AtSign,
   Globe,
   Loader2,
   PanelRightClose,
@@ -41,7 +42,8 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { AGENT_NAMES } from "@/lib/constants";
 import { cn } from "@/lib/utils";
-import { knowledgeApi, mediaApi, runtimeApi, searchApi, workspaceApi, notesApi, sddApi, type ConversationGoal, type ConversationGoalStatus } from "@/lib/tauri-api";
+import { knowledgeApi, mediaApi, runtimeApi, searchApi, workspaceApi, notesApi, sddApi, upstreamAccountApi, conversationApi, type UpstreamAccountOption, type ConversationGoal, type ConversationGoalStatus } from "@/lib/tauri-api";
+import type { ConversationInfo } from "@/types";
 import { getRuntimeAgentId, isAcpAgent } from "@/lib/agentRegistry";
 import type {
   ConversationMessage,
@@ -256,6 +258,37 @@ export function ChatTab({
   const [workspaceSnapshot, setWorkspaceSnapshot] = useState<WorkspaceSnapshot | null>(null);
   const [previewPath, setPreviewPath] = useState<string | null>(null);
   const [workspaceLoading, setWorkspaceLoading] = useState(false);
+  // F1: per-agent upstream account switcher (OAuth + api-key), switchable mid-chat.
+  const [upstreamAccounts, setUpstreamAccounts] = useState<UpstreamAccountOption[]>([]);
+  const loadUpstreamAccounts = useCallback(() => {
+    upstreamAccountApi.list(activeAgent).then(setUpstreamAccounts).catch(() => setUpstreamAccounts([]));
+  }, [activeAgent]);
+  useEffect(() => { loadUpstreamAccounts(); }, [loadUpstreamAccounts]);
+  const activeUpstream = upstreamAccounts.find((a) => a.is_active);
+  const switchUpstreamAccount = async (accountRef: string) => {
+    try {
+      await upstreamAccountApi.setActive(activeAgent, accountRef);
+      loadUpstreamAccounts();
+      const picked = upstreamAccounts.find((a) => a.account_ref === accountRef);
+      toast.success(accountRef ? `已切到「${picked?.label ?? accountRef}」，同一对话继续用新账号` : "已切回默认上游");
+    } catch (error) {
+      toast.error(`切换账号失败：${String(error)}`);
+    }
+  };
+
+  // F-A: cross-agent @ references — pull another conversation's transcript into
+  // this agent's prompt so it can build on another agent's work (tutti core).
+  const [references, setReferences] = useState<{ id: string; label: string }[]>([]);
+  const [refPickerOpen, setRefPickerOpen] = useState(false);
+  const [refConversations, setRefConversations] = useState<ConversationInfo[]>([]);
+  const openRefPicker = () => {
+    setRefPickerOpen((open) => !open);
+    conversationApi.list().then(setRefConversations).catch(() => setRefConversations([]));
+  };
+  const addReference = (conv: ConversationInfo) => {
+    setReferences((prev) => prev.some((r) => r.id === conv.id) ? prev : [...prev, { id: conv.id, label: conv.title }]);
+    setRefPickerOpen(false);
+  };
 
   const runtimeAgentId = getRuntimeAgentId(activeAgent);
   const selectedModel = runtimeModels.find((model) => model.id === selectedModelId)
@@ -368,6 +401,22 @@ export function ChatTab({
       }
     }
 
+    // Cross-agent @ references: inject each referenced conversation's recent
+    // transcript so this agent can continue another agent's work.
+    for (const ref of references) {
+      try {
+        const msgs = await conversationApi.getMessages(ref.id);
+        const transcript = msgs
+          .slice(-24)
+          .map((m) => `${m.role === "user" ? "用户" : "助手"}：${m.content}`)
+          .join("\n")
+          .slice(-8000);
+        if (transcript.trim()) blocks.push(`[引用对话：${ref.label}]\n${transcript}`);
+      } catch {
+        /* skip a reference that failed to load */
+      }
+    }
+
     return blocks.join("\n\n---\n\n");
   };
 
@@ -427,6 +476,7 @@ export function ChatTab({
       workMode,
     }, context, attachments.length > 0 ? attachments : undefined);
     setAttachments([]);
+    setReferences([]);
   };
 
   // Builds a send config from the composer's current model/permission/mode, for
@@ -812,6 +862,28 @@ export function ChatTab({
               style={{ maxHeight: "50vh" }}
             />
 
+            {/* F-A: active cross-agent references (removable chips). */}
+            {references.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {references.map((ref) => (
+                  <span
+                    key={ref.id}
+                    className="flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-xs text-primary"
+                  >
+                    <AtSign className="h-3 w-3" />
+                    <span className="max-w-40 truncate">{ref.label}</span>
+                    <button
+                      type="button"
+                      onClick={() => setReferences((prev) => prev.filter((r) => r.id !== ref.id))}
+                      className="text-primary/70 hover:text-primary"
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+
             <div className="mt-3 flex flex-wrap items-center gap-2">
               {/* One model slot per agent kind: gateway agents pick from the
                   OMNIX catalog; ACP agents pick from the agent's own list
@@ -861,6 +933,29 @@ export function ChatTab({
                 >
                   模型：Agent 默认
                 </span>
+              )}
+
+              {/* F1: upstream account switcher — flip subscription/account mid-chat.
+                  Only shown when the agent has switchable OAuth/api-key accounts. */}
+              {upstreamAccounts.length > 0 && (
+                <select
+                  value={activeUpstream?.account_ref || ""}
+                  onChange={(event) => void switchUpstreamAccount(event.target.value)}
+                  className={cn(
+                    "h-8 max-w-52 rounded-md border bg-background px-2 text-sm",
+                    activeUpstream ? "border-primary/40" : "border-border",
+                  )}
+                  title="切换该 Agent 使用的账号/订阅（同一对话继续，上下文不断）"
+                >
+                  <option value="">账号：默认上游</option>
+                  {upstreamAccounts.map((account) => (
+                    <option key={account.account_ref} value={account.account_ref}>
+                      {account.kind === "oauth" ? "🔑" : "🎫"} {account.label}
+                      {account.provider ? ` · ${account.provider}` : ""}
+                      {account.expired ? "（已过期）" : ""}
+                    </option>
+                  ))}
+                </select>
               )}
 
               <select
@@ -941,6 +1036,41 @@ export function ChatTab({
                 <Globe className="h-3.5 w-3.5" />
                 搜索
               </button>
+
+              {/* F-A: @ reference another conversation (any agent) → inject its
+                  transcript so this agent continues that agent's work. */}
+              <div className="relative">
+                <button
+                  type="button"
+                  className={cn(
+                    "flex h-8 items-center gap-1.5 rounded-md border px-2 text-sm",
+                    references.length > 0 ? "border-primary/40 bg-primary/10 text-primary" : "border-border text-muted-foreground hover:text-foreground"
+                  )}
+                  onClick={openRefPicker}
+                  title="引用另一个对话（跨 Agent），接着它的产出继续"
+                >
+                  <AtSign className="h-3.5 w-3.5" />
+                  {references.length > 0 ? `引用×${references.length}` : "引用"}
+                </button>
+                {refPickerOpen && (
+                  <div className="absolute bottom-full left-0 z-50 mb-1 max-h-64 w-72 overflow-y-auto rounded-md border border-border bg-popover shadow-lg">
+                    <div className="border-b border-border px-3 py-2 text-xs text-muted-foreground">选一个对话引用（任意 Agent）</div>
+                    {refConversations.filter((c) => c.id !== currentConvId).length === 0 ? (
+                      <div className="px-3 py-4 text-center text-xs text-muted-foreground">没有其他对话</div>
+                    ) : refConversations.filter((c) => c.id !== currentConvId).map((conv) => (
+                      <button
+                        key={conv.id}
+                        type="button"
+                        onClick={() => addReference(conv)}
+                        className="block w-full truncate px-3 py-2 text-left text-sm hover:bg-muted/30"
+                      >
+                        <span className="mr-1.5 text-xs text-muted-foreground">{conv.active_agent}</span>
+                        {conv.title}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
 
               <div className="ml-auto flex items-center gap-2">
                 {currentConvId && (

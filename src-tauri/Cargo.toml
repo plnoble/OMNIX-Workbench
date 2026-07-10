@@ -1,6 +1,6 @@
 [package]
 name = "omnix-workbench"
-version = "0.6.0"
+version = "0.7.0"
 description = "Multi-Agent development and collaboration workbench"
 authors = ["OMNIX Workbench Contributors"]
 edition = "2021"
@@ -24,6 +24,8 @@ tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-opener = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-clipboard-manager = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
@@ -56,6 +58,7 @@ aes-gcm = "0.10"
 getrandom = "0.2"
 base64 = "0.22"
 sha2 = "0.10"
+sysinfo = "0.32"
 regex = "1"
 whoami = "1"
 log = "0.4"

@@ -4,7 +4,7 @@ import { SkillTopology } from "./SkillTopology";
 import { Layers, Sparkles, BookOpen, Download, RefreshCw, Search, Star, Upload, ArrowRightLeft, HardDrive, CheckCircle2, XCircle, AlertCircle, FolderOpen, Wand2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/sonner";
-import { modelApi, skillLibraryApi, skillSetApi, skillSyncApi, skillGeneratorApi, shellApi, type WorkspaceFile, type SkillDraft } from "@/lib/tauri-api";
+import { modelApi, skillLibraryApi, skillSetApi, skillSyncApi, skillGeneratorApi, shellApi, skillDagApi, type WorkspaceFile, type SkillDraft, type ConflictPair } from "@/lib/tauri-api";
 import type { PlatformModel } from "@/types";
 import type {
   ToolStatus as SyncToolStatus,
@@ -93,6 +93,12 @@ export const SkillHub: React.FC = () => {
 
   // Fusion Furnace states
   const [furnacePot, setFurnacePot] = useState<string[]>([]);
+  // F-D: SkillDAG conflict awareness — warn when combined skills conflict.
+  const [dagConflicts, setDagConflicts] = useState<ConflictPair[]>([]);
+  useEffect(() => {
+    if (furnacePot.length < 2) { setDagConflicts([]); return; }
+    skillDagApi.checkSet(furnacePot).then((v) => setDagConflicts(v.conflicts)).catch(() => setDagConflicts([]));
+  }, [furnacePot]);
   const [isFusing, setIsFusing] = useState<boolean>(false);
   const [fusedResult, setFusedResult] = useState<{
     draft_id: string;
@@ -284,6 +290,39 @@ export const SkillHub: React.FC = () => {
       setScanReport(report);
     } catch (e) {
       toast.error("导入失败：" + e);
+    }
+  };
+
+  // G1: 一键统一技能库 — 扫描全盘 → 未管理技能纳入中央库 ~/.omnix/skills → 让所有已安装
+  // agent 用软链共享同一份（Windows 无软链权限时自动回退复制）。三步串成一个闭环。
+  const [isUnifying, setIsUnifying] = useState(false);
+  const handleUnifyAll = async () => {
+    setIsUnifying(true);
+    try {
+      // 1) Scan and import every unmanaged skill into the central library.
+      const report = await skillSyncApi.scanDiskSkills();
+      let imported = 0;
+      if (report.unmanaged.length > 0) {
+        imported = await skillSyncApi.importUnmanaged(report.unmanaged);
+      }
+      await loadSkills();
+      // 2) Re-scan, then symlink every managed skill to all installed agents so
+      //    they read one shared central copy.
+      const rescan = await skillSyncApi.scanDiskSkills();
+      setScanReport(rescan);
+      setShowScanPanel(true);
+      const names = Array.from(new Set([...rescan.managed, ...rescan.drifted].map((s) => s.name)));
+      let synced = 0;
+      let failed = 0;
+      if (names.length > 0) {
+        const results = await skillSyncApi.syncBatch(names, "symlink", "overwrite");
+        for (const r of results) { synced += r.succeeded; failed += r.failed; }
+      }
+      toast.success(`已统一技能库：纳入 ${imported} 个 · 共享到各 agent ${synced} 处${failed ? `（${failed} 失败）` : ""}`);
+    } catch (e) {
+      toast.error("统一技能库失败：" + e);
+    } finally {
+      setIsUnifying(false);
     }
   };
 
@@ -1297,6 +1336,22 @@ export const SkillHub: React.FC = () => {
             )}
           </div>
 
+          {/* F-D: SkillDAG conflict warning — these skills have a registered
+              conflicts_with edge and may not compose cleanly. */}
+          {dagConflicts.length > 0 && (
+            <div className="mt-3 rounded-md border border-destructive/40 bg-destructive/5 p-3">
+              <div className="mb-1 text-xs font-semibold text-destructive">⚠ 技能冲突（SkillDAG）</div>
+              <ul className="space-y-0.5 text-xs text-muted-foreground">
+                {dagConflicts.map((c, i) => (
+                  <li key={i}>
+                    <span className="text-foreground">{c.skill_a} ✕ {c.skill_b}</span>
+                    {c.reason ? ` — ${c.reason}` : ""}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
           {/* Render visual diff on complete */}
           {showDiff && fusedResult && (
             <div className="border-t border-border mt-4 pt-4">
@@ -1528,15 +1583,18 @@ export const SkillHub: React.FC = () => {
               <div>
                 <h3 className="card-title flex items-center gap-1.5 text-sm m-0">
                   <RefreshCw size={16} color="var(--color-secondary)" />
-                  技能同步
+                  技能同步 · 统一技能库
                 </h3>
                 <p className="mt-1 text-xs leading-5 text-secondary-foreground">
-                  管理工具安装状态、磁盘扫描、Git 技能源、冲突策略和漂移检测。
+                  「一键统一」：扫描全盘技能 → 未纳管的收进中央库 <code>~/.omnix/skills</code> → 让所有已安装 Agent 软链共享同一份（改一处处处生效；Windows 无软链权限时自动回退为复制）。
                 </p>
               </div>
               <div className="flex gap-2">
-                <button className="btn btn-secondary py-1 px-3 text-xs" onClick={handleScanDisk} disabled={isScanning}>
-                  {isScanning ? "扫描中..." : "扫描磁盘"}
+                <button className="btn btn-primary py-1 px-3 text-xs" onClick={handleUnifyAll} disabled={isUnifying || isScanning} title="扫描全盘 → 纳入中央库 → 全 Agent 软链共享">
+                  {isUnifying ? "统一中..." : "🧩 一键统一技能库"}
+                </button>
+                <button className="btn btn-secondary py-1 px-3 text-xs" onClick={handleScanDisk} disabled={isScanning || isUnifying}>
+                  {isScanning ? "扫描中..." : "仅扫描"}
                 </button>
                 <button className="btn btn-secondary py-1 px-3 text-xs" onClick={() => setShowGitPanel(!showGitPanel)}>
                   Git 源

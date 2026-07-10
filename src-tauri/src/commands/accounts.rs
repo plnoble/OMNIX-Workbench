@@ -101,3 +101,119 @@ pub fn delete_agent_account(
     conn.execute("DELETE FROM agent_accounts WHERE id = ?1", params![id]).map_err(|e| e.to_string())?;
     Ok(())
 }
+
+// ── F1: unified per-agent upstream account switcher (tutti/multi-account) ────
+//
+// Lets an agent's active upstream be switched between OAuth subscriptions (2A)
+// and api-key accounts mid-conversation. The choice is a setting; the session
+// gateway (`resolve_session_model_upstream`) reads it per request, so switching
+// only changes the next turn's upstream — the conversation/context is untouched.
+
+/// Settings key holding an agent's active upstream account ref.
+pub(crate) fn active_upstream_setting_key(agent_name: &str) -> String {
+    format!("active_upstream_{agent_name}")
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct UpstreamAccountOption {
+    /// `oauth:<id>` | `apikey:<id>` — opaque ref the proxy resolves.
+    pub account_ref: String,
+    pub kind: String, // "oauth" | "apikey"
+    pub label: String,
+    pub provider: Option<String>,
+    pub expired: bool,
+    pub is_active: bool,
+}
+
+/// List the upstream accounts an agent can switch between: every OAuth
+/// subscription plus this agent's api-key accounts. Marks the active one.
+#[tauri::command]
+pub fn list_agent_upstream_accounts(
+    agent_name: String,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<Vec<UpstreamAccountOption>, String> {
+    let active = db
+        .get_setting(&active_upstream_setting_key(&agent_name))
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let conn = db.get_connection().map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+
+    // OAuth subscriptions (any provider — user picks what fits the agent).
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT id, provider, label,
+                CASE WHEN expires_at IS NOT NULL AND expires_at <= datetime('now') THEN 1 ELSE 0 END
+         FROM oauth_accounts ORDER BY created_at DESC",
+    ) {
+        if let Ok(rows) = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)? != 0,
+            ))
+        }) {
+            for (id, provider, label, expired) in rows.flatten() {
+                let account_ref = format!("oauth:{id}");
+                let provider_name = crate::oauth::OAuthProviderKind::from_str(&provider)
+                    .map(|k| k.display_name().to_string())
+                    .unwrap_or_else(|_| provider.clone());
+                out.push(UpstreamAccountOption {
+                    is_active: active == account_ref,
+                    account_ref,
+                    kind: "oauth".into(),
+                    label,
+                    provider: Some(provider_name),
+                    expired,
+                });
+            }
+        }
+    }
+
+    // This agent's api-key accounts.
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT id, account_name FROM agent_accounts WHERE agent_name = ?1 ORDER BY updated_at DESC",
+    ) {
+        if let Ok(rows) = stmt.query_map(params![agent_name], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        }) {
+            for (id, name) in rows.flatten() {
+                let account_ref = format!("apikey:{id}");
+                out.push(UpstreamAccountOption {
+                    is_active: active == account_ref,
+                    account_ref,
+                    kind: "apikey".into(),
+                    label: name,
+                    provider: None,
+                    expired: false,
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Set (or clear with empty) the agent's active upstream account.
+#[tauri::command]
+pub fn set_active_upstream_account(
+    agent_name: String,
+    account_ref: String,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<(), String> {
+    db.set_setting(&active_upstream_setting_key(&agent_name), account_ref.trim())
+        .map_err(|e| e.to_string())
+}
+
+/// Read the agent's active upstream account ref (empty = agent/platform default).
+#[tauri::command]
+pub fn get_active_upstream_account(
+    agent_name: String,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<String, String> {
+    Ok(db
+        .get_setting(&active_upstream_setting_key(&agent_name))
+        .ok()
+        .flatten()
+        .unwrap_or_default())
+}

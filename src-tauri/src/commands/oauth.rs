@@ -283,7 +283,7 @@ pub async fn oauth_refresh_account(
 /// Resolve an account to `(provider, decrypted access token)` for internal use
 /// (CLI takeover). Not a command — the raw token never reaches the frontend.
 pub(crate) fn resolve_oauth_access_token(
-    db: &Arc<DbManager>,
+    db: &DbManager,
     account_id: &str,
 ) -> Result<(OAuthProviderKind, String), String> {
     let conn = db.get_connection().map_err(|e| e.to_string())?;

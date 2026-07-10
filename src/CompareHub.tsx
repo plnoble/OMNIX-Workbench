@@ -4,6 +4,8 @@ import { listen } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/sonner";
 import { DEFAULT_PROXY_PORT } from "@/lib/constants";
+import { modelApi } from "@/lib/tauri-api";
+import type { PlatformModel } from "@/types";
 
 interface AgentAccount {
   id: string;
@@ -70,9 +72,27 @@ export const CompareHub: React.FC = () => {
   const [prompt, setPrompt] = useState("");
   const [accounts, setAccounts] = useState<AgentAccount[]>([]);
 
-  // API Mode States — multi-turn conversation per model (多模型同对话)
+  // API Mode States — multi-turn conversation per target (多模型同对话).
+  // A target is either a configured account or an enabled gateway model.
+  const [apiSource, setApiSource] = useState<"account" | "model">("account");
   const [selectedApiAccs, setSelectedApiAccs] = useState<string[]>([]);
-  const [threads, setThreads] = useState<{ [accId: string]: TurnMsg[] }>({});
+  const [models, setModels] = useState<PlatformModel[]>([]);
+  const [selectedModelRefs, setSelectedModelRefs] = useState<string[]>([]);
+  const [threads, setThreads] = useState<{ [targetId: string]: TurnMsg[] }>({});
+
+  // Unified compare targets for the active source.
+  const activeTargetIds = apiSource === "model" ? selectedModelRefs : selectedApiAccs;
+  const targetInfo = (id: string): { name: string; sub: string; kind: "account" | "model" } => {
+    if (apiSource === "model") {
+      const [pid, ...rest] = id.split(":");
+      return { name: rest.join(":") || id, sub: pid, kind: "model" };
+    }
+    const acc = accounts.find((a) => a.id === id);
+    return { name: acc?.account_name || id, sub: acc?.target_model || "", kind: "account" };
+  };
+  const anyStreaming = Object.values(threads).some(
+    (msgs) => msgs.length > 0 && msgs[msgs.length - 1].loading,
+  );
 
   // Web Mode States
   const [selectedWebExps, setSelectedWebExps] = useState<string[]>(["deepseek", "chatgpt"]);
@@ -143,12 +163,39 @@ export const CompareHub: React.FC = () => {
     try {
       const list = await invoke<AgentAccount[]>("get_agent_accounts");
       setAccounts(list);
-      // Select first two connected accounts as default
+      // Select first three connected accounts as default
       const activeIds = list.filter(acc => acc.api_key.trim().length > 0).map(acc => acc.id);
       setSelectedApiAccs(activeIds.slice(0, 3));
     } catch (e) {
       console.error("Failed to load accounts for compare hub:", e);
     }
+    try {
+      const enabled = (await modelApi.getActive()).filter(
+        (m) => !m.model_name.toLowerCase().includes("embedding") && !m.model_name.toLowerCase().includes("rerank"),
+      );
+      setModels(enabled);
+      setSelectedModelRefs(enabled.slice(0, 3).map((m) => `${m.platform_id}:${m.model_name}`));
+    } catch (e) {
+      console.error("Failed to load models for compare hub:", e);
+    }
+  };
+
+  // Abort all in-flight comparison streams.
+  const stopAll = () => {
+    abortControllersRef.current.forEach((c) => c.abort());
+    abortControllersRef.current = [];
+    setThreads((prev) => {
+      const next: typeof prev = {};
+      for (const [id, msgs] of Object.entries(prev)) {
+        const arr = [...msgs];
+        const last = arr[arr.length - 1];
+        if (last && last.role === "assistant" && last.loading) {
+          arr[arr.length - 1] = { ...last, loading: false, error: last.content ? undefined : "已停止" };
+        }
+        next[id] = arr;
+      }
+      return next;
+    });
   };
 
   // Update the trailing (in-flight) assistant message of one model's thread.
@@ -167,52 +214,58 @@ export const CompareHub: React.FC = () => {
   // history out to every selected model and streams a new reply into its column.
   const handleApiCompareSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!prompt.trim() || selectedApiAccs.length === 0) return;
+    const targetIds = activeTargetIds;
+    if (!prompt.trim() || targetIds.length === 0) return;
 
     // Abort existing requests
     abortControllersRef.current.forEach(controller => controller.abort());
     abortControllersRef.current = [];
 
     const submitted = prompt.trim();
+    // Capture the source now so a mid-run source toggle can't mis-route replies.
+    const source = apiSource;
 
-    // Build the message history to send per model from the CURRENT threads,
+    // Build the message history to send per target from the CURRENT threads,
     // appending this turn's user message (exclude any in-flight placeholders).
     const historyByAcc: Record<string, { role: string; content: string }[]> = {};
-    selectedApiAccs.forEach(accId => {
-      const prior = (threads[accId] || [])
+    targetIds.forEach(id => {
+      const prior = (threads[id] || [])
         .filter(m => !m.loading && !m.error)
         .map(m => ({ role: m.role, content: m.content }));
-      historyByAcc[accId] = [...prior, { role: "user", content: submitted }];
+      historyByAcc[id] = [...prior, { role: "user", content: submitted }];
     });
 
     // Append the user turn + an in-flight assistant placeholder to each thread.
     setThreads(prev => {
       const next = { ...prev };
-      selectedApiAccs.forEach(accId => {
-        const arr = next[accId] ? [...next[accId]] : [];
+      targetIds.forEach(id => {
+        const arr = next[id] ? [...next[id]] : [];
         arr.push({ role: "user", content: submitted });
         arr.push({ role: "assistant", content: "", loading: true, startTime: Date.now() });
-        next[accId] = arr;
+        next[id] = arr;
       });
       return next;
     });
     setPrompt("");
     setFusionContent("");
 
-    const apiPromises = selectedApiAccs.map(async (accId) => {
+    const apiPromises = targetIds.map(async (accId) => {
       const controller = new AbortController();
       abortControllersRef.current.push(controller);
       const startTime = Date.now();
       try {
+        // Account targets route via the Auto router + account header; model
+        // targets pin a specific gateway model (platform_id:model_name).
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer local-proxy",
+        };
+        if (source === "account") headers["x-omnix-account-id"] = accId;
         const response = await fetch(`http://localhost:${DEFAULT_PROXY_PORT}/v1/chat/completions`, {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": "Bearer local-proxy",
-            "x-omnix-account-id": accId
-          },
+          headers,
           body: JSON.stringify({
-            model: "Auto",
+            model: source === "model" ? accId : "Auto",
             messages: historyByAcc[accId],
             stream: true
           }),
@@ -501,8 +554,7 @@ export const CompareHub: React.FC = () => {
 
     if (mode === "api") {
       Object.entries(latestAnswers()).forEach(([accId, content]) => {
-        const acc = accounts.find(a => a.id === accId);
-        const name = acc?.account_name || accId;
+        const name = targetInfo(accId).name;
         if (content.trim()) textDict[name] = content;
       });
     } else {
@@ -529,16 +581,16 @@ export const CompareHub: React.FC = () => {
     setFusionContent("");
 
     const sources = Object.entries(textDict)
-      .map(([name, text]) => `【AI 专家 ${name} 的回复】：\n${text.slice(0, 3500)}`)
+      .map(([name, text]) => `【${name} 的回答】：\n${text.slice(0, 3500)}`)
       .join("\n\n");
 
-    const fusionPrompt = `您是 OMNIX 高级系统融合架构师。用户提出了以下开发问题，并且好几个 AI 专家给出了不同的思考回复：
+    const fusionPrompt = `以下是同一个问题、多个 AI 分别给出的回答。请你作为中立的评审，综合比较它们：核对事实、指出分歧与各自的强弱，去重去错，取长补短，融合出一份最全面、准确、可信的答案。若问题涉及代码或工程，同时留意常见反模式与安全/并发隐患。用与问题相同的语言作答。
 
 【问题】：${prompt}
 
 ${sources}
 
-请你作为首席架构评审，全面比对上述不同 AI 专家的内容，去伪存真，剔除他们可能存在的反模式、Tokio 异步死锁、CORS 越权或者过度设计的漏洞，将所有优点整理并提炼成一份最专业、最具实用指导性、线程安全的【最佳系统开发决策方案】：`;
+【融合后的最佳答案】：`;
 
     if (fusionAbortControllerRef.current) {
       fusionAbortControllerRef.current.abort();
@@ -676,43 +728,91 @@ ${sources}
       {/* API Configuration Options */}
       {mode === "api" && (
         <div className="card p-4">
-          <span className="text-sm font-semibold text-secondary-foreground block mb-2">
-            选择连通的 API 专家（最少 1 个，最多 4 个）
-          </span>
-          <div className="flex flex-wrap gap-2.5">
-            {accounts.map(acc => {
-              const connected = acc.api_key.trim().length > 0;
-              return (
-                <label
-                  key={acc.id}
-                  className={cn(
-                    "checkbox-label flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer",
-                    selectedApiAccs.includes(acc.id) ? "checked bg-purple-500/12 border border-purple-500" : "bg-muted/5 border border-border",
-                    !connected && "cursor-not-allowed opacity-60"
-                  )}
-                  title={connected ? `模型: ${acc.target_model}` : "未配置 API Key"}
-                >
-                  <input
-                    type="checkbox"
-                    checked={selectedApiAccs.includes(acc.id)}
-                    disabled={!connected}
-                    onChange={(e) => {
-                      if (e.target.checked) {
-                        setSelectedApiAccs(prev => [...prev, acc.id]);
-                      } else {
-                        setSelectedApiAccs(prev => prev.filter(id => id !== acc.id));
-                      }
-                    }}
-                    className={cn(connected ? "cursor-pointer" : "cursor-not-allowed")}
-                  />
-                  <div>
-                    <span className="text-sm font-medium block">{acc.account_name}</span>
-                    <span className="text-xs text-muted-foreground">{acc.target_model}</span>
-                  </div>
-                </label>
-              );
-            })}
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <span className="text-sm font-semibold text-secondary-foreground">
+              选择要比对的{apiSource === "model" ? "模型" : "API 专家账号"}
+            </span>
+            {/* Source: compare configured accounts, or any enabled gateway model. */}
+            <div className="flex rounded-lg border border-border bg-muted/10 p-0.5 text-xs">
+              <button
+                className={cn("rounded-md px-2.5 py-1", apiSource === "account" ? "bg-accent text-accent-foreground" : "text-muted-foreground")}
+                onClick={() => setApiSource("account")}
+              >按账号</button>
+              <button
+                className={cn("rounded-md px-2.5 py-1", apiSource === "model" ? "bg-accent text-accent-foreground" : "text-muted-foreground")}
+                onClick={() => setApiSource("model")}
+              >按模型</button>
+            </div>
           </div>
+
+          {apiSource === "account" ? (
+            <div className="flex flex-wrap gap-2.5">
+              {accounts.length === 0 && <span className="text-xs text-muted-foreground">还没有配置账号 —— 或切到「按模型」直接比已启用的网关模型。</span>}
+              {accounts.map(acc => {
+                const connected = acc.api_key.trim().length > 0;
+                return (
+                  <label
+                    key={acc.id}
+                    className={cn(
+                      "checkbox-label flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer",
+                      selectedApiAccs.includes(acc.id) ? "checked bg-purple-500/12 border border-purple-500" : "bg-muted/5 border border-border",
+                      !connected && "cursor-not-allowed opacity-60"
+                    )}
+                    title={connected ? `模型: ${acc.target_model}` : "未配置 API Key"}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selectedApiAccs.includes(acc.id)}
+                      disabled={!connected}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setSelectedApiAccs(prev => [...prev, acc.id]);
+                        } else {
+                          setSelectedApiAccs(prev => prev.filter(id => id !== acc.id));
+                        }
+                      }}
+                      className={cn(connected ? "cursor-pointer" : "cursor-not-allowed")}
+                    />
+                    <div>
+                      <span className="text-sm font-medium block">{acc.account_name}</span>
+                      <span className="text-xs text-muted-foreground">{acc.target_model}</span>
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="flex flex-wrap gap-2.5">
+              {models.length === 0 && <span className="text-xs text-muted-foreground">没有已启用的模型 —— 先到「模型」页启用几个。</span>}
+              {models.map(m => {
+                const ref = `${m.platform_id}:${m.model_name}`;
+                const on = selectedModelRefs.includes(ref);
+                return (
+                  <label
+                    key={m.id}
+                    className={cn(
+                      "checkbox-label flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer",
+                      on ? "checked bg-purple-500/12 border border-purple-500" : "bg-muted/5 border border-border",
+                    )}
+                    title={m.platform_id}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={on}
+                      onChange={(e) =>
+                        setSelectedModelRefs(prev => e.target.checked ? [...prev, ref] : prev.filter(r => r !== ref))
+                      }
+                      className="cursor-pointer"
+                    />
+                    <div>
+                      <span className="text-sm font-medium block">{m.model_name}</span>
+                      <span className="text-xs text-muted-foreground">{m.platform_id}</span>
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 
@@ -774,19 +874,25 @@ ${sources}
           <div className="form-group">
             <label className="flex justify-between items-center mb-2">
               <span className="text-sm font-semibold text-foreground">
-                📝 输入开发提问 / System Prompt
+                📝 输入提问 / System Prompt
               </span>
               <span className="text-xs text-muted-foreground">
-                ⚡ 快捷模板：点选下方常用问题
+                ⚡ Ctrl/⌘+Enter 发送 · 模板见下方
               </span>
             </label>
             <textarea
               className="w-full bg-muted/10 border border-border rounded-lg px-3.5 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30 resize-y leading-relaxed font-mono"
               rows={6}
               style={{ minHeight: "140px", maxHeight: "400px" }}
-              placeholder="例如：分析以下 Rust Tokio 并发死锁的根本原因，并给出优化好的线程安全锁方案..."
+              placeholder="输入要同时问多个模型的问题…（Ctrl/⌘+Enter 发送）"
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
+              onKeyDown={(e) => {
+                if (mode === "api" && (e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                  e.preventDefault();
+                  e.currentTarget.form?.requestSubmit();
+                }
+              }}
               required
             />
           </div>
@@ -794,9 +900,15 @@ ${sources}
           <div className="flex gap-2.5">
             {mode === "api" ? (
               <>
-                <button type="submit" className="btn btn-primary flex-1 flex items-center justify-center gap-1.5 py-2.5">
-                  {Object.keys(threads).length > 0 ? "💬 继续追问（多模型同对话）" : "🎯 开始 API 并行比对"}
-                </button>
+                {anyStreaming ? (
+                  <button type="button" className="btn btn-secondary flex-1 flex items-center justify-center gap-1.5 py-2.5" onClick={stopAll}>
+                    ⏹ 停止生成
+                  </button>
+                ) : (
+                  <button type="submit" className="btn btn-primary flex-1 flex items-center justify-center gap-1.5 py-2.5">
+                    {Object.keys(threads).length > 0 ? "💬 继续追问（多模型同对话）" : "🎯 开始并行比对"}
+                  </button>
+                )}
                 {Object.keys(threads).length > 0 && (
                   <button
                     type="button"
@@ -849,20 +961,19 @@ ${sources}
 
       {/* Side-by-Side Display Columns */}
 
-      {/* API Columns — multi-turn conversation per model */}
+      {/* API Columns — one column per target; horizontal scroll when many. */}
       {mode === "api" && Object.keys(threads).length > 0 && (
-        // TODO: migrate to Tailwind - gridTemplateColumns is dynamic based on selectedApiAccs.length
-        <div style={{ display: "grid", gridTemplateColumns: `repeat(${selectedApiAccs.length}, 1fr)` }} className="gap-[15px] min-h-[260px]">
-          {selectedApiAccs.map(accId => {
-            const acc = accounts.find(a => a.id === accId);
+        <div className="flex gap-[15px] min-h-[260px] overflow-x-auto pb-1">
+          {activeTargetIds.map(accId => {
+            const info = targetInfo(accId);
             const msgs = threads[accId] || [];
             const lastAssistant = [...msgs].reverse().find(m => m.role === "assistant");
             return (
-              <div key={accId} className="card glass-card flex flex-col h-full p-4">
+              <div key={accId} className="card glass-card flex flex-col h-full w-[340px] shrink-0 p-4">
                 <div className="flex justify-between items-center border-b border-border pb-2.5 mb-3">
-                  <div>
-                    <strong className="text-sm block">{acc?.account_name || accId}</strong>
-                    <span className="text-xs text-muted-foreground">{acc?.target_model}</span>
+                  <div className="min-w-0">
+                    <strong className="text-sm block truncate" title={accId}>{info.name}</strong>
+                    <span className="text-xs text-muted-foreground">{info.sub}</span>
                     {lastAssistant?.latencyMs && !lastAssistant.loading && (
                       <span className="text-xs text-cyan-400 ml-2">
                         ⏱ {(lastAssistant.latencyMs / 1000).toFixed(1)}s · ~{Math.ceil((lastAssistant.tokenCount || 0) / 4)} tokens

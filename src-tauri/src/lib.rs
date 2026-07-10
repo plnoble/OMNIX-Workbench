@@ -10,6 +10,7 @@ mod event_bus;
 mod hash;
 mod input_validation;
 mod knowledge;
+mod local_models;
 mod media;
 mod model_knowledge;
 mod oauth;
@@ -120,6 +121,8 @@ pub fn run() {
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         // Register the global-shortcut plugin with handler only — NO with_shortcuts().
         // Shortcut registration is deferred to after the event loop starts,
         // so that a conflict (e.g., Alt+Space already taken) doesn't crash the app.
@@ -340,6 +343,8 @@ pub fn run() {
             commands::cli_takeover_apply,
             commands::cli_takeover_revert,
             commands::cli_takeover_status,
+            commands::detect_hardware,
+            commands::recommend_local_models,
             commands::media_generate_image,
             commands::media_create_video_task,
             commands::media_list_tasks,
@@ -370,6 +375,9 @@ pub fn run() {
             commands::save_agent_account,
             commands::switch_agent_account,
             commands::delete_agent_account,
+            commands::list_agent_upstream_accounts,
+            commands::set_active_upstream_account,
+            commands::get_active_upstream_account,
             commands::get_all_memories,
             commands::create_memory,
             commands::delete_memory,
