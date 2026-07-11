@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 
 /**
  * WorkspaceCheckpoints — checkpoint timeline + per-file diff review for the Work
- * surface (Claude Code / Codex desktop inspired). Shows the agent's changes
+ * surface. Shows the agent's changes
  * against the latest checkpoint, lets the user reject a single file or rewind
  * the whole workspace.
  */

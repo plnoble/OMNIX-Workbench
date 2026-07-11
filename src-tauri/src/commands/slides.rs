@@ -182,10 +182,7 @@ pub fn render_deck(
 }
 
 fn exports_dir() -> Result<std::path::PathBuf, String> {
-    let dir = dirs::home_dir()
-        .ok_or_else(|| "找不到用户目录".to_string())?
-        .join(".omnix")
-        .join("exports");
+    let dir = crate::storage::exports_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
 }

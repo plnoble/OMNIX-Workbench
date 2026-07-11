@@ -1,4 +1,4 @@
-//! Parallel sessions via Git worktrees (Codex / Claude Code desktop inspired).
+//! Parallel sessions via Git worktrees.
 //!
 //! Running several agents against one repository at the same time is unsafe if
 //! they share a single working tree — their edits collide. `git worktree` gives

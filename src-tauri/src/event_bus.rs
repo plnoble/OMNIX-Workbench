@@ -1,4 +1,4 @@
-//! Event Bus (Odysseus inspired)
+//! Event Bus
 //!
 //! Lightweight pub-sub for triggering tasks on system events.
 //! Events: session_created, message_sent, skill_synced, agent_started, task_completed.

@@ -1,5 +1,5 @@
 //! Personal "AI-coding profile" stats — powers the activity heatmap, streaks
-//! and shareable card. (Borrowed from Synara's Profile/stats feature.)
+//! and shareable card.
 //!
 //! All figures come from data OMNIX already records: `messages` (prompts),
 //! `conversations`, `agent_sessions` (runs, per agent), and `request_logs`

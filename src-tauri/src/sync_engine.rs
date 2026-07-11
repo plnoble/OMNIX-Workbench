@@ -748,10 +748,7 @@ impl SyncEngine {
     /// Returns the number of skills successfully imported
     pub fn import_unmanaged(&self, items: &[ScanItem]) -> Result<usize, String> {
         let conn = self.db.get_connection().map_err(|e| e.to_string())?;
-        let home_dir = dirs::home_dir().ok_or("Cannot determine home directory")?;
-        let mut skills_dir = home_dir.clone();
-        skills_dir.push(".omnix");
-        skills_dir.push("skills");
+        let skills_dir = crate::storage::skills_dir();
 
         let mut imported = 0;
         for item in items {
@@ -1000,9 +997,8 @@ impl SyncEngine {
         let content = std::fs::read_to_string(&skill_file)
             .map_err(|e| format!("Failed to read skill: {}", e))?;
 
-        // Create central store
-        let home = dirs::home_dir().ok_or("Cannot determine home directory")?;
-        let central_dir = home.join(".omnix").join("skills").join(skill_name);
+        // Create central store (R1: user-configurable)
+        let central_dir = crate::storage::skills_dir().join(skill_name);
         std::fs::create_dir_all(&central_dir).map_err(|e| e.to_string())?;
 
         // Write files

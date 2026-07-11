@@ -1,7 +1,7 @@
-//! Configuration Backup System (ZCF inspired)
+//! Configuration Backup System
 //!
 //! Creates timestamped backups before any configuration modification.
-//! Backup location: ~/.omnix/backups/<category>/<timestamp>/
+//! Backup location: `storage::backups_dir()/<category>/` (user-configurable).
 
 use std::fs;
 use std::path::PathBuf;
@@ -12,8 +12,7 @@ pub fn backup_file(file_path: &PathBuf, category: &str) -> Result<Option<PathBuf
         return Ok(None); // Nothing to backup
     }
 
-    let home = dirs::home_dir().ok_or("Cannot determine home directory")?;
-    let backup_dir = home.join(".omnix").join("backups").join(category);
+    let backup_dir = crate::storage::backups_dir().join(category);
     fs::create_dir_all(&backup_dir).map_err(|e| e.to_string())?;
 
     let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
@@ -33,8 +32,7 @@ pub fn backup_file(file_path: &PathBuf, category: &str) -> Result<Option<PathBuf
 
 /// Create a backup of a string content (for in-memory configs)
 pub fn backup_content(content: &str, category: &str, filename: &str) -> Result<PathBuf, String> {
-    let home = dirs::home_dir().ok_or("Cannot determine home directory")?;
-    let backup_dir = home.join(".omnix").join("backups").join(category);
+    let backup_dir = crate::storage::backups_dir().join(category);
     fs::create_dir_all(&backup_dir).map_err(|e| e.to_string())?;
 
     let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
@@ -49,8 +47,7 @@ pub fn backup_content(content: &str, category: &str, filename: &str) -> Result<P
 
 /// List backups for a category
 pub fn list_backups(category: &str) -> Vec<BackupEntry> {
-    let home = match dirs::home_dir() { Some(h) => h, None => return Vec::new() };
-    let backup_dir = home.join(".omnix").join("backups").join(category);
+    let backup_dir = crate::storage::backups_dir().join(category);
     if !backup_dir.exists() {
         return Vec::new();
     }

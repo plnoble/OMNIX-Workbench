@@ -1,5 +1,5 @@
 /**
- * AuthCenterTab — 认证中心 (sub2api inspired).
+ * AuthCenterTab — 认证中心.
  *
  * Log in to your Claude / OpenAI-Codex / Gemini subscription via the standard
  * PKCE browser flow, store the tokens encrypted, and use them in any agent

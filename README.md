@@ -279,13 +279,3 @@ npx tauri build
 ## 📄 License
 
 MIT License
-
----
-
-## 🙏 致谢
-
-借鉴了以下项目的优秀设计：
-- [Multica](https://github.com/multica-ai/multica) — Agent 模板系统、Skill Frontmatter、Skills Lock File、Autopilot 模式
-- [SkillsLM](https://github.com/) — 工具适配器架构、Skill 同步引擎
-- [shadcn/ui](https://ui.shadcn.com) — UI 组件库
-- [Tauri](https://tauri.app) — 桌面应用框架

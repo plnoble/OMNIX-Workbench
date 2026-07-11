@@ -17,7 +17,7 @@ import type { ModelPlatform, ProviderType, PlatformApiKey } from "@/types";
 import { PROVIDER_TYPES } from "@/lib/constants";
 import { apiKeyApi } from "@/lib/tauri-api";
 
-// Quick-add presets (ZCF inspired): correct protocol + endpoint so users don't
+// Quick-add presets: correct protocol + endpoint so users don't
 // mis-configure (e.g. Volcano as Anthropic). The user only adds the API Key.
 const PROVIDER_PRESETS: { id: string; label: string; api_type: ProviderType; api_address: string }[] = [
   { id: "agnes", label: "Agnes AI（多模态：文本/生图/生视频）", api_type: "openai", api_address: "https://apihub.agnes-ai.com/v1" },

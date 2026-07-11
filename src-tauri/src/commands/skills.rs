@@ -375,8 +375,7 @@ pub(crate) fn create_skill_core(
         return Err(format!("技能 {name} 已存在"));
     }
 
-    let home_dir = dirs::home_dir().ok_or("Cannot determine home directory")?;
-    let base_path = home_dir.join(".omnix").join("skills").join(name);
+    let base_path = crate::storage::skills_dir().join(name);
     std::fs::create_dir_all(&base_path).map_err(|e| e.to_string())?;
     let base_path_str = base_path.to_string_lossy().to_string();
     let frontmatter = SkillFrontmatter {

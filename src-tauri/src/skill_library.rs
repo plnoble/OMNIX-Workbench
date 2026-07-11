@@ -1,4 +1,4 @@
-//! Skill Library Features (Skill Library inspired)
+//! Skill Library Features
 //!
 //! 1. Semantic Skill Auto-Injection — match skills to user messages
 //! 2. Dual-Agent Sandbox Testing — adversarial skill quality testing

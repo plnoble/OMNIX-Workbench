@@ -26,6 +26,7 @@ mod skill_dag;
 mod skill_frontmatter;
 mod skill_library;
 mod slides;
+mod storage;
 mod sync_engine;
 mod token_economy;
 mod tool_adapters;
@@ -90,6 +91,8 @@ pub fn run() {
 
     // 1. Initialize SQLite Database Schema
     let db = Arc::new(db::DbManager::new());
+    // Load user-configured storage locations (backups/exports/skills store).
+    storage::init_from_db(&db);
 
     // 2. Initialize Agent Subprocess watchdog Manager
     let agent_manager = Arc::new(agent::AgentManager::new(Arc::clone(&db)));
@@ -560,52 +563,52 @@ pub fn run() {
             commands::check_git_updates,
             commands::pull_and_update_skill,
             commands::cleanup_skill_cache,
-            // Agent Template commands (Multica-inspired)
+            // Agent Template commands
             commands::get_agent_templates,
             commands::get_agent_template,
-            // Skills Lock File commands (Multica-inspired)
+            // Skills Lock File commands
             commands::get_skill_lock,
             commands::update_skill_lock,
             commands::verify_skill_lock,
-            // Agent Execution Environment commands (Multica-inspired)
+            // Agent Execution Environment commands
             commands::get_agent_exec_config,
             commands::save_agent_exec_config,
-            // Autopilot commands (Multica-inspired)
+            // Autopilot commands
             commands::get_autopilot_config,
             commands::save_autopilot_config,
-            // Workspace GC commands (Multica-inspired)
+            // Workspace GC commands
             commands::get_gc_config,
             commands::save_gc_config,
             commands::run_workspace_gc,
-            // Request Logs & Usage Stats (New API/Sub2API inspired)
+            // Request Logs & Usage Stats
             commands::get_request_logs,
             commands::get_usage_stats,
             commands::get_platform_usage,
             commands::get_usage_timeseries,
             commands::cleanup_request_logs,
-            // Platform Health Management (New API/Sub2API inspired)
+            // Platform Health Management
             commands::get_platform_health,
             commands::reset_platform_health,
             commands::update_platform_routing,
-            // Upstream Model Auto-Sync (New API inspired)
+            // Upstream Model Auto-Sync
             commands::sync_upstream_models,
             commands::apply_model_sync,
             commands::sync_all_upstream_models,
-            // Platform Health Check (New API/Sub2API inspired)
+            // Platform Health Check
             commands::check_all_platform_health,
-            // Agent Task Lifecycle (Multica inspired)
+            // Agent Task Lifecycle
             commands::get_task_list,
             commands::task_start,
             commands::task_complete,
             commands::task_fail,
             commands::task_archive,
             commands::get_task_stats,
-            // Skill Compound Interest (Multica inspired)
+            // Skill Compound Interest
             commands::record_skill_usage,
             commands::get_top_skills_by_usage,
-            // Autopilot Enhancement (Multica inspired)
+            // Autopilot Enhancement
             commands::save_autopilot_result_to_kb,
-            // Odysseus-Inspired Features
+            // Security & safety features
             commands::wrap_untrusted_content,
             commands::scan_prompt_injection,
             // Selection Auto-Capture
@@ -629,32 +632,32 @@ pub fn run() {
             commands::recommend_for_gpu,
             commands::get_gpu_database,
             commands::analyze_codebase,
-            // Config Backup (ZCF inspired)
+            // Config Backup
             commands::backup_config_file,
             commands::list_backups,
             commands::restore_backup,
-            // API Provider Preset (ZCF inspired)
+            // API Provider Preset
             commands::apply_api_preset,
-            // MCP Presets (ZCF inspired)
+            // MCP Presets
             commands::get_mcp_presets,
             commands::apply_mcp_preset,
-            // MCP sync to Agent native config (AionUi / cc-switch inspired)
+            // MCP sync to Agent native config
             commands::mcp_sync_to_agents,
             commands::mcp_remove_from_agent,
             commands::mcp_import_from_agent,
             commands::mcp_get_agent_states,
-            // Workspace checkpoints + diff review (Claude Code / Codex desktop inspired)
+            // Workspace checkpoints + diff review
             commands::create_checkpoint,
             commands::list_checkpoints,
             commands::get_workspace_diff,
             commands::restore_checkpoint,
             commands::revert_file,
-            // Parallel sessions via Git worktrees (Codex / Claude Code desktop inspired)
+            // Parallel sessions via Git worktrees
             commands::create_worktree,
             commands::list_worktrees,
             commands::remove_worktree,
             commands::merge_worktree,
-            // User-state hooks (Claude Code hooks inspired): event → action rules
+            // User-state hooks: event → action rules
             commands::list_hooks,
             commands::save_hook,
             commands::toggle_hook,
@@ -684,15 +687,15 @@ pub fn run() {
             // Knowledge-base portability (export / import)
             commands::kb_export_base,
             commands::kb_import_base,
-            // Output Styles (ZCF inspired)
+            // Output Styles
             commands::get_output_styles,
             commands::get_output_style_prompt,
-            // Architecture Graph (Understand-Anything inspired)
+            // Architecture Graph
             commands::build_architecture_graph,
             commands::save_architecture_graph,
             commands::load_architecture_graph,
             commands::get_ignore_patterns,
-            // Skill Library Features (Skill Library inspired)
+            // Skill Library Features
             commands::match_skills_for_injection,
             commands::test_skill_sandbox,
             commands::intercept_protocols,
@@ -701,51 +704,51 @@ pub fn run() {
             commands::preview_market_skill,
             commands::import_market_skill,
             commands::distill_from_project,
-            // DeepSeek-GUI inspired features
+            // Session control features
             commands::compress_tool_result,
             commands::push_steering_message,
             commands::get_steering_messages,
             commands::consume_steering_messages,
             commands::detect_file_change,
-            // Agent-Platform Bindings (CC Switch inspired)
+            // Agent-Platform Bindings
             commands::get_agent_bindings,
             commands::set_agent_binding,
             commands::remove_agent_binding,
             commands::toggle_agent_binding,
-            // Circuit Breaker & Session Usage (CC Switch inspired)
+            // Circuit Breaker & Session Usage
             commands::get_circuit_status,
             commands::reset_circuit_breaker,
             commands::get_model_pricing,
             commands::estimate_model_cost,
-            // Skill DAG (SkillDAG inspired)
+            // Skill DAG
             commands::search_skills_dag,
             commands::check_skill_set,
             commands::expand_skill_set,
             commands::add_skill_edge,
             commands::remove_skill_edge,
-            // Async Agent Mailbox (AionUi inspired)
+            // Async Agent Mailbox
             commands::send_mail,
             commands::get_mail,
             commands::mark_mail_read,
-            // Enhanced Task Dependencies (AionUi inspired)
+            // Enhanced Task Dependencies
             commands::set_task_blocks,
             commands::auto_unblock_tasks,
-            // YOLO Mode (AionUi inspired)
+            // YOLO Mode
             commands::get_yolo_mode,
             commands::set_yolo_mode,
             commands::get_yolo_mode_config,
             commands::set_yolo_mode_config,
             commands::check_yolo_permission,
-            // Persistent Cron (AionUi inspired)
+            // Persistent Cron
             commands::get_persistent_cron_tasks,
             commands::create_persistent_cron,
             commands::delete_persistent_cron,
-            // Skill Rule Generator (AionUi inspired)
+            // Skill Rule Generator
             commands::scan_workspace_for_skills,
             commands::generate_skill_from_files,
-            // Conversation Skills Indicator (AionUi inspired)
+            // Conversation Skills Indicator
             commands::get_conversation_skills,
-            // Tool Call Confirmation Queue (AionUi inspired)
+            // Tool Call Confirmation Queue
             commands::queue_tool_confirmation,
             commands::resolve_tool_confirmation,
             commands::get_pending_confirmations,
@@ -769,6 +772,19 @@ pub fn run() {
             commands::review_skill_ai,
             commands::set_skill_pool,
             commands::get_skill_pool_content,
+            commands::summarize_skill_ai,
+            commands::reform_skill_ai,
+            commands::apply_skill_reform,
+            commands::fuse_pool_skills_ai,
+            commands::apply_pool_fusion,
+            commands::delete_pool_skill,
+            // Agent installations (R3 统一安装)
+            commands::scan_agent_installations,
+            commands::remove_agent_installation,
+            // Storage locations (R1 存储位置中心)
+            commands::get_storage_config,
+            commands::set_storage_dir,
+            commands::migrate_skills_store,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

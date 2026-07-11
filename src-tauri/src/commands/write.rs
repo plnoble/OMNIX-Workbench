@@ -1,4 +1,4 @@
-//! Write — a Markdown writing workspace (DeepSeek-GUI Write mode inspired).
+//! Write — a Markdown writing workspace.
 //!
 //! A "space" is a folder of `.md` files. The default space lives at
 //! `~/.omnix/write`; users can add custom folders (persisted in the

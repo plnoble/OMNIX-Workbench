@@ -93,7 +93,7 @@ export interface UseConversationsReturn {
   loadArchivedConversations: () => Promise<void>;
   archivedConversations: ConversationInfo[];
   sendMessage: (e: React.FormEvent, config: RuntimeSendConfig, searchContext?: string, images?: ChatImageAttachment[]) => Promise<void>;
-  // Long-term goal for the current conversation (DeepSeek-GUI /goal)
+  // Long-term goal for the current conversation (/goal)
   activeGoal: ConversationGoal | null;
   setGoalStatus: (status: ConversationGoalStatus) => Promise<void>;
   clearActiveGoal: () => Promise<void>;
@@ -428,7 +428,7 @@ export function useConversations(
       setMessages([]);
     }
 
-    // Load this conversation's long-term goal (DeepSeek-GUI /goal) so the badge
+    // Load this conversation's long-term goal (/goal) so the badge
     // and the per-turn injection reflect it.
     try {
       setActiveGoal(await conversationApi.getGoal(id));
@@ -804,7 +804,7 @@ export function useConversations(
     }
   }, [currentConvId]);
 
-  // ── /goal slash command (DeepSeek-GUI) — never sent to the agent ──
+  // ── /goal slash command — never sent to the agent ──
   const handleGoalCommand = useCallback(async (cmd: GoalCommand) => {
     if (!currentConvId) {
       toast.error("先开始一段对话，再设定长期目标");
@@ -840,7 +840,7 @@ export function useConversations(
     }
   }, [currentConvId, activeGoal]);
 
-  // ── /btw slash command (DeepSeek-GUI) — open a side conversation that
+  // ── /btw slash command — open a side conversation that
   // inherits the current context, then send the question into it ──
   const handleBtwCommand = useCallback(async (question: string | null, config: RuntimeSendConfig) => {
     if (!currentConvId) {
@@ -909,7 +909,7 @@ export function useConversations(
     e.preventDefault();
     if (!chatInput.trim() && !(images && images.length > 0)) return;
 
-    // Slash-command interception (DeepSeek-GUI): /goal and /btw are handled
+    // Slash-command interception: /goal and /btw are handled
     // locally and never forwarded to the agent as a normal message.
     const goalCmd = parseGoalCommand(chatInput);
     if (goalCmd) {

@@ -1,5 +1,5 @@
 /**
- * LocalModelPickerTab — 本地模型选型 (whichllm inspired).
+ * LocalModelPickerTab — 本地模型选型.
  *
  * Detects the machine's CPU/RAM, then ranks which open-weight models fit a
  * memory budget (RAM for CPU inference, or type your GPU's VRAM to simulate GPU

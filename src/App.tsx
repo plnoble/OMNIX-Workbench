@@ -132,7 +132,7 @@ function MainApp() {
   const platforms = usePlatforms();
   const accounts = useAccounts(platforms.activeModels);
   const convs = useConversations(settings.gatewayStatus);
-  // Execute due autopilot runs (Multica-inspired) through the real runtime.
+  // Execute due autopilot runs through the real runtime.
   useAutopilotRunner(convs.loadConversations);
   const cron = useCron(convs.detectedAgents);
   const preview = usePreview(convs.chatWorkspace);

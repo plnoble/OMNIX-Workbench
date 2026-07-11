@@ -3,8 +3,9 @@
 // keeping the `commands::*` namespace unchanged for lib.rs.
 
 mod accounts;
+mod agent_installs;
 mod agents;
-mod aionui;
+mod automation;
 mod autopilots;
 mod cc_switch;
 mod conversation_goals;
@@ -22,7 +23,7 @@ mod mcp_sync;
 mod media;
 mod memories;
 mod oauth;
-mod odysseus;
+mod safety;
 mod platforms;
 mod profile;
 mod project_protocol;
@@ -38,6 +39,7 @@ mod skill_pool;
 mod skill_sets;
 mod skill_sync;
 mod skills;
+mod storage;
 mod slides;
 mod team_runtime;
 mod templates;
@@ -51,7 +53,7 @@ mod subagents;
 mod workspace;
 mod worktrees;
 mod write;
-mod zcf;
+mod config_presets;
 
 // ── Shared Structs / Enums used across multiple submodules ──
 
@@ -186,8 +188,9 @@ pub struct WindowLayout {
 // ── Re-export all command functions from submodules ──
 
 pub use accounts::*;
+pub use agent_installs::*;
 pub use agents::*;
-pub use aionui::*;
+pub use automation::*;
 pub use autopilots::*;
 pub use cc_switch::*;
 pub use conversation_goals::*;
@@ -211,7 +214,7 @@ pub use mcp_sync::*;
 pub use media::*;
 pub use memories::*;
 pub use oauth::*;
-pub use odysseus::*;
+pub use safety::*;
 pub use platforms::*;
 pub use profile::*;
 pub use project_protocol::*;
@@ -228,10 +231,11 @@ pub use skill_sets::*;
 pub use skill_sync::*;
 pub use skills::*;
 pub use slides::*;
+pub use storage::*;
 pub use team_runtime::*;
 pub use templates::*;
 pub use windows::*;
 pub use workspace::*;
 pub use worktrees::*;
 pub use write::*;
-pub use zcf::*;
+pub use config_presets::*;

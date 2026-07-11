@@ -1,4 +1,4 @@
-//! Skill Frontmatter — Borrowed from Multica's SKILL.md format
+//! Skill Frontmatter — SKILL.md YAML frontmatter parsing.
 //!
 //! Provides YAML frontmatter parsing and generation for SKILL.md files.
 //! Frontmatter makes skills self-describing: name, description, category,

@@ -102,7 +102,7 @@ pub fn delete_agent_account(
     Ok(())
 }
 
-// ── F1: unified per-agent upstream account switcher (tutti/multi-account) ────
+// ── F1: unified per-agent upstream account switcher (multi-account) ────
 //
 // Lets an agent's active upstream be switched between OAuth subscriptions (2A)
 // and api-key accounts mid-conversation. The choice is a setting; the session

@@ -88,7 +88,7 @@ export interface ChatTabProps {
   /// The running ACP session's selectable model (opencode etc.), if any.
   acpModelOption?: AcpModelOption;
   onSetSessionModel?: (conversationId: string, model: string) => void;
-  /// Long-term goal for the current conversation (DeepSeek-GUI /goal).
+  /// Long-term goal for the current conversation (/goal).
   activeGoal?: ConversationGoal | null;
   onSetGoalStatus?: (status: ConversationGoalStatus) => void;
   onClearGoal?: () => void;
@@ -268,7 +268,7 @@ export function ChatTab({
   const [workspacePanelOpen, setWorkspacePanelOpen] = useState(
     chatWorkspace !== "direct" && window.innerWidth >= 1000
   );
-  // SDD (requirement → plan) — DeepSeek-GUI inspired
+  // SDD (requirement → plan)
   const [requirementOpen, setRequirementOpen] = useState(false);
   const [planPanelOpen, setPlanPanelOpen] = useState(false);
   const [planRefreshKey, setPlanRefreshKey] = useState(0);
@@ -297,7 +297,7 @@ export function ChatTab({
   };
 
   // F-A: cross-agent @ references — pull another conversation's transcript into
-  // this agent's prompt so it can build on another agent's work (tutti core).
+  // this agent's prompt so it can build on another agent's work.
   const [references, setReferences] = useState<{ id: string; label: string }[]>([]);
   const [refPickerOpen, setRefPickerOpen] = useState(false);
   const [refConversations, setRefConversations] = useState<ConversationInfo[]>([]);
@@ -786,7 +786,7 @@ export function ChatTab({
 
         <form onSubmit={handleSubmit} className="shrink-0 border-t border-border bg-background/95 p-5">
           <div className="mx-auto max-w-5xl rounded-md border border-border bg-card/60 p-3 shadow-lg">
-            {/* Long-term goal bar (DeepSeek-GUI /goal) — visible whenever the
+            {/* Long-term goal bar (/goal) — visible whenever the
                 current conversation has a goal; while active it is re-injected
                 into every turn. */}
             {activeGoal && (

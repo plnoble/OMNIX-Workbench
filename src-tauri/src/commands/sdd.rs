@@ -1,6 +1,5 @@
 //! Spec-Driven Development (SDD): requirement draft → clarify → implementation
-//! plan. Borrowed from DeepSeek-GUI's `sdd/` module (prompt contracts) and its
-//! plan/todo panel.
+//! plan, with prompt contracts and a plan/todo panel.
 //!
 //! OMNIX adaptation: OMNIX delegates to external agent CLIs which have no
 //! `create_plan` tool, so the plan-generation prompt instructs the agent to
@@ -34,7 +33,7 @@ pub struct PlanFile {
     pub todo_done: usize,
 }
 
-// ── Prompt builders (pure; ported from DeepSeek-GUI sdd/*) ──
+// ── Prompt builders (pure) ──
 
 /// Wraps a requirement draft so the agent refines it (questions / research /
 /// concrete improvements) without generating a plan yet.

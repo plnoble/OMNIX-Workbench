@@ -1,9 +1,8 @@
 /**
  * ProfileTab — personal AI-coding activity profile.
  *
- * Borrowed from Synara's Profile/stats feature (MIT): a GitHub-style
- * contribution heatmap, streak stats, per-agent breakdown, and a shareable
- * card. Adapted to OMNIX design tokens; the card is drawn on a <canvas> so
+ * A GitHub-style contribution heatmap, streak stats, per-agent breakdown,
+ * and a shareable card drawn on a <canvas> so
  * export needs no extra dependency. All data comes from get_profile_stats.
  */
 

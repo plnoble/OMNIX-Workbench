@@ -128,8 +128,7 @@ pub async fn import_market_skill(
         return Err(format!("技能 {safe_name} 已存在，请明确选择覆盖"));
     }
 
-    let home = dirs::home_dir().ok_or_else(|| "无法确定用户目录".to_string())?;
-    let central_dir = home.join(".omnix").join("skills").join(&safe_name);
+    let central_dir = crate::storage::skills_dir().join(&safe_name);
     std::fs::create_dir_all(&central_dir).map_err(|e| e.to_string())?;
     for file_name in [
         "SKILL.md".to_string(),

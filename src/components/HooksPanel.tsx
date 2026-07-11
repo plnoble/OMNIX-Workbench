@@ -9,7 +9,7 @@ import { hooksApi, type Hook, type HookRun } from "@/lib/tauri-api";
 import { toast } from "@/components/ui/sonner";
 
 /**
- * HooksPanel — user-state hooks (Claude Code hooks inspired). Event → action
+ * HooksPanel — user-state hooks. Event → action
  * rules that fire on agent runtime events: a desktop notify, a shell command
  * (env: OMNIX_SESSION_ID / OMNIX_EVENT / OMNIX_EVENT_TEXT), or a log entry.
  * Self-contained; lives in the automation hub (CronTab).

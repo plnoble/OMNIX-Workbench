@@ -1,5 +1,5 @@
 /**
- * useAutopilotRunner — executes queued autopilot runs (Multica-inspired).
+ * useAutopilotRunner — executes queued autopilot runs.
  *
  * The backend scheduler enqueues a run (a conversation + `queued` row) when an
  * autopilot is due. This hook polls for queued runs and executes each exactly

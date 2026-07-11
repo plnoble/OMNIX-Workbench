@@ -128,7 +128,7 @@ pub struct AnthropicRequest {
     pub system: Option<AnthropicMessageContent>,
     pub temperature: Option<f32>,
     pub stream: Option<bool>,
-    /// Reasoning effort control (New API inspired): "low" | "medium" | "high"
+    /// Reasoning effort control: "low" | "medium" | "high"
     /// Maps to budget_tokens for Anthropic extended thinking
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
@@ -195,7 +195,7 @@ impl ProxyServer {
             .unwrap_or(None)
             .unwrap_or_else(|| "false".to_string())
             == "true";
-        // Remote phone access (AionUi-style): bind all interfaces only when the
+        // Remote phone access: bind all interfaces only when the
         // user has explicitly enabled it, so the gateway stays localhost-only by
         // default. The remote endpoints are token-gated.
         let remote_enabled = db
@@ -408,7 +408,7 @@ async fn handle_messages_impl(
     headers: axum::http::HeaderMap,
     mut payload: AnthropicRequest,
 ) -> Response {
-    // Concurrency limiting (New API/Sub2API inspired)
+    // Concurrency limiting
     let _permit = match state.concurrency_semaphore.try_acquire() {
         Ok(p) => p,
         Err(_) => {
@@ -524,7 +524,7 @@ async fn handle_messages_impl(
                 if need_cod && cod { score += 5; }
                 if need_spd && spd { score += 8; }
                 if !need_vis && !need_reas && !need_cod && !need_spd && vis { score -= 2; }
-                
+
                 if score > highest_score {
                     highest_score = score;
                     best_model = Some(format!("{}:{}", platform_id, model_name));
@@ -1275,7 +1275,7 @@ async fn handle_openai_forward_impl(
     headers: HeaderMap,
     payload: Value,
 ) -> impl IntoResponse {
-    // Concurrency limiting (New API/Sub2API inspired)
+    // Concurrency limiting
     let _permit = match state.concurrency_semaphore.try_acquire() {
         Ok(p) => p,
         Err(_) => {
@@ -1385,7 +1385,7 @@ async fn handle_openai_forward_impl(
                 if need_cod && cod { score += 5; }
                 if need_spd && spd { score += 8; }
                 if !need_vis && !need_reas && !need_cod && !need_spd && vis { score -= 2; }
-                
+
                 if score > highest_score {
                     highest_score = score;
                     best_model = Some(format!("{}:{}", platform_id, model_name));
@@ -1460,7 +1460,7 @@ async fn handle_openai_forward_impl(
             upstream_url, is_stream
         );
 
-        // ── Prompt Injection Guard (Odysseus) ──
+        // ── Prompt Injection Guard ──
         if let Some(msgs) = payload.get("messages").and_then(|m| m.as_array()) {
             if let Some(last_msg) = msgs.last() {
                 if last_msg.get("role").and_then(|r| r.as_str()) == Some("user") {
@@ -1891,7 +1891,7 @@ async fn get_remote_status(
     if let Some(session_id) = active_sessions.first() {
         if let Ok(conn) = state.db.get_connection() {
             if let Ok(mut stmt) = conn.prepare(
-                "SELECT id, conversation_id, title, status, order_num, dependencies 
+                "SELECT id, conversation_id, title, status, order_num, dependencies
                  FROM tasks WHERE conversation_id = ?1 ORDER BY order_num ASC",
             ) {
                 let rows = stmt.query_map(params![session_id], |row| {
@@ -2078,7 +2078,7 @@ async fn post_remote_cron_trigger(
     (StatusCode::BAD_REQUEST, "Task not found").into_response()
 }
 
-// ── Remote chat view + control (AionUi-style) ───────────────────────────────
+// ── Remote chat view + control ─────────────────────────────────────────────
 
 /// Token gate shared by the remote chat endpoints.
 fn remote_token_ok(state: &ProxyState, params: &std::collections::HashMap<String, String>) -> bool {
@@ -2717,7 +2717,7 @@ fn resolve_model_upstream(
     resolve_model_upstream_for_agent(db, target_model_name, None)
 }
 
-/// Resolve upstream with optional agent name for per-agent routing (CC Switch inspired).
+/// Resolve upstream with optional agent name for per-agent routing.
 /// Returns `(api_key, api_host, api_type, actual_model_name, platform_id)` — the
 /// trailing `platform_id` lets the caller attribute circuit-breaker outcomes.
 fn resolve_model_upstream_for_agent(
@@ -2727,7 +2727,7 @@ fn resolve_model_upstream_for_agent(
 ) -> Result<(String, String, String, String, String), String> {
     let conn = db.get_connection().map_err(|e| e.to_string())?;
 
-    // 0. Check per-agent platform binding (CC Switch inspired)
+    // 0. Check per-agent platform binding
     if let Some(agent) = agent_name {
         if let Ok(row) = conn.query_row(
             "SELECT apb.platform_id, COALESCE(apb.model_name, mp.name), mp.api_key, mp.api_address, mp.api_type
@@ -2779,7 +2779,7 @@ fn resolve_model_upstream_for_agent(
         }
     }
 
-    // 2. Weighted selection from matching platforms (New API/Sub2API inspired)
+    // 2. Weighted selection from matching platforms
     //    Find all platforms that serve this model, ordered by priority DESC, weight DESC
     //    Only consider healthy and enabled platforms
     let mut stmt = conn
@@ -2897,7 +2897,7 @@ fn join_url(base: &str, path: &str) -> String {
     format!("{}/{}", base_trimmed, path_trimmed)
 }
 
-// ── Health Endpoint (New API/Sub2API inspired) ────────
+// ── Health Endpoint ────────
 
 /// GET /health — Returns proxy status and platform summary (single query)
 async fn handle_health(State(state): State<Arc<ProxyState>>) -> impl IntoResponse {
@@ -2956,7 +2956,7 @@ async fn handle_health(State(state): State<Arc<ProxyState>>) -> impl IntoRespons
     .into_response()
 }
 
-// ── Platform Health Tracking (New API/Sub2API inspired) ──
+// ── Platform Health Tracking ──
 
 /// Mark a platform as healthy after a successful request
 #[allow(dead_code)]
@@ -2985,7 +2985,7 @@ pub fn mark_platform_unhealthy(db: &DbManager, platform_id: &str, error: &str) {
     }
 }
 
-// ── Request Logging (New API/Sub2API inspired) ───────
+// ── Request Logging ───────
 
 /// Write a request log entry to the database (async, non-blocking)
 pub fn log_request(

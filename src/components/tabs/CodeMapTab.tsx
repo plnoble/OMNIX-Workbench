@@ -1,5 +1,5 @@
 /**
- * CodeMapTab — 代码地图 (Understand-Anything inspired, lightweight layer).
+ * CodeMapTab — 代码地图 (lightweight layer).
  *
  * Analyzes a project into a file dependency graph (via the existing
  * `architectureApi.build`, which extracts imports for JS/TS/Rust/Python/Go) and

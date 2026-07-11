@@ -78,7 +78,7 @@ export const DEFAULT_IDLE_TIMEOUT = "15";
 export const DEFAULT_WSL_DISTRO = "Ubuntu";
 
 // ══════════════════════════════════════════════════
-// API Provider Presets (ZCF inspired)
+// API Provider Presets
 // ══════════════════════════════════════════════════
 
 export interface ApiProviderPreset {
@@ -206,7 +206,7 @@ export const API_PROVIDER_PRESETS: ApiProviderPreset[] = [
 ];
 
 // ══════════════════════════════════════════════════
-// MCP Service Presets (ZCF inspired)
+// MCP Service Presets
 // ══════════════════════════════════════════════════
 
 export interface McpServicePreset {
@@ -286,7 +286,7 @@ export const MCP_SERVICE_PRESETS: McpServicePreset[] = [
 ];
 
 // ══════════════════════════════════════════════════
-// Output Style Presets (ZCF inspired)
+// Output Style Presets
 // ══════════════════════════════════════════════════
 
 export interface OutputStylePreset {

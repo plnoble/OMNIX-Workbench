@@ -1,7 +1,6 @@
 /**
  * QuickAssistant — 划词助手浮动窗口
  *
- * Cherry Studio 风格：
  * - 鼠标选中文字 → 自动捕获 → 显示浮动操作栏（翻译/解释/总结/搜索/复制）
  * - 点击操作 → 执行对应功能，结果流式渲染
  * - 模型从大模型平台已配置模型中选择（下拉）
@@ -241,7 +240,7 @@ export function QuickAssistant() {
     dismissTimerRef.current = window.setTimeout(() => { void hideWindow(); }, ms);
   }, [cancelDismiss, hideWindow]);
 
-  // NOTE: the popup is shown WITHOUT taking focus (Cherry Studio style), so we no
+  // NOTE: the popup is shown WITHOUT taking focus, so we no
   // longer dismiss on focus-loss — doing so would hide it instantly. Dismissal is
   // handled by the backend (mouse-down outside the popup), Esc, the idle timeout,
   // and the ✕ button.
@@ -377,7 +376,7 @@ export function QuickAssistant() {
     // Special: Search action — detect URI/file path, or open search engine
     if (pickedAction === "search") {
       try {
-        // Cherry Studio: if text looks like a URL or file path, open directly
+        // if text looks like a URL or file path, open directly
         const isUrl = /^(https?:\/\/|ftp:\/\/|file:\/\/)/i.test(text);
         const isFilePath = /^([A-Za-z]:\\|\/)/.test(text);
         if (isUrl || isFilePath) {

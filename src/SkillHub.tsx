@@ -116,7 +116,7 @@ export const SkillHub: React.FC = () => {
   const [fusionModels, setFusionModels] = useState<PlatformModel[]>([]);
   const [selectedFusionModel, setSelectedFusionModel] = useState("");
 
-  // ── Skill generation from workspace (AionUi inspired) ──
+  // ── Skill generation from workspace ──
   const [genWorkspace, setGenWorkspace] = useState("");
   const [genFiles, setGenFiles] = useState<WorkspaceFile[]>([]);
   const [genSelected, setGenSelected] = useState<Set<string>>(new Set());

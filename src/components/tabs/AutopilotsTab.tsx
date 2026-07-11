@@ -1,5 +1,5 @@
 /**
- * AutopilotsTab — scheduled agent work (Multica-inspired).
+ * AutopilotsTab — scheduled agent work.
  *
  * CRUD for autopilots. A due autopilot enqueues a run (backend scheduler); the
  * global useAutopilotRunner executes it through the runtime, producing a normal

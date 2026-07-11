@@ -1,5 +1,4 @@
-//! Workspace checkpoints + per-file diff review (Claude Code / Codex desktop
-//! inspired). Before an agent turn that may modify files, a checkpoint snapshots
+//! Workspace checkpoints + per-file diff review. Before an agent turn that may modify files, a checkpoint snapshots
 //! the whole working tree onto a **shadow ref** (`refs/omnix/checkpoints/<id>`)
 //! using a temporary index — so it captures tracked AND untracked (non-ignored)
 //! content without touching the user's real index, working tree, or `git log`.

@@ -268,14 +268,14 @@ impl DbManager {
             "ALTER TABLE messages ADD COLUMN runtime_session_id TEXT NULL",
             [],
         );
-        // Branch lineage for `/btw` side conversations (DeepSeek-GUI inspired):
+        // Branch lineage for `/btw` side conversations:
         // a branched conversation remembers its parent so the parent's transcript
         // can seed the branch's first turn. NULL for normal conversations.
         let _ = conn.execute(
             "ALTER TABLE conversations ADD COLUMN parent_conversation_id TEXT NULL",
             [],
         );
-        // Per-conversation long-term goal (DeepSeek-GUI `/goal`): while status is
+        // Per-conversation long-term goal (`/goal`): while status is
         // 'active' the objective is re-injected into every turn's prompt.
         conn.execute(
             "CREATE TABLE IF NOT EXISTS conversation_goals (
@@ -391,7 +391,7 @@ impl DbManager {
             [],
         )?;
 
-        // 6c. Agent-Platform Bindings (CC Switch inspired)
+        // 6c. Agent-Platform Bindings
         // Maps each agent to a specific API platform for per-agent routing
         conn.execute(
             "CREATE TABLE IF NOT EXISTS agent_platform_bindings (
@@ -476,7 +476,7 @@ impl DbManager {
             [],
         )?;
 
-        // 6e. Skill Sets (Skill Library inspired combinations)
+        // 6e. Skill Sets
         conn.execute(
             "CREATE TABLE IF NOT EXISTS skill_sets (
                 id TEXT PRIMARY KEY,
@@ -554,12 +554,12 @@ impl DbManager {
             "ALTER TABLE skills ADD COLUMN content_hash TEXT NULL",
             "ALTER TABLE skills ADD COLUMN starred INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE skills ADD COLUMN category TEXT NULL",
-            // Skill compound interest fields (Multica inspired)
+            // Skill compound interest fields
             "ALTER TABLE skills ADD COLUMN usage_count INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE skills ADD COLUMN last_used_at DATETIME NULL",
             "ALTER TABLE skills ADD COLUMN success_count INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE skills ADD COLUMN priority_score REAL NOT NULL DEFAULT 1.0",
-            // Agent task lifecycle fields (Multica inspired)
+            // Agent task lifecycle fields
             "ALTER TABLE conversations ADD COLUMN task_status TEXT NOT NULL DEFAULT 'pending'",
             "ALTER TABLE conversations ADD COLUMN task_started_at DATETIME NULL",
             "ALTER TABLE conversations ADD COLUMN task_completed_at DATETIME NULL",
@@ -568,7 +568,7 @@ impl DbManager {
             "ALTER TABLE conversations ADD COLUMN task_files_changed INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE conversations ADD COLUMN task_exit_code INTEGER NULL",
             "ALTER TABLE conversations ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0",
-            // model_platforms weighted routing fields (New API/Sub2API inspired)
+            // model_platforms weighted routing fields
             "ALTER TABLE model_platforms ADD COLUMN weight INTEGER NOT NULL DEFAULT 1",
             "ALTER TABLE model_platforms ADD COLUMN priority INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE model_platforms ADD COLUMN max_retries INTEGER NOT NULL DEFAULT 2",
@@ -588,6 +588,10 @@ impl DbManager {
             "ALTER TABLE skills ADD COLUMN review_verdict TEXT NULL",
             "ALTER TABLE skills ADD COLUMN review_summary TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE skills ADD COLUMN reviewed_at DATETIME NULL",
+            // R2 技能中心：中文摘要（看得懂）+ 完整审核意见（改得动）
+            "ALTER TABLE skills ADD COLUMN summary_zh TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE skills ADD COLUMN review_problems TEXT NOT NULL DEFAULT '[]'",
+            "ALTER TABLE skills ADD COLUMN review_improve TEXT NOT NULL DEFAULT ''",
         ];
         for sql in &migrations {
             // ALTER TABLE ADD COLUMN silently fails if column already exists in SQLite,
@@ -609,7 +613,7 @@ impl DbManager {
             [],
         )?;
 
-        // 6a. Request Logs (API proxy usage tracking — New API/Sub2API inspired)
+        // 6a. Request Logs
         conn.execute(
             "CREATE TABLE IF NOT EXISTS request_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -705,8 +709,8 @@ impl DbManager {
             [],
         )?;
         // Circuit breaker: timestamp the platform's circuit tripped open, so the
-        // proxy can allow a half-open probe once the cooldown elapses (borrowed
-        // from cc-switch's failover). Idempotent — ignored if already present.
+        // proxy can allow a half-open probe once the cooldown elapses.
+        // Idempotent — ignored if already present.
         let _ = conn.execute(
             "ALTER TABLE model_platforms ADD COLUMN circuit_opened_at DATETIME NULL",
             [],
@@ -799,7 +803,7 @@ impl DbManager {
             [],
         )?;
 
-        // 9b. Autopilots (Multica-inspired): scheduled definitions that create a
+        // 9b. Autopilots: scheduled definitions that create a
         // reviewable agent conversation on fire (not a headless CLI run like cron).
         conn.execute(
             "CREATE TABLE IF NOT EXISTS autopilots (
@@ -1023,7 +1027,7 @@ impl DbManager {
             [],
         )?;
 
-        // 21. Development Checklist Table (Odysseus inspired — moved from runtime CREATE)
+        // 21. Development Checklist Table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS dev_checklist (
                 id TEXT PRIMARY KEY,
@@ -1038,7 +1042,7 @@ impl DbManager {
             [],
         )?;
 
-        // 22. Agent Mailbox Table (AionUI inspired — moved from runtime CREATE)
+        // 22. Agent Mailbox Table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS agent_mailbox (
                 id TEXT PRIMARY KEY,
@@ -1052,7 +1056,7 @@ impl DbManager {
             [],
         )?;
 
-        // 23. Task Dependencies Table (AionUI inspired — moved from runtime CREATE)
+        // 23. Task Dependencies Table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS task_dependencies (
                 task_id TEXT NOT NULL,
@@ -1063,7 +1067,7 @@ impl DbManager {
             [],
         )?;
 
-        // 24. Event Triggers Table (Odysseus inspired — moved from runtime CREATE)
+        // 24. Event Triggers Table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS event_triggers (
                 id TEXT PRIMARY KEY,
@@ -1077,7 +1081,7 @@ impl DbManager {
             [],
         )?;
 
-        // 25. Tool Confirmation Queue (AionUI inspired — moved from runtime CREATE)
+        // 25. Tool Confirmation Queue
         conn.execute(
             "CREATE TABLE IF NOT EXISTS tool_confirmations (
                 id TEXT PRIMARY KEY,

@@ -41,7 +41,7 @@ pub async fn set_remote_access(
 }
 
 // ══════════════════════════════════════════════════
-// Request Logs & Usage Stats (New API/Sub2API inspired)
+// Request Logs & Usage Stats
 // ══════════════════════════════════════════════════
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -347,7 +347,7 @@ pub fn cleanup_request_logs(
 }
 
 // ══════════════════════════════════════════════════
-// Platform Health Management (New API/Sub2API inspired)
+// Platform Health Management
 // ══════════════════════════════════════════════════
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -428,7 +428,7 @@ pub fn update_platform_routing(
 }
 
 // ══════════════════════════════════════════════════
-// Upstream Model Auto-Sync (New API inspired)
+// Upstream Model Auto-Sync
 // ══════════════════════════════════════════════════
 
 #[allow(dead_code)]
@@ -650,7 +650,7 @@ pub async fn sync_all_upstream_models(
 }
 
 // ══════════════════════════════════════════════════
-// Platform Health Check (New API/Sub2API inspired)
+// Platform Health Check
 // ══════════════════════════════════════════════════
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -768,7 +768,7 @@ pub async fn check_all_platform_health(
 }
 
 // ══════════════════════════════════════════════════
-// Agent Task Lifecycle (Multica inspired)
+// Agent Task Lifecycle
 // ══════════════════════════════════════════════════
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -907,7 +907,7 @@ pub fn get_task_stats(db: State<'_, Arc<DbManager>>) -> Result<serde_json::Value
 }
 
 // ══════════════════════════════════════════════════
-// Skill Compound Interest System (Multica inspired)
+// Skill Compound Interest System
 // ══════════════════════════════════════════════════
 
 /// Record a skill usage (compound interest: usage_count++, priority_score increases)

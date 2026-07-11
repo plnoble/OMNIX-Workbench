@@ -1,5 +1,4 @@
-//! In-session background tasks / sub-agents (R3 follow-up, Codex/Claude Code
-//! desktop inspired). A sub-agent is an **independent child agent session** that
+//! In-session background tasks / sub-agents. A sub-agent is an **independent child agent session** that
 //! runs concurrently with the parent in its **own Git worktree** (see
 //! `commands/worktrees.rs`), so several agents make progress at once without
 //! sharing a working tree. This is real session-level parallelism — NOT

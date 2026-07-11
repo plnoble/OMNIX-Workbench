@@ -4,9 +4,8 @@
 //! `AdapterKind` / `MediaProviderKind`), so adding a provider is a new variant
 //! the compiler forces every `match` to complete.
 //!
-//! Endpoints/client-ids/scopes are ported from sub2api (Wei-Shaw/sub2api,
-//! `internal/pkg/{oauth,openai,geminicli}`). These are the same public CLI OAuth
-//! clients Claude Code / Codex / Gemini CLI use; the user authenticates in their
+//! Endpoints/client-ids/scopes are the standard public CLI OAuth clients that
+//! Claude Code / Codex / Gemini CLI use; the user authenticates in their
 //! own browser and pastes back the code — OMNIX never sees the password.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64URL, Engine as _};
@@ -74,7 +73,7 @@ pub struct ProviderConfig {
 
 pub fn provider_config(kind: OAuthProviderKind) -> ProviderConfig {
     match kind {
-        // sub2api internal/pkg/oauth/oauth.go
+        // Claude Code CLI OAuth client (public)
         OAuthProviderKind::AnthropicClaude => ProviderConfig {
             client_id: "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
             client_secret: None,
@@ -86,7 +85,7 @@ pub fn provider_config(kind: OAuthProviderKind) -> ProviderConfig {
             body_kind: BodyKind::Json,
             manual_paste: true,
         },
-        // sub2api internal/pkg/openai/oauth.go (Codex CLI official client)
+        // Codex CLI official OAuth client (public)
         OAuthProviderKind::OpenAiCodex => ProviderConfig {
             client_id: "app_EMoamEEZ73f0CkXaXp7hrann",
             client_secret: None,
@@ -101,7 +100,7 @@ pub fn provider_config(kind: OAuthProviderKind) -> ProviderConfig {
             body_kind: BodyKind::Form,
             manual_paste: false,
         },
-        // sub2api internal/pkg/geminicli/constants.go (built-in Gemini CLI client)
+        // Gemini CLI built-in OAuth client (public)
         OAuthProviderKind::GoogleGemini => ProviderConfig {
             client_id: "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com",
             client_secret: Some("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"),
@@ -308,7 +307,7 @@ pub fn build_refresh_request(kind: OAuthProviderKind, refresh_token: &str) -> To
         params.push(("client_secret".into(), secret.to_string()));
     }
     if kind == OAuthProviderKind::OpenAiCodex {
-        // sub2api refreshes OpenAI without offline_access.
+        // Refresh OpenAI without offline_access.
         params.push(("scope".into(), "openid profile email".into()));
     }
     TokenRequest {

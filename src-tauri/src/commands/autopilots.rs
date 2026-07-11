@@ -1,4 +1,4 @@
-//! Autopilots — scheduled agent work (Multica-inspired).
+//! Autopilots — scheduled agent work.
 //!
 //! Unlike cron (which runs a headless CLI and logs to a file), an autopilot fires
 //! by enqueuing a **reviewable conversation**: on schedule (or manual trigger) it

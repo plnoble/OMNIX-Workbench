@@ -1,4 +1,4 @@
-//! CLI 配置接管 (cc-switch inspired): point Claude Code / Codex / Gemini CLI at
+//! CLI 配置接管: point Claude Code / Codex / Gemini CLI at
 //! a chosen target — the OMNIX gateway, a supplier platform, or an OAuth
 //! subscription — by writing each agent's **native** config. These are the
 //! user's real files (and take effect even outside OMNIX), so every write is

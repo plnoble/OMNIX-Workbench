@@ -1,5 +1,5 @@
 /**
- * RequirementModal — SDD requirement draft (DeepSeek-GUI inspired).
+ * RequirementModal — SDD requirement draft.
  *
  * Collects a structured requirement (background / goals / acceptance criteria),
  * then either asks the agent to CLARIFY it (a conversational refinement turn) or

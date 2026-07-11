@@ -5,8 +5,7 @@ import { Activity, RefreshCw, Coins, Hash, Timer } from "lucide-react";
 import { requestLogApi, type UsageStats, type DailyUsage } from "@/lib/tauri-api";
 
 /**
- * TokenActivityPanel — token & cost activity (R4, Cherry Studio / New-API
- * inspired). Surfaces the already-collected `request_logs` usage with estimated
+ * TokenActivityPanel — token & cost activity. Surfaces the already-collected `request_logs` usage with estimated
  * cost and a daily activity chart. Cost is estimated from a per-model pricing
  * table (unknown models fall back to a default rate), so it is an approximation.
  */

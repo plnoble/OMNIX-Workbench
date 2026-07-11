@@ -1,4 +1,4 @@
-//! Agent Templates — Borrowed from Multica's agenttmpl system
+//! Agent Templates — reusable role / system-prompt presets.
 //!
 //! Pre-built agent role templates that inject specialized system prompts
 //! and associate relevant skills with agent sessions.
@@ -1542,7 +1542,7 @@ Do NOT: write overly complex regex when simple string methods work; ignore Unico
 }
 
 // ══════════════════════════════════════════════════
-// Workflow Templates (ZCF inspired)
+// Workflow Templates
 // ══════════════════════════════════════════════════
 
 fn git_flow() -> AgentTemplate {
@@ -1665,7 +1665,7 @@ Do NOT: skip the planning phase; write code without understanding the requiremen
 }
 
 // ══════════════════════════════════════════════════
-// Office / 办公文档 Templates (AionUi / Cherry inspired)
+// Office / 办公文档 Templates
 // ══════════════════════════════════════════════════
 
 fn ppt_creator() -> AgentTemplate {

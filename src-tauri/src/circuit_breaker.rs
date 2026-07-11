@@ -1,4 +1,4 @@
-//! Circuit Breaker & Session Log Tracking (CC Switch inspired)
+//! Circuit Breaker & Session Log Tracking
 //!
 //! 1. Circuit Breaker — per-platform health monitoring with auto failover
 //! 2. Session Log Usage Tracking — parse session logs for token usage

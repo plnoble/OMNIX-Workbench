@@ -1,4 +1,4 @@
-//! Local-model fit ranking (whichllm inspired): given a memory budget (GPU VRAM
+//! Local-model fit ranking: given a memory budget (GPU VRAM
 //! for GPU inference, or system RAM for CPU inference), rank a catalog of popular
 //! open-weight models by whether they fit and at which quantization. Pure and
 //! unit-tested; the `commands/local_models.rs` layer supplies detected hardware.

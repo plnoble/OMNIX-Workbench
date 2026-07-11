@@ -45,7 +45,7 @@ export function DashboardTab({
 }: DashboardTabProps) {
   const tip = OMNIX_TIPS[tipIndex];
 
-  // Remote phone access (AionUi-style): toggle LAN binding + restart proxy.
+  // Remote phone access: toggle LAN binding + restart proxy.
   const [remoteEnabled, setRemoteEnabled] = useState(false);
   const [remoteBusy, setRemoteBusy] = useState(false);
   const [qr, setQr] = useState("");

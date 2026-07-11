@@ -1,4 +1,4 @@
-//! Skill DAG — Typed Dependency Graph for Skills (SkillDAG inspired)
+//! Skill DAG — Typed Dependency Graph for Skills
 //!
 //! Models inter-skill relationships as a typed directed acyclic graph:
 //! - depends_on: A requires B as precondition (directed, DAG)

@@ -19,6 +19,7 @@ import { AGENT_NAMES } from "@/lib/constants";
 import { agentApi, agentBindingApi, runtimeApi } from "@/lib/tauri-api";
 import { getRuntimeAgentId, isAcpAgent } from "@/lib/agentRegistry";
 import { cn } from "@/lib/utils";
+import { AgentInstallManager } from "@/components/AgentInstallManager";
 import { toast } from "@/components/ui/sonner";
 import type { AgentAccount, AgentUpdateInfo, DetectedAgent, PlatformModel, RuntimeAgentCatalogEntry } from "@/types";
 import type { AgentPlatformBinding } from "@/lib/tauri-api";
@@ -361,6 +362,11 @@ export function AgentHubTab({
               </div>
             </div>
           ))}
+        </div>
+
+        {/* R3 统一安装：扫描全部安装副本 / 删多余 / 收进托管目录 */}
+        <div className="mt-6">
+          <AgentInstallManager />
         </div>
       </section>
 

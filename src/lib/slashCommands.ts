@@ -1,6 +1,5 @@
 /**
- * Composer slash-command parsers — ported from DeepSeek-GUI's
- * `floating-composer-commands.ts` (behavior contract preserved).
+ * Composer slash-command parsers for the chat composer.
  *
  * Only `/goal` and `/btw` are handled here; both are intercepted at send time
  * and never forwarded to the agent as a normal message.

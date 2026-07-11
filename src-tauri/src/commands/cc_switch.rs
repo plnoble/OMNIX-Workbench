@@ -6,7 +6,7 @@ use crate::db::DbManager;
 use super::*;
 
 // ══════════════════════════════════════════════════
-// Agent-Platform Bindings (CC Switch inspired)
+// Agent-Platform Bindings
 // ══════════════════════════════════════════════════
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,7 +103,7 @@ pub fn toggle_agent_binding(
 }
 
 // ══════════════════════════════════════════════════
-// Circuit Breaker & Session Usage (CC Switch inspired)
+// Circuit Breaker & Session Usage
 // ══════════════════════════════════════════════════
 
 /// Get circuit breaker status for all platforms

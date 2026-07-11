@@ -7,8 +7,7 @@ import { toast } from "@/components/ui/sonner";
 import { cn } from "@/lib/utils";
 
 /**
- * WorktreePanel — parallel sessions via Git worktrees (Codex / Claude Code
- * desktop inspired). Each worktree is an isolated checkout on its own branch so
+ * WorktreePanel — parallel sessions via Git worktrees. Each worktree is an isolated checkout on its own branch so
  * several agents can work the same repo without clobbering each other. Lists the
  * repo's worktrees (main + OMNIX-created), and lets the user create / open /
  * merge / remove them. Merge surfaces conflicts honestly instead of resolving.

@@ -7,7 +7,7 @@ use crate::db::DbManager;
 use super::*;
 
 // ══════════════════════════════════════════════════
-// Odysseus-Inspired Features — Tauri Commands
+// Security & safety features — Tauri Commands
 // ══════════════════════════════════════════════════
 
 /// Wrap untrusted content in safety tags (Prompt Injection Guard)
@@ -325,7 +325,7 @@ pub async fn send_ntfy_notification(
 }
 
 // ══════════════════════════════════════════════════
-// Cookbook Model Recommendation (Odysseus + AingDesk)
+// Cookbook Model Recommendation
 // ══════════════════════════════════════════════════
 
 /// Detect hardware and recommend models that fit
@@ -345,7 +345,7 @@ pub fn get_model_database() -> Vec<crate::model_knowledge::ModelEntry> {
     crate::model_knowledge::get_model_database()
 }
 
-/// Simulate recommendations for a hypothetical GPU (whichllm --gpu pattern)
+/// Simulate recommendations for a hypothetical GPU
 #[tauri::command]
 pub fn recommend_for_gpu(gpu_name: String) -> Result<serde_json::Value, String> {
     let recommendations = crate::model_knowledge::recommend_for_gpu(&gpu_name)?;
@@ -363,7 +363,7 @@ pub fn get_gpu_database() -> Vec<crate::model_knowledge::GpuSpec> {
 }
 
 // ══════════════════════════════════════════════════
-// Code Deep Analysis (Odysseus Deep Research inspired)
+// Code Deep Analysis
 // ══════════════════════════════════════════════════
 
 /// Analyze a codebase directory — returns file statistics and structure
@@ -461,7 +461,7 @@ pub fn analyze_codebase(path: String) -> Result<serde_json::Value, String> {
 }
 
 // ══════════════════════════════════════════════════
-// Configuration Backup (ZCF inspired)
+// Configuration Backup
 // ══════════════════════════════════════════════════
 
 /// Backup a file before modification
@@ -484,7 +484,7 @@ pub fn restore_backup(backup_path: String, target_path: String) -> Result<(), St
 }
 
 // ══════════════════════════════════════════════════
-// API Provider Preset Management (ZCF inspired)
+// API Provider Preset Management
 // ══════════════════════════════════════════════════
 
 /// Apply an API provider preset — creates or updates a model platform
@@ -548,7 +548,7 @@ pub fn apply_api_preset(
 }
 
 // ══════════════════════════════════════════════════
-// Architecture Knowledge Graph (Understand-Anything inspired)
+// Architecture Knowledge Graph
 // ══════════════════════════════════════════════════
 
 /// Build architecture graph for a project directory

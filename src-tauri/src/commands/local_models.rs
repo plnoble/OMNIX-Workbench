@@ -1,4 +1,4 @@
-//! Local-model selection IO layer (whichllm inspired): detect the machine's CPU
+//! Local-model selection IO layer: detect the machine's CPU
 //! and RAM, then rank which open-weight models fit a memory budget. GPU VRAM
 //! detection is unreliable cross-platform, so the user supplies a budget (their
 //! VRAM for GPU inference, or RAM for CPU inference) — the panel defaults to RAM.

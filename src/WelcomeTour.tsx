@@ -79,7 +79,7 @@ export const WelcomeTour: React.FC<WelcomeTourProps> = ({
     width: number;
     height: number;
   } | null>(null);
-  
+
   const step = TOUR_STEPS[currentStep];
   const resizeRef = useRef<number | null>(null);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -129,7 +129,7 @@ export const WelcomeTour: React.FC<WelcomeTourProps> = ({
   useEffect(() => {
     // Wait slightly for tab changes animations
     const timer = setTimeout(updatePosition, 200);
-    
+
     const handleResize = () => {
       if (resizeRef.current) cancelAnimationFrame(resizeRef.current);
       resizeRef.current = requestAnimationFrame(updatePosition);
@@ -232,7 +232,7 @@ export const WelcomeTour: React.FC<WelcomeTourProps> = ({
     <div className="tour-overlay">
       {/* Target Element Highlight Ring */}
       {coords && (
-        <div 
+        <div
           className="tour-highlight-ring"
           style={{
             top: coords.top - 6,
@@ -251,18 +251,18 @@ export const WelcomeTour: React.FC<WelcomeTourProps> = ({
             {currentStep + 1} / {TOUR_STEPS.length}
           </span>
         </div>
-        
+
         <p className="tour-content">{step.content}</p>
-        
+
         <div className="tour-actions flex items-center justify-between mt-4">
-          <button 
-            className="tour-btn-skip" 
+          <button
+            className="tour-btn-skip"
             onClick={handleComplete}
             title="跳过并在此后默认为已完成"
           >
             跳过指引
           </button>
-          
+
           <div className="flex gap-2">
             {currentStep > 0 && (
               <button className="tour-btn tour-btn-secondary" onClick={handleBack}>

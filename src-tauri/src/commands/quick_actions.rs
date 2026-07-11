@@ -1,4 +1,4 @@
-//! Custom Quick Assistant actions (划词助手深挖, Cherry Studio inspired). The
+//! Custom Quick Assistant actions (划词助手深挖). The
 //! popup ships 6 built-in actions (translate/explain/summarize/refine/search/
 //! copy); this lets the user define their own prompt-based actions on top —
 //! e.g. "改写为正式语气", "提取要点为清单", "翻译并解释生词". Each custom action

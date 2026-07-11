@@ -12,10 +12,10 @@ pub fn get_cron_tasks(
 ) -> Result<Vec<CronTask>, String> {
     let conn = db.get_connection().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
-        "SELECT id, title, schedule, agent_name, args, workspace_dir, is_active, last_run, created_at 
+        "SELECT id, title, schedule, agent_name, args, workspace_dir, is_active, last_run, created_at
          FROM cron_tasks ORDER BY created_at DESC"
     ).map_err(|e| e.to_string())?;
-    
+
     let rows = stmt.query_map([], |row| {
         let is_active_int: i32 = row.get(6)?;
         Ok(CronTask {
@@ -30,7 +30,7 @@ pub fn get_cron_tasks(
             created_at: row.get(8)?,
         })
     }).map_err(|e| e.to_string())?;
-    
+
     let mut result = Vec::new();
     for r in rows {
         if let Ok(task) = r {
@@ -104,10 +104,10 @@ pub fn get_cron_runs(
 ) -> Result<Vec<CronRun>, String> {
     let conn = db.get_connection().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
-        "SELECT id, task_id, status, log_path, started_at, finished_at 
+        "SELECT id, task_id, status, log_path, started_at, finished_at
          FROM cron_runs ORDER BY started_at DESC LIMIT 50"
     ).map_err(|e| e.to_string())?;
-    
+
     let rows = stmt.query_map([], |row| {
         Ok(CronRun {
             id: row.get(0)?,
@@ -118,7 +118,7 @@ pub fn get_cron_runs(
             finished_at: row.get(5)?,
         })
     }).map_err(|e| e.to_string())?;
-    
+
     let mut result = Vec::new();
     for r in rows {
         if let Ok(run) = r {
@@ -153,7 +153,7 @@ pub async fn trigger_cron_task(
             r.get::<_, String>(3)?,
         ))
     }).map_err(|e| format!("Cron task not found: {}", e))?;
-    
+
     let (task_id, agent_name, args_str, workspace_dir) = row;
     let db_arc = db.inner().clone();
     tauri::async_runtime::spawn(async move {

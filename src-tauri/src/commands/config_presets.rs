@@ -264,7 +264,7 @@ pub fn get_activity_log(
 }
 
 // ══════════════════════════════════════════════════
-// MCP Presets (ZCF inspired)
+// MCP Presets
 // ══════════════════════════════════════════════════
 
 /// A single MCP server preset entry
@@ -402,7 +402,7 @@ pub fn apply_mcp_preset(preset_id: String, db: State<'_, Arc<DbManager>>) -> Res
 }
 
 // ══════════════════════════════════════════════════
-// Output Styles (ZCF inspired)
+// Output Styles
 // ══════════════════════════════════════════════════
 
 /// Output style configuration for controlling response formatting

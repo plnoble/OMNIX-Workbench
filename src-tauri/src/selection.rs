@@ -486,7 +486,7 @@ pub async fn capture_selection_with_context() -> Result<CaptureResult, String> {
 // ── Auto-Capture Monitor ────────────────────────────────
 
 /// Current mouse-cursor position in physical screen pixels, so the popup can
-/// appear right next to the selection (Cherry Studio style).
+/// appear right next to the selection.
 #[cfg(windows)]
 fn get_cursor_position() -> Option<(i32, i32)> {
     use windows::Win32::Foundation::POINT;
@@ -506,7 +506,7 @@ fn get_cursor_position() -> Option<(i32, i32)> {
 }
 
 /// Show the Quick Assistant popup at a screen point **without taking focus**
-/// (Cherry Studio style). Stealing focus was what broke text selection and copy
+/// Stealing focus was what broke text selection and copy
 /// and caused the flicker, so we never call `set_focus` here. Returns the popup's
 /// screen rect (x, y, w, h) so the monitor can detect click-away.
 fn show_popup_at(app_handle: &tauri::AppHandle, x: i32, y: i32) -> Option<(i32, i32, i32, i32)> {
@@ -564,7 +564,7 @@ fn current_popup_rect(app_handle: &tauri::AppHandle) -> Option<(i32, i32, i32, i
     Some((pos.x, pos.y, size.width as i32, size.height as i32))
 }
 
-/// Selection monitor — Cherry Studio parity.
+/// Selection monitor.
 ///
 /// Instead of continuously polling UIA (which made the popup flicker, follow the
 /// cursor, and steal focus mid-selection — breaking copy), this watches the left

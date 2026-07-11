@@ -1,4 +1,4 @@
-//! Encryption at Rest (Odysseus Fernet inspired)
+//! Encryption at Rest
 //!
 //! Provides transparent encryption/decryption for sensitive fields
 //! (API keys, tokens, passwords) stored in SQLite.

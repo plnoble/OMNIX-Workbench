@@ -1,5 +1,5 @@
 /**
- * PlanPanel — SDD plan viewer + thread todo (DeepSeek-GUI inspired).
+ * PlanPanel — SDD plan viewer + thread todo.
  *
  * Reads plan files the agent wrote under `.omx/plans/`, renders the selected
  * plan's Markdown, and turns its `- [ ]` checkboxes into a trackable checklist

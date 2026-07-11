@@ -1,4 +1,4 @@
-//! Code Graph — Architecture Knowledge Graph (Understand-Anything inspired)
+//! Code Graph — Architecture Knowledge Graph
 //!
 //! Builds a structured JSON graph of a project's architecture:
 //! files, functions, classes, dependencies, layers, clusters.
@@ -159,7 +159,6 @@ pub fn load_omnixignore(project_path: &PathBuf) -> Vec<String> {
             ".venv".into(),
             "venv".into(),
             ".omnix".into(),
-            ".understand-anything".into(),
         ];
     }
 

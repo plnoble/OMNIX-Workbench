@@ -8,7 +8,7 @@ use crate::proc::NoWindow;
 use super::*;
 
 // ══════════════════════════════════════════════════
-// Agent Template Commands (Multica-inspired)
+// Agent Template Commands
 // ══════════════════════════════════════════════════
 
 /// Get all built-in agent templates
@@ -24,7 +24,7 @@ pub fn get_agent_template(slug: String) -> Option<AgentTemplate> {
 }
 
 // ══════════════════════════════════════════════════
-// Skills Lock File (Multica-inspired)
+// Skills Lock File
 // ══════════════════════════════════════════════════
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -149,7 +149,7 @@ pub fn verify_skill_lock(db: State<'_, Arc<DbManager>>) -> Result<Vec<String>, S
 }
 
 // ══════════════════════════════════════════════════
-// Agent Execution Environment Config (Multica-inspired)
+// Agent Execution Environment Config
 // ══════════════════════════════════════════════════
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -239,7 +239,7 @@ pub fn save_agent_exec_config(
 }
 
 // ══════════════════════════════════════════════════
-// Autopilot Enhancement (Multica-inspired)
+// Autopilot Enhancement
 // ══════════════════════════════════════════════════
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -392,7 +392,7 @@ pub fn save_autopilot_result_to_kb(
 }
 
 // ══════════════════════════════════════════════════
-// Workspace GC (Multica-inspired)
+// Workspace GC
 // ══════════════════════════════════════════════════
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

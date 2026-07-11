@@ -45,7 +45,7 @@ fn resolve_sandbox_path(path_str: &str) -> PathBuf {
     }
 }
 
-fn agent_slug(agent_name: &str) -> &'static str {
+pub(crate) fn agent_slug(agent_name: &str) -> &'static str {
     match agent_name {
         "Claude Code" => "claude-code",
         "Codex" => "codex",
@@ -58,7 +58,7 @@ fn agent_slug(agent_name: &str) -> &'static str {
     }
 }
 
-fn managed_agent_root(db: &DbManager, agent_name: &str) -> PathBuf {
+pub(crate) fn managed_agent_root(db: &DbManager, agent_name: &str) -> PathBuf {
     let key = format!("sandbox_dir_{}", agent_name);
     if let Some(path) = db.get_setting(&key).ok().flatten() {
         return resolve_sandbox_path(&path);
@@ -71,7 +71,7 @@ fn managed_agent_root(db: &DbManager, agent_name: &str) -> PathBuf {
     resolve_sandbox_path(&base).join(agent_slug(agent_name))
 }
 
-fn executable_in_managed_root(root: &Path, bin_name: &str) -> Option<String> {
+pub(crate) fn executable_in_managed_root(root: &Path, bin_name: &str) -> Option<String> {
     let executable = root
         .join("node_modules")
         .join(".bin")
@@ -110,7 +110,7 @@ pub struct DetectedAgent {
 }
 
 /// Update status of an installed agent CLI: its installed version vs the latest
-/// published on npm. (Borrowed from Nezha's agent-version awareness.)
+/// published on npm.
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentUpdateInfo {
     pub name: String,
@@ -232,7 +232,7 @@ impl AgentManager {
         self.start_autopilot_scheduler();
     }
 
-    /// Polls active autopilots (Multica-inspired) and, when one is due, enqueues
+    /// Polls active autopilots and, when one is due, enqueues
     /// a reviewable run (creates a conversation + a `queued` autopilot_run). The
     /// frontend claims queued runs and executes them through the real runtime.
     /// DB-only, mirroring `start_cron_scheduler`; reuses `match_schedule`.
@@ -1491,7 +1491,7 @@ impl AgentManager {
                 let conn_res = db.get_connection();
                 if let Ok(conn) = conn_res {
                     let mut stmt = match conn.prepare(
-                        "SELECT id, title, schedule, agent_name, args, workspace_dir, last_run 
+                        "SELECT id, title, schedule, agent_name, args, workspace_dir, last_run
                          FROM cron_tasks WHERE is_active = 1",
                     ) {
                         Ok(s) => s,

@@ -1,5 +1,5 @@
 /**
- * GatewayHealthCard — per-platform circuit breaker status (cc-switch inspired).
+ * GatewayHealthCard — per-platform circuit breaker status.
  *
  * Reads the live circuit state the proxy maintains: a platform that keeps
  * failing trips to Open (skipped by the router) and auto-probes back to

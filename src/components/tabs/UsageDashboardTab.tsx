@@ -1,5 +1,5 @@
 /**
- * UsageDashboardTab — 用量成本看板 (new-api inspired).
+ * UsageDashboardTab — 用量成本看板.
  *
  * A first-class destination for gateway operations: circuit health, the
  * existing token/cost activity panel, a per-platform cost breakdown, and a

@@ -5,7 +5,7 @@ use crate::db::DbManager;
 use crate::token_economy::{TokenBudget, FileChange as TokenFileChange};
 
 // ══════════════════════════════════════════════════
-// DeepSeek-GUI Inspired Features
+// Session control & steering features
 // ══════════════════════════════════════════════════
 
 /// Compress tool result to fit token budget

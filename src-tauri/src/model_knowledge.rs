@@ -1,7 +1,7 @@
-//! Model Knowledge Base (Odysseus + AingDesk + whichllm inspired)
+//! Model Knowledge Base
 //!
 //! Provides hardware-aware model recommendations with:
-//! - Evidence-graded confidence scoring (whichllm 5-tier system)
+//! - Evidence-graded confidence scoring (5-tier system)
 //! - Lineage-aware version management (model family generations)
 //! - GPU simulation for hardware planning
 //! - Curated model database with quality ratings
@@ -10,7 +10,7 @@ use crate::proc::NoWindow;
 use serde::{Deserialize, Serialize};
 
 // ══════════════════════════════════════════════════
-// Evidence Confidence System (whichllm inspired)
+// Evidence Confidence System
 // ══════════════════════════════════════════════════
 
 /// Evidence tier for model quality rating confidence
@@ -61,7 +61,7 @@ impl EvidenceTier {
 }
 
 // ══════════════════════════════════════════════════
-// Model Lineage System (whichllm inspired)
+// Model Lineage System
 // ══════════════════════════════════════════════════
 
 /// Model family and generation info
@@ -147,7 +147,7 @@ pub struct ModelEntry {
     pub description: String,
     pub ollama_cmd: String,
     pub speed_rating: String,
-    // whichllm-inspired fields
+    // evidence / lineage fields
     pub family: String,
     pub generation: u32,
     pub evidence_tier: EvidenceTier,
@@ -157,7 +157,7 @@ pub struct ModelEntry {
 }
 
 // ══════════════════════════════════════════════════
-// GPU Simulation (whichllm inspired)
+// GPU Simulation
 // ══════════════════════════════════════════════════
 
 /// Curated GPU registry with bandwidth and VRAM
@@ -170,7 +170,7 @@ pub struct GpuSpec {
     pub generation: String,
 }
 
-/// GPU database — curated from whichllm's gpu.py
+/// GPU database — curated specs.
 pub fn get_gpu_database() -> Vec<GpuSpec> {
     vec![
         // NVIDIA RTX 50 series
@@ -220,7 +220,7 @@ pub fn get_gpu_database() -> Vec<GpuSpec> {
     ]
 }
 
-/// Simulate a GPU by name string (whichllm --gpu pattern)
+/// Simulate a GPU by name string
 pub fn simulate_gpu(name: &str) -> Option<GpuSpec> {
     let lower = name.to_lowercase();
     get_gpu_database().into_iter().find(|g| {
@@ -425,7 +425,7 @@ pub fn recommend_models(hw: &HardwareInfo) -> Vec<ModelRecommendation> {
             else if fits_ram { "tight".to_string() }
             else { "impossible".to_string() };
 
-        // Apply lineage penalty (whichllm pattern)
+        // Apply lineage penalty
         let gen_penalty = generation_penalty(&model.family, model.generation);
         let evidence_conf = model.confidence;
         let effective_quality = model.quality as f32 * gen_penalty * evidence_conf;

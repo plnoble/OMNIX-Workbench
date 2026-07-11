@@ -1,5 +1,4 @@
-//! Notes (笔记) — local Markdown notes (Cherry Studio / Obsidian inspired, but
-//! intentionally lightweight). Notes can be created anywhere, and the Quick
+//! Notes (笔记) — lightweight local Markdown notes. Notes can be created anywhere, and the Quick
 //! Assistant can save a result/selection straight into one (`source` records
 //! where it came from). Stored locally in SQLite; content is plain Markdown.
 

@@ -1,4 +1,4 @@
-//! Per-conversation long-term goal (`/goal`) — borrowed from DeepSeek-GUI.
+//! Per-conversation long-term goal (`/goal`).
 //!
 //! A goal pins an objective to a conversation. While its status is `active`,
 //! `runtime::build_goal_reminder` re-injects the objective into every turn's
@@ -14,7 +14,7 @@ use tauri::State;
 use crate::db::DbManager;
 use crate::input_validation;
 
-/// Matches DeepSeek-GUI's `MAX_THREAD_GOAL_OBJECTIVE_CHARS`.
+/// Caps the stored objective length.
 const MAX_GOAL_OBJECTIVE_CHARS: usize = 4_000;
 
 #[derive(Debug, Serialize, Deserialize)]

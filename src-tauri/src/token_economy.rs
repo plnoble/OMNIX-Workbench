@@ -1,4 +1,4 @@
-//! Token Economy & Agent Enhancements (DeepSeek-GUI inspired)
+//! Token Economy & Agent Enhancements
 //!
 //! 1. Token Economy — compress tool descriptions, cap result sizes
 //! 2. Inline Diff Detection — track file modifications

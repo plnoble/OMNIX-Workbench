@@ -164,7 +164,7 @@ pub fn create_conversation(
     workspace_path: String,
     active_agent: String,
     // Set for `/btw` side conversations: the parent whose transcript seeds this
-    // branch's first turn (DeepSeek-GUI inspired). None for normal conversations.
+    // branch's first turn. None for normal conversations.
     parent_conversation_id: Option<String>,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<(), String> {

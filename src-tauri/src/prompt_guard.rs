@@ -1,4 +1,4 @@
-//! Prompt Injection Guard (Odysseus inspired)
+//! Prompt Injection Guard
 //!
 //! Two-layer defense against prompt injection:
 //! 1. **Detection**: Scan content for known injection patterns and score the risk

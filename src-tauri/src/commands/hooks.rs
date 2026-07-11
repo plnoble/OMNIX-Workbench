@@ -1,4 +1,4 @@
-//! User-state hooks (Claude Code hooks inspired): event → action rules that
+//! User-state hooks: event → action rules that
 //! fire on agent runtime events. A hook matches an event kind (e.g.
 //! `tool_completed`, `turn_completed`, `error`) and an optional text matcher,
 //! then runs one of three actions: a desktop **notify**, a shell **command**, or

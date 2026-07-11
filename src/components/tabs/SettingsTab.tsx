@@ -24,6 +24,7 @@ import {
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/sonner";
 import { modelApi, settingsApi, mcpSyncApi, type AgentMcpState } from "@/lib/tauri-api";
+import { StorageLocationsCard } from "@/components/StorageLocationsCard";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { BUILTIN_LANGUAGES } from "@/lib/translate-constants";
 import type { ModelPlatform, PlatformModel, AgentAccount, ModelTestState, SettingsSubTab, SelectionHistoryEntry, SearchProvider, WebSearchResult, McpServer, BackupTableInfo, ImportResult } from "@/types";
@@ -934,7 +935,7 @@ function SystemSubTab({
             配置网络搜索引擎后，在智能体对话中启用"联网搜索"即可让 AI 获取实时网络信息。
           </span>
 
-          {/* Preset search providers (Cherry Studio style) */}
+          {/* Preset search providers */}
           <div>
             <span className="text-xs font-medium text-muted-foreground mb-2 block">🌐 搜索引擎</span>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
@@ -1490,6 +1491,9 @@ function BackupSubTab({
 
   return (
     <div className="flex flex-col gap-4 max-w-4xl mx-auto">
+      {/* Storage locations (R1 存储位置中心) */}
+      <StorageLocationsCard />
+
       {/* Export */}
       <Card>
         <CardHeader>

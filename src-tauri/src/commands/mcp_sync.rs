@@ -1,7 +1,7 @@
 //! Sync OMNIX-managed MCP servers into the native config of Claude Code and
 //! Codex, so a user configures a tool once instead of editing each agent's
-//! config by hand (AionUi "configure once, sync everywhere" + cc-switch atomic
-//! native-config writes).
+//! config by hand — configure once, sync everywhere, with atomic
+//! native-config writes.
 //!
 //! Safety rules, because these are the user's real config files (a broken MCP
 //! entry previously made Codex's `thread/start` slow):
@@ -371,7 +371,7 @@ fn read_codex_names() -> Result<Vec<String>, String> {
 // ── Gemini (~/.gemini/settings.json, JSON `mcpServers`) ────────────────────
 
 /// Gemini infers transport by field name: `httpUrl` = HTTP streaming, `url` =
-/// SSE, presence of `command` = stdio. (cc-switch `gemini_mcp.rs`.)
+/// SSE, presence of `command` = stdio.
 fn gemini_server_spec(row: &McpRow) -> Value {
     if is_remote(&row.server_type) {
         if row.server_type == "http" {
@@ -391,8 +391,7 @@ fn gemini_server_spec(row: &McpRow) -> Value {
 // ── OpenCode (~/.config/opencode/opencode.json, JSON `mcp`) ────────────────
 
 /// OpenCode uses `type: local` (command as `[cmd, ...args]`, env→`environment`)
-/// or `type: remote` (url), each with an `enabled` flag. (cc-switch
-/// `mcp/opencode.rs`.)
+/// or `type: remote` (url), each with an `enabled` flag.
 fn opencode_server_spec(row: &McpRow) -> Value {
     if is_remote(&row.server_type) {
         json!({ "type": "remote", "url": row.url, "enabled": true })

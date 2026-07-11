@@ -581,7 +581,7 @@ struct CapResult {
 
 /// ── Tier 1: Hardcoded model capability catalog ──────────────
 /// Covers ~100 mainstream models. Each entry is (id_substring, 8 capabilities).
-/// Inspired by Cherry Studio's models.json but simplified to our 8-dimension model.
+/// Simplified to our 8-dimension capability model.
 const MODEL_CATALOG: &[(&str, (bool, bool, bool, bool, bool, bool, bool, bool))] = &[
     // ── OpenAI ──────────────────────────────────
     (
@@ -1025,7 +1025,7 @@ fn infer_capabilities(name: &str) -> CapResult {
         };
     }
 
-    // Phase 2: Heuristic fallback (enhanced from Cherry Studio regex sets)
+    // Phase 2: Heuristic fallback (regex heuristics)
     let has_vision = n.contains("vision")
         || n.contains("vl")
         || n.contains("4o")

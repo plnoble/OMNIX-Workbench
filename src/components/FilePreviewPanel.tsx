@@ -7,8 +7,7 @@ import { workspaceApi, type FilePreview } from "@/lib/tauri-api";
 import { toast } from "@/components/ui/sonner";
 
 /**
- * FilePreviewPanel — in-app preview of a workspace file (R2 / file preview
- * panel, AionUi inspired). Renders code/text as monospaced text, Markdown
+ * FilePreviewPanel — in-app preview of a workspace file. Renders code/text as monospaced text, Markdown
  * rendered, images and PDF inline; binary/Office files offer "open with system".
  */
 interface Props {

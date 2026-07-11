@@ -1,4 +1,4 @@
-//! Skill pool governance (#3 技能池重构).
+//! Skill pool governance (#3 技能池重构 + R2 技能中心).
 //!
 //! Every skill lives in one of two pools:
 //! - **待定池 `pending`** — everything collected from disk, forged, fused or
@@ -33,6 +33,9 @@ pub struct SkillPoolItem {
     pub review_score: Option<i64>,
     pub review_verdict: Option<String>,
     pub review_summary: String,
+    pub review_problems: Vec<String>,
+    pub review_improve: String,
+    pub summary_zh: String,
     pub reviewed_at: Option<String>,
     pub updated_at: String,
 }
@@ -78,13 +81,14 @@ pub fn list_skill_pool(db: State<'_, Arc<DbManager>>) -> Result<Vec<SkillPoolIte
         .prepare(
             "SELECT name, description, category, pool, source_ref, central_path,
                     usage_count, starred, review_score, review_verdict, review_summary,
-                    reviewed_at, updated_at
+                    reviewed_at, updated_at, summary_zh, review_problems, review_improve
              FROM skills
              ORDER BY pool DESC, review_score IS NULL, updated_at DESC",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |r| {
+            let problems_json: String = r.get(14)?;
             Ok(SkillPoolItem {
                 name: r.get(0)?,
                 description: r.get(1)?,
@@ -97,6 +101,9 @@ pub fn list_skill_pool(db: State<'_, Arc<DbManager>>) -> Result<Vec<SkillPoolIte
                 review_score: r.get(8)?,
                 review_verdict: r.get(9)?,
                 review_summary: r.get(10)?,
+                review_problems: serde_json::from_str(&problems_json).unwrap_or_default(),
+                review_improve: r.get(15)?,
+                summary_zh: r.get(13)?,
                 reviewed_at: r.get(11)?,
                 updated_at: r.get(12)?,
             })
@@ -112,9 +119,7 @@ pub fn list_skill_pool(db: State<'_, Arc<DbManager>>) -> Result<Vec<SkillPoolIte
 #[tauri::command]
 pub fn skill_pool_stats(db: State<'_, Arc<DbManager>>) -> Result<SkillPoolStats, String> {
     let conn = db.get_connection().map_err(|e| e.to_string())?;
-    let get = |sql: &str| -> i64 {
-        conn.query_row(sql, [], |r| r.get(0)).unwrap_or(0)
-    };
+    let get = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap_or(0) };
     Ok(SkillPoolStats {
         pending: get("SELECT COUNT(*) FROM skills WHERE pool = 'pending'"),
         official: get("SELECT COUNT(*) FROM skills WHERE pool = 'official'"),
@@ -125,8 +130,7 @@ pub fn skill_pool_stats(db: State<'_, Arc<DbManager>>) -> Result<SkillPoolStats,
 }
 
 /// 一键收集：scan every installed tool's skill directory and import everything
-/// unmanaged into the central store (`~/.omnix/skills/<name>`). New imports
-/// land in the 待定池 (the `pool` column defaults to 'pending').
+/// unmanaged into the central store. New imports land in the 待定池.
 #[tauri::command]
 pub fn collect_all_skills(db: State<'_, Arc<DbManager>>) -> Result<CollectReport, String> {
     let engine = SyncEngine::new(Arc::clone(&db));
@@ -140,18 +144,21 @@ pub fn collect_all_skills(db: State<'_, Arc<DbManager>>) -> Result<CollectReport
     })
 }
 
-/// 清理散落原件：after collection, back up and DELETE the per-tool skill
-/// copies so the central store is the single source. Only touches skill dirs
-/// whose name exists in the central DB; never touches anything under ~/.omnix.
-/// Backups go to `~/.omnix/backups/skill_originals_<ts>/<tool>/<name>/`.
+/// 清理散落原件：after collection, back up and DELETE the per-tool skill copies
+/// so the central store is the single source. Only touches skill dirs whose name
+/// exists in the central DB; never touches the central store, backups, or ~/.omnix.
 #[tauri::command]
 pub fn cleanup_scattered_skills(db: State<'_, Arc<DbManager>>) -> Result<CleanupReport, String> {
-    let home = dirs::home_dir().ok_or("找不到用户目录")?;
-    let omnix_root = home.join(".omnix");
-    let backup_dir = omnix_root.join("backups").join(format!(
+    // 备份目录可配置（R1 存储位置中心）——默认 ~/.omnix/backups，可指到 D 盘等。
+    let backup_dir = crate::storage::backups_dir().join(format!(
         "skill_originals_{}",
         chrono::Local::now().format("%Y%m%d_%H%M%S")
     ));
+    let protected_roots = [
+        crate::storage::omnix_root(),
+        crate::storage::skills_dir(),
+        crate::storage::backups_dir(),
+    ];
 
     let engine = SyncEngine::new(Arc::clone(&db));
     let report = engine.scan_disk_skills();
@@ -176,17 +183,14 @@ pub fn cleanup_scattered_skills(db: State<'_, Arc<DbManager>>) -> Result<Cleanup
         .chain(report.unmanaged.iter())
     {
         if item.class == ScanClass::Orphaned || !known.contains(&item.name) {
-            // Unmanaged + not in DB means "collect" hasn't run for it — don't
-            // delete something we never captured.
             continue;
         }
-        // item.path is <tool_base>/<name>/SKILL.md — operate on its parent dir.
         let skill_dir = match Path::new(&item.path).parent() {
             Some(p) => p.to_path_buf(),
             None => continue,
         };
-        // Safety: never touch the central store or anything else in ~/.omnix.
-        if skill_dir.starts_with(&omnix_root) || !skill_dir.exists() {
+        // Safety: never touch the central store, backups, or anything in ~/.omnix.
+        if protected_roots.iter().any(|root| skill_dir.starts_with(root)) || !skill_dir.exists() {
             continue;
         }
         let dest = backup_dir.join(&item.tool_id).join(&item.name);
@@ -194,7 +198,6 @@ pub fn cleanup_scattered_skills(db: State<'_, Arc<DbManager>>) -> Result<Cleanup
             errors.push(format!("{} ({}): {}", item.name, item.tool_id, e));
             continue;
         }
-        // The tool-side copy is gone — drop its sync-target record too.
         if let Ok(conn) = db.get_connection() {
             let _ = conn.execute(
                 "DELETE FROM skill_targets WHERE skill_id = ?1 AND tool = ?2",
@@ -211,8 +214,8 @@ pub fn cleanup_scattered_skills(db: State<'_, Arc<DbManager>>) -> Result<Cleanup
     })
 }
 
-/// Copy `src` dir into `dest` (recursively), then delete `src`. A symlinked
-/// skill dir is just removed (its content lives in the central store already).
+/// Copy `src` dir into `dest`, then delete `src`. A symlinked skill dir is just
+/// removed (its content lives in the central store already).
 fn backup_and_remove(src: &Path, dest: &Path) -> Result<(), String> {
     let meta = std::fs::symlink_metadata(src).map_err(|e| e.to_string())?;
     if meta.file_type().is_symlink() {
@@ -289,8 +292,7 @@ fn build_review_prompt(name: &str, content: &str, official: &[(String, String)])
     )
 }
 
-/// AI 审核一个技能：score + verdict + summary 落库。不改变池归属——
-/// 用户在前端看审核结果后自行决定是否晋升正式池。
+/// AI 审核一个技能：score + verdict + summary + 问题/改法 落库。不改变池归属。
 #[tauri::command]
 pub async fn review_skill_ai(
     name: String,
@@ -322,11 +324,295 @@ pub async fn review_skill_ai(
     let conn = db.get_connection().map_err(|e| e.to_string())?;
     conn.execute(
         "UPDATE skills SET review_score = ?1, review_verdict = ?2, review_summary = ?3,
-                reviewed_at = CURRENT_TIMESTAMP WHERE name = ?4",
-        params![review.score, review.verdict, review.summary, name],
+                review_problems = ?4, review_improve = ?5,
+                reviewed_at = CURRENT_TIMESTAMP WHERE name = ?6",
+        params![
+            review.score,
+            review.verdict,
+            review.summary,
+            serde_json::to_string(&review.problems).unwrap_or_else(|_| "[]".into()),
+            review.improve,
+            name
+        ],
     )
     .map_err(|e| e.to_string())?;
     Ok(review)
+}
+
+/// 生成中文摘要（R2「看得懂」）：这技能是干嘛的、什么时候有用。落库缓存。
+#[tauri::command]
+pub async fn summarize_skill_ai(
+    name: String,
+    chat_model: String,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<String, String> {
+    let content = read_skill_content(&db, &name)?;
+    let capped: String = content.chars().take(12000).collect();
+    let prompt = format!(
+        "用中文向一个忙碌的用户解释下面这个 AI 技能。输出 3-5 句话：\
+         ①它让 AI 会做什么；②什么场景下有用；③内容是否具体可执行（还是空洞口号）。\
+         直接输出这几句话，不要标题、列表或客套。\n\n## 技能：{name}\n{capped}"
+    );
+    let reply = knowledge::chat_once(&db, &chat_model, &prompt).await?;
+    let summary = reply.trim().to_string();
+    let conn = db.get_connection().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE skills SET summary_zh = ?1 WHERE name = ?2",
+        params![summary, name],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(summary)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillReformProposal {
+    pub new_content: String,
+    pub explanation: String,
+}
+
+/// AI 改造（R2「改得动」）：基于审核意见 + 用户指令重写技能，只生成不落盘——
+/// 用户在前端预览后调 `apply_skill_reform` 才生效。
+#[tauri::command]
+pub async fn reform_skill_ai(
+    name: String,
+    chat_model: String,
+    instruction: Option<String>,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<SkillReformProposal, String> {
+    let content = read_skill_content(&db, &name)?;
+    let (summary, problems, improve): (String, String, String) = {
+        let conn = db.get_connection().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT review_summary, review_problems, review_improve FROM skills WHERE name = ?1",
+            params![name],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap_or_default()
+    };
+    let review_block = if summary.is_empty() && improve.is_empty() {
+        "（尚未审核——按下方通用标准改造）".to_string()
+    } else {
+        format!("总评：{summary}\n问题：{problems}\n改造建议：{improve}")
+    };
+    let user_block = instruction
+        .filter(|i| !i.trim().is_empty())
+        .map(|i| format!("\n## 用户额外要求\n{i}\n"))
+        .unwrap_or_default();
+    let capped: String = content.chars().take(16000).collect();
+    let prompt = format!(
+        "你是 AI 技能工程师。把下面的技能改造成一个「强技能」：内容具体、步骤可执行、\
+         有清晰的适用场景与反例，删掉空洞口号与凑数内容，宁精不多。保留原技能真正有价值的部分。\
+         用与原技能相同的主要语言输出。\n\n## 审核意见\n{review_block}\n{user_block}\
+         \n## 原技能：{name}\n{capped}\n\n\
+         输出格式（严格遵守）：第一行开始直接输出改造后的完整 SKILL.md 内容；\
+         最后另起一行输出 `===EXPLANATION===`，其后用中文 2-4 句说明你改了什么、为什么。"
+    );
+    let reply = knowledge::chat_once(&db, &chat_model, &prompt).await?;
+    let (new_content, explanation) = match reply.split_once("===EXPLANATION===") {
+        Some((c, e)) => (c.trim().to_string(), e.trim().to_string()),
+        None => (reply.trim().to_string(), String::new()),
+    };
+    if new_content.len() < 50 {
+        return Err("改造结果太短，可能生成失败——换个模型再试".to_string());
+    }
+    Ok(SkillReformProposal {
+        new_content,
+        explanation,
+    })
+}
+
+/// Write reformed content into the central store. Old content is backed up to
+/// the configurable backups dir; review state resets and the skill returns to
+/// the 待定池 (content changed ⇒ must pass review again — the hard gate).
+#[tauri::command]
+pub fn apply_skill_reform(
+    name: String,
+    new_content: String,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<(), String> {
+    let conn = db.get_connection().map_err(|e| e.to_string())?;
+    let dir: String = conn
+        .query_row(
+            "SELECT CASE WHEN central_path != '' THEN central_path ELSE file_path END
+             FROM skills WHERE name = ?1",
+            params![name],
+            |r| r.get(0),
+        )
+        .map_err(|_| format!("技能不存在: {name}"))?;
+    let dir = PathBuf::from(dir);
+
+    let backup = crate::storage::backups_dir()
+        .join("skill_reforms")
+        .join(format!(
+            "{}_{}",
+            name,
+            chrono::Local::now().format("%Y%m%d_%H%M%S")
+        ));
+    if dir.exists() {
+        let _ = copy_dir_recursive(&dir, &backup);
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    for file in [
+        "SKILL.md".to_string(),
+        format!("{name}_core.md"),
+        format!("{name}_minimal.md"),
+        format!("{name}_comprehensive.md"),
+    ] {
+        std::fs::write(dir.join(file), &new_content).map_err(|e| format!("写入失败: {e}"))?;
+    }
+
+    let description = new_content
+        .lines()
+        .find(|l| l.starts_with('#'))
+        .map(|l| l.trim_start_matches('#').trim().to_string())
+        .unwrap_or_default();
+    conn.execute(
+        "UPDATE skills SET
+            description = CASE WHEN ?1 != '' THEN ?1 ELSE description END,
+            pool = 'pending', review_score = NULL, review_verdict = NULL,
+            review_summary = '', review_problems = '[]', review_improve = '',
+            reviewed_at = NULL, summary_zh = '', updated_at = CURRENT_TIMESTAMP
+         WHERE name = ?2",
+        params![description, name],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillFusionProposal {
+    pub name: String,
+    pub description: String,
+    pub content: String,
+    pub explanation: String,
+}
+
+/// AI 融合：把多个技能合成一个更强的（R2）。只生成不落盘。
+#[tauri::command]
+pub async fn fuse_pool_skills_ai(
+    names: Vec<String>,
+    chat_model: String,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<SkillFusionProposal, String> {
+    if names.len() < 2 {
+        return Err("至少选择 2 个技能进行融合".to_string());
+    }
+    let mut blocks = String::new();
+    for n in &names {
+        let c = read_skill_content(&db, n)?;
+        let capped: String = c.chars().take(6000).collect();
+        blocks.push_str(&format!("\n## 源技能：{n}\n{capped}\n"));
+    }
+    let prompt = format!(
+        "你是 AI 技能工程师。把下面 {} 个技能融合成一个更强的单一技能：\
+         合并重叠部分、保留各自独有的干货、去掉空洞内容，结构清晰可执行。\
+         用源技能的主要语言输出。\n{blocks}\n\
+         输出格式（严格遵守）：\
+         第一行 `NAME: <新技能英文短名，小写下划线>`；\
+         第二行 `DESC: <一句中文描述>`；\
+         第三行起输出完整 SKILL.md；\
+         最后另起一行 `===EXPLANATION===`，其后中文 2-3 句说明融合取舍。",
+        names.len()
+    );
+    let reply = knowledge::chat_once(&db, &chat_model, &prompt).await?;
+    let (body, explanation) = match reply.split_once("===EXPLANATION===") {
+        Some((c, e)) => (c.trim().to_string(), e.trim().to_string()),
+        None => (reply.trim().to_string(), String::new()),
+    };
+    let mut lines = body.lines();
+    let name_line = lines.next().unwrap_or_default();
+    let desc_line = lines.next().unwrap_or_default();
+    let name = name_line
+        .trim_start_matches("NAME:")
+        .trim()
+        .replace(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-', "_");
+    let description = desc_line.trim_start_matches("DESC:").trim().to_string();
+    let content: String = lines.collect::<Vec<_>>().join("\n").trim().to_string();
+    if name.is_empty() || content.len() < 50 {
+        return Err("融合结果格式不对——换个模型再试".to_string());
+    }
+    Ok(SkillFusionProposal {
+        name,
+        description,
+        content,
+        explanation,
+    })
+}
+
+/// Persist a fusion proposal as a NEW pending-pool skill in the central store.
+#[tauri::command]
+pub fn apply_pool_fusion(
+    name: String,
+    description: String,
+    content: String,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<(), String> {
+    let conn = db.get_connection().map_err(|e| e.to_string())?;
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM skills WHERE name = ?1",
+            params![name],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if exists > 0 {
+        return Err(format!("技能 {name} 已存在——换个名字"));
+    }
+    let dir = crate::storage::skills_dir().join(&name);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    for file in [
+        "SKILL.md".to_string(),
+        format!("{name}_core.md"),
+        format!("{name}_minimal.md"),
+        format!("{name}_comprehensive.md"),
+    ] {
+        std::fs::write(dir.join(file), &content).map_err(|e| format!("写入失败: {e}"))?;
+    }
+    let dir_str = dir.to_string_lossy().to_string();
+    conn.execute(
+        "INSERT INTO skills (name, description, file_path, profile, is_active, dependencies,
+                             source_type, source_ref, central_path)
+         VALUES (?1, ?2, ?3, 'Core', 1, '[]', 'fusion', 'omnix:fusion', ?3)",
+        params![name, description, dir_str],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Delete a skill completely: central files + DB row (+ sync targets via
+/// ON DELETE CASCADE). Central dir is backed up first.
+#[tauri::command]
+pub fn delete_pool_skill(name: String, db: State<'_, Arc<DbManager>>) -> Result<(), String> {
+    let conn = db.get_connection().map_err(|e| e.to_string())?;
+    let dir: Option<String> = conn
+        .query_row(
+            "SELECT CASE WHEN central_path != '' THEN central_path ELSE file_path END
+             FROM skills WHERE name = ?1",
+            params![name],
+            |r| r.get(0),
+        )
+        .ok();
+    if let Some(dir) = dir {
+        let dir = PathBuf::from(dir);
+        if dir.exists() && dir.starts_with(crate::storage::skills_dir()) {
+            let backup = crate::storage::backups_dir()
+                .join("skill_deleted")
+                .join(format!(
+                    "{}_{}",
+                    name,
+                    chrono::Local::now().format("%Y%m%d_%H%M%S")
+                ));
+            let _ = copy_dir_recursive(&dir, &backup);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+    let changed = conn
+        .execute("DELETE FROM skills WHERE name = ?1", params![name])
+        .map_err(|e| e.to_string())?;
+    if changed == 0 {
+        return Err(format!("技能不存在: {name}"));
+    }
+    Ok(())
 }
 
 /// Move a skill between pools. The review gate lives here: promotion to the

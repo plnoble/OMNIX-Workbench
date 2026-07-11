@@ -1,5 +1,5 @@
 /**
- * WriteTab — Markdown writing workspace (DeepSeek-GUI Write mode inspired).
+ * WriteTab — Markdown writing workspace.
  *
  * A "space" is a folder of `.md` files. Left: space selector + file tree.
  * Center: a Source / Split / Preview editor with save + HTML export. Selecting

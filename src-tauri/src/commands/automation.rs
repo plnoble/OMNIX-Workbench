@@ -8,7 +8,7 @@ use crate::skill_dag::{SkillGraph, SkillEdge, EdgeType, SkillSearchResult, SetVa
 use super::*;
 
 // ══════════════════════════════════════════════════
-// Skill DAG (SkillDAG inspired)
+// Skill DAG
 // ══════════════════════════════════════════════════
 
 /// Search skills with conflict awareness
@@ -143,7 +143,7 @@ fn persist_edge_to_db(db: &DbManager, source: &str, target: &str, edge_type: &st
 }
 
 // ══════════════════════════════════════════════════
-// Async Agent Mailbox (AionUi inspired)
+// Async Agent Mailbox
 // ══════════════════════════════════════════════════
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -237,7 +237,7 @@ pub fn mark_mail_read(
 }
 
 // ══════════════════════════════════════════════════
-// Enhanced Task Board with Dependency Tracking (AionUi inspired)
+// Enhanced Task Board with Dependency Tracking
 // ══════════════════════════════════════════════════
 
 /// Update task with blocks dependency (reverse of blocked_by)
@@ -297,10 +297,10 @@ pub fn auto_unblock_tasks(
 }
 
 // ══════════════════════════════════════════════════
-// YOLO Full-Auto Mode (AionUi inspired)
+// YOLO Full-Auto Mode
 // ══════════════════════════════════════════════════
 
-/// YOLO mode permission levels (AionUi graded permission design)
+/// YOLO mode permission levels (graded permissions)
 /// - "off":    All tool calls require manual confirmation
 /// - "safe":   Auto-approve read-only/safe operations, confirm moderate, block dangerous
 /// - "moderate": Auto-approve safe + moderate operations, confirm dangerous
@@ -445,7 +445,7 @@ pub fn set_yolo_mode(enabled: bool, db: State<'_, Arc<DbManager>>) -> Result<(),
 }
 
 // ══════════════════════════════════════════════════
-// Persistent Cron with Timezone + Missed Detection (AionUi inspired)
+// Persistent Cron with Timezone + Missed Detection
 // ══════════════════════════════════════════════════
 
 /// Get persistent cron tasks with timezone support
@@ -542,7 +542,7 @@ pub fn delete_persistent_cron(
 }
 
 // ══════════════════════════════════════════════════
-// Skill Rule Generator (AionUi SkillRuleGenerator inspired)
+// Skill Rule Generator
 // ══════════════════════════════════════════════════
 
 /// Scan workspace files suitable for skill rule generation
@@ -662,7 +662,7 @@ pub fn generate_skill_from_files(
 }
 
 // ══════════════════════════════════════════════════
-// Conversation Skills Indicator (AionUi inspired)
+// Conversation Skills Indicator
 // ══════════════════════════════════════════════════
 
 /// Get skills loaded in a specific conversation
@@ -701,7 +701,7 @@ pub fn get_conversation_skills(
 }
 
 // ══════════════════════════════════════════════════
-// Tool Call Confirmation Queue (AionUi inspired)
+// Tool Call Confirmation Queue
 // ══════════════════════════════════════════════════
 
 /// Pending tool call confirmation

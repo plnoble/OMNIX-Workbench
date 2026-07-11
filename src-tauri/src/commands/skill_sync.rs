@@ -348,9 +348,8 @@ pub fn export_skill_package(
         return Err(format!("Skill directory not found: {}", file_path_str));
     }
 
-    // Ensure exports directory exists
-    let home = dirs::home_dir().ok_or("Cannot determine home directory")?;
-    let exports_dir = home.join(".omnix").join("exports");
+    // Ensure exports directory exists (R1: user-configurable)
+    let exports_dir = crate::storage::exports_dir();
     std::fs::create_dir_all(&exports_dir).map_err(|e| e.to_string())?;
 
     let zip_path = exports_dir.join(format!("{}.skill", skill_name));
@@ -417,9 +416,8 @@ pub fn import_skill_package(
         .unwrap_or_else(|| path.file_stem().expect("import path should have a file stem").to_string_lossy().to_string());
     let description = metadata["description"].as_str().unwrap_or("Imported skill").to_string();
 
-    // Create central store directory
-    let home = dirs::home_dir().ok_or("Cannot determine home directory")?;
-    let skills_dir = home.join(".omnix").join("skills");
+    // Create central store directory (R1: user-configurable)
+    let skills_dir = crate::storage::skills_dir();
     std::fs::create_dir_all(&skills_dir).map_err(|e| e.to_string())?;
 
     let central_dir = skills_dir.join(&skill_name);
@@ -479,8 +477,7 @@ pub fn export_all_skills(
     let mut exported = Vec::new();
 
     // Reuse the export logic directly (not through tauri command dispatch)
-    let home = dirs::home_dir().ok_or("Cannot determine home directory")?;
-    let exports_dir = home.join(".omnix").join("exports");
+    let exports_dir = crate::storage::exports_dir();
     std::fs::create_dir_all(&exports_dir).map_err(|e| e.to_string())?;
 
     for name in &names {
@@ -554,7 +551,8 @@ pub fn list_skill_packages() -> Vec<String> {
         Some(h) => h,
         None => return Vec::new(),
     };
-    let exports_dir = home.join(".omnix").join("exports");
+    let _ = home;
+    let exports_dir = crate::storage::exports_dir();
     if !exports_dir.exists() {
         return Vec::new();
     }

@@ -173,7 +173,7 @@ export const upstreamAccountApi = {
     invoke<string>("get_active_upstream_account", { agentName }),
 };
 
-// F-C: local model fit ranking (whichllm inspired)
+// F-C: local model fit ranking
 export interface HardwareInfo { cpu_cores: number; cpu_brand: string; ram_gb: number; }
 export interface ModelRecommendation {
   name: string; family: string; params_b: number; best_quant: string;
@@ -183,6 +183,48 @@ export const localModelApi = {
   detectHardware: () => invoke<HardwareInfo>("detect_hardware"),
   recommend: (budgetGb: number) =>
     invoke<ModelRecommendation[]>("recommend_local_models", { budgetGb }),
+};
+
+// ── Storage locations (R1 存储位置中心) ──
+
+export interface StorageLocation {
+  key: string;
+  label: string;
+  path: string;
+  default_path: string;
+  is_default: boolean;
+}
+export interface SkillsMigrationReport {
+  moved: number;
+  new_dir: string;
+  old_dir: string;
+  errors: string[];
+}
+export const storageApi = {
+  getConfig: () => invoke<StorageLocation[]>("get_storage_config"),
+  setDir: (key: string, path: string) =>
+    invoke<void>("set_storage_dir", { key, path }),
+  migrateSkillsStore: (newDir: string) =>
+    invoke<SkillsMigrationReport>("migrate_skills_store", { newDir }),
+};
+
+// ── Agent installation management (R3 统一安装) ──
+
+export interface AgentInstallation {
+  path: string;
+  version: string;
+  kind: "managed" | "npm_global" | "other" | string;
+  is_active: boolean;
+}
+export interface AgentInstallGroup {
+  agent: string;
+  managed_root: string;
+  installations: AgentInstallation[];
+}
+export const agentInstallApi = {
+  scan: () => invoke<AgentInstallGroup[]>("scan_agent_installations"),
+  remove: (agent: string, kind: string) =>
+    invoke<void>("remove_agent_installation", { agent, kind }),
 };
 
 // ── Skill pool governance (#3 技能池: 待定/审核/正式 + 网关直调) ──
@@ -199,8 +241,21 @@ export interface SkillPoolItem {
   review_score: number | null;
   review_verdict: "pass" | "needs_work" | "reject" | null;
   review_summary: string;
+  review_problems: string[];
+  review_improve: string;
+  summary_zh: string;
   reviewed_at: string | null;
   updated_at: string;
+}
+export interface SkillReformProposal {
+  new_content: string;
+  explanation: string;
+}
+export interface SkillFusionProposal {
+  name: string;
+  description: string;
+  content: string;
+  explanation: string;
 }
 export interface CollectReport {
   tools_scanned: number;
@@ -236,6 +291,21 @@ export const skillPoolApi = {
   setPool: (name: string, pool: "pending" | "official") =>
     invoke<void>("set_skill_pool", { name, pool }),
   content: (name: string) => invoke<string>("get_skill_pool_content", { name }),
+  summarize: (name: string, chatModel: string) =>
+    invoke<string>("summarize_skill_ai", { name, chatModel }),
+  reform: (name: string, chatModel: string, instruction?: string) =>
+    invoke<SkillReformProposal>("reform_skill_ai", {
+      name,
+      chatModel,
+      instruction: instruction ?? null,
+    }),
+  applyReform: (name: string, newContent: string) =>
+    invoke<void>("apply_skill_reform", { name, newContent }),
+  fuse: (names: string[], chatModel: string) =>
+    invoke<SkillFusionProposal>("fuse_pool_skills_ai", { names, chatModel }),
+  applyFusion: (name: string, description: string, content: string) =>
+    invoke<void>("apply_pool_fusion", { name, description, content }),
+  remove: (name: string) => invoke<void>("delete_pool_skill", { name }),
 };
 
 // ── Presentations / PPT panel (结构化幻灯模型，preview == export) ──
@@ -308,7 +378,7 @@ export const slidesApi = {
     invoke<string>("export_deck_pdf", { modelJson }),
 };
 
-// ── Write (Markdown writing workspace) — DeepSeek-GUI inspired ──
+// ── Write (Markdown writing workspace)──
 
 export interface WriteSpace {
   name: string;
@@ -339,7 +409,7 @@ export const writeApi = {
     invoke<string>("write_export_html", { spacePath, relativePath, html }),
 };
 
-// ── Autopilots (scheduled agent work) — Multica inspired ──
+// ── Autopilots (scheduled agent work)──
 
 export interface Autopilot {
   id: string;
@@ -387,7 +457,7 @@ export const autopilotApi = {
   listRuns: (autopilotId: string) => invoke<AutopilotRunInfo[]>("autopilot_list_runs", { autopilotId }),
 };
 
-// ── SDD (requirement → plan) — DeepSeek-GUI inspired ──
+// ── SDD (requirement → plan)──
 
 export interface PlanTodo {
   line_index: number;
@@ -434,7 +504,7 @@ export const conversationApi = {
     invoke("create_conversation", params),
   delete: (id: string) => invoke("delete_conversation", { conversationId: id }),
   archive: (id: string) => invoke("archive_conversation", { conversationId: id }),
-  // Long-term goal (/goal) — DeepSeek-GUI inspired
+  // Long-term goal (/goal)
   getGoal: (conversationId: string) =>
     invoke<ConversationGoal | null>("get_conversation_goal", { conversationId }),
   setGoal: (conversationId: string, objective: string) =>
@@ -630,7 +700,7 @@ export const diagnosticsApi = {
 
 export const remoteApi = {
   getInfo: () => invoke<RemoteAccessInfo>("get_remote_access_info"),
-  /** Enable/disable LAN binding for remote phone access (AionUi-style); restarts the proxy. */
+  /** Enable/disable LAN binding for remote phone access; restarts the proxy. */
   setAccess: (enabled: boolean) => invoke<void>("set_remote_access", { enabled }),
 };
 
@@ -724,7 +794,7 @@ export const mcpApi = {
   delete: (id: string) => invoke("delete_mcp_server", { id }),
 };
 
-// ── Workspace checkpoints + diff review (Claude Code / Codex desktop inspired) ──
+// ── Workspace checkpoints + diff review ──
 export interface Checkpoint {
   id: string; workspace_path: string; session_id: string; label: string;
   vcs: string; ref_name: string; created_at: string; skipped: boolean;
@@ -745,7 +815,7 @@ export const checkpointApi = {
     invoke<void>("revert_file", { checkpointId, path }),
 };
 
-// ── Parallel sessions via Git worktrees (Codex / Claude Code desktop inspired) ──
+// ── Parallel sessions via Git worktrees ──
 export interface Worktree {
   id: string; repo_path: string; worktree_path: string; branch: string;
   session_id: string; label: string; created_at: string;
@@ -763,7 +833,7 @@ export const worktreeApi = {
     invoke<MergeResult>("merge_worktree", { worktreeId }),
 };
 
-// ── User-state hooks (Claude Code hooks inspired): event → action rules ──
+// ── User-state hooks: event → action rules ──
 export interface Hook {
   id: string; name: string; event: string; matcher: string;
   action_type: string; action_payload: string; enabled: boolean;
@@ -827,7 +897,7 @@ export const subAgentApi = {
   remove: (id: string) => invoke<void>("delete_subagent", { id }),
 };
 
-// ── MCP sync to Agent native config (AionUi / cc-switch inspired) ──
+// ── MCP sync to Agent native config ──
 export interface McpSyncReport { agent: string; synced: string[]; skipped: string[]; backup_path: string | null; }
 export interface AgentMcpState { agent: string; config_path: string; config_exists: boolean; server_names: string[]; }
 export const mcpSyncApi = {
@@ -1016,7 +1086,7 @@ export const skillSyncApi = {
     invoke<number>("cleanup_skill_cache"),
 };
 
-// ── Agent Templates (Multica-inspired) ───────────────
+// ── Agent Templates ───────────────
 
 export interface TemplateSkill {
   name: string;
@@ -1056,7 +1126,7 @@ export const customAssistantApi = {
   remove: (slug: string) => invoke<void>("delete_custom_assistant", { slug }),
 };
 
-// ── Skills Lock File (Multica-inspired) ──────────────
+// ── Skills Lock File ──────────────
 
 export interface SkillLockEntry {
   source: string;
@@ -1081,7 +1151,7 @@ export const skillLockApi = {
   verify: () => invoke<string[]>("verify_skill_lock"),
 };
 
-// ── Agent Execution Environment (Multica-inspired) ───
+// ── Agent Execution Environment ───
 
 export interface AgentExecConfig {
   agent_name: string;
@@ -1104,7 +1174,7 @@ export const agentExecApi = {
     invoke("save_agent_exec_config", { config }),
 };
 
-// ── Autopilot (Multica-inspired) ─────────────────────
+// ── Autopilot ─────────────────────
 
 export interface AutopilotConfig {
   task_id: string;
@@ -1132,7 +1202,7 @@ export const autopilotConfigApi = {
     invoke<string>("save_autopilot_result_to_kb", { taskId, resultContent }),
 };
 
-// ── Workspace GC (Multica-inspired) ──────────────────
+// ── Workspace GC ──────────────────
 
 export interface WorkspaceGcConfig {
   enabled: boolean;
@@ -1159,7 +1229,7 @@ export const workspaceGcApi = {
   run: () => invoke<GcResult>("run_workspace_gc"),
 };
 
-// ── Request Logs & Usage Stats (New API/Sub2API inspired)
+// ── Request Logs & Usage Stats
 
 export interface RequestLogEntry {
   id: number;
@@ -1238,7 +1308,7 @@ export const requestLogApi = {
     invoke<number>("cleanup_request_logs", { keepDays }),
 };
 
-// ── Platform Health (New API/Sub2API inspired) ───────
+// ── Platform Health ───────
 
 export interface PlatformHealth {
   id: string;
@@ -1267,7 +1337,7 @@ export const platformHealthApi = {
     invoke("update_platform_routing", { platformId, weight, priority }),
 };
 
-// ── Upstream Model Auto-Sync (New API inspired) ──────
+// ── Upstream Model Auto-Sync ──────
 
 export interface ModelSyncResult {
   platform_id: string;
@@ -1294,7 +1364,7 @@ export const modelSyncApi = {
     invoke<ModelSyncResult[]>("sync_all_upstream_models"),
 };
 
-// ── Platform Health Check (New API/Sub2API inspired) ──
+// ── Platform Health Check ──
 
 export interface HealthCheckResult {
   platform_id: string;
@@ -1311,7 +1381,7 @@ export const healthCheckApi = {
     invoke<HealthCheckResult[]>("check_all_platform_health"),
 };
 
-// ── Agent Task Lifecycle (Multica inspired) ──────────
+// ── Agent Task Lifecycle ──────────
 
 export interface TaskInfo {
   id: string;
@@ -1363,7 +1433,7 @@ export const taskLifecycleApi = {
     invoke<TaskStats>("get_task_stats"),
 };
 
-// ── Skill Compound Interest (Multica inspired) ───────
+// ── Skill Compound Interest ───────
 
 export const skillCompoundApi = {
   /** Record a skill usage (boosts priority on success) */
@@ -1383,7 +1453,7 @@ export const skillCompoundApi = {
     }>>("get_top_skills_by_usage", { limit }),
 };
 
-// ── Odysseus-Inspired APIs ────────────────────────────
+// ── Security & safety APIs ────────────────────────────
 
 // Prompt Injection Guard
 export const promptGuardApi = {
@@ -1515,7 +1585,7 @@ export const codeAnalysisApi = {
   analyze: (path: string) => invoke<CodebaseAnalysis>("analyze_codebase", { path }),
 };
 
-// Config Backup (ZCF inspired)
+// Config Backup
 export interface BackupEntry {
   name: string; path: string; size_bytes: number; created_at: number;
 }
@@ -1528,13 +1598,13 @@ export const configBackupApi = {
     invoke("restore_backup", { backupPath, targetPath }),
 };
 
-// API Provider Preset (ZCF inspired)
+// API Provider Preset
 export const apiPresetApi = {
   apply: (presetId: string, apiKey: string) =>
     invoke<string>("apply_api_preset", { presetId, apiKey }),
 };
 
-// Architecture Graph (Understand-Anything inspired)
+// Architecture Graph
 export type NodeType = "file" | "directory" | "module" | "function" | "class" | "interface" | "component" | "hook" | "route" | "config" | "test" | "style" | "asset" | "domain" | "flow" | "external";
 export type EdgeType = "contains" | "imports" | "exports" | "calls" | "extends" | "implements" | "depends_on" | "belongs_to" | "configures" | "tests" | "styles";
 export type ArchLayer = "api" | "service" | "data" | "ui" | "utility" | "config" | "test" | "infrastructure" | "unknown";
@@ -1562,7 +1632,7 @@ export const architectureApi = {
   getIgnorePatterns: (projectPath: string) => invoke<string[]>("get_ignore_patterns", { projectPath }),
 };
 
-// Skill Library Features (Skill Library inspired)
+// Skill Library Features
 export interface SkillMatch {
   skill_name: string; relevance_score: number;
   matched_keywords: string[]; content_preview: string;
@@ -1686,7 +1756,7 @@ export const skillSetApi = {
     invoke("sync_skill_set_to_tools", { skillSetId, toolIds, mode, strategy }),
 };
 
-// DeepSeek-GUI Inspired APIs
+// Session control APIs
 export interface FileChange {
   file_path: string; change_type: string;
   old_content: string | null; new_content: string | null;
@@ -1705,7 +1775,7 @@ export const tokenEconomyApi = {
     invoke<FileChange>("detect_file_change", { filePath, oldContent, newContent }),
 };
 
-// Agent-Platform Bindings (CC Switch inspired)
+// Agent-Platform Bindings
 export interface AgentPlatformBinding {
   agent_name: string; platform_id: string; platform_name: string;
   model_name: string | null; binding_kind: "default" | "builtin" | "omnix";
@@ -1735,7 +1805,7 @@ export const agentBindingApi = {
     invoke("toggle_agent_binding", { agentName }),
 };
 
-// Circuit Breaker & Session Usage (CC Switch inspired)
+// Circuit Breaker & Session Usage
 export type CircuitState = "Closed" | "Open" | "HalfOpen";
 export interface CircuitBreakerStatus {
   platform_id: string; state: CircuitState; consecutive_failures: number;
@@ -1751,7 +1821,7 @@ export const circuitBreakerApi = {
     invoke<number>("estimate_model_cost", { model, promptTokens, completionTokens }),
 };
 
-// OAuth Auth Center (sub2api inspired) — use your subscriptions in agents
+// OAuth Auth Center — use your subscriptions in agents
 export type OAuthProvider = "anthropic_claude" | "openai_codex" | "google_gemini";
 export interface OAuthStartResult {
   authorize_url: string; state: string; manual_paste: boolean; redirect_uri: string;
@@ -1770,7 +1840,7 @@ export const oauthApi = {
   refreshAccount: (id: string) => invoke<void>("oauth_refresh_account", { id }),
 };
 
-// CLI 配置接管 (cc-switch inspired) — point native CLIs at a chosen target
+// CLI 配置接管 — point native CLIs at a chosen target
 export interface TakeoverTarget { kind: "gateway" | "platform" | "oauth"; ref_id?: string; model?: string; }
 export interface TakeoverReport { agent: string; config_path: string; applied: boolean; backup_path: string | null; detail: string; }
 export interface AgentTakeoverState { agent: string; config_path: string; config_exists: boolean; current_base_url: string | null; has_backup: boolean; }
@@ -1781,7 +1851,7 @@ export const cliTakeoverApi = {
   revert: (agent: string) => invoke<string>("cli_takeover_revert", { agent }),
 };
 
-// Skill DAG (SkillDAG inspired)
+// Skill DAG
 export type DagEdgeType = "depends_on" | "specializes" | "composes_with" | "similar_to" | "conflicts_with";
 export interface ConflictPair { skill_a: string; skill_b: string; reason: string; }
 export interface SkillSearchResult { matches: string[]; neighbors: string[]; conflicts: ConflictPair[]; }
@@ -1802,7 +1872,7 @@ export const skillDagApi = {
     invoke<string>("remove_skill_edge", { source, target, edgeType }),
 };
 
-// Async Agent Mailbox (AionUi inspired)
+// Async Agent Mailbox
 export interface MailMessage {
   id: string; from_agent: string; to_agent: string;
   subject: string; body: string; read: boolean; created_at: string;
@@ -1816,7 +1886,7 @@ export const mailboxApi = {
     invoke("mark_mail_read", { messageIds }),
 };
 
-// Enhanced Task Dependencies (AionUi inspired)
+// Enhanced Task Dependencies
 export const taskDependencyApi = {
   setBlocks: (taskId: string, blocksIds: string[]) =>
     invoke("set_task_blocks", { taskId, blocksIds }),
@@ -1824,7 +1894,7 @@ export const taskDependencyApi = {
     invoke<string[]>("auto_unblock_tasks", { completedTaskId }),
 };
 
-// YOLO Full-Auto Mode (AionUi inspired)
+// YOLO Full-Auto Mode
 export interface YoloModeConfig {
   /** Permission level: "off" | "safe" | "moderate" | "full" */
   level: string;
@@ -1850,7 +1920,7 @@ export const yoloApi = {
     ),
 };
 
-// Persistent Cron (AionUi inspired)
+// Persistent Cron
 export interface PersistentCronTask {
   id: string; name: string; schedule: string; timezone: string;
   agent_name: string | null; prompt_template: string | null;
@@ -1864,7 +1934,7 @@ export const persistentCronApi = {
   delete: (taskId: string) => invoke("delete_persistent_cron", { taskId }),
 };
 
-// Skill Rule Generator (AionUi inspired)
+// Skill Rule Generator
 export interface WorkspaceFile {
   name: string; path: string; relativePath: string; extension: string; size: number;
 }
@@ -1878,13 +1948,13 @@ export const skillGeneratorApi = {
     invoke<SkillDraft>("generate_skill_from_files", { skillName, filePaths, workspacePath }),
 };
 
-// Conversation Skills Indicator (AionUi inspired)
+// Conversation Skills Indicator
 export const conversationSkillsApi = {
   get: (conversationId: string) =>
     invoke<Array<{ name: string; description: string; category: string | null; usage_count: number; priority_score: number }>>("get_conversation_skills", { conversationId }),
 };
 
-// Tool Call Confirmation Queue (AionUi inspired)
+// Tool Call Confirmation Queue
 export interface ToolCallConfirmation {
   id: string; session_id: string; tool_name: string;
   tool_input: string; status: string; created_at: string;
