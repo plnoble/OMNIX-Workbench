@@ -6,6 +6,7 @@
 //! - GPU simulation for hardware planning
 //! - Curated model database with quality ratings
 
+use crate::proc::NoWindow;
 use serde::{Deserialize, Serialize};
 
 // ══════════════════════════════════════════════════
@@ -257,6 +258,7 @@ pub fn detect_hardware() -> HardwareInfo {
 fn detect_gpu() -> Option<GpuInfo> {
     let output = std::process::Command::new("nvidia-smi")
         .args(["--query-gpu=name,memory.total", "--format=csv,noheader,nounits"])
+        .no_window()
         .output().ok()?;
     if !output.status.success() { return None; }
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -275,6 +277,7 @@ fn detect_ram_mb() -> u32 {
     {
         std::process::Command::new("powershell")
             .args(["-Command", "(Get-CimInstance Win32_OperatingSystem).TotalVisibleMemorySize"])
+            .no_window()
             .output().ok()
             .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u32>().ok())
             .map(|kb| kb / 1024)

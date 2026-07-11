@@ -9,6 +9,7 @@
 //! `Vec` and drops the DB connection BEFORE running any action or spawning a
 //! process — no `MutexGuard` is ever held across a spawn/await.
 
+use crate::proc::NoWindow;
 use std::process::Command;
 use std::sync::Arc;
 
@@ -152,6 +153,7 @@ fn run_action(
                 c
             };
             command
+                .no_window()
                 .env("OMNIX_HOOK_NAME", hook_name)
                 .env("OMNIX_SESSION_ID", session_id)
                 .env("OMNIX_EVENT", event)

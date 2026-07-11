@@ -31,6 +31,8 @@ import {
   X,
 } from "lucide-react";
 import { WorkspaceCheckpoints } from "@/components/WorkspaceCheckpoints";
+import { DecisionBlock } from "@/components/DecisionBlock";
+import { parseDecisionParts, buildDecisionReply, type DecisionSpec } from "@/lib/decisionBlock";
 import { WorktreePanel } from "@/components/WorktreePanel";
 import { FilePreviewPanel } from "@/components/FilePreviewPanel";
 import { ContextMeter } from "@/components/ContextMeter";
@@ -152,7 +154,13 @@ function AttachmentStrip({ metadataJson }: { metadataJson?: string | null }) {
   );
 }
 
-function MessageContent({ content }: { content: string }) {
+function MessageContent({
+  content,
+  onDecide,
+}: {
+  content: string;
+  onDecide?: (spec: DecisionSpec, chosen: string[], note: string) => void;
+}) {
   const parts: Array<{ type: "text" | "think"; content: string }> = [];
   let remaining = content;
 
@@ -174,9 +182,21 @@ function MessageContent({ content }: { content: string }) {
 
   return (
     <>
-      {parts.map((part, index) => (
-        part.type === "think" ? <ThinkBlock key={index} content={part.content} /> : <span key={index}>{part.content}</span>
-      ))}
+      {parts.map((part, index) => {
+        if (part.type === "think") return <ThinkBlock key={index} content={part.content} />;
+        // 方案抉择框 (#2): render omnix-decision fences as selectable cards.
+        return parseDecisionParts(part.content).map((sub, subIndex) =>
+          sub.type === "decision" ? (
+            <DecisionBlock
+              key={`${index}-${subIndex}`}
+              spec={sub.spec}
+              onDecide={onDecide ? (chosen, note) => onDecide(sub.spec, chosen, note) : undefined}
+            />
+          ) : (
+            <span key={`${index}-${subIndex}`}>{sub.content}</span>
+          ),
+        );
+      })}
     </>
   );
 }
@@ -489,6 +509,17 @@ export function ChatTab({
     return { model: selectedModel.selection, permission, workMode };
   };
 
+  // 方案抉择框 (#2): send the user's option pick back as the next turn.
+  const handleDecide = (spec: DecisionSpec, chosen: string[], note: string) => {
+    const config = buildSendConfig();
+    if (!config) {
+      toast.error("请先选择一个可用模型");
+      return;
+    }
+    const { display, agent } = buildDecisionReply(spec, chosen, note);
+    onSendPrepared?.(agent, display, config);
+  };
+
   // SDD: ask the agent to clarify the requirement draft (a conversational turn).
   const handleClarifyRequirement = async (draft: string, title: string) => {
     const config = buildSendConfig();
@@ -721,7 +752,10 @@ export function ChatTab({
                     </div>
                     <AttachmentStrip metadataJson={message.metadata_json} />
                     <div className="whitespace-pre-wrap break-words">
-                      <MessageContent content={message.content} />
+                      <MessageContent
+                        content={message.content}
+                        onDecide={message.role !== "user" ? handleDecide : undefined}
+                      />
                     </div>
                   </div>
                 </div>

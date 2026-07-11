@@ -14,6 +14,7 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use crate::proc::NoWindow;
 use std::process::Command;
 use std::sync::Arc;
 
@@ -46,7 +47,7 @@ pub struct FileDiff {
 
 fn git(root: &Path, args: &[&str], index: Option<&Path>, envs: &[(&str, &str)]) -> Result<String, String> {
     let mut command = Command::new("git");
-    command.arg("-C").arg(root).args(args);
+    command.no_window().arg("-C").arg(root).args(args);
     if let Some(index_path) = index {
         command.env("GIT_INDEX_FILE", index_path);
     }

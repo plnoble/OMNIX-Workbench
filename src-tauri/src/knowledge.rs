@@ -995,6 +995,70 @@ pub fn resolve_chat_platform(
     ))
 }
 
+/// One-shot, non-streaming chat call against a gateway model
+/// (`platform_id:model_name` or bare model name). Shared by features that need
+/// a single structured reply (PPT generation/editing, skill review, …).
+pub async fn chat_once(
+    db: &DbManager,
+    chat_model: &str,
+    prompt: &str,
+) -> Result<String, String> {
+    let (api_key, api_address, api_type, actual_model) = resolve_chat_platform(db, chat_model)?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(180))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let answer = if api_type == "anthropic" {
+        let url = format!("{}/v1/messages", api_address.trim_end_matches('/'));
+        let body = serde_json::json!({
+            "model": actual_model,
+            "max_tokens": 8192,
+            "messages": [{"role": "user", "content": prompt}],
+        });
+        let resp = client
+            .post(&url)
+            .header("x-api-key", api_key.trim())
+            .header("anthropic-version", "2023-06-01")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("模型请求失败: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("模型 API 错误: {}", resp.status()));
+        }
+        let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+        json["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    } else {
+        let url = format!("{}/chat/completions", api_address.trim_end_matches('/'));
+        let body = serde_json::json!({
+            "model": actual_model,
+            "messages": [{"role": "user", "content": prompt}],
+        });
+        let mut req = client.post(&url).json(&body);
+        if !api_key.trim().is_empty() {
+            req = req.header("Authorization", format!("Bearer {}", api_key.trim()));
+        }
+        let resp = req.send().await.map_err(|e| format!("模型请求失败: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("模型 API 错误: {}", resp.status()));
+        }
+        let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+        json["choices"][0]["message"]["content"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    };
+
+    if answer.trim().is_empty() {
+        return Err("模型没有返回内容".to_string());
+    }
+    Ok(answer)
+}
+
 fn filter_ranked_results(
     results: &mut Vec<(String, f64)>,
     allowed: &std::collections::HashSet<String>,

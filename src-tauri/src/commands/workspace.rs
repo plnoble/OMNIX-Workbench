@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use crate::proc::NoWindow;
 use std::process::Command;
 
 use serde::Serialize;
@@ -106,6 +107,7 @@ fn collect_workspace_files(
 
 fn git_output(root: &Path, args: &[&str]) -> Option<String> {
     let output = Command::new("git")
+        .no_window()
         .arg("-C")
         .arg(root)
         .args(args)

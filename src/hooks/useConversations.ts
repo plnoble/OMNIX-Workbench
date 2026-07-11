@@ -17,7 +17,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { conversationApi, ptyApi, agentApi, runtimeApi, checkpointApi, modelApi, distillationApi, type ConversationGoal, type ConversationGoalStatus } from "@/lib/tauri-api";
 import { getRuntimeAgentId, loadAgentRegistry } from "@/lib/agentRegistry";
 import { processTerminalStream, detectInteractivePrompts, detectMistakes } from "@/lib/terminal";
-import { parseGoalCommand, parseBtwCommand, type GoalCommand } from "@/lib/slashCommands";
+import { parseGoalCommand, parseBtwCommand, parseProposalCommand, type GoalCommand } from "@/lib/slashCommands";
+import { buildProposalPrompt } from "@/lib/decisionBlock";
 import { AGENT_NAMES } from "@/lib/constants";
 import type {
   AcpModelOption,
@@ -924,6 +925,26 @@ export function useConversations(
     const agent = runtimeAgentId(activeAgent);
     if (!agent) {
       throw new Error(`${activeAgent} 尚未完成真实运行适配，请选择 Claude Code、Codex、Gemini CLI、Qwen Code、OpenCode 或 GitHub Copilot CLI`);
+    }
+
+    // 方案抉择框 (#2): `/方案 <需求>` wraps the requirement in a prompt that asks
+    // the agent to reply with 2-4 schemes as an interactive omnix-decision block.
+    const proposalCmd = parseProposalCommand(chatInput);
+    if (proposalCmd) {
+      if (!proposalCmd.requirement) {
+        setChatInput("");
+        toast.info("用法：/方案 <你的需求> —— 让 AI 提出几个方案供你单选/多选");
+        return;
+      }
+      const displayText = `🧭 方案抉择：${proposalCmd.requirement}`;
+      const agentText = buildProposalPrompt(proposalCmd.requirement);
+      let proposalConvId = currentConvId;
+      if (!proposalConvId) {
+        proposalConvId = await createConversationFromPrompt(displayText);
+      }
+      setChatInput("");
+      await deliverTurn(proposalConvId, agent, displayText, agentText, config, images);
+      return;
     }
 
     let convId = currentConvId;

@@ -1,4 +1,5 @@
 use super::*;
+use crate::proc::NoWindow;
 use std::process::Command;
 use tauri::{AppHandle, Emitter};
 
@@ -129,6 +130,7 @@ if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
 "#;
 
     let output = Command::new("powershell.exe")
+        .no_window()
         .args([
             "-NoProfile",
             "-STA",
@@ -173,6 +175,7 @@ if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
 }
 "#;
     let output = Command::new("powershell.exe")
+        .no_window()
         .args([
             "-NoProfile",
             "-STA",

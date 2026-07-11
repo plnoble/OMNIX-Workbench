@@ -14,6 +14,7 @@ mod local_models;
 mod media;
 mod model_knowledge;
 mod oauth;
+mod proc;
 mod prompt_guard;
 mod proxy;
 mod responses_bridge;
@@ -24,6 +25,7 @@ mod selection;
 mod skill_dag;
 mod skill_frontmatter;
 mod skill_library;
+mod slides;
 mod sync_engine;
 mod token_economy;
 mod tool_adapters;
@@ -748,6 +750,25 @@ pub fn run() {
             commands::resolve_tool_confirmation,
             commands::get_pending_confirmations,
             commands::get_pending_confirmation_count,
+            // PPT / Presentation panel (结构化幻灯模型 + 网关生成/编辑)
+            commands::list_decks,
+            commands::get_deck,
+            commands::create_deck,
+            commands::save_deck,
+            commands::delete_deck,
+            commands::render_deck,
+            commands::generate_deck,
+            commands::edit_deck_ai,
+            commands::export_deck_html,
+            commands::export_deck_pdf,
+            // Skill pool governance (#3 技能池: 待定/审核/正式 + 网关直调)
+            commands::list_skill_pool,
+            commands::skill_pool_stats,
+            commands::collect_all_skills,
+            commands::cleanup_scattered_skills,
+            commands::review_skill_ai,
+            commands::set_skill_pool,
+            commands::get_skill_pool_content,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

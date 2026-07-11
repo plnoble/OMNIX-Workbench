@@ -185,6 +185,129 @@ export const localModelApi = {
     invoke<ModelRecommendation[]>("recommend_local_models", { budgetGb }),
 };
 
+// ── Skill pool governance (#3 技能池: 待定/审核/正式 + 网关直调) ──
+
+export interface SkillPoolItem {
+  name: string;
+  description: string;
+  category: string | null;
+  pool: "pending" | "official" | string;
+  source_ref: string | null;
+  central_path: string;
+  usage_count: number;
+  starred: boolean;
+  review_score: number | null;
+  review_verdict: "pass" | "needs_work" | "reject" | null;
+  review_summary: string;
+  reviewed_at: string | null;
+  updated_at: string;
+}
+export interface CollectReport {
+  tools_scanned: number;
+  found_total: number;
+  imported: number;
+  already_managed: number;
+}
+export interface CleanupReport {
+  cleaned: number;
+  backup_dir: string;
+  errors: string[];
+}
+export interface SkillReview {
+  score: number;
+  verdict: "pass" | "needs_work" | "reject";
+  summary: string;
+  problems: string[];
+  improve: string;
+}
+export interface SkillPoolStats {
+  pending: number;
+  official: number;
+  unreviewed_pending: number;
+}
+
+export const skillPoolApi = {
+  list: () => invoke<SkillPoolItem[]>("list_skill_pool"),
+  stats: () => invoke<SkillPoolStats>("skill_pool_stats"),
+  collectAll: () => invoke<CollectReport>("collect_all_skills"),
+  cleanupScattered: () => invoke<CleanupReport>("cleanup_scattered_skills"),
+  review: (name: string, chatModel: string) =>
+    invoke<SkillReview>("review_skill_ai", { name, chatModel }),
+  setPool: (name: string, pool: "pending" | "official") =>
+    invoke<void>("set_skill_pool", { name, pool }),
+  content: (name: string) => invoke<string>("get_skill_pool_content", { name }),
+};
+
+// ── Presentations / PPT panel (结构化幻灯模型，preview == export) ──
+
+export type SlideLayout =
+  | "cover" | "section" | "bullets" | "content"
+  | "two-column" | "quote" | "image" | "image-left";
+
+export interface SlideColumn {
+  title?: string;
+  bullets?: string[];
+  body?: string;
+}
+export interface Slide {
+  layout: SlideLayout | string;
+  title?: string;
+  subtitle?: string;
+  bullets?: string[];
+  body?: string;
+  columns?: SlideColumn[];
+  image?: string;
+  notes?: string;
+}
+export interface Deck {
+  id: string;
+  title: string;
+  theme: string;
+  slides: Slide[];
+}
+export interface DeckMeta {
+  id: string;
+  title: string;
+  theme: string;
+  slide_count: number;
+  updated_at: string;
+}
+export interface DeckRecord {
+  id: string;
+  title: string;
+  theme: string;
+  model_json: string;
+}
+export const DECK_THEMES = ["midnight", "minimal", "corporate", "sunset"] as const;
+
+export const slidesApi = {
+  list: () => invoke<DeckMeta[]>("list_decks"),
+  get: (id: string) => invoke<DeckRecord>("get_deck", { id }),
+  create: (title: string, theme: string) =>
+    invoke<DeckRecord>("create_deck", { title, theme }),
+  save: (id: string, modelJson: string) =>
+    invoke<DeckRecord>("save_deck", { id, modelJson }),
+  remove: (id: string) => invoke<void>("delete_deck", { id }),
+  render: (modelJson: string, slideIndex?: number | null, print = false) =>
+    invoke<string>("render_deck", {
+      modelJson,
+      slideIndex: slideIndex ?? null,
+      print,
+    }),
+  generate: (topic: string, chatModel: string, slideCount?: number) =>
+    invoke<DeckRecord>("generate_deck", {
+      topic,
+      chatModel,
+      slideCount: slideCount ?? null,
+    }),
+  editAi: (id: string, instruction: string, chatModel: string) =>
+    invoke<DeckRecord>("edit_deck_ai", { id, instruction, chatModel }),
+  exportHtml: (modelJson: string) =>
+    invoke<string>("export_deck_html", { modelJson }),
+  exportPdf: (modelJson: string) =>
+    invoke<string>("export_deck_pdf", { modelJson }),
+};
+
 // ── Write (Markdown writing workspace) — DeepSeek-GUI inspired ──
 
 export interface WriteSpace {

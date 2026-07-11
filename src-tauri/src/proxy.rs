@@ -350,12 +350,63 @@ async fn handle_messages_for_session(
     handle_messages_impl(state, None, Some(session_key), headers, payload).await
 }
 
+/// 正式池网关直调 (#3 技能池): append matched official-pool skills to the
+/// request's system prompt. Every agent that talks through the gateway gets the
+/// same approved skills with zero per-tool distribution. Pending-pool skills
+/// are never injected. Disable via setting `skill_gateway_injection = "0"`.
+fn inject_official_skills(db: &DbManager, payload: &mut AnthropicRequest) {
+    let enabled = db
+        .get_setting("skill_gateway_injection")
+        .unwrap_or(None)
+        .map(|v| v != "0")
+        .unwrap_or(true);
+    if !enabled {
+        return;
+    }
+    let Some(user_text) = payload
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == "user")
+        .map(|m| m.content.to_string_content())
+    else {
+        return;
+    };
+    let mut matches = crate::skill_library::match_skills_for_message(db, &user_text, true);
+    matches.truncate(2); // strongest few, never a skill dump
+    if matches.is_empty() {
+        return;
+    }
+    let injection = crate::skill_library::build_skill_injection(&matches, db);
+    if injection.is_empty() {
+        return;
+    }
+    match payload.system.as_mut() {
+        Some(AnthropicMessageContent::String(s)) => s.push_str(&injection),
+        Some(AnthropicMessageContent::Blocks(blocks)) => blocks.push(AnthropicContentBlock {
+            block_type: "text".to_string(),
+            text: Some(injection),
+            source: None,
+        }),
+        None => payload.system = Some(AnthropicMessageContent::String(injection)),
+    }
+    // Compound-interest tracking: injected == used.
+    if let Ok(conn) = db.get_connection() {
+        for m in &matches {
+            let _ = conn.execute(
+                "UPDATE skills SET usage_count = usage_count + 1, last_used_at = CURRENT_TIMESTAMP WHERE name = ?1",
+                params![m.skill_name],
+            );
+        }
+    }
+}
+
 async fn handle_messages_impl(
     state: Arc<ProxyState>,
     agent_name_opt: Option<String>,
     session_key: Option<String>,
     headers: axum::http::HeaderMap,
-    payload: AnthropicRequest,
+    mut payload: AnthropicRequest,
 ) -> Response {
     // Concurrency limiting (New API/Sub2API inspired)
     let _permit = match state.concurrency_semaphore.try_acquire() {
@@ -406,6 +457,9 @@ async fn handle_messages_impl(
             .get_active_account_for_agent(&agent_name)
             .unwrap_or(None)
     };
+
+    // 正式池技能注入——在进入两条上游分支前统一改写 system。
+    inject_official_skills(&state.db, &mut payload);
 
     let target_model_name = if let Some(ref upstream) = session_upstream {
         upstream.model_name.clone()

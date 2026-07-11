@@ -579,6 +579,15 @@ impl DbManager {
             // Agent model binding fields.
             "ALTER TABLE agent_platform_bindings ADD COLUMN binding_kind TEXT NOT NULL DEFAULT 'omnix'",
             "ALTER TABLE agent_platform_bindings ADD COLUMN builtin_model TEXT NULL",
+            // Skill pool governance (#3 技能池重构): every skill lives in a pool —
+            // 'pending' (待定池, default: collected/forged skills are NOT used until
+            // approved) or 'official' (正式池, injected via the gateway for all
+            // agents). Promotion to official REQUIRES a completed review.
+            "ALTER TABLE skills ADD COLUMN pool TEXT NOT NULL DEFAULT 'pending'",
+            "ALTER TABLE skills ADD COLUMN review_score INTEGER NULL",
+            "ALTER TABLE skills ADD COLUMN review_verdict TEXT NULL",
+            "ALTER TABLE skills ADD COLUMN review_summary TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE skills ADD COLUMN reviewed_at DATETIME NULL",
         ];
         for sql in &migrations {
             // ALTER TABLE ADD COLUMN silently fails if column already exists in SQLite,
@@ -1283,6 +1292,21 @@ impl DbManager {
                 PRIMARY KEY(conversation_id, knowledge_base_id),
                 FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
                 FOREIGN KEY(knowledge_base_id) REFERENCES knowledge_bases(id) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+        // Presentation decks (PPT panel). The whole structured Deck JSON lives
+        // in model_json (single source of truth); title/theme are duplicated as
+        // columns for cheap listing.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS decks (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL DEFAULT '未命名演示',
+                theme TEXT NOT NULL DEFAULT 'midnight',
+                model_json TEXT NOT NULL DEFAULT '{}',
+                slide_count INTEGER NOT NULL DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )",
             [],
         )?;

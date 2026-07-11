@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
+use crate::proc::NoWindow;
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{broadcast, Mutex as AsyncMutex, RwLock};
 
@@ -573,11 +574,13 @@ fn runtime_command(program: &str, args: &[String]) -> Command {
         if is_script {
             let mut command = Command::new("cmd.exe");
             command.args(["/D", "/S", "/C", program]).args(args);
+            command.no_window();
             return command;
         }
     }
     let mut command = Command::new(program);
     command.args(args);
+    command.no_window();
     command
 }
 

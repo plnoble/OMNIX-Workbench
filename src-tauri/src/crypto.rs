@@ -186,6 +186,7 @@ pub fn is_encrypted(value: &str) -> bool {
 /// only to the current user. Silently fails if icacls is unavailable.
 #[cfg(windows)]
 fn restrict_key_file_windows(path: &std::path::Path) -> Result<(), String> {
+    use crate::proc::NoWindow;
     let path_str = path.to_string_lossy().to_string();
     // Remove inherited permissions and grant current user full control only
     let output = std::process::Command::new("icacls")
@@ -193,6 +194,7 @@ fn restrict_key_file_windows(path: &std::path::Path) -> Result<(), String> {
         .arg("/inheritance:r")
         .arg("/grant:r")
         .arg(format!("{}:(F)", whoami::username()))
+        .no_window()
         .output()
         .map_err(|e| format!("Failed to run icacls: {}", e))?;
     if !output.status.success() {

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use crate::proc::NoWindow;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -333,6 +334,7 @@ impl AgentManager {
         // Run <path> --version
         let output = std::process::Command::new(exe_path)
             .arg("--version")
+            .no_window()
             .output();
 
         match output {
@@ -785,6 +787,7 @@ impl AgentManager {
             };
 
             cmd.current_dir(resolved_workspace)
+                .no_window()
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
@@ -973,7 +976,9 @@ impl AgentManager {
                 ]);
                 c
             };
-            cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+            cmd.no_window()
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
             let mut child = cmd
                 .spawn()
                 .map_err(|e| format!("Failed to spawn Antigravity installer: {}", e))?;
@@ -1043,6 +1048,7 @@ impl AgentManager {
         };
         let mut cmd = Command::new(&install_command.program);
         cmd.args(&install_command.args)
+            .no_window()
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
@@ -1769,6 +1775,7 @@ pub(crate) async fn run_cron_task(
     };
 
     cmd.current_dir(resolved_workspace)
+        .no_window()
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 

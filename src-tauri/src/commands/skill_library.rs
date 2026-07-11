@@ -8,13 +8,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::State;
 
-/// 1. Semantic Skill Auto-Injection — find skills matching a message
+/// 1. Semantic Skill Auto-Injection — find skills matching a message.
+/// `official_only` restricts to the 正式池 (what the gateway would inject).
 #[tauri::command]
 pub fn match_skills_for_injection(
     message: String,
+    official_only: Option<bool>,
     db: State<'_, Arc<DbManager>>,
 ) -> Vec<SkillMatch> {
-    crate::skill_library::match_skills_for_message(&db, &message)
+    crate::skill_library::match_skills_for_message(&db, &message, official_only.unwrap_or(false))
 }
 
 /// 2. Sandbox Testing — test a skill adversarially

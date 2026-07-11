@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::db::DbManager;
+use crate::proc::NoWindow;
 
 // ══════════════════════════════════════════════════
 // 1. Semantic Skill Auto-Injection
@@ -26,15 +27,24 @@ pub struct SkillMatch {
 
 /// Find skills that semantically match a user message.
 /// Uses keyword matching against skill name, description, and category.
-pub fn match_skills_for_message(db: &DbManager, message: &str) -> Vec<SkillMatch> {
+/// With `official_only`, restricts to the 正式池 (pool = 'official') — the pool
+/// gate for gateway auto-injection: pending skills are NEVER injected.
+pub fn match_skills_for_message(
+    db: &DbManager,
+    message: &str,
+    official_only: bool,
+) -> Vec<SkillMatch> {
     let conn = match db.get_connection() {
         Ok(c) => c,
         Err(_) => return Vec::new(),
     };
 
-    let mut stmt = match conn
-        .prepare("SELECT name, description, category, file_path FROM skills WHERE is_active = 1")
-    {
+    let sql = if official_only {
+        "SELECT name, description, category, file_path FROM skills WHERE is_active = 1 AND pool = 'official'"
+    } else {
+        "SELECT name, description, category, file_path FROM skills WHERE is_active = 1"
+    };
+    let mut stmt = match conn.prepare(sql) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };
@@ -155,23 +165,31 @@ pub fn build_skill_injection(matches: &[SkillMatch], db: &DbManager) -> String {
     let mut injection = String::from("\n\n<auto_injected_skills>\nThe following skills are automatically activated based on the current task:\n\n");
 
     for m in matches {
-        // Read full skill content
+        // Read full skill content — prefer the central store, fall back from the
+        // profile file to plain SKILL.md so imported skills always inject.
         let content: String = conn
             .query_row(
-                "SELECT file_path FROM skills WHERE name = ?1",
+                "SELECT CASE WHEN central_path != '' THEN central_path ELSE file_path END
+                 FROM skills WHERE name = ?1",
                 rusqlite::params![m.skill_name],
                 |r| r.get(0),
             )
             .ok()
             .and_then(|fp: String| {
-                let core = PathBuf::from(&fp).join(format!("{}_core.md", m.skill_name));
-                std::fs::read_to_string(core).ok()
+                let dir = PathBuf::from(&fp);
+                std::fs::read_to_string(dir.join(format!("{}_core.md", m.skill_name)))
+                    .or_else(|_| std::fs::read_to_string(dir.join("SKILL.md")))
+                    .ok()
             })
             .unwrap_or_default();
-
+        if content.is_empty() {
+            continue;
+        }
+        // Cap each skill so a bloated skill can't blow up the request.
+        let capped: String = content.chars().take(6000).collect();
         injection.push_str(&format!(
             "## Skill: {} (relevance: {:.1})\n{}\n\n",
-            m.skill_name, m.relevance_score, content
+            m.skill_name, m.relevance_score, capped
         ));
     }
 
@@ -692,6 +710,7 @@ pub fn distill_from_project(project_path: &str) -> Result<Vec<DistillRecommendat
         .arg("log")
         .arg("--oneline")
         .arg("-50")
+        .no_window()
         .output()
     {
         let log = String::from_utf8_lossy(&output.stdout);

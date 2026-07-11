@@ -1,6 +1,7 @@
 use super::*;
 use crate::db::DbManager;
 use crate::input_validation;
+use crate::proc::NoWindow;
 use crate::knowledge::{self, ChunkConfig, RagResponse, SearchResult};
 use rusqlite::params;
 use std::sync::Arc;
@@ -183,6 +184,7 @@ pub fn get_workspace_git_diff(workspace_path: String) -> Result<String, String> 
     let output = std::process::Command::new("git")
         .arg("diff")
         .current_dir(workspace)
+        .no_window()
         .output()
         .map_err(|e| format!("Failed to run git diff: {}", e))?;
 
@@ -204,7 +206,7 @@ pub fn run_env_diagnostics() -> Result<std::collections::HashMap<String, String>
     let mut map = std::collections::HashMap::new();
 
     // Node.js
-    match std::process::Command::new("node").arg("-v").output() {
+    match std::process::Command::new("node").arg("-v").no_window().output() {
         Ok(out) => {
             let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
             map.insert("Node.js".into(), v);
@@ -215,7 +217,7 @@ pub fn run_env_diagnostics() -> Result<std::collections::HashMap<String, String>
     }
 
     // Git
-    match std::process::Command::new("git").arg("--version").output() {
+    match std::process::Command::new("git").arg("--version").no_window().output() {
         Ok(out) => {
             let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
             map.insert("Git".into(), v);
@@ -226,7 +228,7 @@ pub fn run_env_diagnostics() -> Result<std::collections::HashMap<String, String>
     }
 
     // Ripgrep
-    match std::process::Command::new("rg").arg("--version").output() {
+    match std::process::Command::new("rg").arg("--version").no_window().output() {
         Ok(out) => {
             let full_out = String::from_utf8_lossy(&out.stdout);
             let first_line = full_out.lines().next().unwrap_or("rg").to_string();
@@ -282,6 +284,7 @@ pub async fn repair_env_tool(app: tauri::AppHandle, tool_name: String) -> Result
 
     let mut child = tokio::process::Command::new(cmd)
         .args(&args)
+        .no_window()
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()

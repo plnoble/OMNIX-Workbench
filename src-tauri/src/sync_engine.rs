@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::db::DbManager;
+use crate::proc::NoWindow;
 use crate::tool_adapters::{AdapterRegistry, SyncMode};
 
 // ─────────────────────────────────────────────
@@ -941,6 +942,7 @@ impl SyncEngine {
             cmd.arg(repo_url).arg(&target_path);
 
             let output = cmd
+                .no_window()
                 .output()
                 .map_err(|e| format!("git clone failed: {}", e))?;
             if !output.status.success() {
@@ -1170,6 +1172,7 @@ impl SyncEngine {
             .arg(repo_path)
             .arg("pull")
             .arg("--ff-only")
+            .no_window()
             .output()
             .map_err(|e| format!("git pull failed: {}", e))?;
 
@@ -1188,6 +1191,7 @@ impl SyncEngine {
             .arg("rev-parse")
             .arg("--short")
             .arg("HEAD")
+            .no_window()
             .output()
             .map_err(|e| format!("git rev-parse failed: {}", e))?;
 

@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use rusqlite::params;
 use crate::db::DbManager;
 use crate::agent_templates::{AgentTemplate, get_all_templates};
+use crate::proc::NoWindow;
 use super::*;
 
 // ══════════════════════════════════════════════════
@@ -338,6 +339,7 @@ pub fn expand_prompt_template(template: &str, workspace: Option<&str>) -> String
         if let Ok(output) = std::process::Command::new("git")
             .arg("-C").arg(ws)
             .arg("status").arg("--short")
+            .no_window()
             .output()
         {
             let status = String::from_utf8_lossy(&output.stdout);

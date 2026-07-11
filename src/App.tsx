@@ -76,6 +76,7 @@ const NotesTab = lazy(() => import("@/components/tabs/NotesTab").then(m => ({ de
 const TranslateTab = lazy(() => import("@/components/tabs/TranslateTab").then(m => ({ default: m.TranslateTab })));
 const ProfileTab = lazy(() => import("@/components/tabs/ProfileTab").then(m => ({ default: m.ProfileTab })));
 const StudioTab = lazy(() => import("@/components/tabs/StudioTab").then(m => ({ default: m.StudioTab })));
+const SlidesTab = lazy(() => import("@/components/tabs/SlidesTab").then(m => ({ default: m.SlidesTab })));
 const AutopilotsTab = lazy(() => import("@/components/tabs/AutopilotsTab").then(m => ({ default: m.AutopilotsTab })));
 const WriteTab = lazy(() => import("@/components/tabs/WriteTab").then(m => ({ default: m.WriteTab })));
 const UsageDashboardTab = lazy(() => import("@/components/tabs/UsageDashboardTab").then(m => ({ default: m.UsageDashboardTab })));
@@ -518,6 +519,7 @@ function MainApp() {
             {activeTab === "translate" && <TranslateTab />}
             {activeTab === "profile" && <ProfileTab />}
             {activeTab === "studio" && <StudioTab />}
+            {activeTab === "slides" && <SlidesTab />}
             {activeTab === "autopilot" && <AutopilotsTab />}
             {activeTab === "write" && <WriteTab />}
             {activeTab === "usage" && <UsageDashboardTab />}

@@ -11,6 +11,7 @@
 //! not auto-resolve) and never force-pushes or rewrites history.
 
 use std::path::{Path, PathBuf};
+use crate::proc::NoWindow;
 use std::process::Command;
 use std::sync::Arc;
 
@@ -44,6 +45,7 @@ pub struct MergeResult {
 
 fn git(root: &Path, args: &[&str]) -> Result<String, String> {
     let output = Command::new("git")
+        .no_window()
         .arg("-C")
         .arg(root)
         .args(args)

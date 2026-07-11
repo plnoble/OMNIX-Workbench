@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { SkillTopology } from "./SkillTopology";
+import { SkillPoolPanel } from "@/components/SkillPoolPanel";
 import { Layers, Sparkles, BookOpen, Download, RefreshCw, Search, Star, Upload, ArrowRightLeft, HardDrive, CheckCircle2, XCircle, AlertCircle, FolderOpen, Wand2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/sonner";
@@ -66,9 +67,10 @@ export interface DiscoveredSkill {
   content_hash: string;
 }
 
-type SkillHubSection = "library" | "generate" | "furnace" | "sets" | "market" | "sync";
+type SkillHubSection = "pool" | "library" | "generate" | "furnace" | "sets" | "market" | "sync";
 
 const SKILL_HUB_SECTIONS: Array<{ id: SkillHubSection; label: string; desc: string }> = [
+  { id: "pool", label: "技能池", desc: "收集→待定池→AI审核→正式池，网关直调零分发" },
   { id: "library", label: "技能库", desc: "查看、编辑、收藏和启停本地技能" },
   { id: "generate", label: "生成", desc: "扫描工作区，让模型生成技能草稿" },
   { id: "furnace", label: "熔炉", desc: "融合多个技能并审批写入" },
@@ -78,7 +80,7 @@ const SKILL_HUB_SECTIONS: Array<{ id: SkillHubSection; label: string; desc: stri
 ];
 
 export const SkillHub: React.FC = () => {
-  const [section, setSection] = useState<SkillHubSection>("library");
+  const [section, setSection] = useState<SkillHubSection>("pool");
   const [skills, setSkills] = useState<Skill[]>([]);
   const [selectedSkillName, setSelectedSkillName] = useState<string | null>(null);
   const [selectedProfile, setSelectedProfile] = useState<string>("Core");
@@ -977,6 +979,8 @@ export const SkillHub: React.FC = () => {
 
       {/* Right workspace: split visual editor & topology graph */}
       <div className="flex h-full min-h-0 min-w-0 flex-col gap-4 overflow-y-auto pr-1.5 pb-4">
+
+        {section === "pool" && <SkillPoolPanel />}
 
         {section === "library" && (selectedSkill ? (
           <div className="card flex min-h-[560px] flex-none flex-col overflow-hidden p-4">

@@ -4,6 +4,7 @@ use tokio::sync::mpsc;
 use crate::db::DbManager;
 use crate::agent::{AgentManager, DetectedAgent};
 use crate::input_validation;
+use crate::proc::NoWindow;
 use rusqlite::params;
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -162,6 +163,7 @@ fn npm_latest_version(package: &str) -> Option<String> {
     let npm = if cfg!(windows) { "npm.cmd" } else { "npm" };
     let output = std::process::Command::new(npm)
         .args(["view", package, "version"])
+        .no_window()
         .output()
         .ok()?;
     if !output.status.success() {
