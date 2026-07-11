@@ -1737,25 +1737,6 @@ export const projectProtocolApi = {
     invoke<EvolutionProposal>("protocol_apply_evolution_proposal", { proposalId, approved }),
 };
 
-export interface SkillSetItem {
-  id: string; skill_set_id: string; skill_id: string; order_num: number; created_at: string;
-}
-export interface SkillSet {
-  id: string; name: string; description: string; sync_targets: string[];
-  items: SkillSetItem[]; created_at: string; updated_at: string;
-}
-export const skillSetApi = {
-  create: (name: string, description: string, skillIds: string[], syncTargets: string[]) =>
-    invoke<SkillSet>("create_skill_set", { name, description, skillIds, syncTargets }),
-  list: () => invoke<SkillSet[]>("list_skill_sets"),
-  update: (skillSetId: string, name: string, description: string, skillIds: string[], syncTargets: string[]) =>
-    invoke<SkillSet>("update_skill_set", { skillSetId, name, description, skillIds, syncTargets }),
-  delete: (skillSetId: string) =>
-    invoke("delete_skill_set", { skillSetId }),
-  syncToTools: (skillSetId: string, toolIds: string[], mode = "copy", strategy = "overwrite") =>
-    invoke("sync_skill_set_to_tools", { skillSetId, toolIds, mode, strategy }),
-};
-
 // Session control APIs
 export interface FileChange {
   file_path: string; change_type: string;
@@ -1935,19 +1916,6 @@ export const persistentCronApi = {
 };
 
 // Skill Rule Generator
-export interface WorkspaceFile {
-  name: string; path: string; relativePath: string; extension: string; size: number;
-}
-export interface SkillDraft {
-  name: string; draft: string; files_analyzed: number; total_chars: number;
-}
-export const skillGeneratorApi = {
-  scanWorkspace: (workspacePath: string) =>
-    invoke<WorkspaceFile[]>("scan_workspace_for_skills", { workspacePath }),
-  generate: (skillName: string, filePaths: string[], workspacePath: string) =>
-    invoke<SkillDraft>("generate_skill_from_files", { skillName, filePaths, workspacePath }),
-};
-
 // Conversation Skills Indicator
 export const conversationSkillsApi = {
   get: (conversationId: string) =>

@@ -365,15 +365,7 @@ pub fn run() {
             commands::save_skill_content,
             commands::toggle_skill_active,
             commands::update_skill_profile,
-            commands::fuse_skills_api,
             commands::create_skill,
-            commands::apply_skill_fusion_draft,
-            commands::reject_skill_fusion_draft,
-            commands::create_skill_set,
-            commands::list_skill_sets,
-            commands::update_skill_set,
-            commands::delete_skill_set,
-            commands::sync_skill_set_to_tools,
             commands::get_active_agent_model,
             commands::update_active_agent_model,
             commands::get_agent_accounts,
@@ -744,8 +736,6 @@ pub fn run() {
             commands::create_persistent_cron,
             commands::delete_persistent_cron,
             // Skill Rule Generator
-            commands::scan_workspace_for_skills,
-            commands::generate_skill_from_files,
             // Conversation Skills Indicator
             commands::get_conversation_skills,
             // Tool Call Confirmation Queue

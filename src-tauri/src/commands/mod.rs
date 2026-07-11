@@ -36,7 +36,6 @@ mod selection;
 mod settings;
 mod skill_library;
 mod skill_pool;
-mod skill_sets;
 mod skill_sync;
 mod skills;
 mod storage;
@@ -77,17 +76,6 @@ pub struct Skill {
     pub content_hash: Option<String>,
     pub starred: bool,
     pub category: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SkillFusionResult {
-    pub draft_id: String,
-    pub name: String,
-    pub description: String,
-    pub fused_code: String,
-    pub explanation: String,
-    pub conflicts: Vec<String>,
-    pub status: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -219,7 +207,6 @@ pub use selection::*;
 pub use settings::*;
 pub use skill_library::*;
 pub use skill_pool::*;
-pub use skill_sets::*;
 pub use skill_sync::*;
 pub use skills::*;
 pub use slides::*;
