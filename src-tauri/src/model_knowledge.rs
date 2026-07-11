@@ -29,16 +29,6 @@ pub enum EvidenceTier {
 }
 
 impl EvidenceTier {
-    pub fn confidence(&self) -> f32 {
-        match self {
-            Self::Direct => 1.0,
-            Self::Variant => 0.7,
-            Self::BaseModel => 0.6,
-            Self::LineInterp => 0.3,
-            Self::SelfReported => 0.4,
-        }
-    }
-
     pub fn label(&self) -> &'static str {
         match self {
             Self::Direct => "已安装",
@@ -63,54 +53,6 @@ impl EvidenceTier {
 // ══════════════════════════════════════════════════
 // Model Lineage System
 // ══════════════════════════════════════════════════
-
-/// Model family and generation info
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModelLineage {
-    pub family: String,
-    pub generation: u32,
-}
-
-/// Detect model family and generation from name
-pub fn detect_lineage(name: &str) -> ModelLineage {
-    let lower = name.to_lowercase();
-
-    // Qwen family
-    if lower.contains("qwen3") { return ModelLineage { family: "Qwen".into(), generation: 3 }; }
-    if lower.contains("qwen2.5") { return ModelLineage { family: "Qwen".into(), generation: 2 }; }
-    if lower.contains("qwen2") { return ModelLineage { family: "Qwen".into(), generation: 2 }; }
-    if lower.contains("qwen") { return ModelLineage { family: "Qwen".into(), generation: 1 }; }
-
-    // Llama family
-    if lower.contains("llama-4") || lower.contains("llama4") { return ModelLineage { family: "Llama".into(), generation: 4 }; }
-    if lower.contains("llama-3.3") || lower.contains("llama3.3") { return ModelLineage { family: "Llama".into(), generation: 3 }; }
-    if lower.contains("llama-3.2") || lower.contains("llama3.2") { return ModelLineage { family: "Llama".into(), generation: 3 }; }
-    if lower.contains("llama-3.1") || lower.contains("llama3.1") { return ModelLineage { family: "Llama".into(), generation: 3 }; }
-    if lower.contains("llama-3") || lower.contains("llama3") { return ModelLineage { family: "Llama".into(), generation: 3 }; }
-    if lower.contains("llama-2") || lower.contains("llama2") { return ModelLineage { family: "Llama".into(), generation: 2 }; }
-
-    // DeepSeek family
-    if lower.contains("deepseek-v4") || lower.contains("deepseek-r2") { return ModelLineage { family: "DeepSeek".into(), generation: 4 }; }
-    if lower.contains("deepseek-v3") || lower.contains("deepseek-r1") { return ModelLineage { family: "DeepSeek".into(), generation: 3 }; }
-    if lower.contains("deepseek-v2") { return ModelLineage { family: "DeepSeek".into(), generation: 2 }; }
-
-    // Gemma family
-    if lower.contains("gemma-3") || lower.contains("gemma3") { return ModelLineage { family: "Gemma".into(), generation: 3 }; }
-    if lower.contains("gemma-2") || lower.contains("gemma2") { return ModelLineage { family: "Gemma".into(), generation: 2 }; }
-
-    // Phi family
-    if lower.contains("phi-4") { return ModelLineage { family: "Phi".into(), generation: 4 }; }
-    if lower.contains("phi-3") { return ModelLineage { family: "Phi".into(), generation: 3 }; }
-
-    // Mistral family
-    if lower.contains("mistral-large") || lower.contains("mistral-nemo") { return ModelLineage { family: "Mistral".into(), generation: 3 }; }
-    if lower.contains("mistral") { return ModelLineage { family: "Mistral".into(), generation: 2 }; }
-
-    // GLM family
-    if lower.contains("glm-4") { return ModelLineage { family: "GLM".into(), generation: 4 }; }
-
-    ModelLineage { family: "Unknown".into(), generation: 1 }
-}
 
 /// Calculate generation penalty (older generations get demoted)
 pub fn generation_penalty(family: &str, generation: u32) -> f32 {

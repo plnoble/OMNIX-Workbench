@@ -176,11 +176,6 @@ fn decrypt_v1_legacy(value: &str) -> String {
     String::from_utf8(decrypted).unwrap_or_else(|_| value.to_string())
 }
 
-/// Check if a value is encrypted (either v1 or v2 format)
-pub fn is_encrypted(value: &str) -> bool {
-    value.starts_with(ENCRYPTED_PREFIX_V2) || value.starts_with(ENCRYPTED_PREFIX_V1)
-}
-
 /// Windows-specific: restrict key file to current user only.
 /// Uses icacls to remove inherited permissions and grant full control
 /// only to the current user. Silently fails if icacls is unavailable.
@@ -203,16 +198,6 @@ fn restrict_key_file_windows(path: &std::path::Path) -> Result<(), String> {
         warn!("icacls failed for key file failed for key file: {}", stderr);
     }
     Ok(())
-}
-
-/// Migrate a v1 (XOR) encrypted value to v2 (AES-256-GCM).
-/// Returns the re-encrypted value in v2 format, or the original if not v1.
-pub fn migrate_v1_to_v2(value: &str) -> String {
-    if !value.starts_with(ENCRYPTED_PREFIX_V1) || value.starts_with(ENCRYPTED_PREFIX_V2) {
-        return value.to_string(); // Not v1, nothing to migrate
-    }
-    let plaintext = decrypt_v1_legacy(value);
-    encrypt(&plaintext)
 }
 
 // ── Utility functions ──
@@ -287,7 +272,6 @@ mod tests {
         let plaintext = "sk-abc123-secret-api-key";
         let encrypted = encrypt(plaintext);
         assert!(encrypted.starts_with(ENCRYPTED_PREFIX_V2));
-        assert!(is_encrypted(&encrypted));
         let decrypted = decrypt(&encrypted);
         assert_eq!(decrypted, plaintext);
     }
@@ -295,7 +279,6 @@ mod tests {
     #[test]
     fn test_plaintext_passthrough() {
         let plaintext = "not-encrypted-value";
-        assert!(!is_encrypted(plaintext));
         assert_eq!(decrypt(plaintext), plaintext);
     }
 

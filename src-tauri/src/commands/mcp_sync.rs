@@ -70,16 +70,6 @@ fn opencode_config_path() -> Result<PathBuf, String> {
     Ok(home()?.join(".config").join("opencode").join("opencode.json"))
 }
 
-fn agent_config_path(agent: &str) -> Result<PathBuf, String> {
-    match agent {
-        "claude_code" | "Claude Code" => claude_config_path(),
-        "codex" | "Codex" => codex_config_path(),
-        "gemini" | "Gemini" | "gemini_cli" | "Gemini CLI" => gemini_config_path(),
-        "opencode" | "OpenCode" | "open_code" => opencode_config_path(),
-        other => Err(format!("不支持的 Agent：{other}")),
-    }
-}
-
 /// Generic JSON-object config reader (Gemini `settings.json`, OpenCode
 /// `opencode.json`). Missing/empty file → empty object; non-object → error.
 fn read_json_root(path: &PathBuf, label: &str) -> Result<Value, String> {

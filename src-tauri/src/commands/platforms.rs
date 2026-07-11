@@ -274,16 +274,6 @@ pub async fn get_all_models_metadata(
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct WindowLayout {
-    pub label: String,
-    pub url: String,
-    pub x: f64,
-    pub y: f64,
-    pub width: f64,
-    pub height: f64,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ModelPlatform {
     pub id: String,
     pub name: String,
@@ -576,7 +566,6 @@ struct CapResult {
     has_tool_use: bool,
     has_embedding: bool,
     has_speedy: bool,
-    source: &'static str, // "catalog" | "heuristic"
 }
 
 /// ── Tier 1: Hardcoded model capability catalog ──────────────
@@ -1021,7 +1010,6 @@ fn infer_capabilities(name: &str) -> CapResult {
             has_tool_use: t,
             has_embedding: e,
             has_speedy: s,
-            source: "catalog",
         };
     }
 
@@ -1085,7 +1073,6 @@ fn infer_capabilities(name: &str) -> CapResult {
         has_tool_use,
         has_embedding,
         has_speedy,
-        source: "heuristic",
     }
 }
 

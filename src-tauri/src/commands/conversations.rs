@@ -334,43 +334,6 @@ pub struct RemoteAccessInfo {
     pub connection_url: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModelMetadata {
-    pub name: String,
-    pub source: String, // "API" or "Local"
-    pub has_vision: bool,
-    pub has_audio: bool,
-    pub has_reasoning: bool,
-    pub has_coding: bool,
-    pub has_long_context: bool,
-    pub has_tool_use: bool,
-    pub has_embedding: bool,
-    pub has_speedy: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CronTask {
-    pub id: String,
-    pub title: String,
-    pub schedule: String,
-    pub agent_name: String,
-    pub args: String,
-    pub workspace_dir: String,
-    pub is_active: bool,
-    pub last_run: Option<String>,
-    pub created_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CronRun {
-    pub id: String,
-    pub task_id: String,
-    pub status: String,
-    pub log_path: String,
-    pub started_at: String,
-    pub finished_at: Option<String>,
-}
-
 #[tauri::command]
 pub fn get_remote_access_info(db: State<'_, Arc<DbManager>>) -> Result<RemoteAccessInfo, String> {
     let local_ip = get_local_ip().unwrap_or_else(|| "127.0.0.1".to_string());

@@ -121,14 +121,6 @@ pub struct Memory {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MemorySuggestion {
-    pub incident_desc: String,
-    pub code_pattern: String,
-    pub remediation: String,
-    pub keywords: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DbTask {
     pub id: String,
     pub conversation_id: String,

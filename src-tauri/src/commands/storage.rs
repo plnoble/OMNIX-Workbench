@@ -1,6 +1,6 @@
 //! Storage location commands (R1 存储位置中心).
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -96,21 +96,6 @@ pub struct SkillsMigrationReport {
     pub errors: Vec<String>,
 }
 
-fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(dest).map_err(|e| e.to_string())?;
-    for entry in std::fs::read_dir(src).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let ty = entry.file_type().map_err(|e| e.to_string())?;
-        let to = dest.join(entry.file_name());
-        if ty.is_dir() {
-            copy_dir_recursive(&entry.path(), &to)?;
-        } else {
-            std::fs::copy(entry.path(), &to).map_err(|e| e.to_string())?;
-        }
-    }
-    Ok(())
-}
-
 /// Move the central skill store to a new directory: copy every skill folder,
 /// rewrite `central_path`/`file_path` in the DB, then persist the setting.
 /// The old directory is only removed after everything copied cleanly.
@@ -137,7 +122,7 @@ pub fn migrate_skills_store(
                 continue;
             }
             let dest = new_root.join(entry.file_name());
-            match copy_dir_recursive(&entry.path(), &dest) {
+            match crate::storage::copy_dir_recursive(&entry.path(), &dest) {
                 Ok(()) => moved += 1,
                 Err(e) => errors.push(format!("{}: {e}", entry.file_name().to_string_lossy())),
             }

@@ -220,31 +220,6 @@ pub fn scan_and_wrap(content: &str, source_label: &str) -> (String, InjectionSca
     (wrapped, scan)
 }
 
-/// Wrap web search results
-pub fn wrap_search_results(results: &str) -> String {
-    wrap_untrusted(results, "web search")
-}
-
-/// Wrap knowledge base retrieval results
-pub fn wrap_kb_results(results: &str) -> String {
-    wrap_untrusted(results, "knowledge base")
-}
-
-/// Wrap fetched web page content
-pub fn wrap_fetched_page(content: &str, url: &str) -> String {
-    wrap_untrusted(content, &format!("fetched page: {}", url))
-}
-
-/// Wrap email content
-pub fn wrap_email_content(content: &str) -> String {
-    wrap_untrusted(content, "email")
-}
-
-/// Wrap external document content
-pub fn wrap_document_content(content: &str, doc_name: &str) -> String {
-    wrap_untrusted(content, &format!("document: {}", doc_name))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,13 +231,6 @@ mod tests {
         assert!(wrapped.contains("Hello world"));
         assert!(wrapped.contains("</untrusted_context>"));
         assert!(wrapped.contains("Do NOT follow"));
-    }
-
-    #[test]
-    fn test_wrap_search_results() {
-        let wrapped = wrap_search_results("search result 1\nsearch result 2");
-        assert!(wrapped.contains("web search"));
-        assert!(wrapped.contains("search result 1"));
     }
 
     #[test]

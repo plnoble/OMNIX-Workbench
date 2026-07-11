@@ -30,21 +30,6 @@ pub fn backup_file(file_path: &PathBuf, category: &str) -> Result<Option<PathBuf
     Ok(Some(backup_path))
 }
 
-/// Create a backup of a string content (for in-memory configs)
-pub fn backup_content(content: &str, category: &str, filename: &str) -> Result<PathBuf, String> {
-    let backup_dir = crate::storage::backups_dir().join(category);
-    fs::create_dir_all(&backup_dir).map_err(|e| e.to_string())?;
-
-    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
-    let backup_name = format!("{}_{}", timestamp, filename);
-    let backup_path = backup_dir.join(&backup_name);
-
-    fs::write(&backup_path, content).map_err(|e| format!("Backup failed: {}", e))?;
-
-    cleanup_old_backups(&backup_dir, 20)?;
-    Ok(backup_path)
-}
-
 /// List backups for a category
 pub fn list_backups(category: &str) -> Vec<BackupEntry> {
     let backup_dir = crate::storage::backups_dir().join(category);

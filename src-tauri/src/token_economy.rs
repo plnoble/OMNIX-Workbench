@@ -66,13 +66,6 @@ pub fn compress_tool_result(content: &str, budget: &TokenBudget) -> String {
     }
 }
 
-/// Estimate token count (rough: 4 chars ≈ 1 token for English)
-pub fn estimate_tokens(text: &str) -> u32 {
-    let ascii = text.chars().filter(|c| c.is_ascii()).count() as u32;
-    let cjk = text.chars().filter(|c| !c.is_ascii()).count() as u32;
-    ascii / 4 + cjk / 2 + 1
-}
-
 
 
 

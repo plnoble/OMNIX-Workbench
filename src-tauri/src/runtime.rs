@@ -316,43 +316,6 @@ pub fn agent_definition(agent: AgentId) -> AgentDefinition {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum InstallationSource {
-    System,
-    Managed,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentInstallation {
-    pub agent: AgentId,
-    pub source: InstallationSource,
-    pub executable_path: String,
-    pub version: String,
-}
-
-pub fn resolve_installation(
-    agent: AgentId,
-    system: Option<(String, String)>,
-    managed: Option<(String, String)>,
-) -> Option<AgentInstallation> {
-    system
-        .map(|(executable_path, version)| AgentInstallation {
-            agent,
-            source: InstallationSource::System,
-            executable_path,
-            version,
-        })
-        .or_else(|| {
-            managed.map(|(executable_path, version)| AgentInstallation {
-                agent,
-                source: InstallationSource::Managed,
-                executable_path,
-                version,
-            })
-        })
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManagedInstallCommand {
     pub program: String,
@@ -1572,9 +1535,9 @@ mod tests {
         build_codex_thread_start_request, build_launch_spec, build_resume_launch_spec,
         create_agent_session_record, evaluate_model_compatibility, get_agent_session_record,
         list_runtime_events, managed_install_command, parse_claude_event, parse_codex_message,
-        record_runtime_event, record_user_message, resolve_installation, resolve_model_selection,
+        record_runtime_event, record_user_message, resolve_model_selection,
         update_agent_session_status, AgentBinding, AgentId, AgentSessionConfig, AgentSessionStatus,
-        InstallationSource, ModelCompatibilityLevel, ModelSelection, PermissionPolicy,
+        ModelCompatibilityLevel, ModelSelection, PermissionPolicy,
         RuntimeEventKind, WorkMode,
     };
     use crate::db::DbManager;
@@ -1935,22 +1898,6 @@ mod tests {
         drop(conn);
         drop(db);
         let _ = std::fs::remove_file(db_path);
-    }
-
-    #[test]
-    fn system_installation_wins_over_managed_copy() {
-        let selected = resolve_installation(
-            AgentId::Codex,
-            Some(("C:/Users/me/npm/codex.cmd".into(), "0.139.0".into())),
-            Some((
-                "C:/Users/me/.omnix/agents/codex.cmd".into(),
-                "0.120.0".into(),
-            )),
-        )
-        .expect("installation");
-
-        assert_eq!(selected.source, InstallationSource::System);
-        assert_eq!(selected.version, "0.139.0");
     }
 
     #[test]

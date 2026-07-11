@@ -267,43 +267,6 @@ pub fn generate_test_cases(skill_name: &str, skill_content: &str) -> Vec<Sandbox
     cases
 }
 
-/// Build the auditor prompt for scoring
-pub fn build_auditor_prompt(
-    skill_name: &str,
-    skill_content: &str,
-    test_input: &str,
-    agent_response: &str,
-) -> String {
-    format!(
-        r#"You are a strict quality auditor for AI skills. Evaluate the following response.
-
-## Skill Being Tested: {skill_name}
-
-## Skill Definition:
-{skill_content}
-
-## Test Input:
-{test_input}
-
-## Agent's Response:
-{agent_response}
-
-## Scoring Criteria (1-10):
-1. **Relevance** (1-10): Does the response demonstrate the skill's domain knowledge?
-2. **Accuracy** (1-10): Is the information technically correct?
-3. **Completeness** (1-10): Does it cover the key aspects from the skill definition?
-4. **Structure** (1-10): Does it follow the skill's workflow/checklist format?
-5. **Anti-pattern avoidance** (1-10): Does it avoid the skill's listed anti-patterns?
-
-Return ONLY a JSON object:
-{{"score": <1-10>, "feedback": "<brief explanation>", "breakdown": {{"relevance": <1-10>, "accuracy": <1-10>, "completeness": <1-10>, "structure": <1-10>, "anti_pattern": <1-10>}}}}"#,
-        skill_name = skill_name,
-        skill_content = skill_content.chars().take(2000).collect::<String>(),
-        test_input = test_input,
-        agent_response = agent_response.chars().take(2000).collect::<String>(),
-    )
-}
-
 // ══════════════════════════════════════════════════
 // 3. Text Protocol Interception
 // ══════════════════════════════════════════════════

@@ -33,17 +33,6 @@ impl EventType {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "session_created" => Some(Self::SessionCreated),
-            "message_sent" => Some(Self::MessageSent),
-            "skill_synced" => Some(Self::SkillSynced),
-            "agent_started" => Some(Self::AgentStarted),
-            "task_completed" => Some(Self::TaskCompleted),
-            "agent_failed" => Some(Self::AgentFailed),
-            _ => None,
-        }
-    }
 }
 
 /// A registered event trigger
@@ -55,22 +44,6 @@ pub struct EventTrigger {
     pub task_id: String,        // cron_task to execute
     pub current_count: u32,     // current counter
     pub enabled: bool,
-}
-
-/// Initialize event_bus tables in DB
-pub fn init_event_bus_tables(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS event_triggers (
-            id TEXT PRIMARY KEY,
-            event_type TEXT NOT NULL,
-            threshold INTEGER NOT NULL DEFAULT 1,
-            task_id TEXT NOT NULL,
-            current_count INTEGER NOT NULL DEFAULT 0,
-            enabled INTEGER NOT NULL DEFAULT 1,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )", [],
-    )?;
-    Ok(())
 }
 
 /// Emit an event — increments counters for all matching triggers.

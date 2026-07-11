@@ -264,7 +264,7 @@ pub fn list_worktrees(
     let mut cur_branch = String::new();
     let mut is_main = true; // git lists the main worktree first
 
-    let mut flush = |path: Option<String>, branch: &str, is_main: bool, out: &mut Vec<Worktree>| {
+    let flush = |path: Option<String>, branch: &str, is_main: bool, out: &mut Vec<Worktree>| {
         let Some(path) = path else { return };
         let path_buf = PathBuf::from(&path);
         let key = path.replace('\\', "/");

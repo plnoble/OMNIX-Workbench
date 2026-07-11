@@ -225,23 +225,8 @@ fn backup_and_remove(src: &Path, dest: &Path) -> Result<(), String> {
         let res = std::fs::remove_file(src);
         return res.map_err(|e| format!("移除软链失败: {e}"));
     }
-    copy_dir_recursive(src, dest)?;
+    crate::storage::copy_dir_recursive(src, dest)?;
     std::fs::remove_dir_all(src).map_err(|e| format!("删除原目录失败: {e}"))
-}
-
-fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(dest).map_err(|e| e.to_string())?;
-    for entry in std::fs::read_dir(src).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let ty = entry.file_type().map_err(|e| e.to_string())?;
-        let to = dest.join(entry.file_name());
-        if ty.is_dir() {
-            copy_dir_recursive(&entry.path(), &to)?;
-        } else {
-            std::fs::copy(entry.path(), &to).map_err(|e| e.to_string())?;
-        }
-    }
-    Ok(())
 }
 
 fn read_skill_content(db: &DbManager, name: &str) -> Result<String, String> {
@@ -449,7 +434,7 @@ pub fn apply_skill_reform(
             chrono::Local::now().format("%Y%m%d_%H%M%S")
         ));
     if dir.exists() {
-        let _ = copy_dir_recursive(&dir, &backup);
+        let _ = crate::storage::copy_dir_recursive(&dir, &backup);
     }
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     for file in [
@@ -602,7 +587,7 @@ pub fn delete_pool_skill(name: String, db: State<'_, Arc<DbManager>>) -> Result<
                     name,
                     chrono::Local::now().format("%Y%m%d_%H%M%S")
                 ));
-            let _ = copy_dir_recursive(&dir, &backup);
+            let _ = crate::storage::copy_dir_recursive(&dir, &backup);
             let _ = std::fs::remove_dir_all(&dir);
         }
     }

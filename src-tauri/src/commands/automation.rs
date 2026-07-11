@@ -325,17 +325,6 @@ impl Default for YoloModeConfig {
     }
 }
 
-/// Classify a tool call's danger level for YOLO mode permission checking
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub enum ToolDangerLevel {
-    /// Read-only operations: file read, list, search, status checks
-    Safe,
-    /// Moderate operations: file write (non-destructive), create, sync
-    Moderate,
-    /// Dangerous operations: file delete, overwrite, system command, network expose
-    Dangerous,
-}
-
 /// Check if a tool call should be auto-approved under current YOLO mode
 #[tauri::command]
 pub fn check_yolo_permission(

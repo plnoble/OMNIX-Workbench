@@ -32,16 +32,6 @@ pub enum EdgeType {
 }
 
 impl EdgeType {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::DependsOn => "depends_on",
-            Self::Specializes => "specializes",
-            Self::ComposesWith => "composes_with",
-            Self::SimilarTo => "similar_to",
-            Self::ConflictsWith => "conflicts_with",
-        }
-    }
-
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "depends_on" => Some(Self::DependsOn),
@@ -135,15 +125,6 @@ pub struct SetValidation {
     pub suggestions: Vec<String>,
 }
 
-/// Propose result (dry-run)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProposeResult {
-    pub would_add: Option<SkillEdge>,
-    pub would_remove: Option<SkillEdge>,
-    pub related_edges: Vec<SkillEdge>,
-    pub would_cycle: bool,
-}
-
 impl SkillGraph {
     pub fn new() -> Self {
         Self {
@@ -219,40 +200,6 @@ impl SkillGraph {
 
     // ── Propose / Commit ───────────────────────────────
 
-    /// Propose an edge addition (dry-run)
-    pub fn propose_add(&self, source: &str, target: &str, edge_type: EdgeType, reason: &str) -> ProposeResult {
-        let edge = SkillEdge {
-            source: source.to_string(),
-            target: target.to_string(),
-            edge_type: edge_type.clone(),
-            reason: reason.to_string(),
-            origin: "manual".into(),
-        };
-
-        let would_cycle = self.would_create_cycle(source, target, &edge_type);
-
-        // Check for contradictions
-        let has_conflict = self.edges.iter().any(|e| {
-            (e.source == source && e.target == target && e.edge_type == EdgeType::ConflictsWith) ||
-            (e.source == target && e.target == source && e.edge_type == EdgeType::ConflictsWith)
-        });
-        let has_positive = edge_type != EdgeType::ConflictsWith;
-        let would_contradict = has_conflict && has_positive;
-
-        // Find related edges between these nodes
-        let related: Vec<SkillEdge> = self.edges.iter()
-            .filter(|e| (e.source == source && e.target == target) || (e.source == target && e.target == source))
-            .cloned()
-            .collect();
-
-        ProposeResult {
-            would_add: if !would_cycle && !would_contradict { Some(edge) } else { None },
-            would_remove: None,
-            related_edges: related,
-            would_cycle,
-        }
-    }
-
     /// Commit an edge addition
     pub fn commit_add(&mut self, edge: SkillEdge) -> bool {
         // Check for duplicates
@@ -301,27 +248,6 @@ impl SkillGraph {
             }
         });
         self.edges.len() < before
-    }
-
-    /// Rollback last N mutations
-    pub fn rollback(&mut self, steps: usize) -> usize {
-        let mut reverted = 0;
-        for _ in 0..steps {
-            if let Some(mutation) = self.history.pop() {
-                match mutation.action.as_str() {
-                    "add" => {
-                        self.commit_remove(&mutation.edge.source, &mutation.edge.target, &mutation.edge.edge_type);
-                        reverted += 1;
-                    }
-                    "remove" => {
-                        self.edges.push(mutation.edge);
-                        reverted += 1;
-                    }
-                    _ => {}
-                }
-            }
-        }
-        reverted
     }
 
     // ── Conflict-Aware Search ──────────────────────────

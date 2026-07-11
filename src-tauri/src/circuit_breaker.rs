@@ -172,19 +172,6 @@ pub fn reset_circuit(db: &crate::db::DbManager, platform_id: &str) {
 // Session Log Usage Tracking
 // ══════════════════════════════════════════════════
 
-/// Usage entry parsed from session logs
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionUsageEntry {
-    pub session_id: String,
-    pub agent: String,
-    pub model: String,
-    pub prompt_tokens: i64,
-    pub completion_tokens: i64,
-    pub total_tokens: i64,
-    pub cost_estimate: f64,
-    pub timestamp: String,
-}
-
 /// Model pricing table (cost per 1M tokens)
 pub fn get_model_pricing() -> HashMap<String, (f64, f64)> {
     // (input_cost_per_1m, output_cost_per_1m)

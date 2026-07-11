@@ -116,16 +116,6 @@ pub struct GraphStats {
     pub edge_count: u32,
 }
 
-/// Change classification for incremental updates
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum ChangeClass {
-    None,
-    Cosmetic,
-    Structural,
-    Architecture,
-    Full,
-}
-
 /// Fingerprint for a file (structural signature, not content hash)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileFingerprint {
@@ -224,33 +214,6 @@ pub fn compute_fingerprint(path: &PathBuf) -> Option<FileFingerprint> {
         imports,
         exports,
     })
-}
-
-/// Classify the change between old and new fingerprints
-pub fn classify_change(old: Option<&FileFingerprint>, new: &FileFingerprint) -> ChangeClass {
-    match old {
-        None => ChangeClass::Structural, // New file
-        Some(old_fp) => {
-            if old_fp.structural_hash == new.structural_hash {
-                if old_fp.content_hash == new.content_hash {
-                    ChangeClass::None
-                } else {
-                    ChangeClass::Cosmetic
-                }
-            } else {
-                // Structural change — check severity
-                let func_diff = (old_fp.functions.len() as i32 - new.functions.len() as i32).abs();
-                let class_diff = (old_fp.classes.len() as i32 - new.classes.len() as i32).abs();
-                let import_diff = (old_fp.imports.len() as i32 - new.imports.len() as i32).abs();
-
-                if func_diff > 5 || class_diff > 3 || import_diff > 5 {
-                    ChangeClass::Architecture
-                } else {
-                    ChangeClass::Structural
-                }
-            }
-        }
-    }
 }
 
 // ══════════════════════════════════════════════════
