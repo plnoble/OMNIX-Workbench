@@ -10,7 +10,7 @@
  * All business logic lives in hooks. All rendering lives in components.
  */
 
-import { useState, useEffect, useRef, Suspense, lazy, useMemo } from "react";
+import { useState, useEffect, useRef, Suspense, lazy, useMemo, type ComponentType } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 // Global shortcuts registered on Rust side (lib.rs) for reliability
@@ -88,6 +88,28 @@ const QuickAssistantTab = lazy(() => import("@/components/tabs/QuickAssistantTab
 const AssistantsTab = lazy(() => import("@/components/tabs/AssistantsTab").then(m => ({ default: m.AssistantsTab })));
 const SettingsTab = lazy(() => import("@/components/tabs/SettingsTab").then(m => ({ default: m.SettingsTab })));
 const WelcomeTour = lazy(() => import("./WelcomeTour").then(m => ({ default: m.WelcomeTour })));
+
+// ── Prop-less tab registry ───────────────────────────
+// Pages that take no props render via one lookup instead of a conditional
+// per tab — adding such a page is a single entry here (+ appRegistry.tsx).
+const SIMPLE_TABS: Record<string, ComponentType> = {
+  compare: CompareTab,
+  hooks: HooksTab,
+  notes: NotesTab,
+  translate: TranslateTab,
+  profile: ProfileTab,
+  studio: StudioTab,
+  slides: SlidesTab,
+  autopilot: AutopilotsTab,
+  write: WriteTab,
+  usage: UsageDashboardTab,
+  "auth-center": AuthCenterTab,
+  "local-models": LocalModelPickerTab,
+  "code-map": CodeMapTab,
+  memories: MemoryTab,
+  skills: SkillTab,
+  knowledge: KnowledgeTab,
+};
 
 // ── Suspense fallback ────────────────────────────────
 function LazyFallback() {
@@ -377,6 +399,7 @@ function MainApp() {
   );
 
   const showConversations = activeTab === "chat" || activeTab === "work" || activeTab === "team";
+  const SimpleTabComponent = SIMPLE_TABS[activeTab];
   const showPreviewButton = !!(convs.chatWorkspace && convs.chatWorkspace !== "direct");
 
   // ── Render ────────────────────────────────────────
@@ -513,24 +536,10 @@ function MainApp() {
               />
             )}
 
-            {activeTab === "compare" && <CompareTab />}
-            {activeTab === "hooks" && <HooksTab />}
-            {activeTab === "notes" && <NotesTab />}
-            {activeTab === "translate" && <TranslateTab />}
-            {activeTab === "profile" && <ProfileTab />}
-            {activeTab === "studio" && <StudioTab />}
-            {activeTab === "slides" && <SlidesTab />}
-            {activeTab === "autopilot" && <AutopilotsTab />}
-            {activeTab === "write" && <WriteTab />}
-            {activeTab === "usage" && <UsageDashboardTab />}
-            {activeTab === "auth-center" && <AuthCenterTab />}
-            {activeTab === "local-models" && <LocalModelPickerTab />}
-            {activeTab === "code-map" && <CodeMapTab />}
-            {activeTab === "memories" && <MemoryTab />}
-            {activeTab === "skills" && <SkillTab />}
-            {activeTab === "knowledge" && <KnowledgeTab />}
-            {activeTab === "labs" && <LabsTab onNavigate={handleTabChange} />}
-            {activeTab === "code-analysis" && <LabsTab onNavigate={handleTabChange} />}
+            {SimpleTabComponent && <SimpleTabComponent />}
+            {(activeTab === "labs" || activeTab === "code-analysis") && (
+              <LabsTab onNavigate={handleTabChange} />
+            )}
             {activeTab === "models" && (
               <ModelsTab
                 platforms={platforms.platforms}
