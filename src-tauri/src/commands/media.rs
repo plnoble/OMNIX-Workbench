@@ -272,10 +272,24 @@ pub async fn media_generate_image(
     size: String,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<MediaTask, String> {
+    media_generate_image_core(&db, &platform_id, &model, &prompt, &size).await
+}
+
+/// Reusable core so other backend features (e.g. slide auto-illustration) can
+/// generate an image without a Tauri `State`.
+pub(crate) async fn media_generate_image_core(
+    db: &DbManager,
+    platform_id: &str,
+    model: &str,
+    prompt: &str,
+    size: &str,
+) -> Result<MediaTask, String> {
+    let (platform_id, model, prompt, size) =
+        (platform_id.to_string(), model.to_string(), prompt.to_string(), size.to_string());
     if prompt.trim().is_empty() {
         return Err("提示词不能为空".into());
     }
-    let (api_key, api_address) = resolve_media_platform(&db, &platform_id)?;
+    let (api_key, api_address) = resolve_media_platform(db, &platform_id)?;
 
     let task_id = format!("media_{}", chrono::Utc::now().timestamp_micros());
     let task = MediaTask {
@@ -292,12 +306,12 @@ pub async fn media_generate_image(
         error: None,
         created_at: String::new(),
     };
-    insert_task(&db, &task)?;
+    insert_task(db, &task)?;
 
     match generate_image_inner(&api_key, &api_address, &model, &prompt, &size, &task_id).await {
         Ok((path, raw)) => {
             update_task(
-                &db,
+                db,
                 &task_id,
                 MediaTaskStatus::Completed,
                 Some(100),
@@ -305,11 +319,11 @@ pub async fn media_generate_image(
                 Some(&raw),
                 None,
             )?;
-            get_task(&db, &task_id)
+            get_task(db, &task_id)
         }
         Err(error) => {
             let _ = update_task(
-                &db,
+                db,
                 &task_id,
                 MediaTaskStatus::Failed,
                 None,

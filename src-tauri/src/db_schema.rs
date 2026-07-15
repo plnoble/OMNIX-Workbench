@@ -1031,6 +1031,15 @@ impl DbManager {
             )",
             [],
         )?;
+        // Reusable presentation brand masters (D).
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS deck_brands (
+                name TEXT PRIMARY KEY,
+                brand_json TEXT NOT NULL DEFAULT '{}',
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )?;
         conn.execute(
             "DELETE FROM conversations WHERE id IN ('mock_sess_cors', 'mock_sess_lock')",
             [],

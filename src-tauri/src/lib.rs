@@ -15,6 +15,7 @@ mod local_models;
 mod media;
 mod model_knowledge;
 mod oauth;
+mod pptx;
 mod proc;
 mod prompt_guard;
 mod proxy;
@@ -756,6 +757,15 @@ pub fn run() {
             commands::edit_deck_ai,
             commands::export_deck_html,
             commands::export_deck_pdf,
+            commands::export_deck_pptx,
+            commands::generate_outline,
+            commands::expand_outline,
+            commands::edit_slide_ai,
+            commands::suggest_slide_image_prompt,
+            commands::generate_slide_image,
+            commands::list_brands,
+            commands::save_brand,
+            commands::delete_brand,
             // Skill pool governance (#3 技能池: 待定/审核/正式 + 网关直调)
             commands::list_skill_pool,
             commands::skill_pool_stats,

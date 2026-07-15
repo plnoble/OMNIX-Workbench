@@ -11,23 +11,30 @@ import {
   ArrowUp,
   FileDown,
   FileText,
+  Image as ImageIcon,
+  ListTree,
   Loader2,
+  Palette,
   Plus,
   Presentation,
   Sparkles,
   Trash2,
   Wand2,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
-import type { PlatformModel } from "@/types";
+import type { PlatformModel, ModelPlatform } from "@/types";
 import {
   DECK_THEMES,
   modelApi,
+  platformApi,
   slidesApi,
+  type Brand,
   type Deck,
   type DeckMeta,
+  type Outline,
   type Slide,
 } from "@/lib/tauri-api";
 
@@ -68,6 +75,22 @@ export function SlidesTab() {
   const [exporting, setExporting] = useState(false);
   const [saveState, setSaveState] = useState<"saved" | "saving" | "dirty">("saved");
   const [scale, setScale] = useState(0.5);
+
+  // A: 大纲两阶段
+  const [outline, setOutline] = useState<Outline | null>(null);
+  const [expanding, setExpanding] = useState(false);
+  // B: 单页 vs 整份
+  const [editScope, setEditScope] = useState<"slide" | "deck">("slide");
+  // C: 配图
+  const [imgOpen, setImgOpen] = useState(false);
+  const [imgPrompt, setImgPrompt] = useState("");
+  const [imgPlatforms, setImgPlatforms] = useState<ModelPlatform[]>([]);
+  const [imgPlatform, setImgPlatform] = useState("");
+  const [imgModel, setImgModel] = useState("gpt-image-1");
+  const [imaging, setImaging] = useState(false);
+  // D: 母版
+  const [brandOpen, setBrandOpen] = useState(false);
+  const [brands, setBrands] = useState<Brand[]>([]);
 
   const previewBoxRef = useRef<HTMLDivElement | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -217,6 +240,44 @@ export function SlidesTab() {
     }
   };
 
+  // ── A：先出大纲，确认后再展开 ──
+  const handleOutline = async () => {
+    if (!topic.trim()) {
+      toast.error("先描述一下要做什么演示");
+      return;
+    }
+    if (!chatModel) {
+      toast.error("请先在「模型中心」启用一个对话模型");
+      return;
+    }
+    setGenerating(true);
+    try {
+      setOutline(await slidesApi.generateOutline(topic.trim(), chatModel, slideCount));
+    } catch (e) {
+      toast.error(`生成大纲失败：${e}`);
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const handleExpand = async () => {
+    if (!outline || outline.items.length === 0) return;
+    setExpanding(true);
+    try {
+      const rec = await slidesApi.expandOutline(outline, chatModel);
+      toast.success(`已按大纲生成 ${outline.items.length} 页`);
+      setOutline(null);
+      setTopic("");
+      await loadDecks();
+      await openDeck(rec.id);
+    } catch (e) {
+      toast.error(`展开失败：${e}`);
+    } finally {
+      setExpanding(false);
+    }
+  };
+
+  // ── B：单页精修（默认）/ 整份修改 ──
   const handleAiEdit = async () => {
     if (!deck || !instruction.trim()) return;
     if (!chatModel) {
@@ -228,13 +289,16 @@ export function SlidesTab() {
       // Flush any pending manual edits first so the AI sees the latest deck.
       if (saveTimer.current) clearTimeout(saveTimer.current);
       await slidesApi.save(deck.id, JSON.stringify(deck));
-      const rec = await slidesApi.editAi(deck.id, instruction.trim(), chatModel);
+      const rec =
+        editScope === "slide"
+          ? await slidesApi.editSlide(deck.id, selected, instruction.trim(), chatModel)
+          : await slidesApi.editAi(deck.id, instruction.trim(), chatModel);
       const next = JSON.parse(rec.model_json) as Deck;
       setDeck(next);
       setSelected((i) => Math.min(i, next.slides.length - 1));
       setSaveState("saved");
       setInstruction("");
-      toast.success("AI 修改完成");
+      toast.success(editScope === "slide" ? `第 ${selected + 1} 页已修改` : "整份已修改");
       void loadDecks();
     } catch (e) {
       toast.error(`AI 修改失败：${e}`);
@@ -243,14 +307,83 @@ export function SlidesTab() {
     }
   };
 
-  const handleExport = async (kind: "html" | "pdf") => {
+  // ── C：自动配图 ──
+  const openImageDialog = async () => {
+    if (!deck) return;
+    setImgOpen(true);
+    try {
+      const [prompt, plats] = await Promise.all([
+        slidesApi.suggestImagePrompt(JSON.stringify(deck), selected),
+        imgPlatforms.length > 0 ? Promise.resolve(imgPlatforms) : platformApi.list(),
+      ]);
+      setImgPrompt(prompt);
+      setImgPlatforms(plats);
+      if (!imgPlatform && plats.length > 0) setImgPlatform(plats[0].id);
+    } catch (e) {
+      toast.error(String(e));
+    }
+  };
+
+  const handleGenImage = async () => {
+    if (!deck) return;
+    if (!imgPlatform) {
+      toast.error("请先在「模型中心」添加一个支持生图的供应商");
+      return;
+    }
+    setImaging(true);
+    try {
+      const rec = await slidesApi.generateImage(
+        deck.id, selected, imgPlatform, imgModel, imgPrompt,
+      );
+      setDeck(JSON.parse(rec.model_json) as Deck);
+      setSaveState("saved");
+      setImgOpen(false);
+      toast.success("配图已插入本页");
+    } catch (e) {
+      toast.error(`生图失败：${e}`);
+    } finally {
+      setImaging(false);
+    }
+  };
+
+  // ── D：母版 ──
+  const openBrandDialog = async () => {
+    setBrandOpen(true);
+    try {
+      setBrands(await slidesApi.listBrands());
+    } catch { /* 母版列表为空不是错误 */ }
+  };
+
+  const applyBrand = (brand: Brand | null) => {
+    mutateDeck((d) => { d.brand = brand; return d; });
+    toast.success(brand ? `已应用母版「${brand.name}」` : "已清除母版");
+  };
+
+  const saveCurrentBrand = async () => {
+    if (!deck?.brand?.name?.trim()) {
+      toast.error("给母版起个名字再保存");
+      return;
+    }
+    try {
+      await slidesApi.saveBrand(deck.brand);
+      setBrands(await slidesApi.listBrands());
+      toast.success(`母版「${deck.brand.name}」已保存，可在其它演示复用`);
+    } catch (e) {
+      toast.error(String(e));
+    }
+  };
+
+  const handleExport = async (kind: "html" | "pdf" | "pptx") => {
     if (!deck) return;
     setExporting(true);
     try {
+      const json = JSON.stringify(deck);
       const path =
         kind === "html"
-          ? await slidesApi.exportHtml(JSON.stringify(deck))
-          : await slidesApi.exportPdf(JSON.stringify(deck));
+          ? await slidesApi.exportHtml(json)
+          : kind === "pdf"
+            ? await slidesApi.exportPdf(json)
+            : await slidesApi.exportPptx(json);
       toast.success(`已导出：${path}`);
     } catch (e) {
       toast.error(String(e));
@@ -329,16 +462,152 @@ export function SlidesTab() {
                   className="h-9 w-16 rounded-lg border border-border bg-background px-2 text-sm"
                 />
               </label>
-              <button
-                onClick={handleGenerate}
-                disabled={generating}
-                className="ml-auto inline-flex h-9 items-center gap-2 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
-              >
-                {generating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wand2 className="h-4 w-4" />}
-                {generating ? "生成中…" : "生成"}
-              </button>
+              <div className="ml-auto flex items-center gap-2">
+                <button
+                  onClick={handleGenerate}
+                  disabled={generating || expanding}
+                  title="跳过大纲，直接一次性生成整份"
+                  className="inline-flex h-9 items-center gap-2 rounded-lg border border-border px-3 text-sm hover:bg-muted/40 disabled:opacity-50"
+                >
+                  <Wand2 className="h-4 w-4" /> 直接生成
+                </button>
+                <button
+                  onClick={() => void handleOutline()}
+                  disabled={generating || expanding}
+                  title="先出大纲，你确认/改完再展开成正式内容（推荐）"
+                  className="inline-flex h-9 items-center gap-2 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                >
+                  {generating ? <Loader2 className="h-4 w-4 animate-spin" /> : <ListTree className="h-4 w-4" />}
+                  {generating ? "规划中…" : "先出大纲"}
+                </button>
+              </div>
             </div>
           </div>
+
+          {/* A: 大纲确认 —— 跑偏时改 3 秒大纲，不用重生成整份 */}
+          {outline && (
+            <div className="rounded-xl border border-primary/40 bg-primary/5 p-5">
+              <div className="flex flex-wrap items-center gap-2">
+                <ListTree className="h-4 w-4 text-primary" />
+                <input
+                  value={outline.title}
+                  onChange={(e) => setOutline({ ...outline, title: e.target.value })}
+                  className="h-8 min-w-52 flex-1 rounded-md border border-transparent bg-transparent px-2 text-sm font-semibold outline-none hover:border-border focus:border-primary"
+                />
+                <select
+                  value={outline.theme}
+                  onChange={(e) => setOutline({ ...outline, theme: e.target.value })}
+                  className="h-8 rounded-md border border-border bg-background px-2 text-xs"
+                >
+                  {DECK_THEMES.map((t) => (
+                    <option key={t} value={t}>{THEME_LABEL[t]}</option>
+                  ))}
+                </select>
+                <span className="text-xs text-muted-foreground">{outline.items.length} 页</span>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                先确认结构再展开——不满意就直接改这里，比重新生成整份快得多。
+              </p>
+              <div className="mt-3 flex flex-col gap-1.5">
+                {outline.items.map((item, i) => (
+                  <div key={i} className="flex items-start gap-2 rounded-lg border border-border bg-background/60 p-2">
+                    <span className="mt-1.5 w-5 shrink-0 text-center font-mono text-[10px] text-muted-foreground">{i + 1}</span>
+                    <select
+                      value={item.layout}
+                      onChange={(e) => {
+                        const items = [...outline.items];
+                        items[i] = { ...item, layout: e.target.value };
+                        setOutline({ ...outline, items });
+                      }}
+                      className="h-7 shrink-0 rounded border border-border bg-background px-1 text-[11px]"
+                    >
+                      {LAYOUTS.map((l) => (
+                        <option key={l.id} value={l.id}>{l.label}</option>
+                      ))}
+                    </select>
+                    <div className="flex min-w-0 flex-1 flex-col gap-1">
+                      <input
+                        value={item.title}
+                        onChange={(e) => {
+                          const items = [...outline.items];
+                          items[i] = { ...item, title: e.target.value };
+                          setOutline({ ...outline, items });
+                        }}
+                        placeholder="这一页的标题"
+                        className="h-7 w-full rounded border border-border bg-background px-2 text-xs font-medium outline-none focus:border-primary"
+                      />
+                      <textarea
+                        value={item.points.join("\n")}
+                        onChange={(e) => {
+                          const items = [...outline.items];
+                          items[i] = { ...item, points: e.target.value.split("\n").filter((p) => p.trim()) };
+                          setOutline({ ...outline, items });
+                        }}
+                        rows={Math.max(1, item.points.length)}
+                        placeholder="要点提纲（每行一条）"
+                        className="w-full resize-none rounded border border-border bg-background px-2 py-1 text-[11px] leading-5 outline-none focus:border-primary"
+                      />
+                    </div>
+                    <div className="flex shrink-0 flex-col gap-0.5">
+                      <button
+                        onClick={() => {
+                          const items = [...outline.items];
+                          if (i > 0) { [items[i - 1], items[i]] = [items[i], items[i - 1]]; setOutline({ ...outline, items }); }
+                        }}
+                        disabled={i === 0}
+                        className="rounded p-0.5 text-muted-foreground hover:text-foreground disabled:opacity-30"
+                      >
+                        <ArrowUp className="h-3 w-3" />
+                      </button>
+                      <button
+                        onClick={() => {
+                          const items = [...outline.items];
+                          if (i < items.length - 1) { [items[i], items[i + 1]] = [items[i + 1], items[i]]; setOutline({ ...outline, items }); }
+                        }}
+                        disabled={i === outline.items.length - 1}
+                        className="rounded p-0.5 text-muted-foreground hover:text-foreground disabled:opacity-30"
+                      >
+                        <ArrowDown className="h-3 w-3" />
+                      </button>
+                      <button
+                        onClick={() => setOutline({ ...outline, items: outline.items.filter((_, j) => j !== i) })}
+                        className="rounded p-0.5 text-muted-foreground hover:text-destructive"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-3 flex items-center gap-2">
+                <button
+                  onClick={() =>
+                    setOutline({
+                      ...outline,
+                      items: [...outline.items, { layout: "bullets", title: "新页面", points: [] }],
+                    })
+                  }
+                  className="inline-flex h-8 items-center gap-1 rounded-lg border border-dashed border-border px-3 text-xs text-muted-foreground hover:border-primary hover:text-foreground"
+                >
+                  <Plus className="h-3 w-3" /> 加一页
+                </button>
+                <button
+                  onClick={() => setOutline(null)}
+                  className="h-8 rounded-lg border border-border px-3 text-xs hover:bg-muted/40"
+                >
+                  放弃
+                </button>
+                <button
+                  onClick={() => void handleExpand()}
+                  disabled={expanding || outline.items.length === 0}
+                  className="ml-auto inline-flex h-9 items-center gap-2 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                >
+                  {expanding ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+                  {expanding ? `逐页生成中（${outline.items.length} 页并行）…` : "按大纲展开成正式内容"}
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* deck list */}
           <div>
@@ -424,11 +693,26 @@ export function SlidesTab() {
         </span>
         <div className="ml-auto flex items-center gap-2">
           <button
+            onClick={() => void openBrandDialog()}
+            title="母版：主色/字体/Logo/页脚，可保存复用"
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-3 text-sm hover:bg-muted/40"
+          >
+            <Palette className="h-4 w-4" /> 母版
+          </button>
+          <button
             onClick={() => void handleExport("html")}
             disabled={exporting}
             className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-3 text-sm hover:bg-muted/40 disabled:opacity-50"
           >
             <FileText className="h-4 w-4" /> HTML
+          </button>
+          <button
+            onClick={() => void handleExport("pptx")}
+            disabled={exporting}
+            title="导出真正的 PowerPoint 文件（同事可直接编辑）"
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-3 text-sm hover:bg-muted/40 disabled:opacity-50"
+          >
+            <Presentation className="h-4 w-4" /> PPTX
           </button>
           <button
             onClick={() => void handleExport("pdf")}
@@ -674,13 +958,44 @@ export function SlidesTab() {
       {/* AI instruction bar */}
       <div className="flex items-center gap-2 border-t border-border px-4 py-2.5">
         <Sparkles className="h-4 w-4 shrink-0 text-primary" />
+        {/* B: 默认只改这一页——快 5-10 倍且不会误伤别页 */}
+        <div className="flex shrink-0 overflow-hidden rounded-lg border border-border">
+          {(
+            [
+              ["slide", `本页 ${selected + 1}`],
+              ["deck", "整份"],
+            ] as ["slide" | "deck", string][]
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              onClick={() => setEditScope(id)}
+              className={cn(
+                "px-2.5 py-1.5 text-xs",
+                editScope === id ? "bg-primary text-primary-foreground" : "hover:bg-muted/40",
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <button
+          onClick={() => void openImageDialog()}
+          title="为这一页自动配图"
+          className="inline-flex h-9 shrink-0 items-center gap-1 rounded-lg border border-border px-2.5 text-xs hover:bg-muted/40"
+        >
+          <ImageIcon className="h-3.5 w-3.5" /> 配图
+        </button>
         <input
           value={instruction}
           onChange={(e) => setInstruction(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.nativeEvent.isComposing) void handleAiEdit();
           }}
-          placeholder={`用自然语言修改整个演示，例如：第 ${selected + 1} 页要点压缩成 3 条；或：整体口吻更正式，换成商务蓝主题`}
+          placeholder={
+            editScope === "slide"
+              ? `只改第 ${selected + 1} 页，例如：要点压缩成 3 条 / 换成双栏对比`
+              : "改整份，例如：整体口吻更正式；统一术语"
+          }
           className="h-9 flex-1 rounded-lg border border-border bg-background px-3 text-sm outline-none focus:border-primary"
           disabled={aiEditing}
         />
@@ -704,6 +1019,139 @@ export function SlidesTab() {
           {aiEditing ? "修改中…" : "AI 修改"}
         </button>
       </div>
+
+      {/* C: 配图 */}
+      {imgOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-8" onClick={() => !imaging && setImgOpen(false)}>
+          <div className="flex w-full max-w-xl flex-col gap-3 rounded-xl border border-border bg-background p-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-semibold">
+                <ImageIcon className="mr-1 inline h-4 w-4 text-primary" /> 为第 {selected + 1} 页配图
+              </span>
+              <button onClick={() => setImgOpen(false)} disabled={imaging}>
+                <X className="h-4 w-4 text-muted-foreground hover:text-foreground" />
+              </button>
+            </div>
+            <p className="text-xs text-muted-foreground">提示词已按本页内容自动拟好，可以改。生成后图片存进本地媒体库并插入本页。</p>
+            <textarea
+              value={imgPrompt}
+              onChange={(e) => setImgPrompt(e.target.value)}
+              rows={4}
+              className="w-full resize-none rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
+            />
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                value={imgPlatform}
+                onChange={(e) => setImgPlatform(e.target.value)}
+                className="h-9 rounded-lg border border-border bg-background px-2 text-sm"
+              >
+                {imgPlatforms.length === 0 && <option value="">（无供应商）</option>}
+                {imgPlatforms.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+              <input
+                value={imgModel}
+                onChange={(e) => setImgModel(e.target.value)}
+                placeholder="生图模型"
+                className="h-9 w-44 rounded-lg border border-border bg-background px-2 text-sm outline-none focus:border-primary"
+              />
+              <button
+                onClick={() => void handleGenImage()}
+                disabled={imaging || !imgPrompt.trim()}
+                className="ml-auto inline-flex h-9 items-center gap-2 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+              >
+                {imaging ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+                {imaging ? "生成中…" : "生成并插入"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* D: 母版 */}
+      {brandOpen && deck && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-8" onClick={() => setBrandOpen(false)}>
+          <div className="flex max-h-full w-full max-w-lg flex-col gap-3 overflow-y-auto rounded-xl border border-border bg-background p-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-semibold">
+                <Palette className="mr-1 inline h-4 w-4 text-primary" /> 母版 / 品牌
+              </span>
+              <button onClick={() => setBrandOpen(false)}>
+                <X className="h-4 w-4 text-muted-foreground hover:text-foreground" />
+              </button>
+            </div>
+            <p className="text-xs text-muted-foreground">在主题之上覆盖品牌样式，留空的项沿用主题默认值。保存后可在其它演示一键复用。</p>
+
+            {brands.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-xs text-muted-foreground">已存母版：</span>
+                {brands.map((b) => (
+                  <span key={b.name} className="inline-flex items-center overflow-hidden rounded border border-border">
+                    <button onClick={() => applyBrand(b)} className="px-2 py-0.5 text-xs hover:bg-muted/40">{b.name}</button>
+                    <button
+                      onClick={async () => {
+                        await slidesApi.deleteBrand(b.name).catch(() => {});
+                        setBrands(await slidesApi.listBrands());
+                      }}
+                      className="border-l border-border px-1 py-0.5 text-muted-foreground hover:text-destructive"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {(
+              [
+                ["name", "母版名称", "如：公司蓝"],
+                ["primary", "主色（标题）", "#2f6fed"],
+                ["accent", "强调色（项目符号）", "#4dd0e1"],
+                ["background", "背景", "#0b1020 或 linear-gradient(...)"],
+                ["text", "正文颜色", "#aab8dd"],
+                ["font", "字体", "'Inter','Microsoft YaHei',sans-serif"],
+                ["logo", "Logo 图片路径/URL", "D:\\brand\\logo.png"],
+                ["footer", "页脚文字", "内部资料 · 2026"],
+              ] as [keyof Brand, string, string][]
+            ).map(([key, label, ph]) => (
+              <label key={key} className="text-xs font-medium text-muted-foreground">
+                {label}
+                <input
+                  value={deck.brand?.[key] ?? ""}
+                  onChange={(e) =>
+                    mutateDeck((d) => {
+                      const base: Brand = d.brand ?? {
+                        name: "", primary: "", accent: "", background: "",
+                        text: "", font: "", logo: "", footer: "",
+                      };
+                      d.brand = { ...base, [key]: e.target.value };
+                      return d;
+                    })
+                  }
+                  placeholder={ph}
+                  className="mt-1 h-8 w-full rounded-md border border-border bg-background px-2 font-mono text-xs text-foreground outline-none focus:border-primary"
+                />
+              </label>
+            ))}
+
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => applyBrand(null)}
+                className="h-8 rounded-lg border border-border px-3 text-xs hover:bg-muted/40"
+              >
+                清除母版
+              </button>
+              <button
+                onClick={() => void saveCurrentBrand()}
+                className="ml-auto inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary px-4 text-xs font-medium text-primary-foreground hover:opacity-90"
+              >
+                保存为可复用母版
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

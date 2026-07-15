@@ -380,11 +380,32 @@ export interface Slide {
   image?: string;
   notes?: string;
 }
+export interface Brand {
+  name: string;
+  primary: string;
+  accent: string;
+  background: string;
+  text: string;
+  font: string;
+  logo: string;
+  footer: string;
+}
 export interface Deck {
   id: string;
   title: string;
   theme: string;
   slides: Slide[];
+  brand?: Brand | null;
+}
+export interface OutlineItem {
+  layout: string;
+  title: string;
+  points: string[];
+}
+export interface Outline {
+  title: string;
+  theme: string;
+  items: OutlineItem[];
 }
 export interface DeckMeta {
   id: string;
@@ -427,6 +448,35 @@ export const slidesApi = {
     invoke<string>("export_deck_html", { modelJson }),
   exportPdf: (modelJson: string) =>
     invoke<string>("export_deck_pdf", { modelJson }),
+  // E: real PowerPoint from the same JSON model
+  exportPptx: (modelJson: string) =>
+    invoke<string>("export_deck_pptx", { modelJson }),
+  // A: two-stage generation (outline → expand)
+  generateOutline: (topic: string, chatModel: string, slideCount?: number) =>
+    invoke<Outline>("generate_outline", { topic, chatModel, slideCount: slideCount ?? null }),
+  expandOutline: (outline: Outline, chatModel: string) =>
+    invoke<DeckRecord>("expand_outline", { outline, chatModel }),
+  // B: single-slide diff edit
+  editSlide: (id: string, slideIndex: number, instruction: string, chatModel: string) =>
+    invoke<DeckRecord>("edit_slide_ai", { id, slideIndex, instruction, chatModel }),
+  // C: auto illustration
+  suggestImagePrompt: (modelJson: string, slideIndex: number) =>
+    invoke<string>("suggest_slide_image_prompt", { modelJson, slideIndex }),
+  generateImage: (
+    id: string,
+    slideIndex: number,
+    platformId: string,
+    model: string,
+    prompt: string,
+    size?: string,
+  ) =>
+    invoke<DeckRecord>("generate_slide_image", {
+      id, slideIndex, platformId, model, prompt, size: size ?? null,
+    }),
+  // D: reusable brand masters
+  listBrands: () => invoke<Brand[]>("list_brands"),
+  saveBrand: (brand: Brand) => invoke<void>("save_brand", { brand }),
+  deleteBrand: (name: string) => invoke<void>("delete_brand", { name }),
 };
 
 // ── Write (Markdown writing workspace)──
