@@ -420,6 +420,11 @@ export interface DeckRecord {
   theme: string;
   model_json: string;
 }
+export interface DeckVersion {
+  id: number;
+  label: string;
+  created_at: string;
+}
 export const DECK_THEMES = ["midnight", "minimal", "corporate", "sunset"] as const;
 
 export const slidesApi = {
@@ -473,6 +478,10 @@ export const slidesApi = {
     invoke<DeckRecord>("generate_slide_image", {
       id, slideIndex, platformId, model, prompt, size: size ?? null,
     }),
+  // Version history — every AI mutation is undoable
+  listVersions: (id: string) => invoke<DeckVersion[]>("list_deck_versions", { id }),
+  restoreVersion: (id: string, versionId?: number) =>
+    invoke<DeckRecord>("restore_deck_version", { id, versionId: versionId ?? null }),
   // D: reusable brand masters
   listBrands: () => invoke<Brand[]>("list_brands"),
   saveBrand: (brand: Brand) => invoke<void>("save_brand", { brand }),

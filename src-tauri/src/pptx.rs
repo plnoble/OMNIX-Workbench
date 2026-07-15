@@ -6,9 +6,10 @@
 //! stay predictable" property is preserved. A pptx is just a ZIP of XML parts;
 //! we emit one fixed master/layout/theme plus one `slideN.xml` per slide.
 //!
-//! Scope: text (title/subtitle/bullets/body/quote/columns), pictures, speaker
-//! notes are omitted (PowerPoint renders fine without a notes part). Everything
-//! is absolutely positioned in EMU, mirroring the 1280×720 CSS canvas.
+//! Scope: text (title/subtitle/bullets/body/quote/columns), pictures, and
+//! speaker notes (exported as real notesSlides so they show in PowerPoint's
+//! presenter view). Everything is absolutely positioned in EMU, mirroring the
+//! 1280×720 CSS canvas.
 
 use std::io::{Cursor, Write};
 
@@ -263,6 +264,22 @@ const THEME_XML: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"
 const SLIDE_MASTER_XML: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <p:sldMaster xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:bg><p:bgPr><a:solidFill><a:schemeClr val="bg1"/></a:solidFill><a:effectLst/></p:bgPr></p:bg><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr></p:spTree></p:cSld><p:clrMap bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" hlink="hlink" folHlink="folHlink"/><p:sldLayoutIdLst><p:sldLayoutId id="2147483649" r:id="rId1"/></p:sldLayoutIdLst></p:sldMaster>"#;
 
+const NOTES_MASTER_XML: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:notesMaster xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr></p:spTree></p:cSld><p:clrMap bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" hlink="hlink" folHlink="folHlink"/></p:notesMaster>"#;
+
+/// One notesSlide part carrying a slide's speaker notes.
+fn notes_xml(notes: &str) -> String {
+    let paras: String = notes
+        .split('\n')
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| format!(r#"<a:p><a:r><a:rPr lang="zh-CN" dirty="0"/><a:t>{}</a:t></a:r></a:p>"#, xml_esc(l)))
+        .collect();
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:notes xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr><p:sp><p:nvSpPr><p:cNvPr id="2" name="Notes Placeholder"/><p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr><p:ph type="body" idx="1"/></p:nvPr></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/>{paras}</p:txBody></p:sp></p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:notes>"#
+    )
+}
+
 const SLIDE_LAYOUT_XML: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <p:sldLayout xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" type="blank" preserve="1"><p:cSld name="Blank"><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr></p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sldLayout>"#;
 
@@ -289,16 +306,22 @@ pub fn build_pptx(deck: &Deck) -> Result<Vec<u8>, String> {
         medias.push(m);
     }
     let n = slides_xml.len();
+    let has_notes: Vec<bool> = deck.slides.iter().map(|s| !s.notes.trim().is_empty()).collect();
 
     // [Content_Types].xml
     let mut ct = String::from(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Default Extension="jpg" ContentType="image/jpeg"/><Default Extension="jpeg" ContentType="image/jpeg"/><Default Extension="gif" ContentType="image/gif"/><Default Extension="webp" ContentType="image/webp"/><Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/><Override PartName="/ppt/slideMasters/slideMaster1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml"/><Override PartName="/ppt/slideLayouts/slideLayout1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml"/><Override PartName="/ppt/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>"#,
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Default Extension="jpg" ContentType="image/jpeg"/><Default Extension="jpeg" ContentType="image/jpeg"/><Default Extension="gif" ContentType="image/gif"/><Default Extension="webp" ContentType="image/webp"/><Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/><Override PartName="/ppt/slideMasters/slideMaster1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml"/><Override PartName="/ppt/slideLayouts/slideLayout1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml"/><Override PartName="/ppt/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/><Override PartName="/ppt/notesMasters/notesMaster1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.notesMaster+xml"/>"#,
     );
     for i in 1..=n {
         ct.push_str(&format!(
             r#"<Override PartName="/ppt/slides/slide{i}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>"#
         ));
+        if has_notes[i - 1] {
+            ct.push_str(&format!(
+                r#"<Override PartName="/ppt/notesSlides/notesSlide{i}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.notesSlide+xml"/>"#
+            ));
+        }
     }
     ct.push_str("</Types>");
     add(&mut zip, "[Content_Types].xml", ct.as_bytes())?;
@@ -324,7 +347,8 @@ pub fn build_pptx(deck: &Deck) -> Result<Vec<u8>, String> {
         "ppt/presentation.xml",
         format!(
             r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<p:presentation xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" saveSubsetFonts="1"><p:sldMasterIdLst><p:sldMasterId id="2147483648" r:id="rId1"/></p:sldMasterIdLst><p:sldIdLst>{ids}</p:sldIdLst><p:sldSz cx="{SLIDE_W}" cy="{SLIDE_H}"/><p:notesSz cx="{SLIDE_H}" cy="{SLIDE_W}"/></p:presentation>"#
+<p:presentation xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" saveSubsetFonts="1"><p:sldMasterIdLst><p:sldMasterId id="2147483648" r:id="rId1"/></p:sldMasterIdLst><p:notesMasterIdLst><p:notesMasterId r:id="rId{notes_master_rid}"/></p:notesMasterIdLst><p:sldIdLst>{ids}</p:sldIdLst><p:sldSz cx="{SLIDE_W}" cy="{SLIDE_H}"/><p:notesSz cx="{SLIDE_H}" cy="{SLIDE_W}"/></p:presentation>"#,
+            notes_master_rid = n + 3,
         )
         .as_bytes(),
     )?;
@@ -341,8 +365,9 @@ pub fn build_pptx(deck: &Deck) -> Result<Vec<u8>, String> {
         ));
     }
     prels.push_str(&format!(
-        r#"<Relationship Id="rId{}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="theme/theme1.xml"/></Relationships>"#,
-        n + 2
+        r#"<Relationship Id="rId{}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="theme/theme1.xml"/><Relationship Id="rId{}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesMaster" Target="notesMasters/notesMaster1.xml"/></Relationships>"#,
+        n + 2,
+        n + 3
     ));
     add(&mut zip, "ppt/_rels/presentation.xml.rels", prels.as_bytes())?;
 
@@ -374,9 +399,40 @@ pub fn build_pptx(deck: &Deck) -> Result<Vec<u8>, String> {
                 m.file
             ));
         }
+        if has_notes[i] {
+            rels.push_str(&format!(
+                r#"<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="../notesSlides/notesSlide{}.xml"/>"#,
+                i + 1
+            ));
+        }
         rels.push_str("</Relationships>");
         add(&mut zip, &format!("ppt/slides/_rels/slide{}.xml.rels", i + 1), rels.as_bytes())?;
+
+        if has_notes[i] {
+            add(
+                &mut zip,
+                &format!("ppt/notesSlides/notesSlide{}.xml", i + 1),
+                notes_xml(&deck.slides[i].notes).as_bytes(),
+            )?;
+            add(
+                &mut zip,
+                &format!("ppt/notesSlides/_rels/notesSlide{}.xml.rels", i + 1),
+                format!(
+                    r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesMaster" Target="../notesMasters/notesMaster1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="../slides/slide{}.xml"/></Relationships>"#,
+                    i + 1
+                )
+                .as_bytes(),
+            )?;
+        }
     }
+    add(&mut zip, "ppt/notesMasters/notesMaster1.xml", NOTES_MASTER_XML.as_bytes())?;
+    add(
+        &mut zip,
+        "ppt/notesMasters/_rels/notesMaster1.xml.rels",
+        br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="../theme/theme1.xml"/></Relationships>"#,
+    )?;
     for m in medias.iter().flatten() {
         add(&mut zip, &format!("ppt/media/{}", m.file), &m.bytes)?;
     }
@@ -440,6 +496,24 @@ mod tests {
         z2.by_name("ppt/slides/slide2.xml").unwrap().read_to_string(&mut s2).unwrap();
         assert!(s2.contains(r#"b="1""#), "**bold** becomes a bold run");
         assert!(s2.contains("<a:buChar char=\"•\"/>"), "bullets get bullet chars");
+    }
+
+    #[test]
+    fn speaker_notes_become_a_notes_slide() {
+        let mut d = deck();
+        d.slides[1].notes = "口播：先讲背景 & 再给数字".into();
+        let bytes = build_pptx(&d).unwrap();
+        let mut z = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let names: Vec<String> = (0..z.len()).map(|i| z.by_index(i).unwrap().name().to_string()).collect();
+        // Slide 1 has no notes → no part; slide 2 does.
+        assert!(!names.contains(&"ppt/notesSlides/notesSlide1.xml".to_string()));
+        assert!(names.contains(&"ppt/notesSlides/notesSlide2.xml".to_string()));
+        assert!(names.contains(&"ppt/notesMasters/notesMaster1.xml".to_string()));
+
+        use std::io::Read;
+        let mut s = String::new();
+        z.by_name("ppt/notesSlides/notesSlide2.xml").unwrap().read_to_string(&mut s).unwrap();
+        assert!(s.contains("先讲背景 &amp; 再给数字"), "notes text escaped + present");
     }
 
     #[test]

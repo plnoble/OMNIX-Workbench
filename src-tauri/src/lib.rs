@@ -758,6 +758,8 @@ pub fn run() {
             commands::export_deck_html,
             commands::export_deck_pdf,
             commands::export_deck_pptx,
+            commands::list_deck_versions,
+            commands::restore_deck_version,
             commands::generate_outline,
             commands::expand_outline,
             commands::edit_slide_ai,

@@ -1031,6 +1031,23 @@ impl DbManager {
             )",
             [],
         )?;
+        // Deck version snapshots — every AI mutation stores the pre-change model
+        // so a bad AI edit is always one click away from being undone.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS deck_versions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                deck_id TEXT NOT NULL,
+                model_json TEXT NOT NULL,
+                label TEXT NOT NULL DEFAULT '',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_deck_versions ON deck_versions(deck_id, id DESC)",
+            [],
+        )?;
+
         // Reusable presentation brand masters (D).
         conn.execute(
             "CREATE TABLE IF NOT EXISTS deck_brands (

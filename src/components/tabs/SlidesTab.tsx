@@ -15,10 +15,12 @@ import {
   ListTree,
   Loader2,
   Palette,
+  Play,
   Plus,
   Presentation,
   Sparkles,
   Trash2,
+  Undo2,
   Wand2,
   X,
 } from "lucide-react";
@@ -30,10 +32,12 @@ import {
   DECK_THEMES,
   modelApi,
   platformApi,
+  shellApi,
   slidesApi,
   type Brand,
   type Deck,
   type DeckMeta,
+  type DeckVersion,
   type Outline,
   type Slide,
 } from "@/lib/tauri-api";
@@ -91,6 +95,11 @@ export function SlidesTab() {
   // D: 母版
   const [brandOpen, setBrandOpen] = useState(false);
   const [brands, setBrands] = useState<Brand[]>([]);
+  // 版本历史（AI 改动可撤销）
+  const [versions, setVersions] = useState<DeckVersion[]>([]);
+  // 放映
+  const [presenting, setPresenting] = useState(false);
+  const [presentHtml, setPresentHtml] = useState("");
 
   const previewBoxRef = useRef<HTMLDivElement | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -202,6 +211,7 @@ export function SlidesTab() {
       setDeck(JSON.parse(rec.model_json) as Deck);
       setSelected(0);
       setSaveState("saved");
+      void refreshVersions(id);
     } catch (e) {
       toast.error(`打开演示失败：${e}`);
     }
@@ -299,6 +309,7 @@ export function SlidesTab() {
       setSaveState("saved");
       setInstruction("");
       toast.success(editScope === "slide" ? `第 ${selected + 1} 页已修改` : "整份已修改");
+      void refreshVersions(deck.id);
       void loadDecks();
     } catch (e) {
       toast.error(`AI 修改失败：${e}`);
@@ -339,10 +350,60 @@ export function SlidesTab() {
       setSaveState("saved");
       setImgOpen(false);
       toast.success("配图已插入本页");
+      void refreshVersions(deck.id);
     } catch (e) {
       toast.error(`生图失败：${e}`);
     } finally {
       setImaging(false);
+    }
+  };
+
+  // ── 撤销 AI 改动 ──
+  const refreshVersions = useCallback(async (deckId: string) => {
+    try {
+      setVersions(await slidesApi.listVersions(deckId));
+    } catch {
+      setVersions([]);
+    }
+  }, []);
+
+  const handleUndo = async () => {
+    if (!deck || versions.length === 0) return;
+    try {
+      const rec = await slidesApi.restoreVersion(deck.id);
+      const next = JSON.parse(rec.model_json) as Deck;
+      setDeck(next);
+      setSelected((i) => Math.min(i, next.slides.length - 1));
+      setSaveState("saved");
+      toast.success(`已撤销：${versions[0].label}`);
+      void refreshVersions(deck.id);
+      void loadDecks();
+    } catch (e) {
+      toast.error(String(e));
+    }
+  };
+
+  // ── 本地图片（AI 生图之外的另一半）──
+  const pickLocalImage = async () => {
+    const file = await shellApi.pickFile();
+    if (!file) return;
+    mutateSlide((s) => {
+      s.image = file;
+      if (s.layout === "bullets" || s.layout === "cover" || s.layout === "section") {
+        s.layout = "image-left";
+      }
+    });
+    toast.success("已插入本地图片");
+  };
+
+  // ── 放映 ──
+  const startPresent = async () => {
+    if (!deck) return;
+    try {
+      setPresentHtml(await slidesApi.render(JSON.stringify(deck), null, false));
+      setPresenting(true);
+    } catch (e) {
+      toast.error(String(e));
     }
   };
 
@@ -693,6 +754,22 @@ export function SlidesTab() {
         </span>
         <div className="ml-auto flex items-center gap-2">
           <button
+            onClick={() => void handleUndo()}
+            disabled={versions.length === 0}
+            title={versions.length > 0 ? `撤销：${versions[0].label}` : "没有可撤销的 AI 改动"}
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-2.5 text-sm hover:bg-muted/40 disabled:opacity-40"
+          >
+            <Undo2 className="h-4 w-4" />
+            撤销{versions.length > 0 ? ` (${versions.length})` : ""}
+          </button>
+          <button
+            onClick={() => void startPresent()}
+            title="全屏放映（方向键翻页，Esc 退出）"
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-2.5 text-sm hover:bg-muted/40"
+          >
+            <Play className="h-4 w-4" /> 放映
+          </button>
+          <button
             onClick={() => void openBrandDialog()}
             title="母版：主色/字体/Logo/页脚，可保存复用"
             className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-3 text-sm hover:bg-muted/40"
@@ -933,13 +1010,22 @@ export function SlidesTab() {
             )}
             {(slide.layout === "image" || slide.layout === "image-left" || slide.layout === "content") && (
               <label className="text-xs font-medium text-muted-foreground">
-                图片 URL
-                <input
-                  value={slide.image ?? ""}
-                  onChange={(e) => mutateSlide((s) => { s.image = e.target.value; })}
-                  placeholder="https://…"
-                  className="mt-1 h-9 w-full rounded-lg border border-border bg-background px-2 text-sm text-foreground"
-                />
+                图片（URL 或本地路径）
+                <div className="mt-1 flex gap-1">
+                  <input
+                    value={slide.image ?? ""}
+                    onChange={(e) => mutateSlide((s) => { s.image = e.target.value; })}
+                    placeholder="https://… 或 D:\\pics\\a.png"
+                    className="h-9 min-w-0 flex-1 rounded-lg border border-border bg-background px-2 text-sm text-foreground"
+                  />
+                  <button
+                    onClick={() => void pickLocalImage()}
+                    title="选择本地图片"
+                    className="inline-flex h-9 shrink-0 items-center rounded-lg border border-border px-2 text-xs hover:bg-muted/40"
+                  >
+                    <ImageIcon className="h-3.5 w-3.5" />
+                  </button>
+                </div>
               </label>
             )}
             <label className="text-xs font-medium text-muted-foreground">
@@ -1019,6 +1105,54 @@ export function SlidesTab() {
           {aiEditing ? "修改中…" : "AI 修改"}
         </button>
       </div>
+
+      {/* 放映：整份 HTML 全屏滚动吸附，方向键翻页 / Esc 退出 */}
+      {presenting && (
+        <div className="fixed inset-0 z-[60] bg-black">
+          <iframe
+            title="present"
+            sandbox="allow-same-origin"
+            srcDoc={presentHtml}
+            className="h-full w-full border-0"
+            ref={(el) => {
+              if (!el) return;
+              // 让每页占满一屏并支持滚动吸附（放映体验）
+              el.onload = () => {
+                const d = el.contentDocument;
+                if (!d) return;
+                const st = d.createElement("style");
+                st.textContent =
+                  "body{padding:0;gap:0;scroll-snap-type:y mandatory;height:100vh;overflow-y:auto}" +
+                  ".slide{scroll-snap-align:start;border-radius:0;box-shadow:none;flex:0 0 auto;" +
+                  "transform-origin:center;zoom:min(calc(100vw/1280),calc(100vh/720));}";
+                d.head.appendChild(st);
+                const goto = (n: number) => d.querySelectorAll(".slide")[n]?.scrollIntoView();
+                goto(selected);
+                d.addEventListener("keydown", (e) => {
+                  const ev = e as KeyboardEvent;
+                  if (ev.key === "Escape") setPresenting(false);
+                  if (["ArrowRight", "ArrowDown", " ", "PageDown"].includes(ev.key)) {
+                    ev.preventDefault();
+                    d.defaultView?.scrollBy({ top: d.defaultView.innerHeight, behavior: "smooth" });
+                  }
+                  if (["ArrowLeft", "ArrowUp", "PageUp"].includes(ev.key)) {
+                    ev.preventDefault();
+                    d.defaultView?.scrollBy({ top: -d.defaultView.innerHeight, behavior: "smooth" });
+                  }
+                });
+                d.body.tabIndex = 0;
+                d.body.focus();
+              };
+            }}
+          />
+          <button
+            onClick={() => setPresenting(false)}
+            className="absolute right-4 top-4 rounded-lg bg-white/10 px-3 py-1.5 text-xs text-white backdrop-blur hover:bg-white/20"
+          >
+            退出放映 (Esc)
+          </button>
+        </div>
+      )}
 
       {/* C: 配图 */}
       {imgOpen && (

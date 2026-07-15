@@ -68,6 +68,89 @@ fn persist_deck(db: &DbManager, mut deck: Deck) -> Result<DeckRecord, String> {
     })
 }
 
+/// Snapshot the deck's CURRENT stored model before an AI mutation overwrites it,
+/// so any AI edit is undoable. Keeps the newest 20 versions per deck.
+/// Best-effort: a snapshot failure must never block the edit itself.
+fn snapshot(db: &DbManager, deck_id: &str, label: &str) {
+    let Ok(conn) = db.get_connection() else { return };
+    let current: Option<String> = conn
+        .query_row(
+            "SELECT model_json FROM decks WHERE id = ?1",
+            params![deck_id],
+            |r| r.get(0),
+        )
+        .ok();
+    let Some(json) = current else { return };
+    let _ = conn.execute(
+        "INSERT INTO deck_versions (deck_id, model_json, label) VALUES (?1, ?2, ?3)",
+        params![deck_id, json, label],
+    );
+    let _ = conn.execute(
+        "DELETE FROM deck_versions WHERE deck_id = ?1 AND id NOT IN
+           (SELECT id FROM deck_versions WHERE deck_id = ?1 ORDER BY id DESC LIMIT 20)",
+        params![deck_id],
+    );
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeckVersion {
+    pub id: i64,
+    pub label: String,
+    pub created_at: String,
+}
+
+#[tauri::command]
+pub fn list_deck_versions(
+    id: String,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<Vec<DeckVersion>, String> {
+    let conn = db.get_connection().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("SELECT id, label, created_at FROM deck_versions WHERE deck_id = ?1 ORDER BY id DESC")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![id], |r| {
+            Ok(DeckVersion { id: r.get(0)?, label: r.get(1)?, created_at: r.get(2)? })
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(rows.flatten().collect())
+}
+
+/// Restore a snapshot (or the latest one when `version_id` is None = plain undo).
+/// The pre-restore state is itself snapshotted, so undo is undoable.
+#[tauri::command]
+pub fn restore_deck_version(
+    id: String,
+    version_id: Option<i64>,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<DeckRecord, String> {
+    let (vid, json): (i64, String) = {
+        let conn = db.get_connection().map_err(|e| e.to_string())?;
+        match version_id {
+            Some(v) => conn.query_row(
+                "SELECT id, model_json FROM deck_versions WHERE deck_id = ?1 AND id = ?2",
+                params![id, v],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            ),
+            None => conn.query_row(
+                "SELECT id, model_json FROM deck_versions WHERE deck_id = ?1 ORDER BY id DESC LIMIT 1",
+                params![id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            ),
+        }
+        .map_err(|_| "没有可回退的版本".to_string())?
+    };
+    snapshot(&db, &id, "回退前");
+    let mut deck: Deck = serde_json::from_str(&json).map_err(|e| e.to_string())?;
+    deck.id = id.clone();
+    let rec = persist_deck(&db, deck)?;
+    // The restored snapshot is now the live state — drop it from history.
+    if let Ok(conn) = db.get_connection() {
+        let _ = conn.execute("DELETE FROM deck_versions WHERE id = ?1", params![vid]);
+    }
+    Ok(rec)
+}
+
 #[tauri::command]
 pub fn list_decks(db: State<'_, Arc<DbManager>>) -> Result<Vec<DeckMeta>, String> {
     let conn = db.get_connection().map_err(|e| e.to_string())?;
@@ -438,6 +521,7 @@ pub async fn edit_slide_ai(
         instruction.trim(),
     );
     let reply = knowledge::chat_once(&db, &chat_model, &prompt).await?;
+    snapshot(&db, &id, &format!("AI 改第 {} 页前", slide_index + 1));
     let json = slides::extract_json(&reply).ok_or("回复里找不到这一页的 JSON")?;
     let new_slide: slides::Slide =
         serde_json::from_str(&json).map_err(|e| format!("单页 JSON 解析失败: {e}"))?;
@@ -494,6 +578,7 @@ pub async fn generate_slide_image(
         .map_err(|_| "演示不存在".to_string())?
     };
     let mut deck: Deck = serde_json::from_str(&current).map_err(|e| e.to_string())?;
+    snapshot(&db, &id, &format!("配图第 {} 页前", slide_index + 1));
     let slide = deck
         .slides
         .get_mut(slide_index)
@@ -587,6 +672,7 @@ pub async fn edit_deck_ai(
     let prompt = slides::build_edit_prompt(&current, instruction.trim());
     let reply = knowledge::chat_once(&db, &chat_model, &prompt).await?;
     let mut deck = slides::parse_deck(&reply)?;
+    snapshot(&db, &id, "AI 改整份前");
     deck.id = id;
     persist_deck(&db, deck)
 }
