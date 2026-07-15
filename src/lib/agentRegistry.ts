@@ -22,6 +22,7 @@ const STATIC_RUNTIME_AGENT_IDS: Record<string, RuntimeAgentId> = {
   "Qwen Code": "qwen_code",
   "OpenCode": "open_code",
   "GitHub Copilot CLI": "copilot_cli",
+  "Grok Build": "grok",
 };
 
 let catalog: RuntimeAgentCatalogEntry[] | null = null;
@@ -59,6 +60,6 @@ export function getAgentAdapter(agentName: string): string | null {
 export function isAcpAgent(agentName: string): boolean {
   const adapter = getAgentAdapter(agentName);
   if (adapter) return adapter === "acp";
-  // Fallback while the catalog loads: the four ACP-native agents.
-  return ["Gemini CLI", "Qwen Code", "OpenCode", "GitHub Copilot CLI"].includes(agentName);
+  // Fallback while the catalog loads: the ACP-native agents.
+  return ["Gemini CLI", "Qwen Code", "OpenCode", "GitHub Copilot CLI", "Grok Build"].includes(agentName);
 }

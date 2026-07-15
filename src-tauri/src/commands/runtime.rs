@@ -83,7 +83,11 @@ pub fn load_runtime_model_options(
         AgentId::Codex => &["gpt-5-codex"],
         // ACP agents run on their own account's default model; OMNIX does not
         // enumerate builtin model choices for them (MVP uses AgentDefault).
-        AgentId::GeminiCli | AgentId::QwenCode | AgentId::OpenCode | AgentId::CopilotCli => &[],
+        AgentId::GeminiCli
+        | AgentId::QwenCode
+        | AgentId::OpenCode
+        | AgentId::CopilotCli
+        | AgentId::Grok => &[],
     };
     options.extend(builtins.iter().map(|model_name| RuntimeModelOption {
         id: format!("builtin:{model_name}"),
@@ -284,18 +288,10 @@ fn validate_runtime_model(
     }
 }
 
-/// Every runnable agent, in the order shown to users. This is the only place
-/// that enumerates `AgentId` for the frontend: the catalog below derives all
-/// display/capability data from `agent_definition`, so registering a new agent
-/// in `runtime.rs` automatically surfaces it here (and in the UI).
-const RUNNABLE_AGENTS: [AgentId; 6] = [
-    AgentId::ClaudeCode,
-    AgentId::Codex,
-    AgentId::GeminiCli,
-    AgentId::QwenCode,
-    AgentId::OpenCode,
-    AgentId::CopilotCli,
-];
+/// Every runnable agent, straight from `AgentId::ALL` — registering an agent in
+/// `runtime.rs` surfaces it here (and in the UI) with no edit to this file. The
+/// catalog below derives all display/capability data from `agent_definition`.
+const RUNNABLE_AGENTS: [AgentId; AgentId::ALL.len()] = AgentId::ALL;
 
 #[tauri::command]
 pub fn runtime_get_agent_catalog(
@@ -358,6 +354,7 @@ fn agent_id_wire_str(agent: AgentId) -> &'static str {
         AgentId::QwenCode => "qwen_code",
         AgentId::OpenCode => "open_code",
         AgentId::CopilotCli => "copilot_cli",
+        AgentId::Grok => "grok",
     }
 }
 

@@ -122,12 +122,28 @@ pub struct AgentUpdateInfo {
     pub package: Option<String>,
 }
 
+/// Install spec for Grok Build.
+///
+/// Deliberately **not** `@latest`: xAI's `latest` dist-tag points at 0.1.4, whose
+/// manifest declares `os: ["darwin"], cpu: ["arm64"]`, so `npm install` aborts with
+/// EBADPLATFORM (exit 1) on Windows and Linux. The published 0.2.x line declares all
+/// six platform binaries (darwin/linux/win32 × arm64/x64), so pin to that line and
+/// let npm resolve against real versions rather than the stale tag.
+///
+/// The `0.2` form is load-bearing, not shorthand for `^0.2.0`: on Windows we invoke
+/// `npm.cmd`, a batch file, so the argument is parsed by cmd.exe — where `^` is the
+/// escape character. A `^0.2.0` spec arrives as the exact version `0.2.0` and silently
+/// pins users to the oldest release in the line. `0.2` is the same `>=0.2.0 <0.3.0`
+/// range with no shell metacharacters, and resolves identically under sh and cmd.exe.
+pub const GROK_NPM_SPEC: &str = "@xai-official/grok@0.2";
+
 /// The npm package an agent CLI ships as (without the `@latest` tag), or `None`
 /// for agents installed by a non-npm mechanism (e.g. Antigravity's installer).
 pub fn npm_package_for_agent(display_name: &str) -> Option<&'static str> {
     match display_name {
         "Claude Code" => Some("@anthropic-ai/claude-code"),
         "Codex" => Some("@openai/codex"),
+        // Version spec lives in GROK_NPM_SPEC; this map is package-name only.
         "Gemini CLI" => Some("@google/gemini-cli"),
         "Qwen Code" => Some("@qwen-code/qwen-code"),
         "OpenCode" => Some("opencode-ai"),
@@ -1012,7 +1028,10 @@ impl AgentManager {
             "Gemini CLI" => "@google/gemini-cli@latest",
             "GitHub Copilot CLI" => "@github/copilot-cli@latest",
             "OpenCode" => "opencode-ai@latest",
-            "Grok Build" => "@xai-official/grok@latest",
+            // NOT `@latest`: xAI's `latest` dist-tag still points at 0.1.4, which
+            // declares `os: darwin, cpu: arm64` and so fails EBADPLATFORM on
+            // Windows/Linux. The 0.2.x line ships all six platform binaries.
+            "Grok Build" => GROK_NPM_SPEC,
             _ if core_agent.is_some() => "",
             _ => {
                 return Err(format!(

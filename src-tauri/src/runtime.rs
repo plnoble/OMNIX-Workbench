@@ -15,9 +15,26 @@ pub enum AgentId {
     QwenCode,
     OpenCode,
     CopilotCli,
+    Grok,
 }
 
 impl AgentId {
+    /// Every agent, in the order the UI lists them. This is the single source of
+    /// truth for "which agents exist"; the frontend catalog derives from it.
+    ///
+    /// A new variant MUST be added here too — `all_lists_every_agent` covers this
+    /// with an exhaustive match, so forgetting fails the build rather than
+    /// silently shipping an agent the runtime reports as 待适配.
+    pub const ALL: [AgentId; 7] = [
+        AgentId::ClaudeCode,
+        AgentId::Codex,
+        AgentId::GeminiCli,
+        AgentId::QwenCode,
+        AgentId::OpenCode,
+        AgentId::CopilotCli,
+        AgentId::Grok,
+    ];
+
     pub fn display_name(self) -> &'static str {
         match self {
             Self::ClaudeCode => "Claude Code",
@@ -26,6 +43,7 @@ impl AgentId {
             Self::QwenCode => "Qwen Code",
             Self::OpenCode => "OpenCode",
             Self::CopilotCli => "GitHub Copilot CLI",
+            Self::Grok => "Grok Build",
         }
     }
 
@@ -33,7 +51,7 @@ impl AgentId {
     pub fn is_acp(self) -> bool {
         matches!(
             self,
-            Self::GeminiCli | Self::QwenCode | Self::OpenCode | Self::CopilotCli
+            Self::GeminiCli | Self::QwenCode | Self::OpenCode | Self::CopilotCli | Self::Grok
         )
     }
 }
@@ -143,10 +161,15 @@ pub fn evaluate_model_compatibility(
             }
         }
         // ACP agents authenticate and pick models through their own login
-        // (Gemini/Qwen/Copilot accounts, OpenCode config). They do not route
-        // through the OMNIX gateway, so OMNIX-managed provider models are not
-        // selectable for them — the session runs on the agent's own default.
-        AgentId::GeminiCli | AgentId::QwenCode | AgentId::OpenCode | AgentId::CopilotCli => {
+        // (Gemini/Qwen/Copilot accounts, OpenCode config, Grok's XAI_API_KEY or
+        // grok.com sign-in). They do not route through the OMNIX gateway, so
+        // OMNIX-managed provider models are not selectable for them — the session
+        // runs on the agent's own default.
+        AgentId::GeminiCli
+        | AgentId::QwenCode
+        | AgentId::OpenCode
+        | AgentId::CopilotCli
+        | AgentId::Grok => {
             let _ = provider_type;
             ModelCompatibility {
                 level: ModelCompatibilityLevel::Unsupported,
@@ -309,6 +332,19 @@ pub fn agent_definition(agent: AgentId) -> AgentDefinition {
             // The real GitHub Copilot CLI binary is `copilot`.
             executable_names: vec!["copilot", "copilot.cmd"],
             managed_package: Some("@github/copilot-cli@latest"),
+            runtime_adapter: AdapterKind::Acp,
+            supports_structured_events: true,
+            supports_resume: true,
+        },
+        AgentId::Grok => AgentDefinition {
+            id: agent,
+            display_name: agent.display_name(),
+            executable_names: vec!["grok", "grok.cmd"],
+            // See `agent::GROK_NPM_SPEC` — `@latest` is a macOS-arm64-only 0.1.4.
+            managed_package: Some(crate::agent::GROK_NPM_SPEC),
+            // `grok agent stdio` is a full ACP server: it answers `initialize`
+            // with protocolVersion 1 + agentCapabilities and reports
+            // `loadSession: true`, so the universal ACP adapter drives it as-is.
             runtime_adapter: AdapterKind::Acp,
             supports_structured_events: true,
             supports_resume: true,
@@ -892,6 +928,7 @@ pub(crate) fn agent_id_str(agent: AgentId) -> &'static str {
         AgentId::QwenCode => "qwen_code",
         AgentId::OpenCode => "opencode",
         AgentId::CopilotCli => "copilot_cli",
+        AgentId::Grok => "grok",
     }
 }
 
@@ -903,6 +940,7 @@ fn parse_agent_id(value: &str) -> Result<AgentId, String> {
         "qwen_code" => Ok(AgentId::QwenCode),
         "opencode" => Ok(AgentId::OpenCode),
         "copilot_cli" => Ok(AgentId::CopilotCli),
+        "grok" => Ok(AgentId::Grok),
         other => Err(format!("unknown Agent id: {other}")),
     }
 }
@@ -1498,6 +1536,8 @@ pub fn build_launch_spec(config: &AgentSessionConfig) -> Result<LaunchSpec, Stri
         AgentId::GeminiCli => args.push("--experimental-acp".into()),
         AgentId::QwenCode | AgentId::CopilotCli => args.push("--acp".into()),
         AgentId::OpenCode => args.push("acp".into()),
+        // Grok's ACP mode is a subcommand pair rather than a single flag.
+        AgentId::Grok => args.extend(["agent", "stdio"].into_iter().map(str::to_string)),
     }
 
     Ok(LaunchSpec {
@@ -1527,8 +1567,8 @@ pub fn build_resume_launch_spec(
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_definition, build_branch_seed_context, build_claude_user_message,
-        build_codex_approval_response,
+        agent_definition, agent_id_str, build_branch_seed_context, build_claude_user_message,
+        build_codex_approval_response, parse_agent_id,
         build_conversation_handoff_context, build_goal_reminder, conversation_has_no_messages,
         conversation_parent_id, get_active_goal_objective, AdapterKind,
         build_codex_initialize_request, build_codex_thread_resume_request,
@@ -2028,6 +2068,59 @@ mod tests {
             .any(|pair| { pair == ["--resume", "claude-persisted-session"] }));
     }
 
+    /// Position of each agent in `AgentId::ALL`. The match is exhaustive, so a new
+    /// `AgentId` variant fails to compile here until it is given an index — and the
+    /// index has to be a real slot in `ALL`, which `all_lists_every_agent` checks.
+    fn expected_index(agent: AgentId) -> usize {
+        match agent {
+            AgentId::ClaudeCode => 0,
+            AgentId::Codex => 1,
+            AgentId::GeminiCli => 2,
+            AgentId::QwenCode => 3,
+            AgentId::OpenCode => 4,
+            AgentId::CopilotCli => 5,
+            AgentId::Grok => 6,
+        }
+    }
+
+    /// On Windows the managed install runs `npm.cmd`, a batch file, so cmd.exe
+    /// parses the package spec. `^` (escape), `&`, `|`, `<`, `>`, `%` all change
+    /// meaning there — a `^0.2.0` range silently degrades to the exact version
+    /// `0.2.0`. Keep specs free of characters cmd.exe would eat.
+    #[test]
+    fn managed_package_specs_survive_cmd_exe() {
+        for agent in AgentId::ALL {
+            let Some(package) = agent_definition(agent).managed_package else {
+                continue;
+            };
+            let offenders: Vec<char> = package
+                .chars()
+                .filter(|c| matches!(c, '^' | '&' | '|' | '<' | '>' | '%' | '"'))
+                .collect();
+            assert!(
+                offenders.is_empty(),
+                "{agent:?} spec {package:?} contains cmd.exe metacharacters {offenders:?} — \
+                 use a bare range like `0.2` instead of `^0.2.0`",
+            );
+        }
+    }
+
+    #[test]
+    fn all_lists_every_agent() {
+        for (index, agent) in AgentId::ALL.into_iter().enumerate() {
+            assert_eq!(expected_index(agent), index, "{agent:?} out of order in ALL");
+        }
+        // Every agent in ALL is runnable: it round-trips through the DB slug and
+        // has a launch-capable definition. This is what "not 待适配" means.
+        for agent in AgentId::ALL {
+            assert_eq!(parse_agent_id(agent_id_str(agent)), Ok(agent), "{agent:?}");
+            assert!(
+                !agent_definition(agent).executable_names.is_empty(),
+                "{agent:?}"
+            );
+        }
+    }
+
     #[test]
     fn acp_agents_use_acp_adapter_and_support_resume() {
         for agent in [
@@ -2035,6 +2128,7 @@ mod tests {
             AgentId::QwenCode,
             AgentId::OpenCode,
             AgentId::CopilotCli,
+            AgentId::Grok,
         ] {
             let definition = agent_definition(agent);
             assert_eq!(definition.runtime_adapter, AdapterKind::Acp, "{:?}", agent);
@@ -2052,6 +2146,8 @@ mod tests {
             (AgentId::QwenCode, "qwen.cmd", vec!["--acp"]),
             (AgentId::CopilotCli, "copilot.cmd", vec!["--acp"]),
             (AgentId::OpenCode, "opencode.cmd", vec!["acp"]),
+            // Grok's ACP mode is a subcommand pair, not a flag.
+            (AgentId::Grok, "grok.cmd", vec!["agent", "stdio"]),
         ];
         for (agent, executable, expected_args) in cases {
             let spec = build_launch_spec(&AgentSessionConfig {

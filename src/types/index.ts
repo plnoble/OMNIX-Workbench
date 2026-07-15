@@ -256,7 +256,8 @@ export type RuntimeAgentId =
   | "gemini_cli"
   | "qwen_code"
   | "open_code"
-  | "copilot_cli";
+  | "copilot_cli"
+  | "grok";
 
 export type RuntimeModelSelection =
   | { kind: "agent_default" }
