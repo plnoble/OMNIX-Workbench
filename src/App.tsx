@@ -88,6 +88,7 @@ const QuickAssistantTab = lazy(() => import("@/components/tabs/QuickAssistantTab
 const AssistantsTab = lazy(() => import("@/components/tabs/AssistantsTab").then(m => ({ default: m.AssistantsTab })));
 const SettingsTab = lazy(() => import("@/components/tabs/SettingsTab").then(m => ({ default: m.SettingsTab })));
 const WelcomeTour = lazy(() => import("./WelcomeTour").then(m => ({ default: m.WelcomeTour })));
+const RemoteDevTab = lazy(() => import("@/components/tabs/RemoteDevTab").then(m => ({ default: m.RemoteDevTab })));
 
 // ── Prop-less tab registry ───────────────────────────
 // Pages that take no props render via one lookup instead of a conditional
@@ -106,6 +107,7 @@ const SIMPLE_TABS: Record<string, ComponentType> = {
   "auth-center": AuthCenterTab,
   "local-models": LocalModelPickerTab,
   "code-map": CodeMapTab,
+  "remote-dev": RemoteDevTab,
   memories: MemoryTab,
   skills: SkillTab,
   knowledge: KnowledgeTab,

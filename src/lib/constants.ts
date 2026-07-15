@@ -50,6 +50,7 @@ export const AGENT_NAMES = [
   "GitHub Copilot CLI",
   "Google Antigravity",
   "OpenCode",
+  "Grok Build",
 ] as const;
 
 /** Supported LLM provider types with display labels */
@@ -100,6 +101,15 @@ export const API_PROVIDER_PRESETS: ApiProviderPreset[] = [
     api_address: "https://api.openai.com/v1",
     default_model: "gpt-4o",
     description: "OpenAI 官方 API",
+    region: "global",
+  },
+  {
+    id: "xai",
+    name: "xAI (Grok)",
+    api_type: "openai",
+    api_address: "https://api.x.ai/v1",
+    default_model: "grok-4",
+    description: "xAI 官方 API（Grok 系列，OpenAI 兼容）",
     region: "global",
   },
   {

@@ -572,6 +572,13 @@ struct CapResult {
 /// Covers ~100 mainstream models. Each entry is (id_substring, 8 capabilities).
 /// Simplified to our 8-dimension capability model.
 const MODEL_CATALOG: &[(&str, (bool, bool, bool, bool, bool, bool, bool, bool))] = &[
+    // ── xAI Grok ────────────────────────────────
+    ("grok-4.5", (true, false, true, true, true, true, false, false)),
+    ("grok-4-fast", (true, false, true, true, true, true, false, true)),
+    ("grok-4", (true, false, true, true, true, true, false, false)),
+    ("grok-3-mini", (false, false, true, true, false, true, false, true)),
+    ("grok-3", (false, false, true, true, true, true, false, false)),
+    ("grok-code-fast", (false, false, true, true, true, true, false, true)),
     // ── OpenAI ──────────────────────────────────
     (
         "gpt-4o",

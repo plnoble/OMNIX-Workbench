@@ -185,6 +185,57 @@ export const localModelApi = {
     invoke<ModelRecommendation[]>("recommend_local_models", { budgetGb }),
 };
 
+// ── Remote Dev (Labs) ──
+
+export interface SshHost {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  user: string;
+  key_path: string;
+  default_workdir: string;
+}
+export interface SshTestResult {
+  ok: boolean;
+  latency_ms: number;
+  uname: string;
+  error: string;
+}
+export interface RemoteHardware {
+  gpu: string;
+  ram_mb: number;
+  cpu_cores: number;
+}
+export interface RemoteAgentStatus {
+  agent: string;
+  bin: string;
+  installed: boolean;
+  path: string;
+  version: string;
+}
+export interface RemoteModelHostTest {
+  ok: boolean;
+  latency_ms: number;
+  models: string[];
+  error: string;
+}
+export const remoteDevApi = {
+  listHosts: () => invoke<SshHost[]>("list_ssh_hosts"),
+  saveHost: (host: SshHost) => invoke<SshHost>("save_ssh_host", { host }),
+  deleteHost: (id: string) => invoke<void>("delete_ssh_host", { id }),
+  testHost: (id: string) => invoke<SshTestResult>("test_ssh_host", { id }),
+  probeHardware: (id: string) => invoke<RemoteHardware>("probe_remote_hardware", { id }),
+  detectAgents: (id: string) => invoke<RemoteAgentStatus[]>("detect_remote_agents", { id }),
+  installAgent: (id: string, agent: string) =>
+    invoke<string>("install_remote_agent", { id, agent }),
+  testModelHost: (url: string) =>
+    invoke<RemoteModelHostTest>("test_remote_model_host", { url }),
+  startRun: (hostId: string, agent: string, workdir: string, prompt: string, useGateway: boolean) =>
+    invoke<{ run_id: string }>("start_remote_run", { hostId, agent, workdir, prompt, useGateway }),
+  stopRun: (runId: string) => invoke<void>("stop_remote_run", { runId }),
+};
+
 // ── Storage locations (R1 存储位置中心) ──
 
 export interface StorageLocation {

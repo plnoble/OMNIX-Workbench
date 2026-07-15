@@ -256,6 +256,15 @@ export const APP_ENTRIES: AppEntry[] = [
     placement: "launcher",
   },
   {
+    id: "remote-dev",
+    label: "远程开发",
+    title: "远程开发",
+    description: "连接家里的 Linux 服务器：远端显卡跑模型、SSH 跑 agent 会话（回连本机网关，技能/路由生效）。",
+    group: "labs",
+    placement: "launcher",
+    is_experimental: true,
+  },
+  {
     id: "labs",
     label: "Labs",
     title: "实验室",
@@ -314,6 +323,7 @@ export const APP_ICON_MAP = {
   "auth-center": KeyRound,
   "local-models": Sparkles,
   "code-map": Network,
+  "remote-dev": Network,
   labs: FlaskConical,
   launcher: Grid3X3,
 } as const;

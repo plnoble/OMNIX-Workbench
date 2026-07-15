@@ -28,6 +28,7 @@ const AGENTS: &[(&str, &str, &str)] = &[
     ("Qwen Code", "qwen", "@qwen-code/qwen-code"),
     ("OpenCode", "opencode", "opencode-ai"),
     ("GitHub Copilot CLI", "copilot", "@github/copilot-cli"),
+    ("Grok Build", "grok", "@xai-official/grok"),
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -54,6 +54,7 @@ pub(crate) fn agent_slug(agent_name: &str) -> &'static str {
         "Qwen Code" => "qwen-code",
         "GitHub Copilot CLI" => "github-copilot-cli",
         "Google Antigravity" => "antigravity",
+        "Grok Build" => "grok-build",
         _ => "custom-agent",
     }
 }
@@ -130,6 +131,7 @@ pub fn npm_package_for_agent(display_name: &str) -> Option<&'static str> {
         "Gemini CLI" => Some("@google/gemini-cli"),
         "Qwen Code" => Some("@qwen-code/qwen-code"),
         "OpenCode" => Some("opencode-ai"),
+        "Grok Build" => Some("@xai-official/grok"),
         "GitHub Copilot CLI" => Some("@github/copilot-cli"),
         _ => None,
     }
@@ -291,6 +293,7 @@ impl AgentManager {
             ("GitHub Copilot CLI", "copilot"),
             ("Google Antigravity", "agy"),
             ("OpenCode", "opencode"),
+            ("Grok Build", "grok"),
         ];
 
         let sandbox_dir_str = self
@@ -1009,6 +1012,7 @@ impl AgentManager {
             "Gemini CLI" => "@google/gemini-cli@latest",
             "GitHub Copilot CLI" => "@github/copilot-cli@latest",
             "OpenCode" => "opencode-ai@latest",
+            "Grok Build" => "@xai-official/grok@latest",
             _ if core_agent.is_some() => "",
             _ => {
                 return Err(format!(
@@ -1201,6 +1205,7 @@ impl AgentManager {
                 "Gemini CLI" => "@google/gemini-cli",
                 "GitHub Copilot CLI" => "@github/copilot-cli",
                 "OpenCode" => "opencode-ai",
+                "Grok Build" => "@xai-official/grok",
                 _ => return Err(format!("Unsupported agent CLI uninstall: {}", agent_name)),
             };
 
@@ -1209,6 +1214,7 @@ impl AgentManager {
                 "Gemini CLI" => "gemini",
                 "GitHub Copilot CLI" => "copilot",
                 "OpenCode" => "opencode",
+                "Grok Build" => "grok",
                 _ => "",
             };
 
@@ -1421,6 +1427,7 @@ impl AgentManager {
             ("GitHub Copilot CLI", "copilot"),
             ("Google Antigravity", "agy"),
             ("OpenCode", "opencode"),
+            ("Grok Build", "grok"),
         ];
 
         let bin_name = agent_names.iter().find(|(dn, _)| dn == &display_name)?.1;

@@ -773,6 +773,17 @@ pub fn run() {
             // Agent installations (R3 统一安装)
             commands::scan_agent_installations,
             commands::remove_agent_installation,
+            // Remote Dev (Labs)
+            commands::list_ssh_hosts,
+            commands::save_ssh_host,
+            commands::delete_ssh_host,
+            commands::test_ssh_host,
+            commands::probe_remote_hardware,
+            commands::detect_remote_agents,
+            commands::install_remote_agent,
+            commands::test_remote_model_host,
+            commands::start_remote_run,
+            commands::stop_remote_run,
             // Storage locations (R1 存储位置中心)
             commands::get_storage_config,
             commands::set_storage_dir,
