@@ -9,9 +9,21 @@ import { useCallback, useEffect, useState } from "react";
 import { FileSpreadsheet, FileUp, Loader2, Plus, RefreshCw, Sparkles, Table2 } from "lucide-react";
 import { toast } from "sonner";
 
-import { officeApi, modelApi } from "@/lib/tauri-api";
+import { officeApi, modelApi, settingsApi } from "@/lib/tauri-api";
 import { shellApi } from "@/lib/tauri-api";
 import type { PlatformModel } from "@/types";
+
+/** Office 概览页的「近期表格」数据源：最近打开/新建的文件路径（去重，留 8 条）。 */
+async function recordRecentOfficeFile(path: string) {
+  try {
+    const raw = await settingsApi.get("office_recent_files");
+    const list: string[] = raw ? JSON.parse(raw) : [];
+    const next = [path, ...list.filter((p) => p !== path)].slice(0, 8);
+    await settingsApi.set("office_recent_files", JSON.stringify(next));
+  } catch {
+    /* best-effort */
+  }
+}
 
 export function ExcelTab() {
   const [filePath, setFilePath] = useState("");
@@ -57,6 +69,7 @@ export function ExcelTab() {
       }
       setFilePath(path);
       setPreviewOnly(!lower.endsWith(".xlsx"));
+      void recordRecentOfficeFile(path);
       await refresh(path);
     } catch (e) {
       toast.error(String(e));
@@ -72,6 +85,7 @@ export function ExcelTab() {
       const path = await officeApi.excelNew(title.trim());
       setFilePath(path);
       setPreviewOnly(false);
+      void recordRecentOfficeFile(path);
       await refresh(path);
       toast.success(`已创建：${path}`);
     } catch (e) {

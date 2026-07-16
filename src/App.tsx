@@ -76,10 +76,8 @@ const NotesTab = lazy(() => import("@/components/tabs/NotesTab").then(m => ({ de
 const TranslateTab = lazy(() => import("@/components/tabs/TranslateTab").then(m => ({ default: m.TranslateTab })));
 const ProfileTab = lazy(() => import("@/components/tabs/ProfileTab").then(m => ({ default: m.ProfileTab })));
 const StudioTab = lazy(() => import("@/components/tabs/StudioTab").then(m => ({ default: m.StudioTab })));
-const SlidesTab = lazy(() => import("@/components/tabs/SlidesTab").then(m => ({ default: m.SlidesTab })));
 const AutopilotsTab = lazy(() => import("@/components/tabs/AutopilotsTab").then(m => ({ default: m.AutopilotsTab })));
-const WriteTab = lazy(() => import("@/components/tabs/WriteTab").then(m => ({ default: m.WriteTab })));
-const ExcelTab = lazy(() => import("@/components/tabs/ExcelTab").then(m => ({ default: m.ExcelTab })));
+const OfficeTab = lazy(() => import("@/components/tabs/OfficeTab").then(m => ({ default: m.OfficeTab })));
 const SupervisionTab = lazy(() => import("@/components/tabs/SupervisionTab").then(m => ({ default: m.SupervisionTab })));
 const UsageDashboardTab = lazy(() => import("@/components/tabs/UsageDashboardTab").then(m => ({ default: m.UsageDashboardTab })));
 const AuthCenterTab = lazy(() => import("@/components/tabs/AuthCenterTab").then(m => ({ default: m.AuthCenterTab })));
@@ -102,10 +100,13 @@ const SIMPLE_TABS: Record<string, ComponentType> = {
   translate: TranslateTab,
   profile: ProfileTab,
   studio: StudioTab,
-  slides: SlidesTab,
   autopilot: AutopilotsTab,
-  write: WriteTab,
-  excel: ExcelTab,
+  // Office 工作台（合并项）：旧的 slides/write/excel id 保留为别名，
+  // 历史导航状态/快捷入口落到同一个工作台，不断链。
+  office: OfficeTab,
+  slides: OfficeTab,
+  write: OfficeTab,
+  excel: OfficeTab,
   supervision: SupervisionTab,
   usage: UsageDashboardTab,
   "auth-center": AuthCenterTab,
