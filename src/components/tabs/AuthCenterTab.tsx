@@ -5,18 +5,24 @@
  * PKCE browser flow, store the tokens encrypted, and use them in any agent
  * through CLI takeover. You authenticate in your own browser and paste the code
  * back — OMNIX never sees your password.
+ *
+ * Grok is deliberately different: its CLI runs xAI's own OAuth and owns the
+ * resulting token (~/.grok/auth.json, auto-refreshed), so OMNIX drives
+ * `grok login --device-auth` and relays xAI's link + code instead of
+ * reimplementing the flow or storing a token. See `commands/grok_auth.rs`.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { KeyRound, ExternalLink, Trash2, RefreshCw, ShieldCheck, ShieldAlert, Terminal, RotateCcw } from "lucide-react";
+import { listen } from "@tauri-apps/api/event";
+import { KeyRound, ExternalLink, Trash2, RefreshCw, ShieldCheck, ShieldAlert, Terminal, RotateCcw, LogOut, Loader2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { toast } from "@/components/ui/sonner";
 import { cn } from "@/lib/utils";
 import {
-  oauthApi, cliTakeoverApi,
+  oauthApi, cliTakeoverApi, grokAuthApi,
   type OAuthProvider, type OAuthAccountView, type OAuthStartResult,
-  type AgentTakeoverState, type TakeoverTarget,
+  type AgentTakeoverState, type TakeoverTarget, type GrokAuthStatus,
 } from "@/lib/tauri-api";
 
 const TAKEOVER_AGENTS: { id: string; name: string }[] = [
@@ -42,6 +48,12 @@ export function AuthCenterTab() {
   const [targetValue, setTargetValue] = useState("gateway");
   const [pickedAgents, setPickedAgents] = useState<string[]>(["claude_code"]);
   const [confirmApply, setConfirmApply] = useState(false);
+  // Grok: device-code sign-in driven by the Grok CLI itself.
+  const [grok, setGrok] = useState<GrokAuthStatus | null>(null);
+  const [grokPrompt, setGrokPrompt] = useState<{ url: string; code: string } | null>(null);
+  const [grokLog, setGrokLog] = useState("");
+  const [grokBusy, setGrokBusy] = useState(false);
+  const grokLogRef = useRef<HTMLPreElement>(null);
 
   const load = useCallback(async () => {
     try {
@@ -51,9 +63,71 @@ export function AuthCenterTab() {
     } catch {
       /* transient */
     }
+    // Independent of the OAuth calls: a Grok-only failure must not blank the page.
+    try {
+      setGrok(await grokAuthApi.status());
+    } catch {
+      /* transient */
+    }
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+
+  // Grok streams its own sign-in output; relay it verbatim so a parse miss still
+  // leaves the user reading Grok's real instructions.
+  useEffect(() => {
+    const un1 = listen<{ line: string }>("grok-login-output", (e) => {
+      setGrokLog((prev) => prev + e.payload.line + "\n");
+      requestAnimationFrame(() => grokLogRef.current?.scrollTo(0, grokLogRef.current.scrollHeight));
+    });
+    const un2 = listen<{ url: string; code: string }>("grok-login-prompt", (e) => {
+      setGrokPrompt(e.payload);
+      void openUrl(e.payload.url).catch(() => {});
+    });
+    const un3 = listen<{ code: number; signed_in: boolean }>("grok-login-done", (e) => {
+      setGrokBusy(false);
+      setGrokPrompt(null);
+      if (e.payload.signed_in) toast.success("已登录 Grok 账号");
+      else if (e.payload.code !== -2) toast.error("Grok 登录未完成，详见下方输出");
+      void load();
+    });
+    return () => {
+      void un1.then((f) => f());
+      void un2.then((f) => f());
+      void un3.then((f) => f());
+    };
+  }, [load]);
+
+  const grokLogin = async () => {
+    setGrokBusy(true);
+    setGrokLog("");
+    setGrokPrompt(null);
+    try {
+      await grokAuthApi.loginStart();
+    } catch (error) {
+      setGrokBusy(false);
+      toast.error(`发起 Grok 登录失败：${String(error)}`);
+    }
+  };
+
+  const grokCancel = async () => {
+    await grokAuthApi.loginCancel().catch(() => {});
+    setGrokBusy(false);
+    setGrokPrompt(null);
+  };
+
+  const grokLogout = async () => {
+    setGrokBusy(true);
+    try {
+      await grokAuthApi.logout();
+      toast.success("已退出 Grok 账号");
+      await load();
+    } catch (error) {
+      toast.error(`退出失败：${String(error)}`);
+    } finally {
+      setGrokBusy(false);
+    }
+  };
 
   const toValue = (): TakeoverTarget =>
     targetValue.startsWith("oauth:")
@@ -154,7 +228,8 @@ export function AuthCenterTab() {
         </div>
         <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">
           登录你自己的 Claude / OpenAI / Gemini 订阅，令牌加密保存，再经「CLI 接管」在各 Agent 里使用。
-          你在自己的浏览器里完成登录，OMNIX 不接触你的账号密码。
+          Grok 由它自己的 CLI 完成登录、自己保管令牌（见下方）。
+          三种方式你都在自己的浏览器里完成登录，OMNIX 不接触你的账号密码。
         </p>
       </div>
 
@@ -184,6 +259,94 @@ export function AuthCenterTab() {
               </Button>
             </div>
           ))}
+        </div>
+
+        {/* Grok — the CLI owns its own credentials, so this drives xAI's device-code
+            flow rather than storing a token in OMNIX. */}
+        <div className="rounded-lg border border-border bg-card/40 p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold">Grok 账号</span>
+              {grok && (
+                <span
+                  className={cn(
+                    "rounded border px-1.5 py-0.5 text-[11px]",
+                    grok.signed_in
+                      ? "border-success/40 bg-success/10 text-success"
+                      : "border-border bg-muted/20 text-muted-foreground",
+                  )}
+                >
+                  {grok.signed_in ? "已登录" : "未登录"}
+                </span>
+              )}
+            </div>
+            <div className="flex gap-2">
+              {grok?.signed_in && (
+                <Button size="sm" variant="ghost" disabled={grokBusy} onClick={() => void grokLogout()}>
+                  <LogOut className="h-4 w-4" /> 退出登录
+                </Button>
+              )}
+              {grokBusy ? (
+                // Available for the whole flow, not just after the code lands —
+                // fetching the device code can itself hang or rate-limit.
+                <Button size="sm" variant="outline" onClick={() => void grokCancel()}>
+                  取消
+                </Button>
+              ) : (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={!grok?.cli_installed}
+                  onClick={() => void grokLogin()}
+                >
+                  <ExternalLink className="h-4 w-4" />
+                  {grok?.signed_in ? "重新登录" : "登录 grok.com 账号"}
+                </Button>
+              )}
+            </div>
+          </div>
+
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">
+            {grok && !grok.cli_installed
+              ? "还没装 Grok Build CLI，先到「智能体」页安装。"
+              : "登录由 Grok CLI 自己完成（xAI 官方流程），令牌存在它自己的 auth.json 里并自动续期——OMNIX 不接触你的密码，也不保存 Grok 令牌，所以这里不像上面那样列出账号。"}
+          </p>
+
+          {grok && !grok.signed_in && (grok.api_key_in_omnix || grok.api_key_env) && (
+            <p className="mt-2 text-xs leading-5 text-muted-foreground">
+              也可以不登录：检测到{grok.api_key_in_omnix ? "「模型中心」里已配置 xAI API Key" : " XAI_API_KEY 环境变量"}，
+              Grok 会在没有会话令牌时用它兜底。登录后会话令牌优先。
+            </p>
+          )}
+
+          {grokPrompt && (
+            <div className="mt-3 rounded-lg border border-primary/40 bg-primary/5 p-3">
+              <p className="text-xs leading-5 text-muted-foreground">
+                浏览器已打开 xAI 确认页（链接里已带确认码）。核对页面上的码与下面一致后确认登录。
+                只确认你自己发起的登录，不要把这个码给别人。
+              </p>
+              <div className="mt-2 flex flex-wrap items-center gap-3">
+                <span className="rounded border border-border bg-background px-3 py-1 font-mono text-base tracking-widest">
+                  {grokPrompt.code || "（见下方输出）"}
+                </span>
+                <button className="text-xs text-primary underline" onClick={() => void openUrl(grokPrompt.url)}>
+                  没自动打开？点这里
+                </button>
+                <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                  <Loader2 className="h-3 w-3 animate-spin" /> 等待你在浏览器里确认…
+                </span>
+              </div>
+            </div>
+          )}
+
+          {grokLog && (
+            <pre
+              ref={grokLogRef}
+              className="mt-3 max-h-32 overflow-y-auto whitespace-pre-wrap rounded-lg border border-border bg-background p-2 font-mono text-[11px] leading-5 text-muted-foreground"
+            >
+              {grokLog}
+            </pre>
+          )}
         </div>
 
         {/* Paste-code step */}

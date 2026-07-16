@@ -1931,6 +1931,24 @@ export const oauthApi = {
   refreshAccount: (id: string) => invoke<void>("oauth_refresh_account", { id }),
 };
 
+// Grok 账号登录 — OMNIX drives `grok login --device-auth` and relays xAI's own
+// link + code. Grok owns the credentials (~/.grok/auth.json); OMNIX never sees
+// the password or token, so there is no account list to store here.
+export interface GrokAuthStatus {
+  cli_installed: boolean;
+  cli_path: string | null;
+  signed_in: boolean;
+  auth_file: string;
+  api_key_env: boolean;
+  api_key_in_omnix: boolean;
+}
+export const grokAuthApi = {
+  status: () => invoke<GrokAuthStatus>("grok_auth_status"),
+  loginStart: () => invoke<void>("grok_login_start"),
+  loginCancel: () => invoke<void>("grok_login_cancel"),
+  logout: () => invoke<void>("grok_logout"),
+};
+
 // CLI 配置接管 — point native CLIs at a chosen target
 export interface TakeoverTarget { kind: "gateway" | "platform" | "oauth"; ref_id?: string; model?: string; }
 export interface TakeoverReport { agent: string; config_path: string; applied: boolean; backup_path: string | null; detail: string; }
