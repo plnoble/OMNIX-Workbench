@@ -272,7 +272,7 @@ fn exports_dir() -> Result<std::path::PathBuf, String> {
 }
 
 /// Keep deck titles usable as file names.
-fn sanitize_filename(name: &str) -> String {
+pub(super) fn sanitize_filename(name: &str) -> String {
     let cleaned: String = name
         .chars()
         .map(|c| match c {
@@ -289,7 +289,7 @@ fn sanitize_filename(name: &str) -> String {
 }
 
 /// Reveal the exported file in Explorer / file manager (GUI launcher — no console).
-fn reveal_in_folder(path: &std::path::Path) {
+pub(super) fn reveal_in_folder(path: &std::path::Path) {
     #[cfg(windows)]
     {
         let _ = std::process::Command::new("explorer")

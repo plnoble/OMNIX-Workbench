@@ -173,6 +173,22 @@ export const APP_ENTRIES: AppEntry[] = [
     placement: "launcher",
   },
   {
+    id: "supervision",
+    label: "监督台",
+    title: "监督台",
+    description: "所有在跑的 agent 会话一屏总控：集中批准/拒绝、随时停止、看最后活动。",
+    group: "core",
+    placement: "launcher",
+  },
+  {
+    id: "excel",
+    label: "表格",
+    title: "表格工作台",
+    description: "真实 .xlsx 为源：AI 指令批量操作、公式即时求值、CSV 导入；docx/pptx 只读预览。",
+    group: "resource",
+    placement: "launcher",
+  },
+  {
     id: "translate",
     label: "翻译",
     title: "翻译",

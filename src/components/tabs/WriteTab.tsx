@@ -24,7 +24,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { toast } from "@/components/ui/sonner";
 import { cn } from "@/lib/utils";
-import { writeApi, modelApi, settingsApi, qaApi, shellApi, type WriteSpace, type WriteFile } from "@/lib/tauri-api";
+import { writeApi, modelApi, settingsApi, qaApi, shellApi, officeApi, slidesApi, type WriteSpace, type WriteFile, type Brand, type WriteSection } from "@/lib/tauri-api";
 
 type EditorMode = "source" | "split" | "preview";
 
@@ -52,6 +52,19 @@ export function WriteTab() {
   const [savedContent, setSavedContent] = useState("");
   const [mode, setMode] = useState<EditorMode>("split");
   const [chatModel, setChatModel] = useState("");
+  // Word/长文/批量（P1）
+  const [docxBusy, setDocxBusy] = useState(false);
+  const [brands, setBrands] = useState<Brand[]>([]);
+  const [brandName, setBrandName] = useState("");
+  const [longOpen, setLongOpen] = useState(false);
+  const [longTopic, setLongTopic] = useState("");
+  const [longSections, setLongSections] = useState<WriteSection[]>([]);
+  const [longBusy, setLongBusy] = useState<"" | "outline" | "expand">("");
+  const [mergeOpen, setMergeOpen] = useState(false);
+  const [mergeTemplate, setMergeTemplate] = useState("");
+  const [mergeData, setMergeData] = useState("");
+  const [mergeKey, setMergeKey] = useState("");
+  const [merging, setMerging] = useState(false);
   const [assistBusy, setAssistBusy] = useState(false);
   const [selection, setSelection] = useState<{ start: number; end: number }>({ start: 0, end: 0 });
 
@@ -183,6 +196,107 @@ export function WriteTab() {
     }
   };
 
+  useEffect(() => {
+    slidesApi.listBrands().then(setBrands).catch(() => {});
+  }, []);
+
+  /** P1：Markdown → 带样式 Word（可选品牌母版，母版来自演示的母版库）。 */
+  const exportDocx = async () => {
+    if (!activeFile) return;
+    setDocxBusy(true);
+    try {
+      const title = activeFile.replace(/\.md$/i, "").split(/[\\/]/).pop() ?? "文档";
+      const path = await officeApi.exportDocx(content, title, brandName || undefined);
+      toast.success(`已导出 Word：${path}`);
+    } catch (e) {
+      toast.error(`导出失败：${e}`);
+    } finally {
+      setDocxBusy(false);
+    }
+  };
+
+  /** P1：现有 docx → Markdown 存进当前写作空间。 */
+  const importDocx = async () => {
+    if (!activeSpace) {
+      toast.error("先选择一个写作空间");
+      return;
+    }
+    try {
+      const path = await shellApi.pickFile();
+      if (!path) return;
+      if (!path.toLowerCase().endsWith(".docx")) {
+        toast.error("请选择 .docx 文件");
+        return;
+      }
+      const md = await officeApi.importDocx(path);
+      const base = (path.split(/[\\/]/).pop() ?? "导入文档").replace(/\.docx$/i, "");
+      const rel = await writeApi.createFile(activeSpace, `${base}.md`);
+      await writeApi.saveFile(activeSpace, rel, md);
+      await loadFiles(activeSpace);
+      setActiveFile(rel);
+      setContent(md);
+      toast.success("已导入为 Markdown，可继续编辑后再导出 Word");
+    } catch (e) {
+      toast.error(`导入失败：${e}`);
+    }
+  };
+
+  /** P1：AI 长文两阶段——先大纲后逐章并行展开，写进当前文件。 */
+  const longOutline = async () => {
+    if (!longTopic.trim() || !chatModel) {
+      toast.error(!chatModel ? "请先启用一个对话模型" : "先描述要写什么");
+      return;
+    }
+    setLongBusy("outline");
+    try {
+      setLongSections(await officeApi.writeOutline(longTopic.trim(), chatModel));
+    } catch (e) {
+      toast.error(String(e));
+    } finally {
+      setLongBusy("");
+    }
+  };
+
+  const longExpand = async () => {
+    if (!activeFile || longSections.length === 0) return;
+    setLongBusy("expand");
+    try {
+      const parts = await Promise.all(
+        longSections.map((sec) =>
+          officeApi.writeExpand(longTopic.trim(), sec, chatModel).catch(() => `## ${sec.title}\n\n（本章生成失败，可重试）`),
+        ),
+      );
+      const assembled = `# ${longTopic.trim()}\n\n${parts.join("\n\n")}\n`;
+      setContent(assembled);
+      await writeApi.saveFile(activeSpace, activeFile, assembled);
+      setLongOpen(false);
+      setLongSections([]);
+      toast.success(`已生成 ${parts.length} 章，写入当前文件`);
+    } catch (e) {
+      toast.error(String(e));
+    } finally {
+      setLongBusy("");
+    }
+  };
+
+  /** P1：merge 批量生成（模板 {{key}} + JSON 数组 → 一条一份）。 */
+  const runMerge = async () => {
+    if (!mergeTemplate || !mergeData.trim()) {
+      toast.error("先选模板并粘贴 JSON 数据");
+      return;
+    }
+    setMerging(true);
+    try {
+      const outputs = await officeApi.mergeBatch(mergeTemplate, mergeData.trim(), mergeKey.trim() || undefined);
+      toast.success(`批量生成完成：${outputs.length} 份`, { description: outputs[0] });
+      setMergeOpen(false);
+    } catch (e) {
+      toast.error(`批量生成失败：${e}`);
+    } finally {
+      setMerging(false);
+    }
+  };
+
   const exportHtml = async () => {
     if (!activeFile) return;
     const body = previewRef.current?.innerHTML;
@@ -311,6 +425,31 @@ export function WriteTab() {
                 </button>
               ))}
             </div>
+            {brands.length > 0 && (
+              <select
+                className="h-8 rounded-md border border-border bg-background px-1.5 text-xs"
+                value={brandName}
+                onChange={(e) => setBrandName(e.target.value)}
+                title="导出 Word 用的品牌母版（来自演示的母版库）"
+              >
+                <option value="">无母版</option>
+                {brands.map((b) => (
+                  <option key={b.name} value={b.name}>{b.name}</option>
+                ))}
+              </select>
+            )}
+            <Button variant="outline" size="sm" disabled={!activeFile || docxBusy} onClick={() => void exportDocx()} title="导出为带样式的 Word（.docx）">
+              <Download className="h-3.5 w-3.5" /> {docxBusy ? "导出中…" : "Word"}
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => void importDocx()} title="导入现有 .docx 为 Markdown">
+              <Download className="h-3.5 w-3.5 rotate-180" /> 导入
+            </Button>
+            <Button variant="outline" size="sm" disabled={!activeFile} onClick={() => setLongOpen(true)} title="AI 长文：先出大纲，确认后逐章展开">
+              <Sparkles className="h-3.5 w-3.5" /> AI 长文
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => setMergeOpen(true)} title="模板 {{key}} + JSON 数据 → 批量生成文档">
+              <Columns2 className="h-3.5 w-3.5" /> 批量
+            </Button>
             <Button variant="outline" size="sm" disabled={!activeFile} onClick={() => void exportHtml()} title="导出为 HTML">
               <Download className="h-3.5 w-3.5" /> HTML
             </Button>
@@ -371,6 +510,87 @@ export function WriteTab() {
           </div>
         )}
       </div>
+
+      {/* AI 长文：先大纲后展开（复用演示的两阶段模式） */}
+      {longOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-8" onClick={() => setLongOpen(false)}>
+          <div className="flex max-h-full w-full max-w-xl flex-col gap-3 rounded-xl border border-border bg-background p-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="text-sm font-semibold">AI 长文（先大纲，确认后逐章展开）</div>
+            <textarea
+              value={longTopic}
+              onChange={(e) => setLongTopic(e.target.value)}
+              placeholder="要写什么？例如：给团队写一份《远程办公安全规范》，面向非技术同事，1500 字左右"
+              className="h-20 resize-none rounded-lg border border-border bg-background p-2 text-sm focus:outline-none"
+            />
+            <div className="flex gap-2">
+              <Button size="sm" disabled={longBusy !== ""} onClick={() => void longOutline()}>
+                {longBusy === "outline" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />} 出大纲
+              </Button>
+              {longSections.length > 0 && (
+                <Button size="sm" variant="outline" disabled={longBusy !== ""} onClick={() => void longExpand()}>
+                  {longBusy === "expand" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                  按大纲展开（{longSections.length} 章并行，写入当前文件）
+                </Button>
+              )}
+            </div>
+            {longSections.length > 0 && (
+              <div className="flex max-h-64 flex-col gap-1.5 overflow-y-auto">
+                {longSections.map((sec, i) => (
+                  <div key={i} className="flex items-center gap-2 rounded-lg border border-border p-2">
+                    <input
+                      value={sec.title}
+                      onChange={(e) => setLongSections((prev) => prev.map((x, j) => (j === i ? { ...x, title: e.target.value } : x)))}
+                      className="w-44 shrink-0 rounded border border-border bg-background px-1.5 py-0.5 text-xs"
+                    />
+                    <input
+                      value={sec.brief}
+                      onChange={(e) => setLongSections((prev) => prev.map((x, j) => (j === i ? { ...x, brief: e.target.value } : x)))}
+                      className="min-w-0 flex-1 rounded border border-border bg-background px-1.5 py-0.5 text-xs"
+                    />
+                    <button onClick={() => setLongSections((prev) => prev.filter((_, j) => j !== i))}>
+                      <Trash2 className="h-3.5 w-3.5 text-muted-foreground hover:text-destructive" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <p className="text-[11px] text-muted-foreground">展开会覆盖当前文件内容；写完可直接「Word」导出带样式文档。</p>
+          </div>
+        </div>
+      )}
+
+      {/* 批量生成：模板 {{key}} + JSON 数组 */}
+      {mergeOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-8" onClick={() => setMergeOpen(false)}>
+          <div className="flex max-h-full w-full max-w-xl flex-col gap-3 rounded-xl border border-border bg-background p-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="text-sm font-semibold">批量生成（模板 {"{{key}}"} 占位 + JSON 数据）</div>
+            <div className="flex items-center gap-2">
+              <Button size="sm" variant="outline" onClick={() => void shellApi.pickFile().then((p) => p && setMergeTemplate(p))}>
+                选模板（docx/xlsx/pptx）
+              </Button>
+              <span className="truncate text-xs text-muted-foreground">{mergeTemplate || "未选择"}</span>
+            </div>
+            <textarea
+              value={mergeData}
+              onChange={(e) => setMergeData(e.target.value)}
+              placeholder={'JSON 数组，每条一份产物：\n[{"name":"张三","amount":"1200"},{"name":"李四","amount":"800"}]'}
+              className="h-32 resize-none rounded-lg border border-border bg-background p-2 font-mono text-xs focus:outline-none"
+            />
+            <div className="flex items-center gap-2 text-xs">
+              <span className="text-muted-foreground">命名字段（可选）：</span>
+              <input
+                value={mergeKey}
+                onChange={(e) => setMergeKey(e.target.value)}
+                placeholder="如 name（缺省用序号）"
+                className="w-40 rounded border border-border bg-background px-1.5 py-0.5"
+              />
+              <Button size="sm" className="ml-auto" disabled={merging} onClick={() => void runMerge()}>
+                {merging ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null} 开始生成
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

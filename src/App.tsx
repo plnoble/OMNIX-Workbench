@@ -79,6 +79,8 @@ const StudioTab = lazy(() => import("@/components/tabs/StudioTab").then(m => ({ 
 const SlidesTab = lazy(() => import("@/components/tabs/SlidesTab").then(m => ({ default: m.SlidesTab })));
 const AutopilotsTab = lazy(() => import("@/components/tabs/AutopilotsTab").then(m => ({ default: m.AutopilotsTab })));
 const WriteTab = lazy(() => import("@/components/tabs/WriteTab").then(m => ({ default: m.WriteTab })));
+const ExcelTab = lazy(() => import("@/components/tabs/ExcelTab").then(m => ({ default: m.ExcelTab })));
+const SupervisionTab = lazy(() => import("@/components/tabs/SupervisionTab").then(m => ({ default: m.SupervisionTab })));
 const UsageDashboardTab = lazy(() => import("@/components/tabs/UsageDashboardTab").then(m => ({ default: m.UsageDashboardTab })));
 const AuthCenterTab = lazy(() => import("@/components/tabs/AuthCenterTab").then(m => ({ default: m.AuthCenterTab })));
 const LocalModelPickerTab = lazy(() => import("@/components/tabs/LocalModelPickerTab").then(m => ({ default: m.LocalModelPickerTab })));
@@ -103,6 +105,8 @@ const SIMPLE_TABS: Record<string, ComponentType> = {
   slides: SlidesTab,
   autopilot: AutopilotsTab,
   write: WriteTab,
+  excel: ExcelTab,
+  supervision: SupervisionTab,
   usage: UsageDashboardTab,
   "auth-center": AuthCenterTab,
   "local-models": LocalModelPickerTab,

@@ -1950,10 +1950,55 @@ export interface OfficeStatus {
   skill_pool: string | null;
   skill_reviewed: boolean;
 }
+export interface WriteSection { title: string; brief: string; }
 export const officeApi = {
   status: () => invoke<OfficeStatus>("office_status"),
   install: () => invoke<string>("office_install"),
   importPptx: (filePath: string) => invoke<DeckRecord>("import_pptx_deck", { filePath }),
+  // P1 Word
+  exportDocx: (markdown: string, title: string, brandName?: string) =>
+    invoke<string>("export_write_docx", { markdown, title, brandName: brandName ?? null }),
+  importDocx: (filePath: string) => invoke<string>("import_docx_markdown", { filePath }),
+  mergeBatch: (template: string, dataJson: string, nameKey?: string) =>
+    invoke<string[]>("office_merge_batch", { template, dataJson, nameKey: nameKey ?? null }),
+  writeOutline: (topic: string, chatModel: string) =>
+    invoke<WriteSection[]>("write_outline_ai", { topic, chatModel }),
+  writeExpand: (topic: string, section: WriteSection, chatModel: string) =>
+    invoke<string>("write_expand_ai", { topic, section, chatModel }),
+  // P2 Excel + 统一预览
+  previewHtml: (filePath: string) => invoke<string>("office_preview_html", { filePath }),
+  excelNew: (title: string) => invoke<string>("excel_new", { title }),
+  excelAiEdit: (filePath: string, instruction: string, chatModel: string) =>
+    invoke<string>("excel_ai_edit", { filePath, instruction, chatModel }),
+  excelImportCsv: (filePath: string, csvPath: string) =>
+    invoke<void>("excel_import_csv", { filePath, csvPath }),
+};
+
+// 监督台 — live console over all running agent sessions.
+export interface PendingApprovalInfo {
+  request_id: string;
+  approval_method: string;
+  summary: string;
+  requested_permissions: unknown | null;
+}
+export interface SupervisedSession {
+  session_id: string;
+  conversation_id: string;
+  conversation_title: string;
+  agent_id: string;
+  workspace_path: string;
+  work_mode: string;
+  status: string;
+  started_at: string;
+  last_event_at: string | null;
+  approval: PendingApprovalInfo | null;
+}
+export interface SupervisionOverview {
+  sessions: SupervisedSession[];
+  recent_done: SupervisedSession[];
+}
+export const supervisionApi = {
+  overview: () => invoke<SupervisionOverview>("supervision_overview"),
 };
 
 export interface SkillUpdated { name: string; from_tool: string; backup_dir: string; needs_re_review: boolean; }
