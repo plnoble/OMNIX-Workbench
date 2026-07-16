@@ -297,8 +297,10 @@ pub fn build_pptx(deck: &Deck) -> Result<Vec<u8>, String> {
     let mut slides_xml = Vec::new();
     let mut medias: Vec<Option<SlideMedia>> = Vec::new();
     for (i, s) in deck.slides.iter().enumerate() {
+        // Same field-slip salvage as the HTML preview (keeps preview == export).
+        let s = crate::slides::effective_slide(s);
         let mut m: Option<SlideMedia> = None;
-        let xml = slide_xml(s, deck, &mut m);
+        let xml = slide_xml(&s, deck, &mut m);
         if let Some(m) = m.as_mut() {
             m.file = format!("image{}.{}", i + 1, m.ext);
         }
@@ -523,5 +525,81 @@ mod tests {
         let (bg, title, _, _) = palette(&d.theme, d.brand.as_ref());
         assert_eq!(title, "FF0000", "brand hex wins");
         assert_eq!(bg, "0B1020", "non-hex gradient falls back to theme");
+    }
+
+    /// A field slip (quote text in `title`, columns in `bullets`) must still export
+    /// visible content — found blank in real output during OfficeCLI verification.
+    #[test]
+    fn misfiled_quote_and_columns_still_render() {
+        let mut d = deck();
+        d.slides = vec![
+            Slide { layout: "quote".into(), title: "金句在 title".into(), subtitle: "—— 出处".into(), ..Default::default() },
+            Slide { layout: "two-column".into(), title: "双栏".into(), bullets: vec!["一".into(), "二".into(), "三".into()], ..Default::default() },
+        ];
+        let bytes = build_pptx(&d).unwrap();
+        let mut z = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        use std::io::Read;
+        let mut quote = String::new();
+        z.by_name("ppt/slides/slide1.xml").unwrap().read_to_string(&mut quote).unwrap();
+        assert!(quote.contains("金句在 title"), "quote text salvaged from title");
+        assert!(quote.contains(">— 出处<"), "cite keeps a single dash");
+        let mut cols = String::new();
+        z.by_name("ppt/slides/slide2.xml").unwrap().read_to_string(&mut cols).unwrap();
+        for b in ["一", "二", "三"] {
+            assert!(cols.contains(b), "bullet {b} lands in a column");
+        }
+    }
+
+    /// Writes a deck exercising every layout + notes + brand to the OS temp dir,
+    /// for inspection with real PowerPoint or an external OOXML validator
+    /// (`npm run test:integration` convention: `cargo test --lib -- --ignored`).
+    /// Prints the output path; the in-memory assertions above stay authoritative.
+    #[test]
+    #[ignore]
+    fn dump_sample_pptx_for_external_validation() {
+        let d = Deck {
+            id: "sample".into(),
+            title: "OMNIX 全版式样例".into(),
+            theme: "midnight".into(),
+            brand: Some(Brand {
+                name: "OMNIX".into(),
+                primary: "#3b82f6".into(),
+                footer: "OMNIX · 内部样例".into(),
+                ..Default::default()
+            }),
+            slides: vec![
+                Slide { layout: "cover".into(), title: "封面：全版式验证".into(), subtitle: "副标题 & 特殊字符 <>".into(), ..Default::default() },
+                Slide { layout: "section".into(), title: "第一章 · 章节页".into(), ..Default::default() },
+                Slide {
+                    layout: "bullets".into(),
+                    title: "要点页".into(),
+                    bullets: vec!["普通要点".into(), "带 **加粗** 的要点".into(), "第三点：中文标点，句号。".into()],
+                    notes: "演讲备注：这页先讲背景，再给数字。".into(),
+                    ..Default::default()
+                },
+                Slide {
+                    layout: "two-column".into(),
+                    title: "双栏对比".into(),
+                    columns: vec![
+                        crate::slides::Column { title: "左栏".into(), bullets: vec!["左一".into(), "左二".into()], ..Default::default() },
+                        crate::slides::Column { title: "右栏".into(), bullets: vec!["右一".into(), "右二".into()], ..Default::default() },
+                    ],
+                    ..Default::default()
+                },
+                Slide { layout: "quote".into(), body: "引用页：一句话金句。".into(), subtitle: "出处".into(), ..Default::default() },
+                // Deliberately misfiled fields — effective_slide must salvage both.
+                Slide { layout: "quote".into(), title: "金句被错放进了 title".into(), subtitle: "—— 带破折号的出处".into(), ..Default::default() },
+                Slide {
+                    layout: "two-column".into(),
+                    title: "栏目内容被错放进了 bullets".into(),
+                    bullets: vec!["一".into(), "二".into(), "三".into(), "四".into()],
+                    ..Default::default()
+                },
+            ],
+        };
+        let bytes = build_pptx(&d).expect("build");
+        let path = std::env::temp_dir().join("omnix_sample_deck.pptx");
+        std::fs::write(&path, &bytes).expect("write sample");
+        println!("sample deck written to: {}", path.display());
     }
 }

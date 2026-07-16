@@ -389,6 +389,52 @@ fn render_slide_inner(slide: &Slide) -> String {
 /// Full self-contained HTML document. If `only` is `Some(i)`, render just that
 /// slide (focused editor preview); otherwise render the whole deck (export /
 /// scrollable preview). `print` adds page-break rules for PDF export.
+/// Salvage a slide whose content landed in the wrong field for its layout, so an
+/// AI field slip degrades to a sensible slide instead of a silently blank one
+/// (SCHEMA_SPEC documents the right fields, but models drift):
+/// - quote with empty `body` → promote `title` to the quotation
+/// - quote `subtitle` starting with a dash → strip it (both renderers prepend "— ")
+/// - two-column with no `columns` but `bullets` → split bullets into two columns
+///
+/// Both renderers (HTML preview and pptx export) MUST apply this, and nothing
+/// else may mutate content, or preview and export drift apart.
+pub(crate) fn effective_slide(slide: &Slide) -> std::borrow::Cow<'_, Slide> {
+    use std::borrow::Cow;
+    match slide.layout.as_str() {
+        "quote" => {
+            let promote = slide.body.trim().is_empty() && !slide.title.trim().is_empty();
+            let dashed = slide.subtitle.trim_start().starts_with(['—', '-', '–']);
+            if !promote && !dashed {
+                return Cow::Borrowed(slide);
+            }
+            let mut s = slide.clone();
+            if promote {
+                s.body = std::mem::take(&mut s.title);
+            }
+            if dashed {
+                s.subtitle = s
+                    .subtitle
+                    .trim_start()
+                    .trim_start_matches(['—', '-', '–'])
+                    .trim_start()
+                    .to_string();
+            }
+            Cow::Owned(s)
+        }
+        "two-column" if slide.columns.is_empty() && !slide.bullets.is_empty() => {
+            let mut s = slide.clone();
+            let mid = s.bullets.len().div_ceil(2);
+            let right = s.bullets.split_off(mid);
+            s.columns = vec![
+                Column { bullets: std::mem::take(&mut s.bullets), ..Default::default() },
+                Column { bullets: right, ..Default::default() },
+            ];
+            Cow::Owned(s)
+        }
+        _ => Cow::Borrowed(slide),
+    }
+}
+
 pub fn render_deck_html(deck: &Deck, only: Option<usize>, print: bool) -> String {
     let theme = if THEMES.contains(&deck.theme.as_str()) {
         deck.theme.as_str()
@@ -420,11 +466,12 @@ pub fn render_deck_html(deck: &Deck, only: Option<usize>, print: bool) -> String
         .enumerate()
         .filter(|(i, _)| only.map(|o| o == *i).unwrap_or(true))
         .map(|(i, s)| {
+            let s = effective_slide(s);
             format!(
                 "<section class=\"slide layout-{}\" data-index=\"{}\">{}{logo_el}{footer_el}<div class=\"pagenum\">{}</div></section>",
                 esc(&s.layout),
                 i,
-                render_slide_inner(s),
+                render_slide_inner(&s),
                 i + 1
             )
         })
