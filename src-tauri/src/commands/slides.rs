@@ -35,7 +35,7 @@ pub struct DeckRecord {
     pub model_json: String,
 }
 
-fn make_id() -> String {
+pub(super) fn make_id() -> String {
     let nanos = Utc::now()
         .timestamp_nanos_opt()
         .unwrap_or_else(|| Utc::now().timestamp_millis() * 1_000_000);
@@ -43,7 +43,7 @@ fn make_id() -> String {
 }
 
 /// Serialize a `Deck` back to a JSON string, persist it, and return the record.
-fn persist_deck(db: &DbManager, mut deck: Deck) -> Result<DeckRecord, String> {
+pub(super) fn persist_deck(db: &DbManager, mut deck: Deck) -> Result<DeckRecord, String> {
     if deck.id.is_empty() {
         deck.id = make_id();
     }
@@ -71,7 +71,7 @@ fn persist_deck(db: &DbManager, mut deck: Deck) -> Result<DeckRecord, String> {
 /// Snapshot the deck's CURRENT stored model before an AI mutation overwrites it,
 /// so any AI edit is undoable. Keeps the newest 20 versions per deck.
 /// Best-effort: a snapshot failure must never block the edit itself.
-fn snapshot(db: &DbManager, deck_id: &str, label: &str) {
+pub(super) fn snapshot(db: &DbManager, deck_id: &str, label: &str) {
     let Ok(conn) = db.get_connection() else { return };
     let current: Option<String> = conn
         .query_row(
@@ -638,14 +638,23 @@ pub fn delete_brand(name: String, db: State<'_, Arc<DbManager>>) -> Result<(), S
 
 /// Export a real PowerPoint file from the same JSON model.
 #[tauri::command]
-pub fn export_deck_pptx(model_json: String) -> Result<String, String> {
+pub async fn export_deck_pptx(model_json: String) -> Result<PptxExportResult, String> {
     let deck: Deck =
         serde_json::from_str(&model_json).map_err(|e| format!("演示 JSON 无效: {e}"))?;
     let bytes = crate::pptx::build_pptx(&deck)?;
     let path = exports_dir()?.join(format!("{}.pptx", sanitize_filename(&deck.title)));
     std::fs::write(&path, bytes).map_err(|e| format!("写出 pptx 失败: {e}"))?;
+    // 质检门：OfficeCLI schema 校验 + 内容问题扫描。导出永不因质检失败——
+    // officecli 缺席时 qa.ran = false，前端提示“未质检”。
+    let qa = crate::office::pptx_qa(&path.to_string_lossy()).await;
     reveal_in_folder(&path);
-    Ok(path.to_string_lossy().to_string())
+    Ok(PptxExportResult { path: path.to_string_lossy().to_string(), qa })
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PptxExportResult {
+    pub path: String,
+    pub qa: crate::office::PptxQa,
 }
 
 /// AI-edit an existing deck with a natural-language instruction. Loads the

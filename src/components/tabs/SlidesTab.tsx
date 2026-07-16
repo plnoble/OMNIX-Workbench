@@ -11,6 +11,7 @@ import {
   ArrowUp,
   FileDown,
   FileText,
+  FileUp,
   Image as ImageIcon,
   ListTree,
   Loader2,
@@ -32,6 +33,7 @@ import {
   DECK_THEMES,
   modelApi,
   platformApi,
+  officeApi,
   shellApi,
   slidesApi,
   type Brand,
@@ -224,6 +226,25 @@ export function SlidesTab() {
       await openDeck(rec.id);
     } catch (e) {
       toast.error(`新建失败：${e}`);
+    }
+  };
+
+  /** 导入现有 pptx：OfficeCLI 提取文本+备注 → 结构化模型 → 全套编辑流水线。 */
+  const handleImportPptx = async () => {
+    try {
+      const path = await shellApi.pickFile();
+      if (!path) return;
+      if (!path.toLowerCase().endsWith(".pptx")) {
+        toast.error("请选择 .pptx 文件");
+        return;
+      }
+      toast.info("正在导入，OfficeCLI 提取内容中…");
+      const rec = await officeApi.importPptx(path);
+      toast.success("导入完成", { description: "版式为推断结果，图片未迁移——可用「配图」补" });
+      await loadDecks();
+      await openDeck(rec.id);
+    } catch (e) {
+      toast.error(`导入失败：${e}`);
     }
   };
 
@@ -439,13 +460,37 @@ export function SlidesTab() {
     setExporting(true);
     try {
       const json = JSON.stringify(deck);
-      const path =
-        kind === "html"
-          ? await slidesApi.exportHtml(json)
-          : kind === "pdf"
-            ? await slidesApi.exportPdf(json)
-            : await slidesApi.exportPptx(json);
-      toast.success(`已导出：${path}`);
+      if (kind === "pptx") {
+        const result = await slidesApi.exportPptx(json);
+        // 质检门：OfficeCLI schema + 内容扫描的判决随导出一起给出。
+        if (!result.qa.ran) {
+          toast.success(`已导出：${result.path}`, {
+            description: "未质检（OfficeCLI 未安装）",
+            action: {
+              label: "安装 OfficeCLI",
+              onClick: () => {
+                toast.info("正在下载并校验 OfficeCLI…");
+                void officeApi
+                  .install()
+                  .then((p) => toast.success("OfficeCLI 已就绪，下次导出自动质检", { description: p }))
+                  .catch((err) => toast.error(`安装失败：${err}`));
+              },
+            },
+            duration: 12000,
+          });
+        } else if (result.qa.schema_ok && result.qa.issue_count === 0) {
+          toast.success(`已导出并通过质检：${result.path}`, { description: "schema 校验通过 · 0 问题" });
+        } else {
+          toast.warning(`已导出，但质检发现问题：${result.path}`, {
+            description: result.qa.detail.slice(0, 4).join("；"),
+            duration: 12000,
+          });
+        }
+      } else {
+        const path =
+          kind === "html" ? await slidesApi.exportHtml(json) : await slidesApi.exportPdf(json);
+        toast.success(`已导出：${path}`);
+      }
     } catch (e) {
       toast.error(String(e));
     } finally {
@@ -674,12 +719,21 @@ export function SlidesTab() {
           <div>
             <div className="mb-3 flex items-center justify-between">
               <h3 className="text-sm font-semibold text-muted-foreground">我的演示</h3>
-              <button
-                onClick={handleCreate}
-                className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-3 text-sm hover:bg-muted/40"
-              >
-                <Plus className="h-4 w-4" /> 空白新建
-              </button>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => void handleImportPptx()}
+                  className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-3 text-sm hover:bg-muted/40"
+                  title="导入现有 .pptx（提取文本与备注进入编辑流水线）"
+                >
+                  <FileUp className="h-4 w-4" /> 导入 PPTX
+                </button>
+                <button
+                  onClick={handleCreate}
+                  className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-3 text-sm hover:bg-muted/40"
+                >
+                  <Plus className="h-4 w-4" /> 空白新建
+                </button>
+              </div>
             </div>
             {decks.length === 0 ? (
               <div className="rounded-xl border border-dashed border-border p-10 text-center text-sm text-muted-foreground">

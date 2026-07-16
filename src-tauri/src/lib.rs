@@ -15,6 +15,7 @@ mod local_models;
 mod media;
 mod model_knowledge;
 mod oauth;
+mod office;
 mod pptx;
 mod proc;
 mod prompt_guard;
@@ -348,6 +349,11 @@ pub fn run() {
             commands::oauth_list_accounts,
             commands::oauth_delete_account,
             commands::oauth_refresh_account,
+            commands::check_skill_updates,
+            commands::resolve_skill_conflict,
+            commands::office_status,
+            commands::office_install,
+            commands::import_pptx_deck,
             commands::grok_auth_status,
             commands::grok_login_start,
             commands::grok_login_cancel,

@@ -38,6 +38,8 @@ pub struct SkillPoolItem {
     pub summary_zh: String,
     pub reviewed_at: Option<String>,
     pub updated_at: String,
+    /// Content was auto-updated after the last review (「更新待复审」 badge).
+    pub needs_re_review: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,7 +83,9 @@ pub fn list_skill_pool(db: State<'_, Arc<DbManager>>) -> Result<Vec<SkillPoolIte
         .prepare(
             "SELECT name, description, category, pool, source_ref, central_path,
                     usage_count, starred, review_score, review_verdict, review_summary,
-                    reviewed_at, updated_at, summary_zh, review_problems, review_improve
+                    reviewed_at, updated_at, summary_zh, review_problems, review_improve,
+                    (reviewed_at IS NOT NULL AND content_updated_at IS NOT NULL
+                     AND content_updated_at > reviewed_at)
              FROM skills
              ORDER BY pool DESC, review_score IS NULL, updated_at DESC",
         )
@@ -106,6 +110,7 @@ pub fn list_skill_pool(db: State<'_, Arc<DbManager>>) -> Result<Vec<SkillPoolIte
                 summary_zh: r.get(13)?,
                 reviewed_at: r.get(11)?,
                 updated_at: r.get(12)?,
+                needs_re_review: r.get::<_, i64>(16)? != 0,
             })
         })
         .map_err(|e| e.to_string())?;

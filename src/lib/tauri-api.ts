@@ -297,6 +297,7 @@ export interface SkillPoolItem {
   summary_zh: string;
   reviewed_at: string | null;
   updated_at: string;
+  needs_re_review: boolean;
 }
 export interface SkillReformProposal {
   new_content: string;
@@ -453,9 +454,9 @@ export const slidesApi = {
     invoke<string>("export_deck_html", { modelJson }),
   exportPdf: (modelJson: string) =>
     invoke<string>("export_deck_pdf", { modelJson }),
-  // E: real PowerPoint from the same JSON model
+  // E: real PowerPoint from the same JSON model, QA'd by OfficeCLI on the way out
   exportPptx: (modelJson: string) =>
-    invoke<string>("export_deck_pptx", { modelJson }),
+    invoke<PptxExportResult>("export_deck_pptx", { modelJson }),
   // A: two-stage generation (outline → expand)
   generateOutline: (topic: string, chatModel: string, slideCount?: number) =>
     invoke<Outline>("generate_outline", { topic, chatModel, slideCount: slideCount ?? null }),
@@ -1929,6 +1930,44 @@ export const oauthApi = {
   listAccounts: () => invoke<OAuthAccountView[]>("oauth_list_accounts"),
   deleteAccount: (id: string) => invoke<void>("oauth_delete_account", { id }),
   refreshAccount: (id: string) => invoke<void>("oauth_refresh_account", { id }),
+};
+
+// Office 底座 — OfficeCLI managed install + pptx QA/import; skill auto-update.
+export interface PptxQa {
+  ran: boolean;
+  schema_ok: boolean;
+  issue_count: number;
+  detail: string[];
+}
+export interface PptxExportResult { path: string; qa: PptxQa; }
+export interface OfficeStatus {
+  installed: boolean;
+  path: string | null;
+  kind: "managed" | "system" | null;
+  version: string | null;
+  pinned_version: string;
+  update_available: boolean;
+  skill_pool: string | null;
+  skill_reviewed: boolean;
+}
+export const officeApi = {
+  status: () => invoke<OfficeStatus>("office_status"),
+  install: () => invoke<string>("office_install"),
+  importPptx: (filePath: string) => invoke<DeckRecord>("import_pptx_deck", { filePath }),
+};
+
+export interface SkillUpdated { name: string; from_tool: string; backup_dir: string; needs_re_review: boolean; }
+export interface SkillConflict { name: string; source_path: string; from_tool: string; }
+export interface SkillUpdateReport {
+  checked: number;
+  updated: SkillUpdated[];
+  conflicts: SkillConflict[];
+  errors: string[];
+}
+export const skillUpdatesApi = {
+  check: (apply: boolean) => invoke<SkillUpdateReport>("check_skill_updates", { apply }),
+  resolveConflict: (name: string, sourcePath: string, takeSource: boolean) =>
+    invoke<void>("resolve_skill_conflict", { name, sourcePath, takeSource }),
 };
 
 // Grok 账号登录 — OMNIX drives `grok login --device-auth` and relays xAI's own

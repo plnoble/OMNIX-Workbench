@@ -169,7 +169,7 @@ Add-Type -AssemblyName System.Windows.Forms
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $dialog = New-Object System.Windows.Forms.OpenFileDialog
 $dialog.Title = '选择要导入 OMNIX 知识库的文件'
-$dialog.Filter = '支持的文档|*.md;*.txt;*.pdf;*.docx;*.rs;*.py;*.js;*.ts;*.tsx;*.jsx;*.json|所有文件|*.*'
+$dialog.Filter = '支持的文档|*.md;*.txt;*.pdf;*.docx;*.pptx;*.xlsx;*.rs;*.py;*.js;*.ts;*.tsx;*.jsx;*.json|所有文件|*.*'
 if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
   Write-Output $dialog.FileName
 }

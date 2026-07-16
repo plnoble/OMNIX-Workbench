@@ -14,6 +14,7 @@ import {
   Download,
   Hammer,
   Loader2,
+  RefreshCw,
   Search,
   ShieldCheck,
   Sparkles,
@@ -28,6 +29,8 @@ import {
   modelApi,
   settingsApi,
   skillPoolApi,
+  skillUpdatesApi,
+  type SkillConflict,
   type SkillFusionProposal,
   type SkillPoolItem,
   type SkillReformProposal,
@@ -72,6 +75,11 @@ export function SkillPoolPanel() {
 
   const summarizedOnce = useRef<Set<string>>(new Set());
 
+  // 技能自动更新：进入面板时静默检查一次；干净更新自动应用（已备份），
+  // 冲突（两边都改过）绝不猜，列出来等用户定。
+  const [conflicts, setConflicts] = useState<SkillConflict[]>([]);
+  const updateCheckedOnce = useRef(false);
+
   const load = useCallback(async () => {
     try {
       setItems(await skillPoolApi.list());
@@ -82,6 +90,23 @@ export function SkillPoolPanel() {
 
   useEffect(() => {
     void load();
+    if (!updateCheckedOnce.current) {
+      updateCheckedOnce.current = true;
+      skillUpdatesApi
+        .check(true)
+        .then((report) => {
+          setConflicts(report.conflicts);
+          if (report.updated.length > 0) {
+            const reReview = report.updated.filter((u) => u.needs_re_review).length;
+            toast.success(`已自动更新 ${report.updated.length} 个技能（原版本已备份）`, {
+              description: reReview > 0 ? `其中 ${reReview} 个在正式池，建议复审` : undefined,
+            });
+            void load();
+          }
+          for (const err of report.errors) toast.error(err);
+        })
+        .catch(() => {});
+    }
     modelApi
       .getActive()
       .then((list) => {
@@ -467,6 +492,52 @@ export function SkillPoolPanel() {
         ))}
       </div>
 
+      {/* 更新冲突：中央副本和源都改过，必须用户拍板 */}
+      {conflicts.length > 0 && (
+        <div className="flex flex-col gap-1.5 rounded-lg border border-warning/40 bg-warning/5 p-2.5 text-xs">
+          <div className="flex items-center gap-1.5 font-medium text-warning">
+            <RefreshCw className="h-3.5 w-3.5" />
+            {conflicts.length} 个技能的源有更新，但中央副本也被改过——保留哪边？
+          </div>
+          {conflicts.map((c) => (
+            <div key={c.name} className="flex items-center gap-2">
+              <span className="truncate text-muted-foreground">
+                「{c.name}」（源：{c.from_tool}）
+              </span>
+              <button
+                className="ml-auto shrink-0 rounded border border-border px-2 py-0.5 hover:bg-muted/40"
+                onClick={() => {
+                  void skillUpdatesApi
+                    .resolveConflict(c.name, c.source_path, true)
+                    .then(() => {
+                      toast.success(`「${c.name}」已用源覆盖（原版本已备份）`);
+                      setConflicts((prev) => prev.filter((x) => x.name !== c.name));
+                      void load();
+                    })
+                    .catch((e) => toast.error(String(e)));
+                }}
+              >
+                用源覆盖
+              </button>
+              <button
+                className="shrink-0 rounded border border-border px-2 py-0.5 hover:bg-muted/40"
+                onClick={() => {
+                  void skillUpdatesApi
+                    .resolveConflict(c.name, c.source_path, false)
+                    .then(() => {
+                      toast.success(`「${c.name}」保留中央版本`);
+                      setConflicts((prev) => prev.filter((x) => x.name !== c.name));
+                    })
+                    .catch((e) => toast.error(String(e)));
+                }}
+              >
+                保留中央
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* list + detail */}
       <div className="flex min-h-0 flex-1 gap-3">
         {/* list */}
@@ -523,6 +594,14 @@ export function SkillPoolPanel() {
                   {item.summary_zh || item.description}
                 </p>
                 <div className="mt-1 flex items-center gap-1.5">
+                  {item.needs_re_review && (
+                    <span
+                      className="rounded border border-warning/40 bg-warning/10 px-1 py-0.5 text-[10px] text-warning"
+                      title="内容在上次审核之后被自动更新过——建议重跑一次审核"
+                    >
+                      更新待复审
+                    </span>
+                  )}
                   {verdict ? (
                     <span className={cn("rounded border px-1 py-0.5 text-[10px]", verdict.cls)}>
                       {verdict.label}

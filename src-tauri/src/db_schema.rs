@@ -272,6 +272,9 @@ impl DbManager {
             "ALTER TABLE skills ADD COLUMN starred INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE skills ADD COLUMN category TEXT NULL",
             // Skill compound interest fields
+            // Skill auto-update: when central content last changed via the update
+            // engine (drives the 「更新待复审」 badge: content_updated_at > reviewed_at)
+            "ALTER TABLE skills ADD COLUMN content_updated_at DATETIME NULL",
             "ALTER TABLE skills ADD COLUMN usage_count INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE skills ADD COLUMN last_used_at DATETIME NULL",
             "ALTER TABLE skills ADD COLUMN success_count INTEGER NOT NULL DEFAULT 0",
