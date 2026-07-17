@@ -1211,7 +1211,7 @@ export function SlidesTab() {
       {/* C: 配图 */}
       {imgOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-8" onClick={() => !imaging && setImgOpen(false)}>
-          <div className="flex w-full max-w-xl flex-col gap-3 rounded-xl border border-border bg-background p-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+          <div className="flex w-full max-w-xl flex-col gap-3 rounded-xl border border-border bg-background p-4 shadow-2xl animate-sheet-in" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between">
               <span className="text-sm font-semibold">
                 <ImageIcon className="mr-1 inline h-4 w-4 text-primary" /> 为第 {selected + 1} 页配图
@@ -1260,7 +1260,7 @@ export function SlidesTab() {
       {/* D: 母版 */}
       {brandOpen && deck && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-8" onClick={() => setBrandOpen(false)}>
-          <div className="flex max-h-full w-full max-w-lg flex-col gap-3 overflow-y-auto rounded-xl border border-border bg-background p-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+          <div className="flex max-h-full w-full max-w-lg flex-col gap-3 overflow-y-auto rounded-xl border border-border bg-background p-4 shadow-2xl animate-sheet-in" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between">
               <span className="text-sm font-semibold">
                 <Palette className="mr-1 inline h-4 w-4 text-primary" /> 母版 / 品牌

@@ -514,7 +514,7 @@ export function WriteTab() {
       {/* AI 长文：先大纲后展开（复用演示的两阶段模式） */}
       {longOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-8" onClick={() => setLongOpen(false)}>
-          <div className="flex max-h-full w-full max-w-xl flex-col gap-3 rounded-xl border border-border bg-background p-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+          <div className="flex max-h-full w-full max-w-xl flex-col gap-3 rounded-xl border border-border bg-background p-4 shadow-2xl animate-sheet-in" onClick={(e) => e.stopPropagation()}>
             <div className="text-sm font-semibold">AI 长文（先大纲，确认后逐章展开）</div>
             <textarea
               value={longTopic}
@@ -562,7 +562,7 @@ export function WriteTab() {
       {/* 批量生成：模板 {{key}} + JSON 数组 */}
       {mergeOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-8" onClick={() => setMergeOpen(false)}>
-          <div className="flex max-h-full w-full max-w-xl flex-col gap-3 rounded-xl border border-border bg-background p-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+          <div className="flex max-h-full w-full max-w-xl flex-col gap-3 rounded-xl border border-border bg-background p-4 shadow-2xl animate-sheet-in" onClick={(e) => e.stopPropagation()}>
             <div className="text-sm font-semibold">批量生成（模板 {"{{key}}"} 占位 + JSON 数据）</div>
             <div className="flex items-center gap-2">
               <Button size="sm" variant="outline" onClick={() => void shellApi.pickFile().then((p) => p && setMergeTemplate(p))}>
