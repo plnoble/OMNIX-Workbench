@@ -6,7 +6,6 @@ import {
   Loader2,
   Play,
   RefreshCw,
-  Settings2,
   Sparkles,
   Terminal,
   Wrench,
@@ -35,6 +34,10 @@ interface AgentHubTabProps {
   onDeleteAccount: (id: string) => void;
   onSwitchAccount: (id: string) => void;
   onStartWork?: (name: string) => void;
+  /** Refreshes the App-level detection list — the ONE source of truth that the
+   * workspace also reads. Every install/update/refresh here must go through
+   * this, or the workspace keeps showing 「未检测到」 until an app restart. */
+  onRefreshAgents: () => Promise<void>;
 }
 
 const BUILTIN_MODELS: Record<string, string[]> = {
@@ -79,49 +82,54 @@ export function AgentHubTab({
   onDeleteAccount,
   onSwitchAccount,
   onStartWork,
+  onRefreshAgents,
 }: AgentHubTabProps) {
-  const [localAgents, setLocalAgents] = useState<DetectedAgent[]>(detectedAgents);
+  // No local copy of the detection list — `detectedAgents` (App-level) is the
+  // single source of truth shared with the workspace. A fork here once made the
+  // workspace claim an installed agent was 「未检测到」 until restart.
   const [bindings, setBindings] = useState<AgentPlatformBinding[]>([]);
   const [selectedAgent, setSelectedAgent] = useState(activeAgent || FEATURED_AGENTS[0]);
   const [busyAgent, setBusyAgent] = useState<string | null>(null);
   const [runtimeCatalog, setRuntimeCatalog] = useState<RuntimeAgentCatalogEntry[]>([]);
   const [updates, setUpdates] = useState<Record<string, AgentUpdateInfo>>({});
-  const [checkingUpdates, setCheckingUpdates] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [showInstallManager, setShowInstallManager] = useState(false);
   // Free-form custom model (per agent). For ACP agents it maps to the ACP model
   // preference (session/set_config_option); for others to a builtin binding.
   const [customModel, setCustomModel] = useState("");
   const [savingCustom, setSavingCustom] = useState(false);
 
   useEffect(() => {
-    setLocalAgents(detectedAgents);
-  }, [detectedAgents]);
-
-  useEffect(() => {
     agentBindingApi.getAll().then(setBindings).catch(() => setBindings([]));
-    runtimeApi.getAgentCatalog().then(setRuntimeCatalog).catch(() => setRuntimeCatalog([]));
   }, []);
 
-  // Check installed agents against npm latest so we can flag available updates.
-  const checkUpdates = useCallback(async () => {
-    setCheckingUpdates(true);
+  /** 「刷新」= 重新检测 + 检查更新 + 运行适配状态，一个动作看全现状。 */
+  const refreshAll = useCallback(async () => {
+    setRefreshing(true);
     try {
-      const list = await agentApi.checkUpdates();
-      setUpdates(Object.fromEntries(list.map((info) => [info.name, info])));
+      await onRefreshAgents();
+      const [catalog, updateList] = await Promise.all([
+        runtimeApi.getAgentCatalog().catch(() => [] as RuntimeAgentCatalogEntry[]),
+        agentApi.checkUpdates().catch(() => [] as AgentUpdateInfo[]),
+      ]);
+      setRuntimeCatalog(catalog);
+      setUpdates(Object.fromEntries(updateList.map((info) => [info.name, info])));
     } catch (error) {
-      toast.error(`检查更新失败：${error}`);
+      toast.error(`刷新失败：${error}`);
     } finally {
-      setCheckingUpdates(false);
+      setRefreshing(false);
     }
-  }, []);
+  }, [onRefreshAgents]);
 
   useEffect(() => {
-    void checkUpdates();
-  }, [checkUpdates, localAgents.length]);
+    void refreshAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const agents = useMemo(() => {
     const names = [...FEATURED_AGENTS, ...AGENT_NAMES.filter((name) => !FEATURED_AGENTS.includes(name))];
     return names.map((name) => {
-      const detected = localAgents.find((agent) => agent.name === name);
+      const detected = detectedAgents.find((agent) => agent.name === name);
       const binding = bindings.find((item) => item.agent_name === name);
       const runtime = runtimeCatalog.find((item) => item.name === name);
       const agentAccounts = accounts.filter((account) => account.agent_name === name || account.agent_name === name.toLowerCase());
@@ -135,7 +143,7 @@ export function AgentHubTab({
         runtime,
       };
     });
-  }, [accounts, bindings, localAgents, runtimeCatalog]);
+  }, [accounts, bindings, detectedAgents, runtimeCatalog]);
 
   const selected = agents.find((agent) => agent.name === selectedAgent) ?? agents[0];
   const selectedIsAcp = selected ? isAcpAgent(selected.name) : false;
@@ -188,28 +196,20 @@ export function AgentHubTab({
   }));
   const builtinModelOptions = BUILTIN_MODELS[selected?.name ?? ""] ?? [];
 
-  const runAgentAction = async (agentName: string, action: "detect" | "install" | "update") => {
+  const runAgentAction = async (agentName: string, action: "install" | "update") => {
     setBusyAgent(agentName);
     try {
-      if (action === "detect") {
-        const list = await agentApi.detectInstalled();
-        setLocalAgents(list);
-        setRuntimeCatalog(await runtimeApi.getAgentCatalog());
-        toast.success("检测完成");
-      } else if (action === "install") {
+      if (action === "install") {
+        toast.info(`正在安装 ${agentName}…`);
         await agentApi.install(agentName);
-        const list = await agentApi.detectInstalled();
-        setLocalAgents(list);
-        setRuntimeCatalog(await runtimeApi.getAgentCatalog());
         toast.success(`${agentName} 安装完成`);
       } else {
         await agentApi.update(agentName);
-        const list = await agentApi.detectInstalled();
-        setLocalAgents(list);
-        setRuntimeCatalog(await runtimeApi.getAgentCatalog());
-        void checkUpdates();
         toast.success(`${agentName} 已更新`);
       }
+      // Post-mutation state flows through the shared refresh so the workspace
+      // sees the new reality immediately (no restart, no fork).
+      await refreshAll();
     } catch (error) {
       toast.error(`${agentName} 操作失败：${error}`);
     } finally {
@@ -255,18 +255,33 @@ export function AgentHubTab({
               本地智能体
             </div>
             <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">
-              检测、安装、更新 Claude Code、Codex、Gemini CLI、OpenCode 等 Agent，并为每个 Agent 绑定模型。
+              每张卡就是一个 Agent 的现状：未安装的点「安装」，有新版的点「更新」，装好的点「开始工作」。
+              状态由「刷新」一次看全（检测本地 CLI + 检查新版本）。
             </p>
           </div>
-          <Button variant="outline" onClick={() => runAgentAction(selected?.name ?? "Claude Code", "detect")} disabled={!!busyAgent}>
-            {busyAgent ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-            重新检测
-          </Button>
-          <Button variant="outline" onClick={() => void checkUpdates()} disabled={checkingUpdates} title="检查各 Agent CLI 是否有新版本">
-            {checkingUpdates ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-            检查更新
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => void refreshAll()} disabled={refreshing || !!busyAgent}>
+              {refreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              刷新
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => setShowInstallManager((v) => !v)}
+              title="盘点系统里每个 Agent 的所有安装副本（PATH / npm 全局 / OMNIX 托管），清理重复、统一到托管目录"
+            >
+              <Wrench className="h-4 w-4" />
+              安装位置{showInstallManager ? " ▲" : ""}
+            </Button>
+          </div>
         </div>
+
+        {/* 安装位置管理：进阶盘点，默认收起——和上面的「刷新」是两回事：
+            刷新回答「现在哪些能用」，这里回答「系统里都装在了哪、要不要清理」。 */}
+        {showInstallManager && (
+          <div className="mb-6 animate-sheet-in">
+            <AgentInstallManager />
+          </div>
+        )}
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
           {agents.map((agent) => (
@@ -313,60 +328,66 @@ export function AgentHubTab({
                 <div className="text-xs text-muted-foreground">当前模型</div>
                 <div className="mt-1 truncate text-sm font-medium">{agent.currentModel}</div>
               </div>
+              {/* 动作按状态收敛：任何时刻只出现「当下该做的那一件事」。
+                  卡片本身即入口——点卡片在右侧看详情/绑模型/配账号。 */}
               <div className="mt-4 flex flex-wrap gap-2">
-                <Button
-                  size="sm"
-                  type="button"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onSwitchAgent(agent.name);
-                    onStartWork?.(agent.name);
-                  }}
-                  disabled={!agent.installed || agent.runtime?.runtime_status !== "supported"}
-                >
-                  <Play className="h-3.5 w-3.5" />
-                  开始工作
-                </Button>
-                {agent.installed && updates[agent.name]?.has_update && (
+                {!agent.installed ? (
                   <Button
                     size="sm"
                     type="button"
-                    variant="outline"
                     disabled={busyAgent === agent.name}
                     onClick={(event) => {
                       event.stopPropagation();
-                      void runAgentAction(agent.name, "update");
+                      void runAgentAction(agent.name, "install");
                     }}
-                    title={`更新到 ${updates[agent.name].latest}`}
                   >
                     {busyAgent === agent.name ? (
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />
                     ) : (
                       <Download className="h-3.5 w-3.5" />
                     )}
-                    更新
+                    安装
                   </Button>
+                ) : (
+                  <>
+                    <Button
+                      size="sm"
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onSwitchAgent(agent.name);
+                        onStartWork?.(agent.name);
+                      }}
+                      disabled={agent.runtime?.runtime_status !== "supported"}
+                    >
+                      <Play className="h-3.5 w-3.5" />
+                      开始工作
+                    </Button>
+                    {updates[agent.name]?.has_update && (
+                      <Button
+                        size="sm"
+                        type="button"
+                        variant="outline"
+                        disabled={busyAgent === agent.name}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void runAgentAction(agent.name, "update");
+                        }}
+                        title={`更新到 ${updates[agent.name].latest}`}
+                      >
+                        {busyAgent === agent.name ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Download className="h-3.5 w-3.5" />
+                        )}
+                        更新
+                      </Button>
+                    )}
+                  </>
                 )}
-                <Button
-                  size="sm"
-                  type="button"
-                  variant="outline"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    setSelectedAgent(agent.name);
-                  }}
-                >
-                  <Settings2 className="h-3.5 w-3.5" />
-                  详情
-                </Button>
               </div>
             </div>
           ))}
-        </div>
-
-        {/* R3 统一安装：扫描全部安装副本 / 删多余 / 收进托管目录 */}
-        <div className="mt-6">
-          <AgentInstallManager />
         </div>
       </section>
 
@@ -429,36 +450,43 @@ export function AgentHubTab({
                     </Button>
                   </div>
                   <p className="mt-1.5 text-xs leading-5 text-muted-foreground">
-                    {selectedIsAcp
-                      ? "ACP Agent（Gemini/Qwen/OpenCode/Copilot）：下次会话经 set_config_option 下发，可填 Agent 未在列表里声明的模型。留空＝用 Agent 默认。"
-                      : "Claude Code / Codex：作为自带模型（--model）绑定。留空并保存＝清除绑定，回到 Agent 默认。"}
+                    {selected.name === "Grok Build"
+                      ? "Grok Build 暂不支持从这里下发模型（其 CLI 不接受标准 ACP 配置协议，实测返回 Method not found）——会话运行在你 Grok 账号的默认模型上；模型选择通道接入中。"
+                      : selectedIsAcp
+                        ? "ACP Agent（Gemini/Qwen/OpenCode/Copilot）：下次会话经 set_config_option 下发，可填 Agent 未在列表里声明的模型。留空＝用 Agent 默认。"
+                        : "Claude Code / Codex：作为自带模型（--model）绑定。留空并保存＝清除绑定，回到 Agent 默认。"}
                   </p>
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-2">
-                <Button variant="outline" onClick={() => runAgentAction(selected.name, "detect")} disabled={busyAgent === selected.name}>
-                  <RefreshCw className={cn("h-4 w-4", busyAgent === selected.name && "animate-spin")} />
-                  检测
-                </Button>
-                <Button variant="outline" onClick={() => runAgentAction(selected.name, "install")} disabled={busyAgent === selected.name || selected.installed}>
-                  <Download className="h-4 w-4" />
-                  安装
-                </Button>
-                <Button variant="outline" onClick={() => runAgentAction(selected.name, "update")} disabled={busyAgent === selected.name || !selected.installed}>
-                  <Wrench className="h-4 w-4" />
-                  更新
-                </Button>
-                <Button
-                  onClick={() => {
-                    onSwitchAgent(selected.name);
-                    onStartWork?.(selected.name);
-                  }}
-                  disabled={!selected.installed || selected.runtime?.runtime_status !== "supported"}
-                >
-                  <Play className="h-4 w-4" />
-                  开始
-                </Button>
+              {/* 情境化动作：与宫格卡片同一逻辑（检测由顶部「刷新」统一负责）。 */}
+              <div className="flex gap-2">
+                {!selected.installed ? (
+                  <Button className="flex-1" onClick={() => runAgentAction(selected.name, "install")} disabled={busyAgent === selected.name}>
+                    {busyAgent === selected.name ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                    安装
+                  </Button>
+                ) : (
+                  <>
+                    <Button
+                      className="flex-1"
+                      onClick={() => {
+                        onSwitchAgent(selected.name);
+                        onStartWork?.(selected.name);
+                      }}
+                      disabled={selected.runtime?.runtime_status !== "supported"}
+                    >
+                      <Play className="h-4 w-4" />
+                      开始工作
+                    </Button>
+                    {updates[selected.name]?.has_update && (
+                      <Button variant="outline" onClick={() => runAgentAction(selected.name, "update")} disabled={busyAgent === selected.name}>
+                        {busyAgent === selected.name ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wrench className="h-4 w-4" />}
+                        更新到 {updates[selected.name].latest}
+                      </Button>
+                    )}
+                  </>
+                )}
               </div>
 
               <div className="rounded-md border border-border bg-background/50 p-4">

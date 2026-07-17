@@ -492,6 +492,7 @@ function MainApp() {
 
             {(activeTab === "chat" || activeTab === "work") && (
               <ChatTab
+                onRedetectAgents={convs.detectAgents}
                 surface={activeTab}
                 activeAgent={convs.activeAgent}
                 detectedAgents={convs.detectedAgents}
@@ -540,6 +541,7 @@ function MainApp() {
                   convs.selectAgent(name);
                   handleTabChange("work");
                 }}
+                onRefreshAgents={convs.detectAgents}
               />
             )}
 

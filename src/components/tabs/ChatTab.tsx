@@ -68,6 +68,8 @@ export interface ChatTabProps {
   surface: "chat" | "work";
   activeAgent: string;
   detectedAgents: DetectedAgent[];
+  /** 重新跑一次全局检测（App 级单一数据源）——工作区提示未检测到时的自救按钮。 */
+  onRedetectAgents?: () => Promise<void>;
   messages: ConversationMessage[];
   chatInput: string;
   chatWorkspace: string;
@@ -226,6 +228,7 @@ export function ChatTab({
   surface,
   activeAgent,
   detectedAgents,
+  onRedetectAgents,
   messages,
   chatInput,
   chatWorkspace,
@@ -714,6 +717,7 @@ export function ChatTab({
               activeAgent={activeAgent}
               installed={detectedAgents.find((agent) => agent.name === activeAgent)?.status === "installed"}
               onPrompt={setChatInput}
+              onRedetect={onRedetectAgents}
             />
           ) : (
             <div className="mx-auto flex max-w-4xl flex-col gap-5">
@@ -1323,7 +1327,8 @@ function AgentStrip({
   );
 }
 
-function FirstScreen({ activeAgent, installed, onPrompt }: { activeAgent: string; installed: boolean; onPrompt: (prompt: string) => void }) {
+function FirstScreen({ activeAgent, installed, onPrompt, onRedetect }: { activeAgent: string; installed: boolean; onPrompt: (prompt: string) => void; onRedetect?: () => Promise<void> }) {
+  const [redetecting, setRedetecting] = useState(false);
   return (
     <div className="first-screen mx-auto flex min-h-full max-w-4xl flex-col items-center justify-center px-6 py-6 text-center">
       <div className="first-screen-icon mb-5 flex h-16 w-16 items-center justify-center rounded-md border border-border bg-card/70">
@@ -1336,7 +1341,19 @@ function FirstScreen({ activeAgent, installed, onPrompt }: { activeAgent: string
       {!installed && (
         <div className="mt-4 flex items-center gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-warning">
           <AlertTriangle className="h-4 w-4" />
-          当前 Agent 未检测到，仍可先整理任务，稍后到智能体页安装或配置。
+          当前 Agent 未检测到——如果你刚在智能体页装好，点一下重新检测。
+          {onRedetect && (
+            <button
+              className="ml-1 inline-flex items-center gap-1 rounded border border-warning/40 px-2 py-0.5 text-xs hover:bg-warning/20"
+              disabled={redetecting}
+              onClick={() => {
+                setRedetecting(true);
+                void onRedetect().finally(() => setRedetecting(false));
+              }}
+            >
+              {redetecting ? "检测中…" : "重新检测"}
+            </button>
+          )}
         </div>
       )}
       <div className="first-screen-suggestions mt-7 grid w-full grid-cols-1 gap-2 md:grid-cols-3">
