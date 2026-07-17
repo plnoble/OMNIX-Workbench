@@ -549,7 +549,7 @@ pub async fn runtime_set_session_model(
     session_id: String,
     model: String,
     runtime_manager: State<'_, Arc<RuntimeManager>>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     runtime_manager.set_session_model(&session_id, &model).await
 }
 

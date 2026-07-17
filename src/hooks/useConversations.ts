@@ -649,13 +649,13 @@ export function useConversations(
       return;
     }
     try {
-      await runtimeApi.setSessionModel(sessionId, model);
+      const outcome = await runtimeApi.setSessionModel(sessionId, model);
       setAcpModelOptions((current) => {
         const existing = current[conversationId];
         if (!existing) return current;
         return { ...current, [conversationId]: { ...existing, current: model } };
       });
-      toast.success(`模型已切换：${model}`);
+      toast.success(outcome || `模型已切换：${model}`);
     } catch (error) {
       toast.error("切换模型失败", { description: String(error) });
     }

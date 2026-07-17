@@ -129,10 +129,17 @@ impl RuntimeManager {
     ) -> Result<(), String> {
         update_agent_session_status(&self.db, session_id, AgentSessionStatus::Starting, None)?;
 
-        let launch = match resume_external_id.as_deref() {
+        let mut launch = match resume_external_id.as_deref() {
             Some(external_id) => build_resume_launch_spec(&config, external_id)?,
             None => build_launch_spec(&config)?,
         };
+        // Grok can't switch models over ACP (`set_config_option` → Method not
+        // found), so the remembered preference is applied at launch via `-m`.
+        if config.agent == crate::runtime::AgentId::Grok {
+            if let Some(preferred) = acp_model_preference(&self.db, config.agent) {
+                launch.args.extend(["-m".to_string(), preferred]);
+            }
+        }
         let mut command = runtime_command(&launch.program, &launch.args);
         command
             .current_dir(&launch.cwd)
@@ -265,14 +272,19 @@ impl RuntimeManager {
                     let config_id = active.acp_model_config_id.read().await.clone();
                     let session_id_ext = active.external_session_id.read().await.clone();
                     if let (Some(config_id), Some(session_id_ext)) = (config_id, session_id_ext) {
-                        let request_id = active.next_request_id.fetch_add(1, Ordering::Relaxed);
-                        let request = build_acp_set_config_option_request(
-                            request_id,
-                            &session_id_ext,
-                            &config_id,
-                            &preferred,
-                        );
-                        let _ = write_json_line(&active, &request).await;
+                        // `launch-arg:` options (Grok) were already applied via the
+                        // launch command line; the agent has no RPC to receive them.
+                        if !config_id.starts_with("launch-arg:") {
+                            let request_id =
+                                active.next_request_id.fetch_add(1, Ordering::Relaxed);
+                            let request = build_acp_set_config_option_request(
+                                request_id,
+                                &session_id_ext,
+                                &config_id,
+                                &preferred,
+                            );
+                            let _ = write_json_line(&active, &request).await;
+                        }
                     }
                 }
             }
@@ -466,7 +478,9 @@ impl RuntimeManager {
 
     /// Switches the model of a running ACP session via `session/set_config_option`
     /// and remembers the choice per-agent so future sessions start on it.
-    pub async fn set_session_model(&self, session_id: &str, model: &str) -> Result<(), String> {
+    /// Returns the user-facing outcome — agents whose option is `launch-arg:`
+    /// (Grok) can't switch mid-session, so the choice applies to the NEXT one.
+    pub async fn set_session_model(&self, session_id: &str, model: &str) -> Result<String, String> {
         if model.trim().is_empty() {
             return Err("模型不能为空".into());
         }
@@ -480,6 +494,15 @@ impl RuntimeManager {
             .await
             .clone()
             .ok_or_else(|| "该 Agent 未提供可切换的模型选项".to_string())?;
+        // Persist as this agent's preferred model for future sessions.
+        let _ = self
+            .db
+            .set_setting(&acp_model_setting_key(active.config.agent), model);
+        if config_id.starts_with("launch-arg:") {
+            return Ok(format!(
+                "已记住 {model}——该 Agent 不支持会话中切换，下次会话自动生效"
+            ));
+        }
         let session_id_ext = active
             .external_session_id
             .read()
@@ -490,11 +513,7 @@ impl RuntimeManager {
         let request =
             build_acp_set_config_option_request(request_id, &session_id_ext, &config_id, model);
         write_json_line(&active, &request).await?;
-        // Persist as this agent's preferred model for future sessions.
-        let _ = self
-            .db
-            .set_setting(&acp_model_setting_key(active.config.agent), model);
-        Ok(())
+        Ok(format!("模型已切换：{model}"))
     }
 
     pub async fn stop_session(&self, session_id: &str) -> Result<(), String> {

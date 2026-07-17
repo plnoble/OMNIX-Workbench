@@ -497,12 +497,13 @@ export function SkillPoolPanel() {
         <div className="flex flex-col gap-1.5 rounded-lg border border-warning/40 bg-warning/5 p-2.5 text-xs">
           <div className="flex items-center gap-1.5 font-medium text-warning">
             <RefreshCw className="h-3.5 w-3.5" />
-            {conflicts.length} 个技能的源有更新，但中央副本也被改过——保留哪边？
+            {conflicts.length} 个技能的源更新需要你裁决——保留哪边？
           </div>
           {conflicts.map((c) => (
             <div key={c.name} className="flex items-center gap-2">
-              <span className="truncate text-muted-foreground">
+              <span className="truncate text-muted-foreground" title={c.reason}>
                 「{c.name}」（源：{c.from_tool}）
+                <span className="ml-1 text-warning/80">· {c.reason}</span>
               </span>
               <button
                 className="ml-auto shrink-0 rounded border border-border px-2 py-0.5 hover:bg-muted/40"

@@ -605,8 +605,32 @@ pub fn delete_pool_skill(name: String, db: State<'_, Arc<DbManager>>) -> Result<
     Ok(())
 }
 
+/// 晋升前的注入扫描（安全门之二）。正式池技能会被网关注入到**每一个** agent
+/// 请求里，被投毒的技能等于全 agent 持续中毒，所以高危样式一票否决——用户
+/// 想用就先改造掉那几行再晋升（审核/改造流程都在手边）。
+fn injection_gate(db: &DbManager, name: &str) -> Result<(), String> {
+    let content = read_skill_content(db, name)?;
+    let scan = crate::prompt_guard::scan_for_injection(&content);
+    if scan.should_block || scan.risk_level == "high" || scan.risk_level == "critical" {
+        let hits: Vec<String> = scan
+            .detected_patterns
+            .iter()
+            .take(4)
+            .map(|p| format!("「{}」({})", p.matched_text.chars().take(60).collect::<String>(), p.pattern_name))
+            .collect();
+        return Err(format!(
+            "安全扫描拦截（{}）：技能内容命中注入样式 {} —— 正式池技能会注入所有 agent 请求，\
+             请先用「AI 改造」清除这些内容，再审核晋升",
+            scan.risk_level,
+            hits.join("、")
+        ));
+    }
+    Ok(())
+}
+
 /// Move a skill between pools. The review gate lives here: promotion to the
-/// 正式池 requires a completed review (用户最终拍板，但没有审核就没有晋升).
+/// 正式池 requires a completed review (用户最终拍板，但没有审核就没有晋升)，
+/// plus an injection scan (审核看质量，扫描看恶意——两道门都过才进正式池).
 #[tauri::command]
 pub fn set_skill_pool(
     name: String,
@@ -615,6 +639,9 @@ pub fn set_skill_pool(
 ) -> Result<(), String> {
     if pool != "pending" && pool != "official" {
         return Err("pool 只能是 pending 或 official".to_string());
+    }
+    if pool == "official" {
+        injection_gate(&db, &name)?;
     }
     let conn = db.get_connection().map_err(|e| e.to_string())?;
     if pool == "official" {

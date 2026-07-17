@@ -350,6 +350,7 @@ pub fn run() {
             commands::oauth_delete_account,
             commands::oauth_refresh_account,
             commands::supervision_overview,
+            commands::agent_quota_overview,
             commands::check_skill_updates,
             commands::resolve_skill_conflict,
             commands::office_status,

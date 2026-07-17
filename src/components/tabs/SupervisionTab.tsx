@@ -11,6 +11,7 @@ import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
 import { runtimeApi, supervisionApi, type SupervisedSession } from "@/lib/tauri-api";
+import { QuotaStrip } from "@/components/QuotaStrip";
 
 const STATUS_META: Record<string, { label: string; cls: string }> = {
   created: { label: "已创建", cls: "bg-muted/30 text-muted-foreground" },
@@ -157,6 +158,8 @@ export function SupervisionTab() {
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-6">
+        {/* 订阅额度：5 小时 / 周额度用量与重置，一眼看全 */}
+        <QuotaStrip />
         {awaiting.length > 0 && (
           <section>
             <h3 className="mb-2 text-sm font-semibold text-warning">等待批准（{awaiting.length}）</h3>

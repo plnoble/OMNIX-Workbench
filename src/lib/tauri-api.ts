@@ -674,7 +674,7 @@ export const runtimeApi = {
     requestedPermissions?: unknown;
   }) => invoke("runtime_respond_approval", params),
   setSessionModel: (sessionId: string, model: string) =>
-    invoke("runtime_set_session_model", { sessionId, model }),
+    invoke<string>("runtime_set_session_model", { sessionId, model }),
   stopSession: (sessionId: string) => invoke("runtime_stop_session", { sessionId }),
   resumeSession: (sessionId: string) =>
     invoke<AgentSessionRecord>("runtime_resume_session", { sessionId }),
@@ -2001,8 +2001,24 @@ export const supervisionApi = {
   overview: () => invoke<SupervisionOverview>("supervision_overview"),
 };
 
+// 订阅额度 — Claude Code 5h 块 + Codex 官方限额窗口（读本机日志，零联网）。
+export interface TokenTally { input: number; output: number; cache_read: number; cache_create: number; requests: number; }
+export interface ClaudeQuota {
+  window_started_at: string | null;
+  window_resets_at: string | null;
+  window: TokenTally;
+  week: TokenTally;
+  window_models: [string, number][];
+}
+export interface CodexWindow { used_percent: number; window_minutes: number; resets_at: string | null; }
+export interface CodexQuota { plan_type: string; primary: CodexWindow | null; secondary: CodexWindow | null; captured_at: string; }
+export interface QuotaOverview { claude: ClaudeQuota | null; codex: CodexQuota | null; }
+export const quotaApi = {
+  overview: () => invoke<QuotaOverview>("agent_quota_overview"),
+};
+
 export interface SkillUpdated { name: string; from_tool: string; backup_dir: string; needs_re_review: boolean; }
-export interface SkillConflict { name: string; source_path: string; from_tool: string; }
+export interface SkillConflict { name: string; source_path: string; from_tool: string; reason: string; }
 export interface SkillUpdateReport {
   checked: number;
   updated: SkillUpdated[];

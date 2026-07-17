@@ -291,7 +291,17 @@ fn parse_response(value: &Value, line: &str) -> Vec<RuntimeEvent> {
 /// Extracts the model selection config option from a `session/new` response,
 /// returning `{configId, current, options:[{value,name}]}` when the agent
 /// exposes a `configOptions` entry of category/id `model`.
+///
+/// Grok Build is special-cased: it advertises models through the private
+/// `_meta["x.ai/sessionConfig"].options` field instead of `configOptions`, and
+/// it does NOT implement `session/set_config_option` (returns Method not found
+/// — verified against 0.2.97). Its option therefore carries the sentinel
+/// config id `launch-arg:-m`: the manager routes the selection through the
+/// `-m` launch argument on the next session instead of a live config write.
 fn extract_model_config_option(value: &Value) -> Option<Value> {
+    if let Some(option) = extract_grok_session_config(value) {
+        return Some(option);
+    }
     let options = value.pointer("/result/configOptions")?.as_array()?;
     let model = options.iter().find(|option| {
         option.get("category").and_then(Value::as_str) == Some("model")
@@ -316,6 +326,38 @@ fn extract_model_config_option(value: &Value) -> Option<Value> {
     Some(json!({
         "config_id": model.get("id").and_then(Value::as_str).unwrap_or("model"),
         "current": model.get("currentValue").and_then(Value::as_str),
+        "options": choices,
+    }))
+}
+
+/// Grok's private model advertisement (`_meta["x.ai/sessionConfig"]`). The key
+/// contains a `/`, hence the `~1` escape in the JSON pointer.
+fn extract_grok_session_config(value: &Value) -> Option<Value> {
+    let options = value
+        .pointer("/result/_meta/x.ai~1sessionConfig/options")?
+        .as_array()?;
+    let models: Vec<&Value> = options
+        .iter()
+        .filter(|option| option.get("category").and_then(Value::as_str) == Some("model"))
+        .collect();
+    if models.is_empty() {
+        return None;
+    }
+    let current = models
+        .iter()
+        .find(|option| option.get("selected").and_then(Value::as_bool) == Some(true))
+        .and_then(|option| option.get("id").and_then(Value::as_str));
+    let choices: Vec<Value> = models
+        .iter()
+        .filter_map(|option| {
+            let id = option.get("id").and_then(Value::as_str)?;
+            let label = option.get("label").and_then(Value::as_str).unwrap_or(id);
+            Some(json!({ "value": id, "name": label }))
+        })
+        .collect();
+    Some(json!({
+        "config_id": "launch-arg:-m",
+        "current": current,
         "options": choices,
     }))
 }
@@ -692,6 +734,29 @@ mod tests {
             AcpInbound::Emit(events) => {
                 assert_eq!(events[0].kind, RuntimeEventKind::RawLog);
                 assert!(events[0].metadata.get("acp_parse_error").is_some());
+            }
+            other => panic!("expected Emit, got {other:?}"),
+        }
+    }
+
+    /// Verbatim (trimmed) `session/new` result from Grok Build 0.2.97 with a
+    /// signed-in account: models live in `_meta["x.ai/sessionConfig"]`, not
+    /// standard configOptions.
+    #[test]
+    fn grok_private_session_config_maps_to_launch_arg_model_option() {
+        let line = r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"ses_g","models":[],"_meta":{"currentWorkingDirectory":"C:\\x","x.ai/sessionConfig":{"options":[{"id":"grok-4.5","category":"model","label":"Grok 4.5","selected":true},{"id":"high","category":"mode","label":"High Effort","selected":true},{"id":"low","category":"mode","label":"Low Effort","selected":false}]}}}}"#;
+        match classify_acp_message(line).expect("classify") {
+            AcpInbound::Emit(events) => {
+                let event = &events[0];
+                assert_eq!(event.kind, RuntimeEventKind::SessionStarted);
+                let model = &event.metadata["acp_model_option"];
+                assert_eq!(model["config_id"], "launch-arg:-m");
+                assert_eq!(model["current"], "grok-4.5");
+                // mode entries (effort) must NOT leak into the model list.
+                let options = model["options"].as_array().unwrap();
+                assert_eq!(options.len(), 1);
+                assert_eq!(options[0]["value"], "grok-4.5");
+                assert_eq!(options[0]["name"], "Grok 4.5");
             }
             other => panic!("expected Emit, got {other:?}"),
         }

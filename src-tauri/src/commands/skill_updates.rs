@@ -46,6 +46,8 @@ pub struct SkillConflict {
     pub name: String,
     pub source_path: String,
     pub from_tool: String,
+    /// Why this needs a human: "both-edited" or an injection-scan verdict.
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -144,8 +146,31 @@ pub fn check_skill_updates(
                 name,
                 source_path: candidate.path.clone(),
                 from_tool: candidate.tool_display_name.clone(),
+                reason: "中央副本也被改过".into(),
             });
             continue;
+        }
+
+        // 安全门：自动拉取会替换正式池可能正在注入的内容——源被投毒就等于给
+        // 所有 agent 下毒。高危样式不自动收编，转人工裁决。
+        if let Ok(source_content) = std::fs::read_to_string(&candidate.path) {
+            let scan = crate::prompt_guard::scan_for_injection(&source_content);
+            if scan.should_block || scan.risk_level == "high" || scan.risk_level == "critical" {
+                report.conflicts.push(SkillConflict {
+                    name,
+                    source_path: candidate.path.clone(),
+                    from_tool: candidate.tool_display_name.clone(),
+                    reason: format!(
+                        "源内容命中注入样式（{}）：{}",
+                        scan.risk_level,
+                        scan.detected_patterns
+                            .first()
+                            .map(|p| p.pattern_name.clone())
+                            .unwrap_or_default()
+                    ),
+                });
+                continue;
+            }
         }
 
         if !apply {
