@@ -6,53 +6,56 @@
    ============================================ */
 
 @theme {
-  /* --- Color Palette --- */
-  --color-background: #0a0b10;
-  --color-foreground: #f8fafc;
+  /* --- Color Palette — Apple Liquid Glass（暗色为默认）---
+     色板对齐 Apple systemDark：蓝 0A84FF / 青 64D2FF / 紫 BF5AF2 /
+     绿 30D158 / 橙 FF9F0A / 红 FF453A。面板一律「毛玻璃」：半透明白填充 +
+     发丝级白描边，深度靠模糊与投影，不靠霓虹光晕。 --- */
+  --color-background: #0a0c12;
+  --color-foreground: #f5f6f8;
 
-  --color-card: rgba(18, 20, 32, 0.7);
-  --color-card-foreground: #f8fafc;
+  --color-card: rgba(255, 255, 255, 0.055);
+  --color-card-foreground: #f5f6f8;
 
-  --color-popover: rgba(15, 17, 24, 0.95);
-  --color-popover-foreground: #f8fafc;
+  --color-popover: rgba(28, 30, 38, 0.8);
+  --color-popover-foreground: #f5f6f8;
 
-  --color-primary: #00f2fe;
-  --color-primary-foreground: #0a0b10;
+  --color-primary: #0a84ff;
+  --color-primary-foreground: #ffffff;
 
-  --color-secondary: #4facfe;
-  --color-secondary-foreground: #cbd5e1;
+  --color-secondary: #64d2ff;
+  --color-secondary-foreground: #d6e1f0;
 
-  --color-accent: #a855f7;
-  --color-accent-foreground: #f8fafc;
+  --color-accent: #bf5af2;
+  --color-accent-foreground: #ffffff;
 
-  --color-muted: #1c2030;
-  --color-muted-foreground: #94a3b8;
+  --color-muted: #171a22;
+  --color-muted-foreground: #9aa3b5;
 
-  --color-destructive: #ef4444;
-  --color-destructive-foreground: #f8fafc;
+  --color-destructive: #ff453a;
+  --color-destructive-foreground: #ffffff;
 
-  --color-success: #10b981;
-  --color-warning: #f59e0b;
-  --color-info: #3b82f6;
+  --color-success: #30d158;
+  --color-warning: #ff9f0a;
+  --color-info: #64d2ff;
 
-  --color-border: rgba(255, 255, 255, 0.07);
-  --color-input: rgba(255, 255, 255, 0.07);
-  --color-ring: #a855f7;
+  --color-border: rgba(255, 255, 255, 0.1);
+  --color-input: rgba(255, 255, 255, 0.1);
+  --color-ring: #0a84ff;
 
   /* --- Typography --- */
   --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   --font-mono: 'Cascadia Code', 'JetBrains Mono', ui-monospace, monospace;
 
-  /* --- Border Radius --- */
-  --radius-sm: 6px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
-  --radius-xl: 16px;
-  --radius-2xl: 20px;
+  /* --- Border Radius（连续大圆角）--- */
+  --radius-sm: 8px;
+  --radius-md: 11px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
+  --radius-2xl: 24px;
 
-  /* --- Shadows --- */
-  --shadow-glow: 0 0 20px rgba(0, 242, 254, 0.2);
-  --shadow-accent-glow: 0 0 20px rgba(168, 85, 247, 0.2);
+  /* --- Shadows（柔和玻璃投影，替代霓虹光晕）--- */
+  --shadow-glow: 0 8px 24px rgba(10, 132, 255, 0.18);
+  --shadow-accent-glow: 0 8px 24px rgba(191, 90, 242, 0.18);
 }
 
 /* ============================================
@@ -77,10 +80,14 @@
   body {
     margin: 0;
     min-height: 100vh;
+    /* Liquid Glass 的底：柔和环境光晕（蓝/紫/青三团），玻璃面板悬浮其上
+       才有折射感。fixed 让滚动时光斑不动，更像空间里的光。 */
     background:
-      radial-gradient(ellipse at 10% 20%, rgba(79, 172, 254, 0.04) 0%, transparent 50%),
-      radial-gradient(ellipse at 90% 80%, rgba(168, 85, 247, 0.04) 0%, transparent 50%),
+      radial-gradient(ellipse 55% 45% at 12% 8%, rgba(10, 132, 255, 0.13) 0%, transparent 60%),
+      radial-gradient(ellipse 50% 42% at 92% 22%, rgba(191, 90, 242, 0.1) 0%, transparent 62%),
+      radial-gradient(ellipse 60% 50% at 55% 105%, rgba(100, 210, 255, 0.08) 0%, transparent 60%),
       var(--color-background);
+    background-attachment: fixed;
   }
 
   /* Focus-visible accessibility: keyboard navigation ring */
@@ -116,30 +123,41 @@
    ============================================ */
 
 @utility glass-card {
-  background: rgba(18, 20, 32, 0.7);
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  backdrop-filter: blur(12px);
-  border-radius: 16px;
-  box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.7);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(20px) saturate(160%);
+  border-radius: 18px;
+  /* 顶部 1px 内高光 = 玻璃上沿受光；外阴影柔和拉开层级 */
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 12px 32px -12px rgba(0, 0, 0, 0.55);
 }
 
 @utility glass-card-hover {
-  border-color: rgba(0, 242, 254, 0.2);
-  box-shadow: 0 4px 20px -5px rgba(0, 242, 254, 0.15);
+  border-color: rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.08);
 }
 
 @utility glass-panel {
-  background: rgba(10, 10, 14, 0.3);
-  backdrop-filter: blur(20px);
+  background: rgba(16, 18, 24, 0.42);
+  backdrop-filter: blur(24px) saturate(150%);
+}
+
+/* Chrome 层（侧栏/顶栏/常驻工具条）：更强的模糊与饱和拉升，Apple 的
+   bar 质感——内容从它背后滑过时颜色被“吸”进玻璃。 */
+@utility glass-chrome {
+  background: rgba(16, 18, 26, 0.55);
+  backdrop-filter: blur(28px) saturate(170%);
+  border-color: rgba(255, 255, 255, 0.08);
 }
 
 @utility glow-border {
-  border-color: rgba(0, 242, 254, 0.2);
-  box-shadow: 0 4px 20px -5px rgba(0, 242, 254, 0.15);
+  border-color: rgba(10, 132, 255, 0.35);
+  box-shadow: 0 4px 20px -6px rgba(10, 132, 255, 0.25);
 }
 
 @utility glow-text {
-  background: linear-gradient(135deg, #00f2fe, #4facfe);
+  background: linear-gradient(135deg, #64d2ff, #0a84ff);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
@@ -273,48 +291,52 @@
    ============================================ */
 
 [data-theme="light"] {
-  --color-background: #f5f7fa;
-  --color-foreground: #1a1a2e;
+  /* Apple systemLight：iOS 灰底 #f2f2f7、蓝 007AFF、绿 34C759、橙 FF9500、
+     红 FF3B30、紫 AF52DE。玻璃面板改为半透明白。 */
+  --color-background: #f2f2f7;
+  --color-foreground: #1d1d1f;
 
-  --color-card: rgba(255, 255, 255, 0.85);
-  --color-card-foreground: #1a1a2e;
+  --color-card: rgba(255, 255, 255, 0.72);
+  --color-card-foreground: #1d1d1f;
 
-  --color-popover: rgba(255, 255, 255, 0.98);
-  --color-popover-foreground: #1a1a2e;
+  --color-popover: rgba(255, 255, 255, 0.86);
+  --color-popover-foreground: #1d1d1f;
 
-  --color-primary: #0891b2;
+  --color-primary: #007aff;
   --color-primary-foreground: #ffffff;
 
-  --color-secondary: #2563eb;
-  --color-secondary-foreground: #475569;
+  --color-secondary: #32ade6;
+  --color-secondary-foreground: #3a3a3c;
 
-  --color-accent: #7c3aed;
+  --color-accent: #af52de;
   --color-accent-foreground: #ffffff;
 
-  --color-muted: #e2e8f0;
-  --color-muted-foreground: #475569;
+  --color-muted: #e5e5ea;
+  --color-muted-foreground: #6e6e73;
 
-  --color-destructive: #dc2626;
+  --color-destructive: #ff3b30;
   --color-destructive-foreground: #ffffff;
 
-  --color-success: #059669;
-  --color-warning: #d97706;
-  --color-info: #2563eb;
+  --color-success: #34c759;
+  --color-warning: #ff9500;
+  --color-info: #007aff;
 
-  --color-border: rgba(0, 0, 0, 0.08);
-  --color-input: rgba(0, 0, 0, 0.08);
-  --color-ring: #7c3aed;
+  --color-border: rgba(0, 0, 0, 0.1);
+  --color-input: rgba(0, 0, 0, 0.1);
+  --color-ring: #007aff;
 
-  --shadow-glow: 0 0 20px rgba(8, 145, 178, 0.12);
-  --shadow-accent-glow: 0 0 20px rgba(124, 58, 237, 0.12);
+  --shadow-glow: 0 8px 24px rgba(0, 122, 255, 0.14);
+  --shadow-accent-glow: 0 8px 24px rgba(175, 82, 222, 0.14);
 }
 
 /* Light theme base overrides */
 [data-theme="light"] body {
   background:
-    radial-gradient(ellipse at 10% 20%, rgba(8, 145, 178, 0.03) 0%, transparent 50%),
-    radial-gradient(ellipse at 90% 80%, rgba(124, 58, 237, 0.03) 0%, transparent 50%),
+    radial-gradient(ellipse 55% 45% at 12% 8%, rgba(0, 122, 255, 0.08) 0%, transparent 60%),
+    radial-gradient(ellipse 50% 42% at 92% 22%, rgba(175, 82, 222, 0.06) 0%, transparent 62%),
+    radial-gradient(ellipse 60% 50% at 55% 105%, rgba(50, 173, 230, 0.06) 0%, transparent 60%),
     var(--color-background);
+  background-attachment: fixed;
   color: var(--color-foreground);
 }
 
@@ -327,18 +349,25 @@
 
 /* Light theme glassmorphism overrides */
 [data-theme="light"] .glass-card {
-  background: rgba(255, 255, 255, 0.85);
-  border: 1px solid rgba(0, 0, 0, 0.06);
-  box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.08);
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(0, 0, 0, 0.07);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.85),
+    0 12px 32px -14px rgba(0, 0, 0, 0.18);
 }
 
 [data-theme="light"] .glass-card-hover {
-  border-color: rgba(8, 145, 178, 0.25);
-  box-shadow: 0 4px 20px -5px rgba(8, 145, 178, 0.12);
+  border-color: rgba(0, 0, 0, 0.12);
+  background: rgba(255, 255, 255, 0.85);
 }
 
 [data-theme="light"] .glass-panel {
-  background: rgba(255, 255, 255, 0.6);
+  background: rgba(255, 255, 255, 0.55);
+}
+
+[data-theme="light"] .glass-chrome {
+  background: rgba(248, 248, 252, 0.65);
+  border-color: rgba(0, 0, 0, 0.07);
 }
 
 [data-theme="light"] .glow-border {

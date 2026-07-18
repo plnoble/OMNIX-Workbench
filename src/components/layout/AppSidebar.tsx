@@ -78,7 +78,7 @@ export function AppSidebar({
   }
 
   return (
-    <aside className="flex w-44 shrink-0 flex-col border-r border-border bg-background/70 backdrop-blur-xl md:w-52 min-[1500px]:w-72">
+    <aside className="glass-chrome flex w-44 shrink-0 flex-col border-r md:w-52 min-[1500px]:w-72">
       <div className="border-b border-border p-4">
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">

@@ -11,7 +11,9 @@ const buttonVariants = cva(
     variants: {
       variant: {
         default:
-          "bg-gradient-to-r from-secondary to-primary text-primary-foreground shadow-[0_4px_15px_rgba(0,242,254,0.2)] hover:brightness-110",
+          // Apple filled button: solid tint + 1px inner top highlight (glass lip),
+          // soft drop shadow — no neon glow.
+          "bg-primary text-primary-foreground shadow-[inset_0_1px_0_rgba(255,255,255,0.22),0_1px_3px_rgba(0,0,0,0.3)] hover:bg-primary/90",
         destructive:
           "bg-destructive text-destructive-foreground hover:bg-destructive/90",
         outline:

@@ -385,10 +385,28 @@ export function ChatTab({
     }
   };
 
+  // Workspace refresh policy: immediate on workspace switch; message-driven
+  // refreshes are debounced (2s trailing) and never overlap — an agent turn
+  // streaming many messages must not queue N concurrent snapshots (each one
+  // walks the tree + runs git), which is how 「读工作区」 span forever.
+  const wsRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wsLoadingRef = useRef(false);
+  wsLoadingRef.current = workspaceLoading;
   useEffect(() => {
     void refreshWorkspace();
-    // Refresh after completed messages because an Agent turn may change files.
-  }, [chatWorkspace, messages.length]); // eslint-disable-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatWorkspace]);
+  useEffect(() => {
+    if (!isWorkspaceMode) return;
+    if (wsRefreshTimer.current) clearTimeout(wsRefreshTimer.current);
+    wsRefreshTimer.current = setTimeout(() => {
+      if (!wsLoadingRef.current) void refreshWorkspace();
+    }, 2000);
+    return () => {
+      if (wsRefreshTimer.current) clearTimeout(wsRefreshTimer.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages.length]);
 
   const selectedPermission = PERMISSION_OPTIONS.find((item) => item.id === permissionPolicy)!;
   const selectedWorkMode = WORK_MODE_OPTIONS.find((item) => item.id === workMode)!;

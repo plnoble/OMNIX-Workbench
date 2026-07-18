@@ -120,7 +120,7 @@ export function AppHeader({
   }[gatewayStatus];
 
   return (
-    <header className="relative z-40 border-b border-border bg-background/92 backdrop-blur-xl">
+    <header className="glass-chrome relative z-40 border-b">
       <div className="flex h-14 items-center gap-3 px-3">
         <button
           className="flex h-10 min-w-0 items-center gap-2 rounded-md px-2 text-left hover:bg-muted/20"
