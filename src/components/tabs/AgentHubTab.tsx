@@ -310,7 +310,7 @@ export function AgentHubTab({
               tabIndex={0}
               aria-label={`选择 ${agent.name}`}
               className={cn(
-                "min-h-56 cursor-pointer rounded-md border bg-card/40 p-5 text-left outline-none transition-colors hover:bg-muted/20 focus-visible:ring-2 focus-visible:ring-primary/40",
+                "min-h-56 cursor-pointer rounded-md border glass-surface p-5 text-left outline-none transition-colors hover:bg-muted/20 focus-visible:ring-2 focus-visible:ring-primary/40",
                 selectedAgent === agent.name && "border-primary/40 bg-primary/10"
               )}
               onClick={() => setSelectedAgent(agent.name)}
@@ -411,7 +411,7 @@ export function AgentHubTab({
       </section>
 
       {selected && (
-        <aside className="hidden w-[420px] shrink-0 border-l border-border bg-card/30 lg:flex lg:flex-col">
+        <aside className="hidden w-[420px] shrink-0 border-l border-border glass-surface lg:flex lg:flex-col">
           <div className="flex items-start justify-between gap-3 border-b border-border p-5">
             <div>
               <div className="flex items-center gap-2 text-base font-semibold">

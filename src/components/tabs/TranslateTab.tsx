@@ -110,7 +110,7 @@ export function TranslateTab() {
 
         {/* Two panes */}
         <div className="grid gap-3 lg:grid-cols-2">
-          <div className="flex flex-col rounded-lg border border-border bg-card/40">
+          <div className="flex flex-col rounded-lg border border-border glass-surface">
             <textarea
               value={source}
               onChange={(e) => setSource(e.target.value)}
@@ -126,7 +126,7 @@ export function TranslateTab() {
             </div>
           </div>
 
-          <div className="flex flex-col rounded-lg border border-border bg-card/40">
+          <div className="flex flex-col rounded-lg border border-border glass-surface">
             <div className="min-h-[240px] flex-1 whitespace-pre-wrap p-3 text-sm leading-6">
               {result ? result : <span className="text-muted-foreground">译文显示在这里</span>}
             </div>

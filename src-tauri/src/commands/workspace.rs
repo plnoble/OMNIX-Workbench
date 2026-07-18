@@ -44,21 +44,28 @@ fn collect_workspace_files(
     max_depth: usize,
     max_entries: usize,
 ) -> Result<Vec<WorkspaceFileEntry>, String> {
+    // Wall-clock budget on the WHOLE walk. Even with node_modules/target ignored
+    // and a depth/entry cap, a repo on a slow drive or behind real-time AV
+    // (每次 read_dir/file_type 都过火绒) can crawl for many seconds. On budget
+    // exhaustion we return what we have — a partial tree beats an infinite spinner.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+
     fn visit(
         root: &Path,
         directory: &Path,
         depth: usize,
         max_depth: usize,
         max_entries: usize,
+        deadline: std::time::Instant,
         entries: &mut Vec<WorkspaceFileEntry>,
     ) -> Result<(), String> {
-        if depth > max_depth || entries.len() >= max_entries {
+        if depth > max_depth || entries.len() >= max_entries || std::time::Instant::now() >= deadline {
             return Ok(());
         }
-        let mut children = std::fs::read_dir(directory)
-            .map_err(|error| format!("无法读取 {}: {error}", directory.display()))?
-            .flatten()
-            .collect::<Vec<_>>();
+        let Ok(read) = std::fs::read_dir(directory) else {
+            return Ok(()); // unreadable dir → skip, don't fail the whole snapshot
+        };
+        let mut children = read.flatten().collect::<Vec<_>>();
         children.sort_by(|left, right| {
             let left_dir = left.file_type().map(|kind| kind.is_dir()).unwrap_or(false);
             let right_dir = right.file_type().map(|kind| kind.is_dir()).unwrap_or(false);
@@ -70,10 +77,10 @@ fn collect_workspace_files(
             })
         });
         for child in children {
-            if entries.len() >= max_entries {
+            if entries.len() >= max_entries || std::time::Instant::now() >= deadline {
                 break;
             }
-            let file_type = child.file_type().map_err(|error| error.to_string())?;
+            let Ok(file_type) = child.file_type() else { continue };
             if file_type.is_symlink() {
                 continue;
             }
@@ -82,11 +89,10 @@ fn collect_workspace_files(
                 continue;
             }
             let path = child.path();
-            let relative = path
-                .strip_prefix(root)
-                .map_err(|error| error.to_string())?
-                .to_string_lossy()
-                .replace('\\', "/");
+            let relative = match path.strip_prefix(root) {
+                Ok(rel) => rel.to_string_lossy().replace('\\', "/"),
+                Err(_) => continue,
+            };
             entries.push(WorkspaceFileEntry {
                 path: relative,
                 name,
@@ -94,14 +100,14 @@ fn collect_workspace_files(
                 depth,
             });
             if file_type.is_dir() && depth < max_depth {
-                visit(root, &path, depth + 1, max_depth, max_entries, entries)?;
+                visit(root, &path, depth + 1, max_depth, max_entries, deadline, entries)?;
             }
         }
         Ok(())
     }
 
     let mut entries = Vec::new();
-    visit(root, root, 0, max_depth, max_entries, &mut entries)?;
+    visit(root, root, 0, max_depth, max_entries, deadline, &mut entries)?;
     Ok(entries)
 }
 
@@ -171,8 +177,27 @@ fn workspace_changes(root: &Path) -> Vec<WorkspaceChange> {
     .collect()
 }
 
+fn build_workspace_snapshot(root: PathBuf) -> WorkspaceSnapshot {
+    let max_entries = 600;
+    let files = collect_workspace_files(&root, 4, max_entries).unwrap_or_default();
+    WorkspaceSnapshot {
+        root_path: root.to_string_lossy().into_owned(),
+        root_name: root
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| root.to_string_lossy().into_owned()),
+        branch: git_output(&root, &["branch", "--show-current"]).filter(|branch| !branch.is_empty()),
+        changes: workspace_changes(&root),
+        truncated: files.len() >= max_entries,
+        files,
+    }
+}
+
+/// Async + off the UI thread + hard overall deadline. The blocking walk/git run
+/// in `spawn_blocking`; if the whole thing exceeds the budget we still return a
+/// minimal snapshot (root only) rather than letting the panel spin forever.
 #[tauri::command]
-pub fn get_workspace_snapshot(workspace_path: String) -> Result<WorkspaceSnapshot, String> {
+pub async fn get_workspace_snapshot(workspace_path: String) -> Result<WorkspaceSnapshot, String> {
     let requested = PathBuf::from(workspace_path.trim());
     let root = requested
         .canonicalize()
@@ -180,20 +205,25 @@ pub fn get_workspace_snapshot(workspace_path: String) -> Result<WorkspaceSnapsho
     if !root.is_dir() {
         return Err("工作区路径不是文件夹".into());
     }
-    let max_entries = 600;
-    let files = collect_workspace_files(&root, 4, max_entries)?;
-    Ok(WorkspaceSnapshot {
-        root_path: root.to_string_lossy().into_owned(),
-        root_name: root
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| root.to_string_lossy().into_owned()),
-        branch: git_output(&root, &["branch", "--show-current"])
-            .filter(|branch| !branch.is_empty()),
-        changes: workspace_changes(&root),
-        truncated: files.len() >= max_entries,
-        files,
-    })
+
+    let root_for_task = root.clone();
+    let work = tokio::task::spawn_blocking(move || build_workspace_snapshot(root_for_task));
+    // Budget covers file walk (≤3s) + up to two git calls (≤6s each) with margin.
+    match tokio::time::timeout(std::time::Duration::from_secs(16), work).await {
+        Ok(Ok(snapshot)) => Ok(snapshot),
+        Ok(Err(_join_err)) => Err("读取工作区任务异常".into()),
+        Err(_timeout) => Ok(WorkspaceSnapshot {
+            root_path: root.to_string_lossy().into_owned(),
+            root_name: root
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| root.to_string_lossy().into_owned()),
+            branch: None,
+            changes: Vec::new(),
+            truncated: true,
+            files: Vec::new(),
+        }),
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]

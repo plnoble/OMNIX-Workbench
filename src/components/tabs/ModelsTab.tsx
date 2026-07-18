@@ -18,15 +18,15 @@ export function ModelsTab(props: PlatformSubTabProps) {
             </p>
           </div>
           <div className="grid grid-cols-3 gap-2 text-xs text-muted-foreground">
-            <div className="rounded-md border border-border bg-card/40 px-3 py-2">
+            <div className="rounded-md border border-border glass-surface px-3 py-2">
               <KeyRound className="mb-1 h-3.5 w-3.5" />
               主 Key + 故障切换
             </div>
-            <div className="rounded-md border border-border bg-card/40 px-3 py-2">
+            <div className="rounded-md border border-border glass-surface px-3 py-2">
               <RefreshCw className="mb-1 h-3.5 w-3.5" />
               从地址拉取模型
             </div>
-            <div className="rounded-md border border-border bg-card/40 px-3 py-2">
+            <div className="rounded-md border border-border glass-surface px-3 py-2">
               <ShieldCheck className="mb-1 h-3.5 w-3.5" />
               批量健康检查
             </div>

@@ -128,7 +128,7 @@ export function ProfileTab() {
     <div className="h-full overflow-y-auto p-6">
       <div className="mx-auto max-w-3xl space-y-6">
         {/* Header */}
-        <div ref={cardRef} className="flex items-center gap-4 rounded-lg border border-border bg-card/40 p-5">
+        <div ref={cardRef} className="flex items-center gap-4 rounded-lg border border-border glass-surface p-5">
           <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full accent-gradient text-xl font-bold text-primary-foreground">
             {(displayHandle[0] || "O").toUpperCase()}
           </div>
@@ -161,7 +161,7 @@ export function ProfileTab() {
         {/* Stat cards */}
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           {statCards.map((card) => (
-            <div key={card.label} className="rounded-lg border border-border bg-card/40 p-4">
+            <div key={card.label} className="rounded-lg border border-border glass-surface p-4">
               <card.icon className="h-4 w-4 text-primary" />
               <div className="mt-2 text-2xl font-bold">{card.value}</div>
               <div className="text-xs text-muted-foreground">{card.label}</div>
@@ -170,7 +170,7 @@ export function ProfileTab() {
         </div>
 
         {/* Activity heatmap */}
-        <div className="rounded-lg border border-border bg-card/40 p-5">
+        <div className="rounded-lg border border-border glass-surface p-5">
           <div className="mb-3 flex items-center justify-between">
             <div className="text-sm font-medium">活动热力图 · 近 26 周</div>
             <div className="flex items-center gap-1 text-xs text-muted-foreground">
@@ -206,7 +206,7 @@ export function ProfileTab() {
 
         {/* Per-agent breakdown */}
         {stats.per_agent.length > 0 && (
-          <div className="rounded-lg border border-border bg-card/40 p-5">
+          <div className="rounded-lg border border-border glass-surface p-5">
             <div className="mb-3 text-sm font-medium">各 Agent 会话占比</div>
             <div className="space-y-2">
               {stats.per_agent.map((agent) => (

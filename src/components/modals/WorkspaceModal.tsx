@@ -112,7 +112,7 @@ export function WorkspaceModal({
           <p className="text-xs text-muted-foreground">不需要手动输入路径，点击“选择”打开系统文件夹选择器。</p>
         </div>
 
-        <div className="mt-4 rounded-md border border-border bg-card/50 p-3">
+        <div className="mt-4 rounded-md border border-border glass-surface p-3">
           <label className="flex cursor-pointer items-start gap-3">
             <Checkbox
               checked={enableProjectProtocol}

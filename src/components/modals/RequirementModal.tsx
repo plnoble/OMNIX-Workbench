@@ -84,7 +84,7 @@ export function RequirementModal({ open, onClose, onClarify, onGeneratePlan }: R
 
   return createPortal(
     <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
-      <div className="flex max-h-[88vh] w-full max-w-2xl flex-col overflow-hidden rounded-lg border border-border bg-card shadow-xl">
+      <div className="flex max-h-[88vh] w-full max-w-2xl flex-col overflow-hidden rounded-lg border border-border glass-surface shadow-xl">
         <div className="flex items-center justify-between border-b border-border px-5 py-3">
           <div className="flex items-center gap-2">
             <ClipboardList className="h-4 w-4 text-accent" />

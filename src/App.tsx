@@ -1026,7 +1026,7 @@ function MainApp() {
       {/* Archive confirm — distill-then-archive, or archive only. */}
       {pendingArchive && (
         <div className="fixed inset-0 z-[1100] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-md border border-border bg-card p-5 shadow-xl">
+          <div className="w-full max-w-md rounded-md border border-border glass-surface p-5 shadow-xl">
             <h3 className="m-0 mb-2 text-base font-semibold text-foreground">归档会话</h3>
             <p className="mb-1 break-words text-sm text-muted-foreground line-clamp-3">"{pendingArchive.title}"</p>
             <p className="mb-4 text-xs leading-5 text-muted-foreground">

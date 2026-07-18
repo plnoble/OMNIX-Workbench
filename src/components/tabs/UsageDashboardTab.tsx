@@ -86,7 +86,7 @@ export function UsageDashboardTab() {
         <TokenActivityPanel />
 
         {/* Per-platform cost breakdown */}
-        <div className="rounded-lg border border-border bg-card/40 p-4">
+        <div className="rounded-lg border border-border glass-surface p-4">
           <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
             <Server className="h-4 w-4 text-primary" /> 按平台开销
           </div>
@@ -115,7 +115,7 @@ export function UsageDashboardTab() {
         </div>
 
         {/* Recent request stream */}
-        <div className="rounded-lg border border-border bg-card/40 p-4">
+        <div className="rounded-lg border border-border glass-surface p-4">
           <div className="mb-3 text-sm font-semibold">最近请求</div>
           {logs.length === 0 ? (
             <p className="text-xs text-muted-foreground">还没有请求记录。</p>

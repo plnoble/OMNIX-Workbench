@@ -53,7 +53,7 @@ export function LabsTab({ onNavigate }: LabsTabProps) {
   return (
     <div className="flex-1 overflow-y-auto bg-background">
       <div className="mx-auto flex w-full max-w-[1320px] flex-col gap-4 p-5">
-        <section className="rounded-md border border-border bg-card/55 p-4">
+        <section className="rounded-md border border-border glass-surface p-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <div className="flex items-center gap-2 text-base font-semibold">
@@ -78,7 +78,7 @@ export function LabsTab({ onNavigate }: LabsTabProps) {
             const canOpen = Boolean(nav.tab);
 
             return (
-              <article key={feature.id} className="rounded-md border border-border bg-card/55 p-4">
+              <article key={feature.id} className="rounded-md border border-border glass-surface p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-2">
                     <Icon className="h-5 w-5 shrink-0 text-accent" />

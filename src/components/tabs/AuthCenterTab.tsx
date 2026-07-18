@@ -245,7 +245,7 @@ export function AuthCenterTab() {
         {/* Login buttons */}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           {PROVIDERS.map((provider) => (
-            <div key={provider.id} className="rounded-lg border border-border bg-card/40 p-4">
+            <div key={provider.id} className="rounded-lg border border-border glass-surface p-4">
               <div className="text-sm font-semibold">{provider.name}</div>
               <p className="mt-1 mb-3 text-xs leading-5 text-muted-foreground">{provider.hint}</p>
               <Button
@@ -263,7 +263,7 @@ export function AuthCenterTab() {
 
         {/* Grok — the CLI owns its own credentials, so this drives xAI's device-code
             flow rather than storing a token in OMNIX. */}
-        <div className="rounded-lg border border-border bg-card/40 p-4">
+        <div className="rounded-lg border border-border glass-surface p-4">
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
               <span className="text-sm font-semibold">Grok 账号</span>
@@ -438,7 +438,7 @@ export function AuthCenterTab() {
         </div>
 
         {/* ── CLI takeover ─────────────────────────────────────── */}
-        <div className="rounded-lg border border-border bg-card/40 p-4">
+        <div className="rounded-lg border border-border glass-surface p-4">
           <div className="mb-1 flex items-center gap-2 text-sm font-semibold">
             <Terminal className="h-4 w-4 text-primary" /> 在 CLI 里使用（配置接管）
           </div>
@@ -515,7 +515,7 @@ export function AuthCenterTab() {
       {/* Confirm apply — writes real config files */}
       {confirmApply && (
         <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-lg border border-border bg-card p-5 shadow-xl">
+          <div className="w-full max-w-md rounded-lg border border-border glass-surface p-5 shadow-xl">
             <h3 className="m-0 mb-2 text-base font-semibold text-foreground">确认接管这些 Agent 的配置？</h3>
             <p className="mb-1 text-sm text-muted-foreground">
               将修改 {pickedAgents.map((a) => TAKEOVER_AGENTS.find((t) => t.id === a)?.name).join("、")} 的原生配置文件。

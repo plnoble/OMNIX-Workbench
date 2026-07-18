@@ -558,7 +558,7 @@ export function SkillPoolPanel() {
                   "cursor-pointer rounded-lg border p-2.5 transition",
                   selectedName === item.name
                     ? "border-primary bg-primary/5"
-                    : "border-border bg-card/40 hover:border-primary/40",
+                    : "border-border glass-surface hover:border-primary/40",
                 )}
               >
                 <div className="flex items-center gap-1.5">

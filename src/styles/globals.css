@@ -143,6 +143,15 @@
   backdrop-filter: blur(24px) saturate(150%);
 }
 
+/* glass-surface — 通用磨砂面（替代满屏的 bg-card 面板）。只管填充与模糊，
+   不碰圆角边框阴影，各调用点保留自己的圆角与边框。这是让苹果风真正铺满
+   全屏的关键：bg-card 只是半透明底色、没有 backdrop-filter，看不出玻璃；
+   glass-surface 才有真正的毛玻璃折射。 */
+@utility glass-surface {
+  background-color: rgba(255, 255, 255, 0.045);
+  backdrop-filter: blur(16px) saturate(150%);
+}
+
 /* Chrome 层（侧栏/顶栏/常驻工具条）：更强的模糊与饱和拉升，Apple 的
    bar 质感——内容从它背后滑过时颜色被“吸”进玻璃。 */
 @utility glass-chrome {
@@ -363,6 +372,10 @@
 
 [data-theme="light"] .glass-panel {
   background: rgba(255, 255, 255, 0.55);
+}
+
+[data-theme="light"] .glass-surface {
+  background-color: rgba(255, 255, 255, 0.62);
 }
 
 [data-theme="light"] .glass-chrome {

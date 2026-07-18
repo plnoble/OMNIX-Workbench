@@ -231,7 +231,7 @@ export function RemoteDevTab() {
 
       <div className="flex flex-col gap-4 overflow-y-auto p-6">
         {/* ① 远程模型主机 (P0) */}
-        <div className="rounded-xl border border-border bg-card/40 p-4">
+        <div className="rounded-xl border border-border glass-surface p-4">
           <div className="flex items-center gap-2 text-sm font-semibold">
             <Activity className="h-4 w-4 text-primary" /> 远程模型主机（Ollama / vLLM）
           </div>
@@ -257,7 +257,7 @@ export function RemoteDevTab() {
         </div>
 
         {/* ② SSH 主机 (P1) */}
-        <div className="rounded-xl border border-border bg-card/40 p-4">
+        <div className="rounded-xl border border-border glass-surface p-4">
           <div className="flex items-center gap-2 text-sm font-semibold">
             <Server className="h-4 w-4 text-primary" /> SSH 主机
             <button
@@ -346,7 +346,7 @@ export function RemoteDevTab() {
 
         {/* ③ 远端探测 (P2) */}
         {selected && (
-          <div className="rounded-xl border border-border bg-card/40 p-4">
+          <div className="rounded-xl border border-border glass-surface p-4">
             <div className="flex flex-wrap items-center gap-2 text-sm font-semibold">
               <Cpu className="h-4 w-4 text-primary" /> 远端环境 · {selected.name || selected.host}
               <div className="ml-auto flex gap-1.5">
@@ -414,7 +414,7 @@ export function RemoteDevTab() {
 
         {/* ④ 运行测试台 (P1) */}
         {selected && (
-          <div className="rounded-xl border border-border bg-card/40 p-4">
+          <div className="rounded-xl border border-border glass-surface p-4">
             <div className="flex items-center gap-2 text-sm font-semibold">
               <Play className="h-4 w-4 text-primary" /> 远程运行测试台
             </div>

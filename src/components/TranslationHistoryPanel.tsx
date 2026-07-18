@@ -26,7 +26,7 @@ export function TranslationHistoryPanel() {
   };
 
   return (
-    <div className="rounded-md border border-border bg-card/40 p-4">
+    <div className="rounded-md border border-border glass-surface p-4">
       <div className="mb-3 flex items-center justify-between">
         <div className="flex items-center gap-2 text-sm font-semibold">
           <Languages className="h-4 w-4" /> 翻译历史 {t.translationHistory.length > 0 && `(${t.translationHistory.length})`}

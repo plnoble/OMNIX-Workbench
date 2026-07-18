@@ -117,7 +117,7 @@ export function CommandPalette({ open, onClose, onNavigate, onToggleTheme }: Com
     <div className="fixed inset-0 z-[100] flex items-start justify-center pt-[20vh]">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
 
-      <div className="relative w-[560px] overflow-hidden rounded-md border border-border bg-card shadow-xl animate-fade-in">
+      <div className="relative w-[560px] overflow-hidden rounded-md border border-border glass-surface shadow-xl animate-fade-in">
         <div className="flex items-center gap-3 border-b border-border px-4 py-3">
           <Search className="h-4 w-4 text-muted-foreground" />
           <input

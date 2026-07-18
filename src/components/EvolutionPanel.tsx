@@ -418,7 +418,7 @@ export function EvolutionPanel() {
       {/* Confirm remove-from-hub modal (DB records only, never disk files) */}
       {pendingRemove && (
         <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-lg border border-border bg-card p-5 shadow-xl">
+          <div className="w-full max-w-md rounded-lg border border-border glass-surface p-5 shadow-xl">
             <h3 className="m-0 mb-2 text-base font-semibold text-foreground">从进化中枢移除工作区？</h3>
             <p className="mb-1 truncate text-sm text-muted-foreground" title={pendingRemove.workspace_path}>
               「{pendingRemove.project_name}」· {shortPath(pendingRemove.workspace_path)}

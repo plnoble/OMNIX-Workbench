@@ -183,7 +183,7 @@ export function AppSidebar({
         </>
       ) : (
         <div className="flex flex-1 flex-col justify-between p-4">
-          <div className="rounded-md border border-border bg-card/40 p-4">
+          <div className="rounded-md border border-border glass-surface p-4">
             <div className="text-sm font-semibold">当前页面</div>
             <p className="mt-2 text-xs leading-5 text-muted-foreground">
               左侧栏只显示当前页面需要的上下文。资源和实验功能从顶栏应用宫格进入，避免主界面拥挤。
@@ -201,7 +201,7 @@ export function AppSidebar({
 
       {pendingDelete && createPortal(
         <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-sm rounded-md border border-border bg-card p-5 shadow-xl">
+          <div className="w-full max-w-sm rounded-md border border-border glass-surface p-5 shadow-xl">
             <h3 className="m-0 mb-2 text-base font-semibold text-foreground">确认删除会话？</h3>
             <p className="mb-1 break-words text-sm text-muted-foreground line-clamp-3">"{pendingDelete.title}"</p>
             <p className="mb-4 text-xs leading-5 text-muted-foreground">

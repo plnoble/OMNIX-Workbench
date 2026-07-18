@@ -746,7 +746,7 @@ export function ChatTab({
                       "max-w-[78%] rounded-md border px-4 py-3 text-sm leading-6",
                       message.role === "user"
                         ? "border-primary/20 bg-primary/12"
-                        : "border-border bg-card/50"
+                        : "border-border glass-surface"
                     )}
                   >
                     <div className="mb-1 flex items-center gap-2 text-xs text-muted-foreground">
@@ -790,7 +790,7 @@ export function ChatTab({
               )}
               {isAwaitingResponse && (
                 <div className="flex justify-start">
-                  <div className="max-w-[78%] rounded-md border border-border bg-card/50 px-4 py-3 text-sm">
+                  <div className="max-w-[78%] rounded-md border border-border glass-surface px-4 py-3 text-sm">
                     <div className="mb-1 text-xs text-muted-foreground">{activeAgent}</div>
                     <div className="flex items-center gap-2 text-muted-foreground">
                       <Loader2 className="h-4 w-4 animate-spin" />
@@ -807,7 +807,7 @@ export function ChatTab({
         </div>
 
         <form onSubmit={handleSubmit} className="shrink-0 border-t border-border bg-background/95 p-5">
-          <div className="mx-auto max-w-5xl rounded-md border border-border bg-card/60 p-3 shadow-lg">
+          <div className="mx-auto max-w-5xl rounded-md border border-border glass-surface p-3 shadow-lg">
             {/* Long-term goal bar (/goal) — visible whenever the
                 current conversation has a goal; while active it is re-injected
                 into every turn. */}
@@ -1170,7 +1170,7 @@ export function ChatTab({
       </div>
 
       {workspacePanelOpen && (
-        <aside className="absolute inset-y-0 right-0 z-30 flex w-[min(22rem,88vw)] shrink-0 flex-col border-l border-border bg-background shadow-xl min-[1600px]:static min-[1600px]:w-72 min-[1600px]:bg-card/30 min-[1600px]:shadow-none min-[1800px]:w-80">
+        <aside className="absolute inset-y-0 right-0 z-30 flex w-[min(22rem,88vw)] shrink-0 flex-col border-l border-border bg-background shadow-xl min-[1600px]:static min-[1600px]:w-72 min-[1600px]:glass-surface min-[1600px]:shadow-none min-[1800px]:w-80">
           <div className="flex items-center justify-between border-b border-border p-4">
             <div>
               <div className="text-base font-semibold">工作区</div>
@@ -1333,7 +1333,7 @@ function AgentStrip({
             onClick={() => onSelectAgent(name)}
             className={cn(
               "flex h-9 shrink-0 items-center gap-2 rounded-full border px-3 text-sm",
-              active ? "border-primary/40 bg-primary/12 text-primary" : "border-border bg-card/40 text-muted-foreground hover:text-foreground"
+              active ? "border-primary/40 bg-primary/12 text-primary" : "border-border glass-surface text-muted-foreground hover:text-foreground"
             )}
           >
             <span className={cn("h-2 w-2 rounded-full", installed ? "bg-success" : "bg-muted-foreground")} />
@@ -1349,7 +1349,7 @@ function FirstScreen({ activeAgent, installed, onPrompt, onRedetect }: { activeA
   const [redetecting, setRedetecting] = useState(false);
   return (
     <div className="first-screen mx-auto flex min-h-full max-w-4xl flex-col items-center justify-center px-6 py-6 text-center">
-      <div className="first-screen-icon mb-5 flex h-16 w-16 items-center justify-center rounded-md border border-border bg-card/70">
+      <div className="first-screen-icon mb-5 flex h-16 w-16 items-center justify-center rounded-md border border-border glass-surface">
         <Sparkles className="h-8 w-8 text-primary" />
       </div>
       <h2 className="first-screen-title m-0 text-3xl font-semibold">今天让 {activeAgent} 做什么？</h2>
@@ -1380,7 +1380,7 @@ function FirstScreen({ activeAgent, installed, onPrompt, onRedetect }: { activeA
           ["修复一个问题", "帮我定位并修复一个具体 bug，先说明原因，再给出最小改动。"],
           ["做一个计划", "先不要改文件，帮我把这个目标拆成可确认的开发计划。"],
         ].map(([label, prompt]) => (
-          <button key={label} className="rounded-md border border-border bg-card/40 p-4 text-left hover:bg-muted/20" onClick={() => onPrompt(prompt)}>
+          <button key={label} className="rounded-md border border-border glass-surface p-4 text-left hover:bg-muted/20" onClick={() => onPrompt(prompt)}>
             <div className="text-sm font-semibold">{label}</div>
             <div className="mt-2 line-clamp-2 text-xs leading-5 text-muted-foreground">{prompt}</div>
           </button>

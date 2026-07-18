@@ -69,7 +69,7 @@ export function AgentInstallManager() {
   };
 
   return (
-    <div className="rounded-xl border border-border bg-card/40 p-4">
+    <div className="rounded-xl border border-border glass-surface p-4">
       <div className="flex flex-wrap items-center gap-2">
         <div className="flex items-center gap-2 text-sm font-semibold">
           <HardDrive className="h-4 w-4 text-primary" /> 安装管理

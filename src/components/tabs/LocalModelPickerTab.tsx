@@ -55,16 +55,16 @@ export function LocalModelPickerTab() {
       <div className="flex flex-col gap-5 overflow-y-auto p-6">
         {/* Hardware + budget */}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <div className="rounded-lg border border-border bg-card/40 p-4">
+          <div className="rounded-lg border border-border glass-surface p-4">
             <div className="flex items-center gap-2 text-xs text-muted-foreground"><Cpu className="h-3.5 w-3.5" /> CPU</div>
             <div className="mt-1 text-sm font-medium">{hw ? `${hw.cpu_cores} 核` : "检测中…"}</div>
             <div className="truncate text-xs text-muted-foreground" title={hw?.cpu_brand}>{hw?.cpu_brand}</div>
           </div>
-          <div className="rounded-lg border border-border bg-card/40 p-4">
+          <div className="rounded-lg border border-border glass-surface p-4">
             <div className="flex items-center gap-2 text-xs text-muted-foreground"><HardDrive className="h-3.5 w-3.5" /> 内存</div>
             <div className="mt-1 text-sm font-medium">{hw ? `${hw.ram_gb} GB` : "检测中…"}</div>
           </div>
-          <div className="rounded-lg border border-border bg-card/40 p-4">
+          <div className="rounded-lg border border-border glass-surface p-4">
             <label className="flex items-center gap-2 text-xs text-muted-foreground">显存/预算 (GB)</label>
             <div className="mt-1 flex items-center gap-2">
               <input
@@ -86,7 +86,7 @@ export function LocalModelPickerTab() {
         </div>
 
         {/* Ranked models */}
-        <div className="rounded-lg border border-border bg-card/40 p-4">
+        <div className="rounded-lg border border-border glass-surface p-4">
           <div className="mb-3 text-sm font-semibold">按 {budget} GB 预算的推荐（共 {models.length} 个候选）</div>
           <div className="space-y-1.5">
             {models.map((m) => {

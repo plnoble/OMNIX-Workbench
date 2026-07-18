@@ -195,7 +195,7 @@ export function KnowledgeHub() {
   return (
     <div className="flex h-full w-full min-w-0">
       {/* ── Left Panel: Document List ── */}
-      <div className="w-48 sm:w-64 border-r border-border flex flex-col bg-card/50">
+      <div className="w-48 sm:w-64 border-r border-border flex flex-col glass-surface">
         <div className="p-3 border-b border-border flex items-center justify-between">
           <h3 className="text-sm font-semibold text-foreground flex items-center gap-1.5">
             <BookOpen className="h-4 w-4 text-cyan-400" />
@@ -649,7 +649,7 @@ export function KnowledgeHub() {
       </div>
 
       {/* ── Right Panel: Detail ── */}
-      <div className="hidden lg:flex lg:w-80 border-l border-border flex-col bg-card/30">
+      <div className="hidden lg:flex lg:w-80 border-l border-border flex-col glass-surface">
         <div className="p-3 border-b border-border">
           <h3 className="text-sm font-semibold text-foreground flex items-center gap-1.5">
             <ChevronRight className="h-4 w-4 text-cyan-400" />

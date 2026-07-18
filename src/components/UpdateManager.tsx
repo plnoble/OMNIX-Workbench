@@ -106,7 +106,7 @@ export function UpdateManager() {
       {/* Update dialog */}
       {showDialog && (
         <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-lg border border-border bg-card p-5 shadow-xl">
+          <div className="w-full max-w-md rounded-lg border border-border glass-surface p-5 shadow-xl">
             <div className="mb-2 flex items-center gap-2">
               <Rocket className="h-5 w-5 text-primary" />
               <h3 className="m-0 text-base font-semibold text-foreground">发现新版本 v{update.version}</h3>

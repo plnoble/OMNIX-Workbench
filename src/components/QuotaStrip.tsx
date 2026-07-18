@@ -72,7 +72,7 @@ export function QuotaStrip() {
   if (loaded && !claude && !codex) return null;
 
   return (
-    <section className="rounded-xl border border-border bg-card/40 p-3">
+    <section className="rounded-xl border border-border glass-surface p-3">
       <div className="mb-2 flex items-center gap-1.5 text-sm font-semibold">
         <Gauge className="h-4 w-4 text-primary" />
         订阅额度

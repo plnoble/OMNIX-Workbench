@@ -131,7 +131,7 @@ export function PlanPanel({ workspacePath, refreshKey, onClose }: PlanPanelProps
           <>
             {/* Thread todo (checkbox checklist parsed from the plan) */}
             {todos.length > 0 && (
-              <div className="mb-3 rounded-md border border-border bg-card/40 p-2">
+              <div className="mb-3 rounded-md border border-border glass-surface p-2">
                 <div className="mb-1.5 flex items-center justify-between text-xs font-medium text-muted-foreground">
                   <span>任务清单</span>
                   <span>{doneCount}/{todos.length}</span>

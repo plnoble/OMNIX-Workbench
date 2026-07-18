@@ -172,7 +172,7 @@ export function AppHeader({
             ref={launcherToggleRef}
             className={cn(
               "flex h-10 w-10 shrink-0 items-center justify-center rounded-md border transition-colors",
-              launcherOpen ? "border-primary/30 bg-primary/12 text-primary" : "border-border bg-card/40 hover:bg-muted/20"
+              launcherOpen ? "border-primary/30 bg-primary/12 text-primary" : "border-border glass-surface hover:bg-muted/20"
             )}
             onClick={() => setLauncherOpen((open) => !open)}
             title="应用宫格"
@@ -308,7 +308,7 @@ function LauncherItem({
   canMoveRight?: boolean;
 }) {
   return (
-    <div className={cn("rounded-md border p-3", active ? "border-primary/40 bg-primary/10" : "border-border bg-card/40")}>
+    <div className={cn("rounded-md border p-3", active ? "border-primary/40 bg-primary/10" : "border-border glass-surface")}>
       <button className="flex w-full items-start gap-3 text-left" onClick={onOpen}>
         <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-muted/30">
           <AppIcon id={entry.id} className="h-5 w-5" />

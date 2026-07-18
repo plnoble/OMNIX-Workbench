@@ -54,7 +54,7 @@ export function GatewayHealthCard({ className }: { className?: string }) {
   const healthy = rows.length - degraded.length;
 
   return (
-    <div className={cn("rounded-lg border border-border bg-card/40 p-4", className)}>
+    <div className={cn("rounded-lg border border-border glass-surface p-4", className)}>
       <div className="mb-3 flex items-center justify-between">
         <div className="flex items-center gap-2 text-sm font-semibold">
           <Activity className="h-4 w-4 text-primary" /> 网关健康

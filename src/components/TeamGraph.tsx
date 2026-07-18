@@ -89,7 +89,7 @@ export function TeamGraph({ workers, selectedId, onSelect }: TeamGraphProps) {
   if (workers.length === 0) return null;
 
   return (
-    <div className="overflow-auto rounded-lg border border-border bg-card/30 p-2">
+    <div className="overflow-auto rounded-lg border border-border glass-surface p-2">
       <svg width={layout.width} height={layout.height} className="min-w-full">
         <defs>
           <marker id="team-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">

@@ -83,7 +83,7 @@ export function StorageLocationsCard() {
   };
 
   return (
-    <div className="rounded-xl border border-border bg-card/40 p-5">
+    <div className="rounded-xl border border-border glass-surface p-5">
       <div className="flex items-center gap-2 text-sm font-semibold">
         <HardDrive className="h-4 w-4 text-primary" /> 存储位置
       </div>

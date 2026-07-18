@@ -61,7 +61,7 @@ function MediaThumb({
   }, [task.id, task.status, task.result_path, isVideo]);
 
   return (
-    <div className="group relative overflow-hidden rounded-lg border border-border bg-card/40">
+    <div className="group relative overflow-hidden rounded-lg border border-border glass-surface">
       <div className={cn("flex items-center justify-center bg-muted/20", isVideo ? "aspect-video" : "aspect-square")}>
         {task.status === "failed" ? (
           <div className="p-3 text-center text-xs text-destructive" title={task.error ?? ""}>
@@ -246,7 +246,7 @@ export function StudioTab() {
     <div className="h-full overflow-y-auto p-6">
       <div className="mx-auto max-w-5xl space-y-6">
         {/* Composer */}
-        <div className="rounded-lg border border-border bg-card/40 p-5">
+        <div className="rounded-lg border border-border glass-surface p-5">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 text-base font-semibold">
               <Wand2 className="h-4 w-4 text-primary" /> 创作 Studio
@@ -367,7 +367,7 @@ export function StudioTab() {
         </div>
 
         {/* Gallery */}
-        <div className="rounded-lg border border-border bg-card/40 p-5">
+        <div className="rounded-lg border border-border glass-surface p-5">
           <div className="mb-3 flex items-center justify-between">
             <div className="text-sm font-medium">作品画廊（{tasks.length}）</div>
             <Button size="sm" variant="outline" onClick={() => void loadTasks()} title="刷新">

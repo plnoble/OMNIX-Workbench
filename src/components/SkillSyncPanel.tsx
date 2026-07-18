@@ -121,7 +121,7 @@ export function SkillSyncPanel({ onClose }: { onClose: () => void }) {
                 ["孤儿", report.orphaned.length, "text-muted-foreground"],
               ] as [string, number, string][]
             ).map(([label, n, cls]) => (
-              <div key={label} className="rounded-lg border border-border bg-card/40 p-2">
+              <div key={label} className="rounded-lg border border-border glass-surface p-2">
                 <div className={cn("text-lg font-semibold", cls)}>{n}</div>
                 <div className="text-[10px] text-muted-foreground">{label}</div>
               </div>

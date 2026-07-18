@@ -535,7 +535,7 @@ export function SlidesTab() {
 
         <div className="flex flex-col gap-6 overflow-y-auto p-6">
           {/* generate form */}
-          <div className="rounded-xl border border-border bg-card/40 p-5">
+          <div className="rounded-xl border border-border glass-surface p-5">
             <div className="flex items-center gap-2 text-sm font-semibold">
               <Sparkles className="h-4 w-4 text-primary" /> AI 生成演示
             </div>
@@ -744,7 +744,7 @@ export function SlidesTab() {
                 {decks.map((d) => (
                   <div
                     key={d.id}
-                    className="group cursor-pointer rounded-xl border border-border bg-card/40 p-4 transition hover:border-primary/60"
+                    className="group cursor-pointer rounded-xl border border-border glass-surface p-4 transition hover:border-primary/60"
                     onClick={() => void openDeck(d.id)}
                   >
                     <div className="flex items-start justify-between gap-2">
@@ -868,7 +868,7 @@ export function SlidesTab() {
                   "group mb-1.5 cursor-pointer rounded-lg border p-2.5 text-xs transition",
                   i === selected
                     ? "border-primary bg-primary/10"
-                    : "border-border bg-card/30 hover:border-primary/40",
+                    : "border-border glass-surface hover:border-primary/40",
                 )}
               >
                 <div className="flex items-center justify-between">

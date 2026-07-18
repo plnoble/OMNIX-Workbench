@@ -69,7 +69,7 @@ export function QuickActionsEditor() {
   };
 
   return (
-    <div className="rounded-md border border-border bg-card/40 p-4">
+    <div className="rounded-md border border-border glass-surface p-4">
       <div className="mb-3 flex items-center justify-between">
         <div className="flex items-center gap-2 text-sm font-semibold">
           <Wand2 className="h-4 w-4" /> 自定义动作

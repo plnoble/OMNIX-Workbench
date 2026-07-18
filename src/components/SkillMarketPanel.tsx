@@ -99,7 +99,7 @@ export function SkillMarketPanel({ onClose, onImported }: { onClose: () => void;
             </div>
           )}
           {results.map((skill) => (
-            <div key={`${skill.repo_url}-${skill.name}`} className="rounded-lg border border-border bg-card/40 p-2.5">
+            <div key={`${skill.repo_url}-${skill.name}`} className="rounded-lg border border-border glass-surface p-2.5">
               <div className="flex items-center gap-2">
                 <span className="truncate text-sm font-medium">{skill.name}</span>
                 <span className="ml-auto flex shrink-0 items-center gap-1">

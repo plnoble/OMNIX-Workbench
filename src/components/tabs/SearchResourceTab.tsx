@@ -72,7 +72,7 @@ export function SearchResourceTab({
               key={provider.id}
               className={cn(
                 "rounded-md border p-3",
-                selectedProviderId === provider.id ? "border-primary/40 bg-primary/10" : "border-border bg-card/40"
+                selectedProviderId === provider.id ? "border-primary/40 bg-primary/10" : "border-border glass-surface"
               )}
             >
               <button className="w-full text-left" onClick={() => onSetSelectedProviderId(provider.id)}>
@@ -135,7 +135,7 @@ export function SearchResourceTab({
                   href={result.url}
                   target="_blank"
                   rel="noreferrer"
-                  className="block rounded-md border border-border bg-card/40 p-4 hover:bg-muted/20"
+                  className="block rounded-md border border-border glass-surface p-4 hover:bg-muted/20"
                 >
                   <div className="text-sm font-semibold">{result.title}</div>
                   <p className="mt-2 text-sm leading-6 text-muted-foreground">{result.snippet}</p>

@@ -158,7 +158,7 @@ export function ConversationHistoryView({
                 <div
                   key={conv.id}
                   className={cn(
-                    "group relative p-4 rounded-lg border bg-card transition-all cursor-pointer hover:border-accent/50 hover:shadow-md",
+                    "group relative p-4 rounded-lg border glass-surface transition-all cursor-pointer hover:border-accent/50 hover:shadow-md",
                     isActive ? "border-accent ring-1 ring-accent" : "border-border"
                   )}
                   onClick={() => {
@@ -234,7 +234,7 @@ export function ConversationHistoryView({
       {/* Confirm delete modal */}
       {pendingDelete && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[60]">
-          <div className="bg-card border border-border rounded-lg p-5 max-w-md mx-4 shadow-xl">
+          <div className="glass-surface border border-border rounded-lg p-5 max-w-md mx-4 shadow-xl">
             <h3 className="text-base font-semibold m-0 mb-2 text-foreground">确认删除对话?</h3>
             <p className="text-sm text-muted-foreground mb-1 truncate">"{pendingDelete.title}"</p>
             <p className="text-xs text-muted-foreground mb-4">删除后将无法恢复，消息记录也会被一并清除。如想保留请使用「归档」。</p>

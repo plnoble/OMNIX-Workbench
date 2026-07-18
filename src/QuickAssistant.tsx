@@ -529,7 +529,7 @@ export function QuickAssistant() {
         </div>
       ) : (
         /* Default header: input + model selector + close */
-        <div className="flex items-center gap-2 p-3 border-b border-border/50 bg-card/50">
+        <div className="flex items-center gap-2 p-3 border-b border-border/50 glass-surface">
           <Input
             placeholder="输入问题..."
             value={query}

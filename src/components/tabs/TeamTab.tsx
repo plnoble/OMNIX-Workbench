@@ -299,7 +299,7 @@ export function TeamTab({
                 {/* Status summary */}
                 <div className="mt-3 flex flex-wrap gap-2">
                   {Object.entries(statusCounts).map(([status, count]) => (
-                    <span key={status} className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card/40 px-2.5 py-1 text-xs">
+                    <span key={status} className="inline-flex items-center gap-1.5 rounded-full border border-border glass-surface px-2.5 py-1 text-xs">
                       <span className="h-2 w-2 rounded-full" style={{ backgroundColor: STATUS_DOT[status] ?? "#6b7280" }} />
                       {statusLabels[status] || status}
                       <span className="text-muted-foreground">{count}</span>

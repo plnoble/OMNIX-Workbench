@@ -148,7 +148,7 @@ export function AutopilotsTab() {
 
         {/* Create / edit form */}
         {form && (
-          <div className="mb-5 space-y-3 rounded-lg border border-border bg-card/50 p-4">
+          <div className="mb-5 space-y-3 rounded-lg border border-border glass-surface p-4">
             <input
               className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:border-accent focus:outline-none"
               placeholder="标题，例如「每日依赖安全巡检」"
@@ -246,7 +246,7 @@ export function AutopilotsTab() {
               key={ap.id}
               className={cn(
                 "rounded-lg border p-3",
-                ap.enabled ? "border-border bg-card/40" : "border-border bg-muted/10 opacity-70",
+                ap.enabled ? "border-border glass-surface" : "border-border bg-muted/10 opacity-70",
               )}
             >
               <div className="flex items-start justify-between gap-2">

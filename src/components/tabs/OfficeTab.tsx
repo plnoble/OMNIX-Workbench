@@ -154,7 +154,7 @@ function OfficeHome({ onEnter }: { onEnter: (mode: OfficeMode) => void }) {
   ) => (
     <button
       onClick={() => onEnter(modeId)}
-      className="flex min-h-52 flex-col rounded-xl border border-border bg-card/40 p-4 text-left transition hover:border-primary/60"
+      className="flex min-h-52 flex-col rounded-xl border border-border glass-surface p-4 text-left transition hover:border-primary/60"
     >
       <div className="flex items-center gap-2">
         {icon}
@@ -207,7 +207,7 @@ function OfficeHome({ onEnter }: { onEnter: (mode: OfficeMode) => void }) {
       </div>
 
       {/* 共用底座 */}
-      <div className="rounded-xl border border-border bg-card/40 p-4">
+      <div className="rounded-xl border border-border glass-surface p-4">
         <div className="flex items-center gap-2">
           <Wrench className="h-4 w-4 text-primary" />
           <span className="text-sm font-semibold">共用底座 · OfficeCLI 引擎</span>

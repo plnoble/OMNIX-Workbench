@@ -92,7 +92,7 @@ export function SupervisionConsole() {
   const card = (s: SupervisedSession, done?: boolean) => {
     const meta = STATUS_META[s.status] ?? { label: s.status, cls: "bg-muted/30 text-muted-foreground" };
     return (
-      <div key={s.session_id} className={cn("rounded-xl border p-3", s.approval ? "border-warning/50 bg-warning/5" : "border-border bg-card/40", done && "opacity-70")}>
+      <div key={s.session_id} className={cn("rounded-xl border p-3", s.approval ? "border-warning/50 bg-warning/5" : "border-border glass-surface", done && "opacity-70")}>
         <div className="flex items-center gap-2">
           <span className="truncate text-sm font-medium">{s.conversation_title}</span>
           <span className={cn("shrink-0 rounded px-1.5 py-0.5 text-[10px]", meta.cls)}>{meta.label}</span>

@@ -188,7 +188,7 @@ export function AssistantsTab({ onUseTemplate }: AssistantsTabProps) {
 
   return (
     <div className="flex h-full min-h-0 flex-1 overflow-hidden bg-background">
-      <aside className="hidden w-80 shrink-0 border-r border-border bg-card/30 p-4 lg:flex lg:flex-col">
+      <aside className="hidden w-80 shrink-0 border-r border-border glass-surface p-4 lg:flex lg:flex-col">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 text-base font-semibold">
             <Wand2 className="h-4 w-4 text-primary" />
@@ -265,7 +265,7 @@ export function AssistantsTab({ onUseTemplate }: AssistantsTabProps) {
             <div className="mb-4 flex items-center gap-2 text-lg font-semibold">
               <Plus className="h-5 w-5 text-primary" /> 新建自定义助手
             </div>
-            <div className="flex flex-col gap-3 rounded-md border border-border bg-card/50 p-4">
+            <div className="flex flex-col gap-3 rounded-md border border-border glass-surface p-4">
               <div className="grid grid-cols-2 gap-3">
                 <label className="flex flex-col gap-1 text-xs text-muted-foreground">
                   名称
@@ -327,14 +327,14 @@ export function AssistantsTab({ onUseTemplate }: AssistantsTabProps) {
             </div>
 
             <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_280px]">
-              <section className="rounded-md border border-border bg-card/50 p-4">
+              <section className="rounded-md border border-border glass-surface p-4">
                 <div className="mb-3 text-sm font-semibold">提示词</div>
                 <pre className="max-h-[62vh] overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-border bg-background p-4 text-sm leading-6">
                   {selected.instructions}
                 </pre>
               </section>
 
-              <aside className="rounded-md border border-border bg-card/50 p-4">
+              <aside className="rounded-md border border-border glass-surface p-4">
                 <div className="text-sm font-semibold">关联技能</div>
                 <div className="mt-3 space-y-2">
                   {selected.skills.length === 0 ? (

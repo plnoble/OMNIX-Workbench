@@ -105,7 +105,7 @@ export function QuickAssistantTab({
         </div>
 
         <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-          <div className="rounded-md border border-border bg-card/40 p-4">
+          <div className="rounded-md border border-border glass-surface p-4">
             <div className="mb-4 flex items-center gap-2 text-sm font-semibold">
               <Clipboard className="h-4 w-4" />
               捕获设置
@@ -156,7 +156,7 @@ export function QuickAssistantTab({
             </div>
           </div>
 
-          <div className="rounded-md border border-border bg-card/40 p-4">
+          <div className="rounded-md border border-border glass-surface p-4">
             <div className="mb-4 flex items-center gap-2 text-sm font-semibold">
               <Languages className="h-4 w-4" />
               翻译与动作
@@ -198,7 +198,7 @@ export function QuickAssistantTab({
         </div>
       </section>
 
-      <aside className="hidden w-96 shrink-0 border-l border-border bg-card/30 p-5 xl:block">
+      <aside className="hidden w-96 shrink-0 border-l border-border glass-surface p-5 xl:block">
         <div className="mb-4 flex items-center justify-between gap-3">
           <div>
             <div className="text-sm font-semibold">捕获历史</div>
