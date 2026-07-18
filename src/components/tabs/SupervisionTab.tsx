@@ -24,7 +24,8 @@ const STATUS_META: Record<string, { label: string; cls: string }> = {
   cancelled: { label: "已取消", cls: "bg-muted/30 text-muted-foreground" },
 };
 
-export function SupervisionTab() {
+/** 监控中心的「总控」视图（实时会话 + 审批 + 额度）。 */
+export function SupervisionConsole() {
   const [sessions, setSessions] = useState<SupervisedSession[]>([]);
   const [recentDone, setRecentDone] = useState<SupervisedSession[]>([]);
   const [busy, setBusy] = useState("");

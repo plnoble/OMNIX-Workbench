@@ -225,6 +225,30 @@
 }
 
 /* ============================================
+   Global press feedback (apple-design #1: respond on press, instantly)
+   Every button / role=button / summary gets a subtle scale-down the moment
+   it's pressed — the whole app feels responsive, not just <Button>. Elements
+   with a Tailwind transition utility animate it; the rest snap (instant press
+   is itself the principle). Disabled controls opt out.
+   ============================================ */
+@layer base {
+  button,
+  [role="button"],
+  summary {
+    transition: transform 130ms cubic-bezier(0.25, 1, 0.5, 1);
+  }
+  button:not(:disabled):active,
+  [role="button"]:not([aria-disabled="true"]):active,
+  summary:active {
+    transform: scale(0.97);
+  }
+  /* Cards/tiles are large — a gentler press reads better than 0.97. */
+  [data-press="soft"]:not([aria-disabled="true"]):active {
+    transform: scale(0.985);
+  }
+}
+
+/* ============================================
    Reduced motion (apple-design: always honor it)
    Kill non-essential motion; keep spinners (they signal ongoing work) but slow
    them, and collapse entrance transforms so nothing jumps.

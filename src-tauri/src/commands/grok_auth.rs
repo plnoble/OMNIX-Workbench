@@ -237,6 +237,84 @@ pub async fn grok_login_cancel() -> Result<(), String> {
     Ok(())
 }
 
+/// One selectable Grok model, from the account's own advertisement.
+#[derive(Debug, Clone, Serialize)]
+pub struct GrokModel {
+    pub id: String,
+    pub name: String,
+}
+
+/// Discover the models the signed-in Grok account can actually use, WITHOUT
+/// starting a real turn (zero tokens). `grok agent stdio` answers `initialize`
+/// with `_meta.modelState.availableModels` — we do just the handshake, read it,
+/// and kill the child. Grok advertises models only per-session (no pre-session
+/// list command), so this handshake is the honest way to populate a picker
+/// before the user starts working; it reflects THEIR plan, not a hardcoded set.
+#[tauri::command]
+pub async fn grok_available_models(db: State<'_, Arc<DbManager>>) -> Result<Vec<GrokModel>, String> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    let exe = grok_exe(&db)?;
+    let mut child = tokio::process::Command::new(exe)
+        .args(["agent", "stdio"])
+        .no_window()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("启动 grok 失败: {e}"))?;
+
+    let mut stdin = child.stdin.take().ok_or("no stdin")?;
+    let stdout = child.stdout.take().ok_or("no stdout")?;
+    let init = serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "protocolVersion": 1, "clientCapabilities": { "fs": { "readTextFile": true, "writeTextFile": true } } }
+    });
+    stdin
+        .write_all(format!("{init}\n").as_bytes())
+        .await
+        .map_err(|e| format!("写入失败: {e}"))?;
+
+    // Read lines until the initialize result arrives, or time out.
+    let models = tokio::time::timeout(std::time::Duration::from_secs(12), async {
+        let mut lines = BufReader::new(stdout).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let trimmed = line.trim();
+            if !trimmed.starts_with('{') {
+                continue;
+            }
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else { continue };
+            if value.get("id").and_then(|v| v.as_i64()) != Some(1) {
+                continue;
+            }
+            let available = value
+                .pointer("/result/_meta/modelState/availableModels")
+                .and_then(|v| v.as_array());
+            let mut out = Vec::new();
+            if let Some(list) = available {
+                for m in list {
+                    if let Some(id) = m.get("modelId").and_then(|v| v.as_str()) {
+                        out.push(GrokModel {
+                            id: id.to_string(),
+                            name: m.get("name").and_then(|v| v.as_str()).unwrap_or(id).to_string(),
+                        });
+                    }
+                }
+            }
+            return out;
+        }
+        Vec::new()
+    })
+    .await
+    .unwrap_or_default();
+
+    let _ = child.kill().await;
+    if models.is_empty() {
+        return Err("未能读取到 Grok 模型——请确认已在认证中心登录 Grok 账号".to_string());
+    }
+    Ok(models)
+}
+
 #[tauri::command]
 pub async fn grok_logout(db: State<'_, Arc<DbManager>>) -> Result<(), String> {
     let exe = grok_exe(&db)?;

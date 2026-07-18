@@ -369,6 +369,7 @@ pub fn run() {
             commands::grok_login_start,
             commands::grok_login_cancel,
             commands::grok_logout,
+            commands::grok_available_models,
             commands::cli_takeover_apply,
             commands::cli_takeover_revert,
             commands::cli_takeover_status,

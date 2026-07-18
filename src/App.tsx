@@ -74,12 +74,10 @@ const McpTab = lazy(() => import("@/components/tabs/McpTab").then(m => ({ defaul
 const HooksTab = lazy(() => import("@/components/tabs/HooksTab").then(m => ({ default: m.HooksTab })));
 const NotesTab = lazy(() => import("@/components/tabs/NotesTab").then(m => ({ default: m.NotesTab })));
 const TranslateTab = lazy(() => import("@/components/tabs/TranslateTab").then(m => ({ default: m.TranslateTab })));
-const ProfileTab = lazy(() => import("@/components/tabs/ProfileTab").then(m => ({ default: m.ProfileTab })));
 const StudioTab = lazy(() => import("@/components/tabs/StudioTab").then(m => ({ default: m.StudioTab })));
 const AutopilotsTab = lazy(() => import("@/components/tabs/AutopilotsTab").then(m => ({ default: m.AutopilotsTab })));
 const OfficeTab = lazy(() => import("@/components/tabs/OfficeTab").then(m => ({ default: m.OfficeTab })));
-const SupervisionTab = lazy(() => import("@/components/tabs/SupervisionTab").then(m => ({ default: m.SupervisionTab })));
-const UsageDashboardTab = lazy(() => import("@/components/tabs/UsageDashboardTab").then(m => ({ default: m.UsageDashboardTab })));
+const MonitorTab = lazy(() => import("@/components/tabs/MonitorTab").then(m => ({ default: m.MonitorTab })));
 const AuthCenterTab = lazy(() => import("@/components/tabs/AuthCenterTab").then(m => ({ default: m.AuthCenterTab })));
 const LocalModelPickerTab = lazy(() => import("@/components/tabs/LocalModelPickerTab").then(m => ({ default: m.LocalModelPickerTab })));
 const CodeMapTab = lazy(() => import("@/components/tabs/CodeMapTab").then(m => ({ default: m.CodeMapTab })));
@@ -98,7 +96,6 @@ const SIMPLE_TABS: Record<string, ComponentType> = {
   hooks: HooksTab,
   notes: NotesTab,
   translate: TranslateTab,
-  profile: ProfileTab,
   studio: StudioTab,
   autopilot: AutopilotsTab,
   // Office 工作台（合并项）：旧的 slides/write/excel id 保留为别名，
@@ -107,8 +104,10 @@ const SIMPLE_TABS: Record<string, ComponentType> = {
   slides: OfficeTab,
   write: OfficeTab,
   excel: OfficeTab,
-  supervision: SupervisionTab,
-  usage: UsageDashboardTab,
+  // 监控中心（合并项）：总控/用量/画像收进一个入口，旧 id 别名。
+  supervision: MonitorTab,
+  usage: MonitorTab,
+  profile: MonitorTab,
   "auth-center": AuthCenterTab,
   "local-models": LocalModelPickerTab,
   "code-map": CodeMapTab,

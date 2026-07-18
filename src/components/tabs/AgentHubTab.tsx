@@ -15,7 +15,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { AGENT_NAMES } from "@/lib/constants";
-import { agentApi, agentBindingApi, runtimeApi } from "@/lib/tauri-api";
+import { agentApi, agentBindingApi, runtimeApi, grokAuthApi, type GrokModel } from "@/lib/tauri-api";
 import { getRuntimeAgentId, isAcpAgent } from "@/lib/agentRegistry";
 import { cn } from "@/lib/utils";
 import { AgentInstallManager } from "@/components/AgentInstallManager";
@@ -98,6 +98,10 @@ export function AgentHubTab({
   // preference (session/set_config_option); for others to a builtin binding.
   const [customModel, setCustomModel] = useState("");
   const [savingCustom, setSavingCustom] = useState(false);
+  // Grok advertises models only per-session; probe the account (zero-token
+  // handshake) so its picker isn't empty before the first session.
+  const [grokModels, setGrokModels] = useState<GrokModel[]>([]);
+  const [grokModelsBusy, setGrokModelsBusy] = useState(false);
 
   useEffect(() => {
     agentBindingApi.getAll().then(setBindings).catch(() => setBindings([]));
@@ -161,6 +165,20 @@ export function AgentHubTab({
     }
     setCustomModel(selected.binding?.binding_kind === "builtin" ? selected.binding.builtin_model ?? "" : "");
   }, [selected]);
+
+  // Selecting Grok (installed) auto-probes its account models for the picker.
+  useEffect(() => {
+    if (selected?.name !== "Grok Build" || !selected.installed) {
+      setGrokModels([]);
+      return;
+    }
+    setGrokModelsBusy(true);
+    grokAuthApi
+      .availableModels()
+      .then(setGrokModels)
+      .catch(() => setGrokModels([]))
+      .finally(() => setGrokModelsBusy(false));
+  }, [selected?.name, selected?.installed]);
 
   const saveCustomModel = async () => {
     if (!selected) return;
@@ -288,6 +306,7 @@ export function AgentHubTab({
             <div
               key={agent.name}
               role="button"
+              data-press="soft"
               tabIndex={0}
               aria-label={`选择 ${agent.name}`}
               className={cn(
@@ -432,6 +451,40 @@ export function AgentHubTab({
                 <p className="mt-2 text-xs leading-5 text-muted-foreground">
                   Agent 默认沿用 CLI 自己的配置；Agent 官方模型由 CLI 直连；OMNIX 模型使用模型中心中已启用的供应商。运行时仍会检查协议兼容性。
                 </p>
+
+                {/* Grok：账号实际可用的模型（零 token 探测）——点一下即填入。 */}
+                {selected.name === "Grok Build" && (
+                  <div className="mt-3 border-t border-border pt-3">
+                    <div className="mb-1.5 flex items-center gap-1.5 text-xs font-medium">
+                      Grok 账号可用模型
+                      {grokModelsBusy && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
+                    </div>
+                    {grokModels.length > 0 ? (
+                      <div className="flex flex-wrap gap-1.5">
+                        {grokModels.map((m) => (
+                          <button
+                            key={m.id}
+                            className={cn(
+                              "rounded border px-2 py-0.5 text-xs hover:bg-muted/40",
+                              customModel === m.id ? "border-primary bg-primary/10 text-primary" : "border-border",
+                            )}
+                            onClick={() => setCustomModel(m.id)}
+                            title={m.id}
+                          >
+                            {m.name}
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">
+                        {grokModelsBusy ? "正在读取账号模型…" : "未读取到——请确认已在认证中心登录 Grok，且 CLI 已安装。"}
+                      </p>
+                    )}
+                    <p className="mt-1.5 text-xs leading-5 text-muted-foreground">
+                      选一个再点下方「保存」即绑定；Grok 不支持会话中切换，下次会话经 <code>-m</code> 生效。
+                    </p>
+                  </div>
+                )}
 
                 {/* Free-form custom model — beyond the preset dropdown above. */}
                 <div className="mt-3 border-t border-border pt-3">

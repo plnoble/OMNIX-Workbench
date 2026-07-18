@@ -2042,11 +2042,14 @@ export interface GrokAuthStatus {
   api_key_env: boolean;
   api_key_in_omnix: boolean;
 }
+export interface GrokModel { id: string; name: string; }
 export const grokAuthApi = {
   status: () => invoke<GrokAuthStatus>("grok_auth_status"),
   loginStart: () => invoke<void>("grok_login_start"),
   loginCancel: () => invoke<void>("grok_login_cancel"),
   logout: () => invoke<void>("grok_logout"),
+  // 探测登录账号可用的 Grok 模型（零 token 握手）——供选中 Grok 时填充选择器。
+  availableModels: () => invoke<GrokModel[]>("grok_available_models"),
 };
 
 // CLI 配置接管 — point native CLIs at a chosen target

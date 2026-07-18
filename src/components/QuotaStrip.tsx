@@ -136,6 +136,11 @@ export function QuotaStrip() {
           </div>
         )}
       </div>
+      {/* 诚实说明：为什么只有 Codex/Claude——不为 Grok/Gemini 编造假额度 */}
+      <p className="mt-2 text-[10px] leading-4 text-muted-foreground/70">
+        仅 Codex 在本地留有官方限额百分比；Claude Code 只留消耗（Anthropic 不回传本地百分比，故不显示）。
+        Grok CLI 不记录限额、Gemini 走 OAuth 服务端配额，本地读不到，故未列出。
+      </p>
     </section>
   );
 }

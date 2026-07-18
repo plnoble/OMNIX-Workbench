@@ -105,34 +105,70 @@ fn collect_workspace_files(
     Ok(entries)
 }
 
+/// Run git with a hard wall-clock timeout. Without it, `git status` on a repo
+/// with a huge untracked tree (or a held index.lock, or a slow network drive)
+/// blocks the whole workspace snapshot forever — the "读工作区读了很久都没读好"
+/// symptom. On timeout we kill the child and treat it as "no git info".
 fn git_output(root: &Path, args: &[&str]) -> Option<String> {
-    let output = Command::new("git")
+    use std::process::Stdio;
+    let mut child = Command::new("git")
         .no_window()
         .arg("-C")
         .arg(root)
         .args(args)
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
         .ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if !status.success() {
+                    return None;
+                }
+                let mut buf = String::new();
+                use std::io::Read;
+                child.stdout.take()?.read_to_string(&mut buf).ok()?;
+                return Some(buf.trim().to_string());
+            }
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(40));
+            }
+            Err(_) => return None,
+        }
+    }
 }
 
 fn workspace_changes(root: &Path) -> Vec<WorkspaceChange> {
-    git_output(root, &["status", "--porcelain=v1", "--untracked-files=all"])
-        .unwrap_or_default()
-        .lines()
-        .filter_map(|line| {
-            if line.len() < 3 {
-                return None;
-            }
-            Some(WorkspaceChange {
-                status: line[..2].trim().to_string(),
-                path: line[3..].trim().trim_matches('"').replace(" -> ", " → "),
-            })
+    // `--untracked-files=normal` (not `all`): shows untracked dirs without
+    // recursing into every file inside them, so a repo with an unignored
+    // node_modules/target doesn't take minutes. Cap the list so a repo with
+    // thousands of changes produces a bounded payload.
+    git_output(
+        root,
+        &["status", "--porcelain=v1", "--untracked-files=normal"],
+    )
+    .unwrap_or_default()
+    .lines()
+    .filter_map(|line| {
+        if line.len() < 3 {
+            return None;
+        }
+        Some(WorkspaceChange {
+            status: line[..2].trim().to_string(),
+            path: line[3..].trim().trim_matches('"').replace(" -> ", " → "),
         })
-        .collect()
+    })
+    .take(500)
+    .collect()
 }
 
 #[tauri::command]
