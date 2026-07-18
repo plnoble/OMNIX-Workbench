@@ -137,7 +137,7 @@ impl RuntimeManager {
         // found), so the remembered preference is applied at launch via `-m`.
         if config.agent == crate::runtime::AgentId::Grok {
             if let Some(preferred) = acp_model_preference(&self.db, config.agent) {
-                launch.args.extend(["-m".to_string(), preferred]);
+                place_grok_model_arg(&mut launch.args, &preferred);
             }
         }
         let mut command = runtime_command(&launch.program, &launch.args);
@@ -993,6 +993,15 @@ pub(crate) fn acp_model_setting_key(agent: AgentId) -> String {
     format!("acp_model_{}", crate::runtime::agent_id_str(agent))
 }
 
+/// Insert `-m <model>` for Grok so it lands BEFORE the `stdio` subcommand.
+/// `-m` is an option of `grok agent`, not of `grok agent stdio`; appending it
+/// after `stdio` makes clap reject it (`unexpected argument '-m'`, exit code 2)
+/// and the session dies before returning a session id.
+fn place_grok_model_arg(args: &mut Vec<String>, model: &str) {
+    let insert_at = args.iter().position(|a| a == "stdio").unwrap_or(args.len());
+    args.splice(insert_at..insert_at, ["-m".to_string(), model.to_string()]);
+}
+
 /// Reads the user's saved model preference for an ACP agent, if any. Falls back
 /// to the legacy display-name key written by earlier builds.
 pub(crate) fn acp_model_preference(db: &Arc<DbManager>, agent: AgentId) -> Option<String> {
@@ -1115,6 +1124,17 @@ mod tests {
     use std::sync::Arc;
 
     use rusqlite::OptionalExtension;
+
+    /// Grok's `-m` must precede the `stdio` subcommand, else clap exits 2 and the
+    /// session dies before returning a session id (the "exit code: 2" report).
+    #[test]
+    fn grok_model_arg_goes_before_stdio() {
+        let mut args = vec!["agent".to_string(), "stdio".to_string()];
+        super::place_grok_model_arg(&mut args, "grok-4.5");
+        assert_eq!(args, ["agent", "-m", "grok-4.5", "stdio"]);
+        // Never after stdio.
+        assert!(args.iter().position(|a| a == "-m") < args.iter().position(|a| a == "stdio"));
+    }
 
     use crate::db::DbManager;
     use crate::runtime::{
