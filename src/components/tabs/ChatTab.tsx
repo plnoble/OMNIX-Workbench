@@ -254,6 +254,24 @@ export function ChatTab({
   onSendPrepared,
 }: ChatTabProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // Auto-scroll: keep the newest message in view as the reply streams in, but
+  // don't yank the user back down if they scrolled up to read history.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const stickToBottomRef = useRef(true);
+  const onScrollAreaScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+  };
+  useEffect(() => {
+    if (stickToBottomRef.current && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [messages]);
+  // A fresh conversation always starts pinned to the bottom.
+  useEffect(() => {
+    stickToBottomRef.current = true;
+  }, [currentConvId]);
   const [permissionPolicy, setPermissionPolicy] = useState<PermissionPolicy>("ask_on_risk");
   const [workMode, setWorkMode] = useState<WorkMode>("direct");
   // When on, switching a conversation to a different agent carries the prior
@@ -713,7 +731,7 @@ export function ChatTab({
           )}
         </div>
 
-        <div className="flex-1 overflow-y-auto px-6 py-5">
+        <div ref={scrollRef} onScroll={onScrollAreaScroll} className="flex-1 overflow-y-auto px-6 py-5">
           {messages.length === 0 && needsWorkspace ? (
             <div className="mx-auto flex h-full max-w-md flex-col items-center justify-center gap-4 text-center">
               <div className="flex h-14 w-14 items-center justify-center rounded-xl bg-muted/40">

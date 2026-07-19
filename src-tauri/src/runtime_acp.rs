@@ -200,8 +200,12 @@ fn parse_session_update(envelope: &Value) -> Vec<RuntimeEvent> {
             event
         }
         SessionUpdate::UserMessageChunk(chunk) => {
+            // The agent echoes OUR prompt back. OMNIX already recorded the user
+            // message at send time (`record_user_message`), so persisting this
+            // echo as another UserMessage duplicates the user's bubble (Grok does
+            // this on every turn). Keep it as a non-persisted RawLog for audit.
             let mut event =
-                RuntimeEvent::new(RuntimeEventKind::UserMessage, json!({ "acp_chunk": "user" }));
+                RuntimeEvent::new(RuntimeEventKind::RawLog, json!({ "acp_chunk": "user_echo" }));
             event.text = content_block_text(&chunk.content);
             event
         }
@@ -682,6 +686,20 @@ mod tests {
                 assert_eq!(method, "terminal/create");
             }
             other => panic!("expected UnsupportedRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn user_message_echo_is_not_persisted_as_a_message() {
+        // Grok echoes our prompt back as user_message_chunk every turn. It must
+        // map to RawLog (not UserMessage), or the user's bubble duplicates.
+        let line = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"你再开发么?"}}}}"#;
+        match classify_acp_message(line).expect("classify") {
+            AcpInbound::Emit(events) => {
+                assert_eq!(events[0].kind, RuntimeEventKind::RawLog);
+                assert_ne!(events[0].kind, RuntimeEventKind::UserMessage);
+            }
+            other => panic!("expected Emit, got {other:?}"),
         }
     }
 
