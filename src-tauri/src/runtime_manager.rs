@@ -133,9 +133,19 @@ impl RuntimeManager {
             Some(external_id) => build_resume_launch_spec(&config, external_id)?,
             None => build_launch_spec(&config)?,
         };
-        // Grok can't switch models over ACP (`set_config_option` → Method not
-        // found), so the remembered preference is applied at launch via `-m`.
         if config.agent == crate::runtime::AgentId::Grok {
+            // Grok's agent protocol is all-or-nothing on permissions: its default
+            // hook denies tool use (initialize `_meta` declares pre_tool_use →
+            // deny), which is why a fresh session reports 「写文件被拒」 and stops
+            // after one message. There is no per-action ACP approval for the
+            // `agent stdio` subcommand — only `--always-approve`. So: Direct mode
+            // (= act) auto-approves its tools; Plan mode stays read-only, where
+            // the default deny is exactly what we want.
+            if matches!(config.work_mode, WorkMode::Direct) {
+                place_grok_flag(&mut launch.args, "--always-approve");
+            }
+            // Model preference can't be switched over ACP (`set_config_option`
+            // → Method not found), so it is applied at launch via `-m`.
             if let Some(preferred) = acp_model_preference(&self.db, config.agent) {
                 place_grok_model_arg(&mut launch.args, &preferred);
             }
@@ -993,13 +1003,23 @@ pub(crate) fn acp_model_setting_key(agent: AgentId) -> String {
     format!("acp_model_{}", crate::runtime::agent_id_str(agent))
 }
 
-/// Insert `-m <model>` for Grok so it lands BEFORE the `stdio` subcommand.
-/// `-m` is an option of `grok agent`, not of `grok agent stdio`; appending it
-/// after `stdio` makes clap reject it (`unexpected argument '-m'`, exit code 2)
-/// and the session dies before returning a session id.
-fn place_grok_model_arg(args: &mut Vec<String>, model: &str) {
+/// Insert a Grok launch flag so it lands BEFORE the `stdio` subcommand — flags
+/// like `-m` and `--always-approve` belong to `grok agent`, not to the `stdio`
+/// subcommand, so appending them after `stdio` makes clap reject them
+/// (`unexpected argument`, exit code 2) and the session dies before returning a
+/// session id.
+fn place_grok_args(args: &mut Vec<String>, extra: &[&str]) {
     let insert_at = args.iter().position(|a| a == "stdio").unwrap_or(args.len());
-    args.splice(insert_at..insert_at, ["-m".to_string(), model.to_string()]);
+    let owned: Vec<String> = extra.iter().map(|s| s.to_string()).collect();
+    args.splice(insert_at..insert_at, owned);
+}
+
+fn place_grok_model_arg(args: &mut Vec<String>, model: &str) {
+    place_grok_args(args, &["-m", model]);
+}
+
+fn place_grok_flag(args: &mut Vec<String>, flag: &str) {
+    place_grok_args(args, &[flag]);
 }
 
 /// Reads the user's saved model preference for an ACP agent, if any. Falls back
@@ -1134,6 +1154,18 @@ mod tests {
         assert_eq!(args, ["agent", "-m", "grok-4.5", "stdio"]);
         // Never after stdio.
         assert!(args.iter().position(|a| a == "-m") < args.iter().position(|a| a == "stdio"));
+    }
+
+    #[test]
+    fn grok_flags_all_land_before_stdio() {
+        // Direct mode: --always-approve then -m, both before the subcommand.
+        let mut args = vec!["agent".to_string(), "stdio".to_string()];
+        super::place_grok_flag(&mut args, "--always-approve");
+        super::place_grok_model_arg(&mut args, "grok-4.5");
+        let stdio = args.iter().position(|a| a == "stdio").unwrap();
+        assert!(args.iter().position(|a| a == "--always-approve").unwrap() < stdio);
+        assert!(args.iter().position(|a| a == "-m").unwrap() < stdio);
+        assert_eq!(args.last().unwrap(), "stdio");
     }
 
     use crate::db::DbManager;
