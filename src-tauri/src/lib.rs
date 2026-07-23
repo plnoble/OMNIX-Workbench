@@ -13,6 +13,7 @@ mod input_validation;
 mod knowledge;
 mod local_models;
 mod media;
+mod memory_recall;
 mod model_knowledge;
 mod oauth;
 mod office;

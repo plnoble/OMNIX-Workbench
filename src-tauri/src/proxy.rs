@@ -263,6 +263,34 @@ fn inject_official_skills(db: &DbManager, payload: &mut AnthropicRequest) {
     }
 }
 
+/// 记忆自动召回注入：取最近一条用户消息，词法匹配相关历史经验/教训，追加到
+/// system。默认关（`memory_gateway_recall`）、最多 3 条、无命中不注——与技能注入
+/// 同一套克制策略。借鉴 jcode 的「相关记忆自动浮现」，用 OMNIX 已有的记忆库实现。
+fn inject_recalled_memory(db: &DbManager, payload: &mut AnthropicRequest) {
+    let Some(user_text) = payload
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == "user")
+        .map(|m| m.content.to_string_content())
+    else {
+        return;
+    };
+    let injection = crate::memory_recall::recall_injection(db, &user_text);
+    if injection.is_empty() {
+        return;
+    }
+    match payload.system.as_mut() {
+        Some(AnthropicMessageContent::String(s)) => s.push_str(&injection),
+        Some(AnthropicMessageContent::Blocks(blocks)) => blocks.push(AnthropicContentBlock {
+            block_type: "text".to_string(),
+            text: Some(injection),
+            source: None,
+        }),
+        None => payload.system = Some(AnthropicMessageContent::String(injection)),
+    }
+}
+
 async fn handle_messages_impl(
     state: Arc<ProxyState>,
     agent_name_opt: Option<String>,
@@ -320,8 +348,9 @@ async fn handle_messages_impl(
             .unwrap_or(None)
     };
 
-    // 正式池技能注入——在进入两条上游分支前统一改写 system。
+    // 正式池技能注入 + 记忆自动召回——在进入两条上游分支前统一改写 system。
     inject_official_skills(&state.db, &mut payload);
+    inject_recalled_memory(&state.db, &mut payload);
 
     let target_model_name = if let Some(ref upstream) = session_upstream {
         upstream.model_name.clone()

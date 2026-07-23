@@ -49,6 +49,7 @@ export function SkillPoolPanel() {
   const [models, setModels] = useState<PlatformModel[]>([]);
   const [chatModel, setChatModel] = useState("");
   const [injectionOn, setInjectionOn] = useState(true);
+  const [memoryRecallOn, setMemoryRecallOn] = useState(false);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<PoolFilter>("all");
   const [selectedName, setSelectedName] = useState<string | null>(null);
@@ -122,6 +123,10 @@ export function SkillPoolPanel() {
     settingsApi
       .get("skill_gateway_injection")
       .then((v) => setInjectionOn(v !== "0"))
+      .catch(() => {});
+    settingsApi
+      .get("memory_gateway_recall")
+      .then((v) => setMemoryRecallOn(v === "1"))
       .catch(() => {});
   }, [load]);
 
@@ -373,6 +378,17 @@ export function SkillPoolPanel() {
     }
   };
 
+  const toggleMemoryRecall = async () => {
+    const next = !memoryRecallOn;
+    try {
+      await settingsApi.set("memory_gateway_recall", next ? "1" : "0");
+      setMemoryRecallOn(next);
+      toast.success(next ? "记忆自动召回已开启：相关历史经验会自动进入上下文" : "记忆自动召回已关闭");
+    } catch (e) {
+      toast.error(String(e));
+    }
+  };
+
   const pendingCount = items.filter((i) => i.pool === "pending").length;
   const officialCount = items.filter((i) => i.pool === "official").length;
 
@@ -452,6 +468,21 @@ export function SkillPoolPanel() {
               className={cn(
                 "absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all",
                 injectionOn ? "left-[18px]" : "left-0.5",
+              )}
+            />
+          </button>
+        </label>
+        <label className="flex cursor-pointer items-center gap-2 text-sm text-muted-foreground">
+          <span>记忆自动召回</span>
+          <button
+            onClick={() => void toggleMemoryRecall()}
+            className={cn("relative h-5 w-9 rounded-full transition", memoryRecallOn ? "bg-success" : "bg-muted")}
+            title="开启后：按当前任务词法匹配相关历史经验/教训，自动注入上下文（最多 3 条，默认关）"
+          >
+            <span
+              className={cn(
+                "absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all",
+                memoryRecallOn ? "left-[18px]" : "left-0.5",
               )}
             />
           </button>

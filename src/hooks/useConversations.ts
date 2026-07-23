@@ -45,6 +45,19 @@ export interface RuntimeSendConfig {
 // Single source: backend agent registry via src/lib/agentRegistry.
 const runtimeAgentId = getRuntimeAgentId;
 
+/** 每会话终端日志的内存上限（字符）。长会话/长跑 agent 的日志此前只增不减，
+ * 是 OMNIX 自身唯一能省的内存点。超限时裁掉头部、保留最近内容（终端语义上也
+ * 只关心最新输出），并标一行省略提示。 */
+const MAX_TERMINAL_LOG_CHARS = 262_144; // 256 KB
+function capLog(text: string): string {
+  if (text.length <= MAX_TERMINAL_LOG_CHARS) return text;
+  const kept = text.slice(text.length - MAX_TERMINAL_LOG_CHARS);
+  // 从第一个换行切，避免把一行截半。
+  const nl = kept.indexOf("\n");
+  const body = nl > 0 ? kept.slice(nl + 1) : kept;
+  return `…（较早的日志已省略以节省内存）\n${body}`;
+}
+
 export interface UseConversationsReturn {
   // Conversation state
   conversations: ConversationInfo[];
@@ -163,9 +176,9 @@ export function useConversations(
       const cleanText = processTerminalStream(text);
       if (!cleanText) return;
 
-      // Update terminal logs ref
+      // Update terminal logs ref (capped so a long session can't grow unbounded)
       const currentLogs = terminalLogsRef.current[session_id] || "";
-      const updatedLogs = currentLogs + cleanText;
+      const updatedLogs = capLog(currentLogs + cleanText);
       terminalLogsRef.current[session_id] = updatedLogs;
 
       // Detect interactive prompts
@@ -288,9 +301,9 @@ export function useConversations(
 
         if (runtimeEvent.kind === "raw_log") {
           const text = runtimeEvent.text || "";
-          terminalLogsRef.current[sessionId] = `${terminalLogsRef.current[sessionId] || ""}${text}\n`;
+          terminalLogsRef.current[sessionId] = capLog(`${terminalLogsRef.current[sessionId] || ""}${text}\n`);
           if (conversationId === currentConvIdRef.current) {
-            setCollabLogs((current) => `${current}${text}\n`);
+            setCollabLogs((current) => capLog(`${current}${text}\n`));
           }
         }
 
