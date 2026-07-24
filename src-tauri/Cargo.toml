@@ -1,6 +1,6 @@
 [package]
 name = "omnix-workbench"
-version = "0.13.7"
+version = "0.14.0"
 description = "Multi-Agent development and collaboration workbench"
 authors = ["OMNIX Workbench Contributors"]
 edition = "2021"
