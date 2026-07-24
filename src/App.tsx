@@ -273,7 +273,12 @@ function MainApp() {
   };
 
   const handleTabChange = (tab: string) => {
-    const nextTab = normalizeTab(tab);
+    let nextTab = normalizeTab(tab);
+    // 诊断已并入设置：任何跳"dashboard"的入口都落到 设置›诊断 子页。
+    if (nextTab === "dashboard") {
+      setSettingsSubTab("diagnostics");
+      nextTab = "settings";
+    }
     setActiveTab(nextTab);
     if (nextTab === "chat" || nextTab === "work") {
       convs.enterSurface(nextTab);
@@ -474,21 +479,6 @@ function MainApp() {
       <main className="relative flex min-w-0 flex-1 flex-col bg-background">
         <div className="flex flex-1 min-w-0 overflow-hidden">
           <Suspense fallback={<LazyFallback />}>
-            {activeTab === "dashboard" && (
-              <DashboardTab
-                activeSessionsCount={convs.activeSessions.length}
-                detectedAgents={convs.detectedAgents}
-                tipIndex={tipIndex}
-                envDiagnostics={diagnostics.envDiagnostics}
-                repairLogs={diagnostics.repairLogs}
-                repairingTool={diagnostics.repairingTool}
-                remoteInfo={remote.remoteInfo}
-                onRunDiagnostics={diagnostics.runDiagnostics}
-                onRepairTool={diagnostics.repairTool}
-                onLoadRemoteAccess={remote.loadRemoteAccess}
-              />
-            )}
-
             {(activeTab === "chat" || activeTab === "work") && (
               <ChatTab
                 onRedetectAgents={convs.detectAgents}
@@ -778,6 +768,20 @@ function MainApp() {
               <SettingsTab
                 settingsSubTab={settingsSubTab}
                 setSettingsSubTab={setSettingsSubTab}
+                diagnosticsPanel={
+                  <DashboardTab
+                    activeSessionsCount={convs.activeSessions.length}
+                    detectedAgents={convs.detectedAgents}
+                    tipIndex={tipIndex}
+                    envDiagnostics={diagnostics.envDiagnostics}
+                    repairLogs={diagnostics.repairLogs}
+                    repairingTool={diagnostics.repairingTool}
+                    remoteInfo={remote.remoteInfo}
+                    onRunDiagnostics={diagnostics.runDiagnostics}
+                    onRepairTool={diagnostics.repairTool}
+                    onLoadRemoteAccess={remote.loadRemoteAccess}
+                  />
+                }
                 platforms={platforms.platforms}
                 selectedPlatformId={platforms.selectedPlatformId}
                 platformModels={platforms.platformModels}

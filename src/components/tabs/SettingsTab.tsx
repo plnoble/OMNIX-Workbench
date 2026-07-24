@@ -33,6 +33,10 @@ export interface SettingsTabProps {
   settingsSubTab: SettingsSubTab;
   setSettingsSubTab: (tab: SettingsSubTab) => void;
 
+  // Diagnostics sub-tab — 整块诊断/概览面板由 App 构造后作为节点传入（合并原顶栏"诊断"入口）。
+  // 可选：专页复用组件（如 McpTab）不提供，它们也不会渲染诊断子页。
+  diagnosticsPanel?: React.ReactNode;
+
   // Platform sub-tab
   platforms: ModelPlatform[];
   selectedPlatformId: string;
@@ -162,6 +166,7 @@ export interface SettingsTabProps {
 const SETTINGS_TABS: { id: SettingsSubTab; label: string; icon: React.ReactNode }[] = [
   { id: "platform", label: "大模型平台", icon: <Plug className="h-3.5 w-3.5" /> },
   { id: "system", label: "系统设置", icon: <Settings className="h-3.5 w-3.5" /> },
+  { id: "diagnostics", label: "诊断", icon: <Wrench className="h-3.5 w-3.5" /> },
   { id: "mcp", label: "MCP 服务器", icon: <Server className="h-3.5 w-3.5" /> },
   { id: "backup", label: "数据备份", icon: <Database className="h-3.5 w-3.5" /> },
 ];
@@ -214,6 +219,7 @@ export function SettingsTab(props: SettingsTabProps) {
       <div className="flex-1 overflow-y-auto p-5">
         {props.settingsSubTab === "platform" && <PlatformSubTab {...props} />}
         {props.settingsSubTab === "system" && <SystemSubTab {...props} />}
+        {props.settingsSubTab === "diagnostics" && props.diagnosticsPanel}
         {props.settingsSubTab === "mcp" && <McpSubTab {...props} />}
         {props.settingsSubTab === "backup" && <BackupSubTab {...props} />}
       </div>

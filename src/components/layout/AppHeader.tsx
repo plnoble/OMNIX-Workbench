@@ -200,9 +200,6 @@ export function AppHeader({
           </Button>
         )}
 
-        <Button size="sm" variant="ghost" className="h-9 w-9 p-0" onClick={() => onNavigate("dashboard")} title="诊断">
-          <Monitor className="h-4 w-4" />
-        </Button>
         <Button size="sm" variant="ghost" className="h-9 w-9 p-0" onClick={onToggleTheme} title="切换主题">
           <ThemeIcon mode={themeMode} />
         </Button>

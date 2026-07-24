@@ -530,7 +530,7 @@ export interface PlatformApiKey {
 }
 
 /** Settings sub-tab selection */
-export type SettingsSubTab = "platform" | "system" | "mcp" | "backup";
+export type SettingsSubTab = "platform" | "system" | "diagnostics" | "mcp" | "backup";
 
 // ── Knowledge Base Types ────────────────────────────────
 
