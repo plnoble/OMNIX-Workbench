@@ -743,6 +743,9 @@ export const teamRunApi = {
     invoke<AgentRun[]>("list_agent_runs", { runId }),
   generatePlan: (goal: string, workspacePath: string, managerAgent: string) =>
     invoke<TeamRunDetail>("team_generate_plan", { goal, workspacePath, managerAgent }),
+  // 编排预设（借鉴 paseo）：不经 AI 队长，直接构造 handoff / advisor 计划，仍进批准
+  buildPreset: (preset: "handoff" | "advisor", task: string, workspacePath: string, plannerAgent: string, workerAgent: string) =>
+    invoke<TeamRunDetail>("team_build_preset", { preset, task, workspacePath, plannerAgent, workerAgent }),
   getDetail: (runId: string) =>
     invoke<TeamRunDetail>("team_get_run_detail", { runId }),
   startApproved: (runId: string, concurrency = 2) =>
@@ -2266,3 +2269,9 @@ export interface GitUpdateCheck {
   latest_revision: string;
   has_update: boolean;
 }
+
+// 悬浮状态坞：默认不开机自启，用户在系统设置里开关（即时生效）。
+export const statusDockApi = {
+  isEnabled: () => invoke<boolean>("get_status_dock_enabled"),
+  setEnabled: (enabled: boolean) => invoke<void>("set_status_dock_enabled", { enabled }),
+};

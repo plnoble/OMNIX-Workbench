@@ -141,6 +141,7 @@ fn parse_manager_plan(raw: &str) -> Result<Vec<TeamAssignment>, String> {
             depends_on: item.depends_on,
             acceptance_criteria: item.acceptance_criteria,
             max_retries: item.max_retries,
+            work_mode: super::runs::default_work_mode(),
         })
         .collect::<Vec<_>>();
     validate_assignments(&assignments)?;
@@ -285,6 +286,82 @@ fn store_plan(
     Ok(())
 }
 
+/// 编排预设（借鉴 paseo）：不经 AI 队长，直接按固定形状构造计划，仍落进
+/// 「待批准」状态——用户批准后才跑，审批闸门不变。
+/// - `handoff`：planner_agent 先规划 → worker_agent 依赖其产出再实现（依赖上下文
+///   自动透传，见 run_worker）。两步都可写。
+/// - `advisor`：单个 worker_agent 以**只读/计划模式**给第二意见，不接管、不改文件。
+#[tauri::command]
+pub async fn team_build_preset(
+    preset: String,
+    task: String,
+    workspace_path: String,
+    planner_agent: String,
+    worker_agent: String,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<TeamRunDetail, String> {
+    if task.trim().is_empty() {
+        return Err("请先描述任务".into());
+    }
+    let title: String = task.chars().take(60).collect();
+    let default_mode = super::runs::default_work_mode();
+
+    let (manager_display, assignments) = match preset.as_str() {
+        "handoff" => {
+            let planner = parse_agent(&planner_agent)?;
+            let worker = parse_agent(&worker_agent)?;
+            (
+                planner.display_name().to_string(),
+                vec![
+                    TeamAssignment {
+                        id: "plan".into(),
+                        agent_name: planner.display_name().to_string(),
+                        task_title: format!("先规划：{task}。产出清晰的实现方案与步骤，不写代码。"),
+                        status: "planned".into(),
+                        depends_on: vec![],
+                        acceptance_criteria: vec!["给出可执行的分步方案".into()],
+                        max_retries: 1,
+                        work_mode: "plan".into(),
+                    },
+                    TeamAssignment {
+                        id: "impl".into(),
+                        agent_name: worker.display_name().to_string(),
+                        task_title: format!("按上一步的方案实现：{task}。完成后说明改动与验证命令。"),
+                        status: "planned".into(),
+                        depends_on: vec!["plan".into()],
+                        acceptance_criteria: vec!["实现符合方案且通过验证".into()],
+                        max_retries: 1,
+                        work_mode: default_mode.clone(),
+                    },
+                ],
+            )
+        }
+        "advisor" => {
+            let advisor = parse_agent(&worker_agent)?;
+            (
+                advisor.display_name().to_string(),
+                vec![TeamAssignment {
+                    id: "advice".into(),
+                    agent_name: advisor.display_name().to_string(),
+                    task_title: format!(
+                        "作为顾问，仅就以下问题给出第二意见与建议，**不要动手改文件**：{task}"
+                    ),
+                    status: "planned".into(),
+                    depends_on: vec![],
+                    acceptance_criteria: vec!["给出明确观点与理由".into()],
+                    max_retries: 0,
+                    work_mode: "plan".into(),
+                }],
+            )
+        }
+        other => return Err(format!("未知编排预设: {other}")),
+    };
+
+    let run = create_workspace_run_core(&db, &title, &workspace_path, &manager_display)?;
+    store_plan(&db, &run.id, &task, &assignments)?;
+    get_detail(&db, &run.id)
+}
+
 #[tauri::command]
 pub async fn team_generate_plan(
     goal: String,
@@ -367,8 +444,8 @@ fn seed_worker_runs(db: &Arc<DbManager>, run_id: &str, plan: &TeamPlan) -> Resul
             .execute(
                 "INSERT OR IGNORE INTO agent_runs
              (id, run_id, agent_name, task_title, status, assignment_id, dependencies_json,
-              acceptance_json, max_retries, validation_status)
-             VALUES (?1, ?2, ?3, ?4, 'queued', ?5, ?6, ?7, ?8, 'pending')",
+              acceptance_json, max_retries, validation_status, work_mode)
+             VALUES (?1, ?2, ?3, ?4, 'queued', ?5, ?6, ?7, ?8, 'pending', ?9)",
                 params![
                     id,
                     run_id,
@@ -379,6 +456,7 @@ fn seed_worker_runs(db: &Arc<DbManager>, run_id: &str, plan: &TeamPlan) -> Resul
                     serde_json::to_string(&assignment.acceptance_criteria)
                         .unwrap_or_else(|_| "[]".into()),
                     assignment.max_retries,
+                    assignment.work_mode,
                 ],
             )
             .map_err(|error| error.to_string())?;
@@ -449,7 +527,7 @@ async fn run_worker(
             conversation_id,
             run.workspace_path.clone(),
             agent,
-            WorkMode::Direct,
+            if worker.work_mode == "plan" { WorkMode::Plan } else { WorkMode::Direct },
             prompt.clone(),
             Duration::from_secs(1800),
             Some(worker.id.clone()),
@@ -823,6 +901,7 @@ mod tests {
                 acceptance_criteria: vec!["passes".into()],
                 max_retries: 1,
                 status: "queued".into(),
+                work_mode: "direct".into(),
             },
             TeamAssignment {
                 id: "b".into(),
@@ -832,6 +911,7 @@ mod tests {
                 acceptance_criteria: vec!["reviewed".into()],
                 max_retries: 1,
                 status: "queued".into(),
+                work_mode: "direct".into(),
             },
         ];
         store_plan(&db, &run.id, "retry", &assignments).expect("plan should store");

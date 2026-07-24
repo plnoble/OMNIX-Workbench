@@ -155,6 +155,35 @@ export function TeamTab({
     }
   };
 
+  /** 编排预设：交接（planner→worker）/ 顾问（只读第二意见）。落进批准流程。 */
+  const buildPreset = async (preset: "handoff" | "advisor") => {
+    if (!collabStdin.trim() || !workspacePath || !activeAgent) {
+      toast.warning("请填写任务，并选择工作区和主 Agent");
+      return;
+    }
+    // 交接需要两个 agent：主 Agent 当规划者，另一个已装的当实现者。
+    const worker =
+      preset === "handoff"
+        ? supported.find((a) => a.name !== activeAgent)?.name ?? activeAgent
+        : activeAgent;
+    setBusy(preset);
+    try {
+      const created = await teamRunApi.buildPreset(preset, collabStdin, workspacePath, activeAgent, worker);
+      setDetail(created);
+      setSelectedRunId(created.run.id);
+      await loadRuns();
+      toast.success(
+        preset === "handoff"
+          ? `已构造交接计划：${activeAgent} 规划 → ${worker} 实现，确认后启动`
+          : `已构造顾问计划：${activeAgent} 只读给第二意见，确认后启动`,
+      );
+    } catch (error) {
+      toast.error(`预设构造失败：${error}`);
+    } finally {
+      setBusy("");
+    }
+  };
+
   const approvePlan = async () => {
     if (!detail) return;
     setBusy("approve");
@@ -252,6 +281,34 @@ export function TeamTab({
               </Button>
               {supported.length === 0 && <span className="text-xs text-destructive">请先安装 Claude Code 或 Codex</span>}
             </div>
+
+            {/* 编排预设（借鉴 paseo）：不用 AI 队长，一键构造固定协作形状，仍走批准 */}
+            {supported.length > 0 && (
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <span className="text-xs text-muted-foreground">编排预设：</span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void buildPreset("handoff")}
+                  disabled={busy !== "" || supported.length < 2}
+                  title={supported.length < 2 ? "交接需要装两个 Agent（规划者 + 实现者）" : "主 Agent 先规划 → 另一个 Agent 依赖其方案实现"}
+                >
+                  {busy === "handoff" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null} 交接
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void buildPreset("advisor")}
+                  disabled={busy !== ""}
+                  title="拉一个 Agent 只读给第二意见，不接管、不改文件"
+                >
+                  {busy === "advisor" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null} 顾问
+                </Button>
+                <span className="text-[11px] text-muted-foreground/70">
+                  交接=规划→实现；顾问=只读第二意见。都会先出计划让你确认。
+                </span>
+              </div>
+            )}
 
             {detail?.plan && (
               <section className="mt-7 border-t border-border pt-5">

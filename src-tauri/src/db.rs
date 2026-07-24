@@ -156,6 +156,7 @@ impl DbManager {
                 max_retries INTEGER NOT NULL DEFAULT 1,
                 result_summary TEXT NOT NULL DEFAULT '',
                 validation_status TEXT NOT NULL DEFAULT 'pending',
+                work_mode TEXT NOT NULL DEFAULT 'direct',
                 FOREIGN KEY(run_id) REFERENCES workspace_runs(id) ON DELETE CASCADE
             )",
             [],

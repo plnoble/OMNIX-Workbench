@@ -23,7 +23,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/sonner";
-import { modelApi, settingsApi, mcpSyncApi, type AgentMcpState } from "@/lib/tauri-api";
+import { modelApi, settingsApi, mcpSyncApi, statusDockApi, type AgentMcpState } from "@/lib/tauri-api";
 import { StorageLocationsCard } from "@/components/StorageLocationsCard";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { BUILTIN_LANGUAGES } from "@/lib/translate-constants";
@@ -507,6 +507,30 @@ export function PlatformSubTab({
 
 // ── System Sub-Tab ───────────────────────────────────
 
+/** 悬浮状态坞开关（默认关、不开机自启，即时生效）。自管状态，不走保存流程。 */
+function StatusDockToggle() {
+  const [on, setOn] = useState(false);
+  useEffect(() => {
+    statusDockApi.isEnabled().then(setOn).catch(() => {});
+  }, []);
+  const toggle = async (next: boolean) => {
+    setOn(next);
+    try {
+      await statusDockApi.setEnabled(next);
+      toast.success(next ? "悬浮状态坞已开启（下次开机也会显示）" : "悬浮状态坞已关闭（不再开机自启）");
+    } catch (e) {
+      setOn(!next);
+      toast.error(`切换失败：${e}`);
+    }
+  };
+  return (
+    <div className="flex items-center gap-2.5">
+      <Switch checked={on} onCheckedChange={(v) => void toggle(v)} id="statusdock_chk" />
+      <Label htmlFor="statusdock_chk" className="m-0">显示悬浮状态坞（默认关，不开机自启）</Label>
+    </div>
+  );
+}
+
 function SystemSubTab({
   accounts,
   onAddAccount,
@@ -685,6 +709,7 @@ function SystemSubTab({
               <Switch checked={startToTray} onCheckedChange={setStartToTray} id="tray_chk" />
               <Label htmlFor="tray_chk" className="m-0">启动时最小化至系统托盘</Label>
             </div>
+            <StatusDockToggle />
           </div>
 
           <Separator className="my-2.5" />

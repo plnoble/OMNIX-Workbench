@@ -39,6 +39,8 @@ pub struct AgentRun {
     pub max_retries: i64,
     pub result_summary: String,
     pub validation_status: String,
+    #[serde(default = "default_work_mode")]
+    pub work_mode: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,6 +53,8 @@ pub struct TeamAssignmentInput {
     pub acceptance_criteria: Vec<String>,
     #[serde(default = "default_max_retries")]
     pub max_retries: i64,
+    #[serde(default = "default_work_mode")]
+    pub work_mode: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,10 +69,18 @@ pub struct TeamAssignment {
     pub acceptance_criteria: Vec<String>,
     #[serde(default = "default_max_retries")]
     pub max_retries: i64,
+    #[serde(default = "default_work_mode")]
+    pub work_mode: String,
 }
 
 fn default_max_retries() -> i64 {
     1
+}
+
+/// 编排预设的 worker 工作模式："direct"（可写，默认，队长实现型）或 "plan"
+/// （只读/计划，顾问与委员会用——给意见不动文件）。
+pub fn default_work_mode() -> String {
+    "direct".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -210,6 +222,7 @@ pub fn propose_team_plan_core(
             depends_on: Vec::new(),
             acceptance_criteria: Vec::new(),
             max_retries: 1,
+            work_mode: default_work_mode(),
         })
         .collect();
 
@@ -330,7 +343,7 @@ pub fn get_agent_run_core(db: &Arc<DbManager>, agent_run_id: &str) -> Result<Age
     let conn = db.get_connection().map_err(|e| e.to_string())?;
     conn.query_row(
         "SELECT id, run_id, agent_name, task_title, status, session_id, started_at, completed_at, log_excerpt,
-                assignment_id, dependencies_json, acceptance_json, retry_count, max_retries, result_summary, validation_status
+                assignment_id, dependencies_json, acceptance_json, retry_count, max_retries, result_summary, validation_status, work_mode
          FROM agent_runs WHERE id = ?1",
         params![agent_run_id],
         |row| {
@@ -351,6 +364,7 @@ pub fn get_agent_run_core(db: &Arc<DbManager>, agent_run_id: &str) -> Result<Age
                 max_retries: row.get(13)?,
                 result_summary: row.get(14)?,
                 validation_status: row.get(15)?,
+                work_mode: row.get(16)?,
             })
         },
     )
@@ -363,7 +377,7 @@ pub fn list_agent_runs_core(db: &Arc<DbManager>, run_id: &str) -> Result<Vec<Age
     let mut stmt = conn
         .prepare(
             "SELECT id, run_id, agent_name, task_title, status, session_id, started_at, completed_at, log_excerpt,
-                    assignment_id, dependencies_json, acceptance_json, retry_count, max_retries, result_summary, validation_status
+                    assignment_id, dependencies_json, acceptance_json, retry_count, max_retries, result_summary, validation_status, work_mode
              FROM agent_runs WHERE run_id = ?1 ORDER BY id ASC",
         )
         .map_err(|e| e.to_string())?;
@@ -387,6 +401,7 @@ pub fn list_agent_runs_core(db: &Arc<DbManager>, run_id: &str) -> Result<Vec<Age
                 max_retries: row.get(13)?,
                 result_summary: row.get(14)?,
                 validation_status: row.get(15)?,
+                work_mode: row.get(16)?,
             })
         })
         .map_err(|e| e.to_string())?;

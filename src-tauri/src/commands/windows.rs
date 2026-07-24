@@ -193,6 +193,33 @@ if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
     Ok((!selected.is_empty()).then_some(selected))
 }
 
+/// 悬浮状态坞是否随应用启动。默认关（"0"/未设）——用户显式开启才创建。
+pub const STATUS_DOCK_SETTING: &str = "status_dock_enabled";
+
+/// 构造悬浮状态坞窗口（幂等：已存在则复用）。抽成函数供启动条件创建 + 开关
+/// 后按需创建复用，两处不再各写一份 builder。
+pub fn spawn_status_dock(app: &AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    if app.get_webview_window("status-dock").is_some() {
+        return Ok(());
+    }
+    tauri::WebviewWindowBuilder::new(
+        app,
+        "status-dock",
+        tauri::WebviewUrl::App("/?window=status-dock".into()),
+    )
+    .title("OMNIX Status Dock")
+    .inner_size(200.0, 48.0)
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(true)
+    .resizable(false)
+    .skip_taskbar(true)
+    .build()
+    .map_err(|e| format!("创建状态坞失败: {e}"))?;
+    Ok(())
+}
+
 #[tauri::command]
 pub fn toggle_status_dock(app_handle: AppHandle, visible: bool) -> Result<(), String> {
     use tauri::Manager;
@@ -205,6 +232,39 @@ pub fn toggle_status_dock(app_handle: AppHandle, visible: bool) -> Result<(), St
         }
     }
     Ok(())
+}
+
+/// 开关悬浮状态坞（持久化 + 立即生效）。开启时按需创建并显示；关闭时关掉窗口。
+/// 默认关，所以不会开机自启，除非用户在这里打开过。
+#[tauri::command]
+pub fn set_status_dock_enabled(
+    app_handle: AppHandle,
+    db: tauri::State<'_, std::sync::Arc<crate::db::DbManager>>,
+    enabled: bool,
+) -> Result<(), String> {
+    use tauri::Manager;
+    db.set_setting(STATUS_DOCK_SETTING, if enabled { "1" } else { "0" })
+        .map_err(|e| e.to_string())?;
+    if enabled {
+        spawn_status_dock(&app_handle)?;
+        if let Some(dock) = app_handle.get_webview_window("status-dock") {
+            let _ = dock.show();
+        }
+    } else if let Some(dock) = app_handle.get_webview_window("status-dock") {
+        let _ = dock.close();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_status_dock_enabled(
+    db: tauri::State<'_, std::sync::Arc<crate::db::DbManager>>,
+) -> Result<bool, String> {
+    Ok(db
+        .get_setting(STATUS_DOCK_SETTING)
+        .unwrap_or(None)
+        .as_deref()
+        == Some("1"))
 }
 
 #[tauri::command]

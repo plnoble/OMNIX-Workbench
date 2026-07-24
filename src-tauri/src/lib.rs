@@ -260,20 +260,15 @@ pub fn run() {
                 });
             }
 
-            // Initialize OMNIX Status Dock floating window
-            let _status_dock = tauri::WebviewWindowBuilder::new(
-                app,
-                "status-dock",
-                tauri::WebviewUrl::App("/?window=status-dock".into()),
-            )
-            .title("OMNIX Status Dock")
-            .inner_size(200.0, 48.0)
-            .decorations(false)
-            .transparent(true)
-            .always_on_top(true)
-            .resizable(false)
-            .skip_taskbar(true)
-            .build();
+            // Status Dock 悬浮窗：默认不开机自启，仅当用户在设置里开启过才创建。
+            if db
+                .get_setting(commands::STATUS_DOCK_SETTING)
+                .unwrap_or(None)
+                .as_deref()
+                == Some("1")
+            {
+                let _ = commands::spawn_status_dock(app.handle());
+            }
 
             // Initialize OMNIX Quick Assistant floating window (hidden by default)
             let _qa = tauri::WebviewWindowBuilder::new(
@@ -306,6 +301,7 @@ pub fn run() {
             commands::start_agent_run,
             commands::list_agent_runs,
             commands::team_generate_plan,
+            commands::team_build_preset,
             commands::team_get_run_detail,
             commands::team_start_approved_run,
             commands::team_stop_run,
@@ -435,6 +431,8 @@ pub fn run() {
             commands::pick_directory,
             commands::pick_file,
             commands::toggle_status_dock,
+            commands::set_status_dock_enabled,
+            commands::get_status_dock_enabled,
             commands::get_model_platforms,
             commands::save_model_platform,
             commands::delete_model_platform,

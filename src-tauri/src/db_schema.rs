@@ -280,6 +280,8 @@ impl DbManager {
             "ALTER TABLE skills ADD COLUMN success_count INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE skills ADD COLUMN priority_score REAL NOT NULL DEFAULT 1.0",
             // Agent task lifecycle fields
+            // 编排预设（借鉴 paseo）：worker 可按预设跑只读/计划模式（顾问、委员会）
+            "ALTER TABLE agent_runs ADD COLUMN work_mode TEXT NOT NULL DEFAULT 'direct'",
             "ALTER TABLE conversations ADD COLUMN task_status TEXT NOT NULL DEFAULT 'pending'",
             "ALTER TABLE conversations ADD COLUMN task_started_at DATETIME NULL",
             "ALTER TABLE conversations ADD COLUMN task_completed_at DATETIME NULL",
