@@ -414,6 +414,9 @@ pub fn import_skill_package(
     let skill_name = metadata["name"].as_str()
         .map(|s| s.to_string())
         .unwrap_or_else(|| path.file_stem().expect("import path should have a file stem").to_string_lossy().to_string());
+    // The name becomes a subdirectory under the central skills store — reject
+    // any separators / `..` so a crafted metadata name can't escape it (Zip Slip).
+    crate::input_validation::validate_path_component(&skill_name, "技能名")?;
     let description = metadata["description"].as_str().unwrap_or("Imported skill").to_string();
 
     // Create central store directory (R1: user-configurable)
@@ -430,6 +433,10 @@ pub fn import_skill_package(
         let name = file.name().to_string();
         if name == "metadata.json" { continue; }
         if !name.ends_with(".md") { continue; }
+        // Reject `../` or rooted ZIP entry names so extraction stays inside
+        // central_dir (Zip Slip). Normal nested paths (subdir/file.md) are fine.
+        crate::input_validation::validate_relative_path(std::path::Path::new(&name))
+            .map_err(|e| format!("技能包条目 {} 非法: {}", name, e))?;
 
         let mut content = String::new();
         file.read_to_string(&mut content).map_err(|e| e.to_string())?;

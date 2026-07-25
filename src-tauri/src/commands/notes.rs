@@ -136,6 +136,9 @@ pub fn save_note(
     ensure_table(&db)?;
     let conn = db.get_connection().map_err(|e| e.to_string())?;
     let id = id.unwrap_or_else(|| format!("note_{}", chrono::Utc::now().timestamp_micros()));
+    // id is mirrored to ~/.omnix/notes/<id>.md — reject separators/`..` so a
+    // caller-supplied id can't write outside the notes directory.
+    crate::input_validation::validate_path_component(&id, "笔记 id")?;
     let title = if title.trim().is_empty() { "无标题笔记".to_string() } else { title };
     conn.execute(
         "INSERT INTO notes (id, title, content, tags, source)
@@ -156,6 +159,9 @@ pub fn save_note(
 
 #[tauri::command]
 pub fn delete_note(id: String, db: State<'_, Arc<DbManager>>) -> Result<(), String> {
+    // Mirrored to ~/.omnix/notes/<id>.md and removed via remove_file — same
+    // traversal guard as save_note.
+    crate::input_validation::validate_path_component(&id, "笔记 id")?;
     let conn = db.get_connection().map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM notes WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;

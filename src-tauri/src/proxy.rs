@@ -147,6 +147,12 @@ impl ProxyServer {
                 axum::routing::post(post_remote_cron_trigger),
             )
             .route("/health", axum::routing::get(handle_health))
+            // Gate /v1,/agent,/session to loopback-or-token so enabling LAN
+            // remote access can't expose the raw model gateway (P1 fix).
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                guard_gateway_access,
+            ))
             .layer(cors_layer)
             .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024)) // 10MB request body limit
             .with_state(state);
@@ -165,7 +171,10 @@ impl ProxyServer {
                     return;
                 }
             };
-            if let Err(e) = axum::serve(listener, app)
+            if let Err(e) = axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
                 .with_graceful_shutdown(async move {
                     let _ = rx.await;
                     println!("OMNIX Workbench HTTP Proxy shutting down gracefully...");
@@ -371,7 +380,7 @@ async fn handle_messages_impl(
 
         if let Ok(active_models) = state.db.get_connection().and_then(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT pm.model_name, pm.platform_id, pm.has_vision, pm.has_reasoning, pm.has_coding, mp.api_key, mp.api_address, mp.api_type
+                "SELECT pm.model_name, pm.platform_id, pm.has_vision, pm.has_reasoning, pm.has_coding, mp.api_key, mp.api_address, mp.api_type, pm.has_speedy
                  FROM platform_models pm
                  JOIN model_platforms mp ON pm.platform_id = mp.id
                  WHERE pm.is_enabled = 1 AND mp.is_enabled = 1
@@ -381,8 +390,8 @@ async fn handle_messages_impl(
                 let has_vis: i32 = row.get(2)?;
                 let has_reas: i32 = row.get(3)?;
                 let has_cod: i32 = row.get(4)?;
-                // has_speedy column may not exist in older DBs, default to false
-                let has_spd: bool = row.get::<_, Option<i32>>(8).ok().flatten().map(|v| v != 0).unwrap_or(false);
+                // has_speedy is column index 8 (guaranteed present by schema + migration).
+                let has_spd: bool = row.get::<_, i32>(8).unwrap_or(0) != 0;
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
@@ -1232,7 +1241,7 @@ async fn handle_openai_forward_impl(
 
         if let Ok(active_models) = state.db.get_connection().and_then(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT pm.model_name, pm.platform_id, pm.has_vision, pm.has_reasoning, pm.has_coding, mp.api_key, mp.api_address, mp.api_type
+                "SELECT pm.model_name, pm.platform_id, pm.has_vision, pm.has_reasoning, pm.has_coding, mp.api_key, mp.api_address, mp.api_type, pm.has_speedy
                  FROM platform_models pm
                  JOIN model_platforms mp ON pm.platform_id = mp.id
                  WHERE pm.is_enabled = 1 AND mp.is_enabled = 1
@@ -1242,8 +1251,8 @@ async fn handle_openai_forward_impl(
                 let has_vis: i32 = row.get(2)?;
                 let has_reas: i32 = row.get(3)?;
                 let has_cod: i32 = row.get(4)?;
-                // has_speedy column may not exist in older DBs, default to false
-                let has_spd: bool = row.get::<_, Option<i32>>(8).ok().flatten().map(|v| v != 0).unwrap_or(false);
+                // has_speedy is column index 8 (guaranteed present by schema + migration).
+                let has_spd: bool = row.get::<_, i32>(8).unwrap_or(0) != 0;
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
@@ -1972,6 +1981,57 @@ async fn post_remote_cron_trigger(
 // ── Remote chat view + control ─────────────────────────────────────────────
 
 /// Token gate shared by the remote chat endpoints.
+/// Gate the raw model-gateway routes (`/v1/*`, `/agent/*`, `/session/*`) to the
+/// local machine unless the caller presents the remote-access token. Local CLI
+/// agents connect over loopback and are always allowed; when "手机远程访问"
+/// binds the proxy to 0.0.0.0, a LAN client must send
+/// `x-omnix-remote-token: <token>` or it gets 403 — otherwise anyone on the
+/// same Wi-Fi could spend the user's API keys straight through /v1/messages.
+/// The `/api/remote/*` panel routes are separately token-gated already.
+async fn guard_gateway_access(
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<SocketAddr>,
+    State(state): State<Arc<ProxyState>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let path = req.uri().path();
+    let is_gateway = path.starts_with("/v1/")
+        || path.starts_with("/agent/")
+        || path.starts_with("/session/");
+    if is_gateway && !peer.ip().is_loopback() {
+        // WSL agents also reach the host over a non-loopback address; when WSL
+        // mode is on we keep the pre-existing local-dev trust and don't IP-gate
+        // the gateway (WSL can't easily send the token). Otherwise the only
+        // reason we're bound to 0.0.0.0 is 手机远程访问 — require the token.
+        let use_wsl = state
+            .db
+            .get_setting("use_wsl")
+            .unwrap_or(None)
+            .as_deref()
+            == Some("true");
+        if !use_wsl {
+            let expected = state
+                .db
+                .get_setting("remote_token")
+                .unwrap_or(None)
+                .unwrap_or_default();
+            let provided = req
+                .headers()
+                .get("x-omnix-remote-token")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            if expected.is_empty() || provided != expected {
+                return (
+                    StatusCode::FORBIDDEN,
+                    "远程访问模型网关需要有效令牌 (x-omnix-remote-token)",
+                )
+                    .into_response();
+            }
+        }
+    }
+    next.run(req).await
+}
+
 fn remote_token_ok(state: &ProxyState, params: &std::collections::HashMap<String, String>) -> bool {
     let token = params.get("token").cloned().unwrap_or_default();
     let expected = state.db.get_setting("remote_token").unwrap_or(None).unwrap_or_default();

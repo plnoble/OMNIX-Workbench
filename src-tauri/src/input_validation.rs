@@ -67,6 +67,23 @@ pub fn validate_content(content: &str, param_name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Validate a caller-supplied string that will be used as a **single path
+/// component** — a file or directory name such as a note id (`<id>.md`) or a
+/// skill name used as a subdirectory. Layers on top of [`validate_name`] and
+/// additionally rejects path separators, drive/ADS colons, and `.`/`..`, so the
+/// value cannot escape the directory it is joined onto.
+pub fn validate_path_component(name: &str, param_name: &str) -> Result<(), String> {
+    validate_name(name, param_name)?;
+    let trimmed = name.trim();
+    if trimmed == "." || trimmed == ".." {
+        return Err(format!("{} must not be '.' or '..'", param_name));
+    }
+    if name.contains('/') || name.contains('\\') || name.contains(':') || name.contains('\0') {
+        return Err(format!("{} must not contain path separators", param_name));
+    }
+    Ok(())
+}
+
 // ── Path Validation ────────────────────────────────────────
 
 /// Validate a relative file path to prevent directory traversal attacks.
@@ -80,10 +97,20 @@ pub fn validate_relative_path(path: &std::path::Path) -> Result<(), String> {
     if path.is_absolute() {
         return Err("Absolute paths are not allowed for security reasons".to_string());
     }
-    // Reject path traversal components
+    // Reject path traversal AND rooted/prefixed components. Note `..` and a
+    // leading `/` (RootDir) or `C:\` (Prefix) all let a "relative" string escape
+    // its base once joined — on Windows `base.join("/etc/x")` jumps to the drive
+    // root even though `Path::is_absolute()` returns false for `/etc/x`.
     for component in path.components() {
-        if component == std::path::Component::ParentDir {
-            return Err("Path traversal (..) is not allowed for security reasons".to_string());
+        use std::path::Component;
+        match component {
+            Component::ParentDir => {
+                return Err("Path traversal (..) is not allowed for security reasons".to_string());
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                return Err("Rooted or absolute path segments are not allowed".to_string());
+            }
+            _ => {}
         }
     }
     // Reject if canonicalized path escapes to system directories
@@ -225,5 +252,24 @@ mod tests {
     fn test_validate_relative_path_ok() {
         assert!(validate_relative_path(std::path::Path::new("src/main.rs")).is_ok());
         assert!(validate_relative_path(std::path::Path::new("docs/readme.md")).is_ok());
+    }
+
+    #[test]
+    fn test_validate_relative_path_rejects_rooted() {
+        // Leading `/` has no drive prefix, so is_absolute() is false on Windows,
+        // but RootDir must still be rejected (join escapes to the drive root).
+        assert!(validate_relative_path(std::path::Path::new("/etc/passwd")).is_err());
+    }
+
+    #[test]
+    fn test_validate_path_component() {
+        assert!(validate_path_component("note_123", "id").is_ok());
+        assert!(validate_path_component("my-skill", "name").is_ok());
+        assert!(validate_path_component("../evil", "id").is_err());
+        assert!(validate_path_component("a/b", "id").is_err());
+        assert!(validate_path_component("a\\b", "id").is_err());
+        assert!(validate_path_component("C:evil", "id").is_err());
+        assert!(validate_path_component("..", "id").is_err());
+        assert!(validate_path_component("", "id").is_err());
     }
 }

@@ -343,6 +343,11 @@ pub fn revert_file(
     path: String,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<(), String> {
+    // `path` is caller-supplied and, on the "file is new" branch below, feeds
+    // `fs::remove_file(root.join(path))`. Without this guard an absolute path or
+    // `..` would delete files outside the workspace.
+    crate::input_validation::validate_relative_path(Path::new(&path))
+        .map_err(|e| format!("非法文件路径: {e}"))?;
     let (workspace_path, ref_name) = lookup_checkpoint(&db, &checkpoint_id)?;
     let root = canonical_root(&workspace_path)?;
     let existed = git(&root, &["cat-file", "-e", &format!("{ref_name}:{path}")], None, &[]).is_ok();

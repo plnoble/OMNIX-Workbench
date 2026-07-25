@@ -331,33 +331,25 @@ impl DbManager {
             )?;
         }
 
-        // Generate a cryptographically secure random remote_token if not set
+        // Generate a cryptographically secure random remote_token if not set.
+        // Source is the OS CSPRNG via getrandom (BCryptGenRandom on Windows,
+        // getrandom(2)/ /dev/urandom on Unix). There is NO fallback: a
+        // predictable token would let any LAN client forge the remote-access
+        // credential, so we fail initialization rather than emit a weak token.
+        // (Previously this read the Windows "CON" device and ignored the read
+        // result — on a GUI process with no console that yielded an all-zero,
+        // fully predictable token.)
         let mut stmt = conn.prepare("SELECT value FROM settings WHERE key = 'remote_token'")?;
         let exists = stmt.exists([]).unwrap_or(false);
         if !exists {
-            let token = {
-                use std::io::Read;
-                let mut rng_bytes = [0u8; 32];
-                // Use OS CSPRNG via /dev/urandom or CryptGenRandom
-                if let Ok(mut f) =
-                    std::fs::File::open("/dev/urandom").or_else(|_| std::fs::File::open("CON"))
-                {
-                    let _ = f.read_exact(&mut rng_bytes);
-                } else {
-                    // Fallback: mix time + thread + process id (still better than DefaultHasher alone)
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default();
-                    let seed = now.as_nanos() as u128;
-                    for (i, b) in rng_bytes.iter_mut().enumerate() {
-                        *b = ((seed >> (i % 16 * 8)) & 0xFF) as u8;
-                    }
-                }
-                format!(
-                    "tok_{:064x}",
-                    u128::from_be_bytes(rng_bytes[0..16].try_into().unwrap_or([0u8; 16]))
+            let mut rng_bytes = [0u8; 32];
+            getrandom::getrandom(&mut rng_bytes).map_err(|e| {
+                rusqlite::Error::ToSqlConversionFailure(
+                    format!("CSPRNG (getrandom) unavailable: {e}").into(),
                 )
-            };
+            })?;
+            let hex: String = rng_bytes.iter().map(|b| format!("{:02x}", b)).collect();
+            let token = format!("tok_{hex}");
             let _ = conn.execute(
                 "INSERT INTO settings (key, value) VALUES ('remote_token', ?1)",
                 params![token],

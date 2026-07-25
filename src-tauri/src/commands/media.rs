@@ -40,8 +40,15 @@ pub(crate) fn attachments_dir() -> Result<PathBuf, String> {
 /// files inside the managed attachments directory.
 #[tauri::command]
 pub fn media_read_attachment(path: String) -> Result<String, String> {
-    let root = attachments_dir()?;
-    let target = PathBuf::from(&path);
+    // Canonicalize BEFORE the containment check. The lexical `starts_with` this
+    // replaces compared path components without resolving `..`, so
+    // `attachments/../../secret` passed the prefix test and was then read.
+    let root = attachments_dir()?
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    let target = PathBuf::from(&path)
+        .canonicalize()
+        .map_err(|_| "附件路径越界".to_string())?;
     if !target.starts_with(&root) {
         return Err("附件路径越界".into());
     }

@@ -1,0 +1,62 @@
+name: CI
+
+# Quality gate for day-to-day changes. The separate Release workflow only runs
+# on `v*` tags, so master/PR pushes previously had NO build, test, or lint
+# check. Frontend build + Rust tests are REQUIRED; formatting/lint run as signal
+# while the pre-existing fmt/clippy debt is cleared.
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Typecheck + build frontend (tsc && vite build)
+        run: npm run build
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Rust tests (required)
+        working-directory: ./src-tauri
+        run: cargo test --lib
+
+      # Signal-only until the pre-existing fmt/clippy debt is cleared. Flip these
+      # to blocking (drop continue-on-error) once `cargo fmt` + clippy are green.
+      - name: Rustfmt check (signal)
+        working-directory: ./src-tauri
+        run: cargo fmt --check
+        continue-on-error: true
+
+      - name: Clippy (signal)
+        working-directory: ./src-tauri
+        run: cargo clippy --lib -- -D warnings
+        continue-on-error: true
