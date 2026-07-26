@@ -43,7 +43,7 @@ const GROUP_LABELS: Record<AppEntry["group"], string> = {
   core: "核心",
   resource: "资源",
   assistant: "助手",
-  labs: "Labs",
+  labs: "实验室",
   system: "系统",
 };
 
@@ -164,7 +164,7 @@ export function AppHeader({
               aria-label={entry.label}
             >
               <AppIcon id={entry.id} />
-              <span className="hidden min-[1500px]:inline">{entry.label}</span>
+              <span className="hidden min-[1024px]:inline">{entry.label}</span>
             </button>
           ))}
 
@@ -314,11 +314,11 @@ function LauncherItem({
           <div className="flex items-center gap-2">
             <span className="truncate text-sm font-semibold">{entry.label}</span>
             {entry.is_experimental && (
-              <span className="rounded border border-warning/30 px-1.5 py-0.5 text-[10px] text-warning">Labs</span>
+              <span className="rounded border border-warning/30 px-1.5 py-0.5 text-[10px] text-warning">实验</span>
             )}
             {entry.is_incomplete && (
               <span className="rounded border border-muted-foreground/30 px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                Incomplete
+                未完成
               </span>
             )}
           </div>

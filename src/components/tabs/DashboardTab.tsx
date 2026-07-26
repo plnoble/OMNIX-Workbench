@@ -105,7 +105,7 @@ export function DashboardTab({
             <span className="text-xs text-muted-foreground flex items-center gap-1.5">
               <Wifi className="h-3 w-3" /> 中转代理端口
             </span>
-            <span className="text-2xl font-bold block mt-1">:{DEFAULT_PROXY_PORT}</span>
+            <span className="text-lg font-bold block mt-1">127.0.0.1:{DEFAULT_PROXY_PORT}</span>
           </CardContent>
         </Card>
         <Card>

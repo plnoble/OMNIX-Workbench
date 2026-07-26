@@ -203,27 +203,15 @@ function MainApp() {
     setTipIndex(Math.floor(Math.random() * 5));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps -- mount-only init: all load functions are stable ref-less fetchers
 
-  // Warm lazy tab chunks during idle time so switching tabs doesn't flash a loader.
+  // Warm only the handful of chunks the user is most likely to open next, so
+  // switching to a core surface doesn't flash a loader. Warming all ~18 lazy
+  // tabs on idle defeated the point of code-splitting (it pulled almost the
+  // whole app anyway); the rest load on demand.
   useEffect(() => {
     const warm = () => {
-      void import("@/components/tabs/ChatTab");
-      void import("@/components/tabs/AgentHubTab");
-      void import("@/components/tabs/ModelsTab");
-      void import("@/components/tabs/McpTab");
-      void import("@/components/tabs/HooksTab");
-      void import("@/components/tabs/NotesTab");
-      void import("@/components/tabs/TranslateTab");
+      void import("@/components/tabs/ChatTab"); // chat + work surfaces
       void import("@/components/tabs/TeamTab");
-      void import("@/components/tabs/SkillTab");
-      void import("@/components/tabs/KnowledgeTab");
-      void import("@/components/tabs/MemoryTab");
       void import("@/components/tabs/SettingsTab");
-      void import("@/components/tabs/DashboardTab");
-      void import("@/components/tabs/CompareTab");
-      void import("@/components/tabs/CronTab");
-      void import("@/components/tabs/AssistantsTab");
-      void import("@/components/tabs/SearchResourceTab");
-      void import("@/components/tabs/LabsTab");
     };
     const ric = (window as unknown as { requestIdleCallback?: (cb: () => void) => number }).requestIdleCallback;
     const id = ric ? ric(warm) : window.setTimeout(warm, 1500);

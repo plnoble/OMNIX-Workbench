@@ -53,7 +53,7 @@ export const APP_ENTRIES: AppEntry[] = [
   {
     id: "team",
     label: "团队",
-    title: "Team",
+    title: "团队",
     description: "队长拆解计划，确认后启动多个 Worker。",
     group: "core",
     placement: "pinned",
@@ -62,24 +62,24 @@ export const APP_ENTRIES: AppEntry[] = [
   {
     id: "agents",
     label: "智能体",
-    title: "Agents",
+    title: "智能体",
     description: "检测、安装、更新和配置本地 Agent。",
     group: "core",
-    placement: "pinned",
+    placement: "launcher",
     is_core: true,
   },
   {
     id: "skills",
     label: "技能",
-    title: "Skills",
+    title: "技能",
     description: "管理技能包、同步目标和漂移状态。",
     group: "core",
-    placement: "pinned",
+    placement: "launcher",
     is_core: true,
   },
   {
     id: "models",
-    label: "Models",
+    label: "模型",
     title: "模型中心",
     description: "供应商、多 API Key、模型列表、能力和健康检查。",
     group: "resource",
@@ -87,7 +87,7 @@ export const APP_ENTRIES: AppEntry[] = [
   },
   {
     id: "knowledge",
-    label: "Knowledge",
+    label: "知识库",
     title: "知识库",
     description: "普通对话可手动选择的 RAG 资料源。",
     group: "resource",
@@ -95,7 +95,7 @@ export const APP_ENTRIES: AppEntry[] = [
   },
   {
     id: "memories",
-    label: "Memory",
+    label: "记忆",
     title: "记忆",
     description: "长期经验、避坑记录和上下文复用。",
     group: "resource",
@@ -111,7 +111,7 @@ export const APP_ENTRIES: AppEntry[] = [
   },
   {
     id: "search",
-    label: "Search",
+    label: "搜索",
     title: "搜索",
     description: "联网搜索供应商和搜索调试。",
     group: "resource",
@@ -145,7 +145,7 @@ export const APP_ENTRIES: AppEntry[] = [
   {
     id: "autopilot",
     label: "自动驾驶",
-    title: "Autopilot",
+    title: "自动驾驶",
     description: "定时把任务派给 Agent 在工作区自动执行，每次运行都是可回看的会话。",
     group: "labs",
     placement: "launcher",
@@ -173,7 +173,7 @@ export const APP_ENTRIES: AppEntry[] = [
     title: "监控中心",
     description: "总控在跑的 agent 会话与订阅额度、用量成本看板、编程画像——三合一。",
     group: "core",
-    placement: "launcher",
+    placement: "pinned",
   },
   {
     id: "translate",
@@ -185,7 +185,7 @@ export const APP_ENTRIES: AppEntry[] = [
   },
   {
     id: "compare",
-    label: "Compare",
+    label: "对比",
     title: "模型对比",
     description: "多模型输出对比和评审。",
     group: "labs",
@@ -194,7 +194,7 @@ export const APP_ENTRIES: AppEntry[] = [
   },
   {
     id: "code-analysis",
-    label: "Code Analysis",
+    label: "代码分析",
     title: "代码分析",
     description: "代码结构分析入口，后续接入验证链路。",
     group: "labs",
@@ -253,7 +253,7 @@ export const APP_ENTRIES: AppEntry[] = [
   },
   {
     id: "labs",
-    label: "Labs",
+    label: "实验室",
     title: "实验室",
     description: "未稳定能力总览和风险状态。",
     group: "labs",
@@ -262,9 +262,14 @@ export const APP_ENTRIES: AppEntry[] = [
   },
 ];
 
+// Header stays lean: only the four daily-use surfaces are pinned. Everything
+// else (智能体/技能/模型/记忆…) lives in the app grid. Existing users keep their
+// saved layout until they "恢复默认".
 export const DEFAULT_NAVIGATION_LAYOUT: NavigationLayout = {
-  pinned: ["chat", "work", "team", "agents", "skills"],
+  pinned: ["chat", "work", "team", "supervision"],
   launcher: [
+    "agents",
+    "skills",
     "models",
     "knowledge",
     "memories",
