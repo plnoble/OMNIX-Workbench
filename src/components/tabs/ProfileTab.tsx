@@ -173,7 +173,7 @@ export function ProfileTab() {
         <div className="rounded-lg border border-border glass-surface p-5">
           <div className="mb-3 flex items-center justify-between">
             <div className="text-sm font-medium">活动热力图 · 近 26 周</div>
-            <div className="flex items-center gap-1 text-xs text-muted-foreground">
+            <div className="flex items-center gap-1 text-xs text-muted-foreground" aria-hidden="true">
               少
               {LEVEL_CLASSES.map((c, i) => (
                 <span key={i} className={cn("h-2.5 w-2.5 rounded-[2px]", c)} />
@@ -181,27 +181,40 @@ export function ProfileTab() {
               多
             </div>
           </div>
-          <div className="flex gap-[3px] overflow-x-auto pb-1">
-            <div className="mr-1 flex flex-col gap-[3px] pt-[2px] text-[9px] text-muted-foreground">
-              {WEEKDAY_LABELS.map((d, i) => (
-                <span key={d} className="h-2.5 leading-[10px]">{i % 2 === 1 ? d : ""}</span>
-              ))}
-            </div>
-            {weeks.map((week, wi) => (
-              <div key={wi} className="flex flex-col gap-[3px]">
-                {week.map((cell, di) => (
-                  <div
-                    key={di}
-                    className={cn(
-                      "h-2.5 w-2.5 rounded-[2px]",
-                      cell.count < 0 ? "bg-transparent" : LEVEL_CLASSES[cell.level]
-                    )}
-                    title={cell.count >= 0 ? `${cell.day}: ${cell.count} 次提示` : ""}
-                  />
+          {stats.total_prompts === 0 ? (
+            <p className="py-6 text-center text-xs text-muted-foreground">
+              还没有编程活动——用 Agent 在工作区跑几次任务，这里会画出你近 26 周的活动热力图。
+            </p>
+          ) : (
+            // role=img + summary so screen readers get one description instead of
+            // ~182 individual cells; the grid itself is aria-hidden.
+            <div
+              role="img"
+              aria-label={`近 26 周活动热力图：共 ${stats.total_prompts} 次提示，${stats.active_days} 个活跃天，当前连续 ${stats.current_streak} 天`}
+            >
+              <div className="flex gap-[3px] overflow-x-auto pb-1" aria-hidden="true">
+                <div className="mr-1 flex flex-col gap-[3px] pt-[2px] text-[9px] text-muted-foreground">
+                  {WEEKDAY_LABELS.map((d, i) => (
+                    <span key={d} className="h-2.5 leading-[10px]">{i % 2 === 1 ? d : ""}</span>
+                  ))}
+                </div>
+                {weeks.map((week, wi) => (
+                  <div key={wi} className="flex flex-col gap-[3px]">
+                    {week.map((cell, di) => (
+                      <div
+                        key={di}
+                        className={cn(
+                          "h-2.5 w-2.5 rounded-[2px]",
+                          cell.count < 0 ? "bg-transparent" : LEVEL_CLASSES[cell.level]
+                        )}
+                        title={cell.count >= 0 ? `${cell.day}: ${cell.count} 次提示` : ""}
+                      />
+                    ))}
+                  </div>
                 ))}
               </div>
-            ))}
-          </div>
+            </div>
+          )}
         </div>
 
         {/* Per-agent breakdown */}
