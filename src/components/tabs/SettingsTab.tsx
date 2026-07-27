@@ -591,8 +591,41 @@ function SystemSubTab({
       .catch(e => console.error("[Settings] Failed to load available models:", e));
   }, []);
 
+  // ── Left-side group nav: one long mixed page → focused groups ──
+  type SystemGroup = "general" | "accounts" | "selection" | "translate" | "docs" | "search";
+  const [group, setGroup] = useState<SystemGroup>("general");
+  const GROUPS: { id: SystemGroup; label: string; icon: React.ReactNode }[] = [
+    { id: "general", label: "常规", icon: <Settings className="h-3.5 w-3.5" /> },
+    { id: "accounts", label: "云端账户", icon: <Key className="h-3.5 w-3.5" /> },
+    { id: "selection", label: "划词助手", icon: <MousePointerClick className="h-3.5 w-3.5" /> },
+    { id: "translate", label: "翻译", icon: <Languages className="h-3.5 w-3.5" /> },
+    { id: "docs", label: "文档处理", icon: <FileText className="h-3.5 w-3.5" /> },
+    { id: "search", label: "搜索服务", icon: <Search className="h-3.5 w-3.5" /> },
+  ];
+
   return (
-    <div className="flex flex-col gap-4 max-w-4xl mx-auto">
+    <div className="mx-auto flex w-full max-w-5xl gap-4">
+      <nav className="w-36 shrink-0">
+        <div className="sticky top-0 flex flex-col gap-1">
+          {GROUPS.map((g) => (
+            <button
+              key={g.id}
+              onClick={() => setGroup(g.id)}
+              className={cn(
+                "flex items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition",
+                group === g.id
+                  ? "bg-accent/10 text-accent border border-accent/30"
+                  : "text-muted-foreground hover:bg-muted/20 hover:text-foreground border border-transparent"
+              )}
+            >
+              {g.icon}
+              {g.label}
+            </button>
+          ))}
+        </div>
+      </nav>
+
+      <div className="flex min-w-0 flex-1 flex-col gap-4">
       {/* Theme selector lives in the title bar. */}
       {false && (
       <Card>
@@ -628,6 +661,7 @@ function SystemSubTab({
       )}
 
       {/* Account Management */}
+      {group === "accounts" && (
       <Card>
         <CardHeader className="flex-row justify-between items-center mb-4">
           <CardTitle className="text-sm">🔑 智能体云端账户授权管理器</CardTitle>
@@ -671,8 +705,10 @@ function SystemSubTab({
           )}
         </CardContent>
       </Card>
+      )}
 
       {/* System Configuration */}
+      {group === "general" && (
       <Card>
         <CardContent className="p-5 flex flex-col gap-3">
           <div className="space-y-3">
@@ -734,16 +770,18 @@ function SystemSubTab({
           </div>
 
           <Button className="w-full mt-4" onClick={onSaveSettings}>
-            <Save className="h-4 w-4" /> 💾 保存系统配置并重载网关
+            <Save className="h-4 w-4" /> 保存系统配置并重载网关
           </Button>
         </CardContent>
       </Card>
+      )}
 
       {/* ── Selection Assistant ─────────────────────── */}
+      {group === "selection" && (
       <Card>
         <CardHeader>
           <CardTitle className="text-sm flex items-center gap-2">
-            <MousePointerClick className="h-4 w-4" /> 🖱️ 划词助手
+            <MousePointerClick className="h-4 w-4" /> 划词助手
           </CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
@@ -808,12 +846,14 @@ function SystemSubTab({
           )}
         </CardContent>
       </Card>
+      )}
 
       {/* ── Translation Settings ────────────────────── */}
+      {group === "translate" && (
       <Card>
         <CardHeader>
           <CardTitle className="text-sm flex items-center gap-2">
-            <Languages className="h-4 w-4" /> 🌐 AI 翻译助手
+            <Languages className="h-4 w-4" /> AI 翻译助手
           </CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
@@ -900,12 +940,14 @@ function SystemSubTab({
           </Button>
         </CardContent>
       </Card>
+      )}
 
       {/* ── Document Processing ────────────────────── */}
+      {group === "docs" && (
       <Card>
         <CardHeader>
           <CardTitle className="text-sm flex items-center gap-2">
-            <FileText className="h-4 w-4" /> 📄 文档处理
+            <FileText className="h-4 w-4" /> 文档处理
           </CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
@@ -950,12 +992,14 @@ function SystemSubTab({
           </div>
         </CardContent>
       </Card>
+      )}
 
       {/* ── Search Providers ─────────────────────── */}
+      {group === "search" && (
       <Card>
         <CardHeader className="flex-row justify-between items-center">
           <CardTitle className="text-sm flex items-center gap-2">
-            <Search className="h-4 w-4" /> 🔍 网络搜索配置
+            <Search className="h-4 w-4" /> 网络搜索配置
           </CardTitle>
           <Button size="sm" variant="outline" onClick={onAddSearchProvider}>
             <Plus className="h-3 w-3" /> 新增
@@ -1053,6 +1097,7 @@ function SystemSubTab({
           )}
         </CardContent>
       </Card>
+      )}
       {/* Search Provider Modal */}
       {showSearchProviderModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
@@ -1139,6 +1184,7 @@ function SystemSubTab({
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }

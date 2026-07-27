@@ -22,6 +22,7 @@ import {
   Play,
   Send,
   Shield,
+  SlidersHorizontal,
   Sparkles,
   Square,
   Target,
@@ -279,6 +280,9 @@ export function ChatTab({
   const [handoffOn, setHandoffOn] = useState(
     () => (localStorage.getItem("omnix_agent_handoff") ?? "true") !== "false"
   );
+  // "高级" popover: work mode / handoff / knowledge / web search / references
+  // live here so the main composer row stays lean.
+  const [advOpen, setAdvOpen] = useState(false);
   // Image attachments for the next message (vision input).
   const [attachments, setAttachments] = useState<ChatImageAttachment[]>([]);
   const [runtimeModels, setRuntimeModels] = useState<RuntimeModelOption[]>([]);
@@ -1041,34 +1045,6 @@ export function ChatTab({
                 {PERMISSION_OPTIONS.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
               </select>
 
-              <select
-                value={workMode}
-                onChange={(event) => setWorkMode(event.target.value as WorkMode)}
-                className="h-8 rounded-md border border-border bg-background px-2 text-sm"
-                title={selectedWorkMode.desc}
-              >
-                {WORK_MODE_OPTIONS.map((option) => (
-                  <option key={option.id} value={option.id}>{option.label}</option>
-                ))}
-              </select>
-
-              <button
-                type="button"
-                className={cn(
-                  "flex h-8 items-center gap-1.5 rounded-md border px-2 text-sm",
-                  handoffOn ? "border-primary/40 bg-primary/10 text-primary" : "border-border text-muted-foreground hover:text-foreground"
-                )}
-                title="切换 Agent 时，把此前对话的上下文一并交接给新 Agent"
-                onClick={() => {
-                  const next = !handoffOn;
-                  setHandoffOn(next);
-                  localStorage.setItem("omnix_agent_handoff", String(next));
-                }}
-              >
-                <GitBranch className="h-3.5 w-3.5" />
-                交接{handoffOn ? "开" : "关"}
-              </button>
-
               <label
                 className={cn(
                   "flex h-8 cursor-pointer items-center gap-1.5 rounded-md border px-2 text-sm",
@@ -1090,58 +1066,130 @@ export function ChatTab({
                 />
               </label>
 
-              {!isWorkspaceMode && (
-                <KnowledgePicker
-                  knowledgeBases={knowledgeBases}
-                  selectedIds={selectedKnowledgeIds}
-                  disabled={!selectedEmbeddingModel}
-                  onToggle={handleKnowledgeToggle}
-                />
-              )}
-
-              <button
-                type="button"
-                className={cn(
-                  "flex h-8 items-center gap-1.5 rounded-md border px-2 text-sm",
-                  webSearchEnabled ? "border-success/40 bg-success/10 text-success" : "border-border text-muted-foreground hover:text-foreground"
-                )}
-                onClick={() => setWebSearchEnabled((enabled) => !enabled)}
-              >
-                <Globe className="h-3.5 w-3.5" />
-                搜索
-              </button>
-
-              {/* F-A: @ reference another conversation (any agent) → inject its
-                  transcript so this agent continues that agent's work. */}
+              {/* 高级：执行模式/交接/知识库/联网搜索/引用收进弹层，主行保持
+                  Agent·账号·权限·图片·发送。激活项数显示在按钮上。 */}
               <div className="relative">
-                <button
-                  type="button"
-                  className={cn(
-                    "flex h-8 items-center gap-1.5 rounded-md border px-2 text-sm",
-                    references.length > 0 ? "border-primary/40 bg-primary/10 text-primary" : "border-border text-muted-foreground hover:text-foreground"
-                  )}
-                  onClick={openRefPicker}
-                  title="引用另一个对话（跨 Agent），接着它的产出继续"
-                >
-                  <AtSign className="h-3.5 w-3.5" />
-                  {references.length > 0 ? `引用×${references.length}` : "引用"}
-                </button>
-                {refPickerOpen && (
-                  <div className="absolute bottom-full left-0 z-50 mb-1 max-h-64 w-72 overflow-y-auto rounded-md border border-border bg-popover shadow-lg">
-                    <div className="border-b border-border px-3 py-2 text-xs text-muted-foreground">选一个对话引用（任意 Agent）</div>
-                    {refConversations.filter((c) => c.id !== currentConvId).length === 0 ? (
-                      <div className="px-3 py-4 text-center text-xs text-muted-foreground">没有其他对话</div>
-                    ) : refConversations.filter((c) => c.id !== currentConvId).map((conv) => (
-                      <button
-                        key={conv.id}
-                        type="button"
-                        onClick={() => addReference(conv)}
-                        className="block w-full truncate px-3 py-2 text-left text-sm hover:bg-muted/30"
+                {(() => {
+                  const advActive =
+                    (workMode !== "direct" ? 1 : 0) +
+                    (webSearchEnabled ? 1 : 0) +
+                    (references.length > 0 ? 1 : 0) +
+                    (selectedKnowledgeIds.length > 0 ? 1 : 0);
+                  return (
+                    <button
+                      type="button"
+                      className={cn(
+                        "flex h-8 items-center gap-1.5 rounded-md border px-2 text-sm",
+                        advOpen || advActive > 0
+                          ? "border-primary/40 bg-primary/10 text-primary"
+                          : "border-border text-muted-foreground hover:text-foreground"
+                      )}
+                      onClick={() => setAdvOpen((open) => !open)}
+                      title="执行模式、上下文交接、知识库、联网搜索、引用对话"
+                    >
+                      <SlidersHorizontal className="h-3.5 w-3.5" />
+                      高级{advActive > 0 ? `×${advActive}` : ""}
+                    </button>
+                  );
+                })()}
+                {advOpen && (
+                  <div className="absolute bottom-full left-0 z-50 mb-1 flex w-80 flex-col gap-3 rounded-md border border-border bg-popover p-3 shadow-lg">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs text-muted-foreground" title={selectedWorkMode.desc}>执行模式</span>
+                      <select
+                        value={workMode}
+                        onChange={(event) => setWorkMode(event.target.value as WorkMode)}
+                        className="h-8 rounded-md border border-border bg-background px-2 text-sm"
+                        title={selectedWorkMode.desc}
                       >
-                        <span className="mr-1.5 text-xs text-muted-foreground">{conv.active_agent}</span>
-                        {conv.title}
+                        {WORK_MODE_OPTIONS.map((option) => (
+                          <option key={option.id} value={option.id}>{option.label}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs text-muted-foreground">切换 Agent 时交接上下文</span>
+                      <button
+                        type="button"
+                        className={cn(
+                          "flex h-8 items-center gap-1.5 rounded-md border px-2 text-sm",
+                          handoffOn ? "border-primary/40 bg-primary/10 text-primary" : "border-border text-muted-foreground hover:text-foreground"
+                        )}
+                        title="切换 Agent 时，把此前对话的上下文一并交接给新 Agent"
+                        onClick={() => {
+                          const next = !handoffOn;
+                          setHandoffOn(next);
+                          localStorage.setItem("omnix_agent_handoff", String(next));
+                        }}
+                      >
+                        <GitBranch className="h-3.5 w-3.5" />
+                        交接{handoffOn ? "开" : "关"}
                       </button>
-                    ))}
+                    </div>
+
+                    {!isWorkspaceMode && (
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs text-muted-foreground">知识库</span>
+                        <KnowledgePicker
+                          knowledgeBases={knowledgeBases}
+                          selectedIds={selectedKnowledgeIds}
+                          disabled={!selectedEmbeddingModel}
+                          onToggle={handleKnowledgeToggle}
+                        />
+                      </div>
+                    )}
+
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs text-muted-foreground">联网搜索</span>
+                      <button
+                        type="button"
+                        className={cn(
+                          "flex h-8 items-center gap-1.5 rounded-md border px-2 text-sm",
+                          webSearchEnabled ? "border-success/40 bg-success/10 text-success" : "border-border text-muted-foreground hover:text-foreground"
+                        )}
+                        onClick={() => setWebSearchEnabled((enabled) => !enabled)}
+                      >
+                        <Globe className="h-3.5 w-3.5" />
+                        {webSearchEnabled ? "已开启" : "已关闭"}
+                      </button>
+                    </div>
+
+                    {/* F-A: @ reference another conversation (any agent) → inject its
+                        transcript so this agent continues that agent's work. */}
+                    <div className="relative flex items-center justify-between gap-2">
+                      <span className="text-xs text-muted-foreground">引用对话</span>
+                      <button
+                        type="button"
+                        className={cn(
+                          "flex h-8 items-center gap-1.5 rounded-md border px-2 text-sm",
+                          references.length > 0 ? "border-primary/40 bg-primary/10 text-primary" : "border-border text-muted-foreground hover:text-foreground"
+                        )}
+                        onClick={openRefPicker}
+                        title="引用另一个对话（跨 Agent），接着它的产出继续"
+                      >
+                        <AtSign className="h-3.5 w-3.5" />
+                        {references.length > 0 ? `引用×${references.length}` : "选择"}
+                      </button>
+                      {refPickerOpen && (
+                        <div className="absolute bottom-full right-0 z-50 mb-1 max-h-64 w-72 overflow-y-auto rounded-md border border-border bg-popover shadow-lg">
+                          <div className="border-b border-border px-3 py-2 text-xs text-muted-foreground">选一个对话引用（任意 Agent）</div>
+                          {refConversations.filter((c) => c.id !== currentConvId).length === 0 ? (
+                            <div className="px-3 py-4 text-center text-xs text-muted-foreground">没有其他对话</div>
+                          ) : refConversations.filter((c) => c.id !== currentConvId).map((conv) => (
+                            <button
+                              key={conv.id}
+                              type="button"
+                              onClick={() => addReference(conv)}
+                              className="block w-full truncate px-3 py-2 text-left text-sm hover:bg-muted/30"
+                            >
+                              <span className="mr-1.5 text-xs text-muted-foreground">{conv.active_agent}</span>
+                              {conv.title}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
@@ -1338,27 +1386,77 @@ function AgentStrip({
   detectedAgents: DetectedAgent[];
   onSelectAgent: (name: string) => void;
 }) {
-  return (
-    <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto">
-      {AGENT_NAMES.map((name) => {
-        const agent = detectedAgents.find((item) => item.name === name);
-        const installed = agent?.status === "installed";
-        const active = activeAgent === name;
+  // 8 个横向药丸挤爆一行 → 只露 3 个（活跃优先、已安装其次），其余进「更多」。
+  const [moreOpen, setMoreOpen] = useState(false);
+  const isInstalled = (name: string) =>
+    detectedAgents.find((item) => item.name === name)?.status === "installed";
+  const rank = (name: string) => (name === activeAgent ? 0 : isInstalled(name) ? 1 : 2);
+  const ordered = [...AGENT_NAMES].sort((a, b) => rank(a) - rank(b));
+  const visible = ordered.slice(0, 3);
+  const rest = ordered.slice(3);
 
-        return (
+  const pill = (name: string) => {
+    const installed = isInstalled(name);
+    const active = activeAgent === name;
+    return (
+      <button
+        key={name}
+        onClick={() => onSelectAgent(name)}
+        className={cn(
+          "flex h-9 shrink-0 items-center gap-2 rounded-full border px-3 text-sm",
+          active ? "border-primary/40 bg-primary/12 text-primary" : "border-border glass-surface text-muted-foreground hover:text-foreground"
+        )}
+        title={installed ? `${name} · 已就绪` : `${name} · 未安装`}
+      >
+        <span aria-hidden="true" className={cn("h-2 w-2 rounded-full", installed ? "bg-success" : "bg-muted-foreground")} />
+        {name}
+      </button>
+    );
+  };
+
+  return (
+    <div className="flex min-w-0 flex-1 items-center gap-2">
+      {visible.map(pill)}
+      {rest.length > 0 && (
+        <div className="relative">
           <button
-            key={name}
-            onClick={() => onSelectAgent(name)}
+            type="button"
+            onClick={() => setMoreOpen((open) => !open)}
             className={cn(
-              "flex h-9 shrink-0 items-center gap-2 rounded-full border px-3 text-sm",
-              active ? "border-primary/40 bg-primary/12 text-primary" : "border-border glass-surface text-muted-foreground hover:text-foreground"
+              "flex h-9 shrink-0 items-center gap-1 rounded-full border px-3 text-sm",
+              moreOpen ? "border-primary/40 bg-primary/12 text-primary" : "border-border glass-surface text-muted-foreground hover:text-foreground"
             )}
+            aria-expanded={moreOpen}
           >
-            <span className={cn("h-2 w-2 rounded-full", installed ? "bg-success" : "bg-muted-foreground")} />
-            {name}
+            更多
+            <ChevronDown className="h-3.5 w-3.5" />
           </button>
-        );
-      })}
+          {moreOpen && (
+            <div className="absolute left-0 top-full z-50 mt-1 w-56 rounded-md border border-border bg-popover py-1 shadow-lg">
+              {rest.map((name) => {
+                const installed = isInstalled(name);
+                return (
+                  <button
+                    key={name}
+                    type="button"
+                    onClick={() => {
+                      onSelectAgent(name);
+                      setMoreOpen(false);
+                    }}
+                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-muted/30"
+                  >
+                    <span aria-hidden="true" className={cn("h-2 w-2 rounded-full", installed ? "bg-success" : "bg-muted-foreground")} />
+                    <span className="min-w-0 flex-1 truncate">{name}</span>
+                    <span className={cn("shrink-0 text-xs", installed ? "text-success" : "text-muted-foreground")}>
+                      {installed ? "已就绪" : "未安装"}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
