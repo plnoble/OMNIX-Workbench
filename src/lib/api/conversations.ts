@@ -1,0 +1,286 @@
+/** Auto-split from tauri-api.ts — domain: conversations. Import via "@/lib/tauri-api". */
+import { invoke } from "@tauri-apps/api/core";
+import type {
+  AgentUpdateInfo,
+  DetectedAgent,
+  MediaModelSuggestions,
+  MediaTask,
+  ProfileStats,
+  ConversationInfo,
+  ConversationMessage,
+  CronTask,
+  CronRun,
+  WorkspaceRun,
+  AgentRun,
+  TeamAssignmentInput,
+  TeamPlan,
+  TeamRunDetail,
+  LabFeature,
+  AgentSessionRecord,
+  RuntimeAgentCatalogEntry,
+  RuntimeAgentId,
+  RuntimeEvent,
+  RuntimeModelOption,
+  RuntimeModelSelection,
+  RuntimePermissionPolicy,
+  WorkMode,
+  WorkspaceSnapshot,
+} from "@/types";
+
+// ── Conversations ─────────────────────────────────────
+
+export type ConversationGoalStatus = "active" | "paused" | "complete";
+export interface ConversationGoal {
+  conversation_id: string;
+  objective: string;
+  status: ConversationGoalStatus;
+  created_at: string;
+  updated_at: string;
+}
+
+export const conversationApi = {
+  list: () => invoke<ConversationInfo[]>("get_all_conversations"),
+  create: (params: { id: string; title: string; workspacePath: string; activeAgent: string; parentConversationId?: string }) =>
+    invoke("create_conversation", params),
+  delete: (id: string) => invoke("delete_conversation", { conversationId: id }),
+  archive: (id: string) => invoke("archive_conversation", { conversationId: id }),
+  // Long-term goal (/goal)
+  getGoal: (conversationId: string) =>
+    invoke<ConversationGoal | null>("get_conversation_goal", { conversationId }),
+  setGoal: (conversationId: string, objective: string) =>
+    invoke<ConversationGoal>("set_conversation_goal", { conversationId, objective }),
+  setGoalStatus: (conversationId: string, status: ConversationGoalStatus) =>
+    invoke<ConversationGoal>("set_conversation_goal_status", { conversationId, status }),
+  clearGoal: (conversationId: string) =>
+    invoke("clear_conversation_goal", { conversationId }),
+  unarchive: (id: string) => invoke("unarchive_conversation", { conversationId: id }),
+  listArchived: () => invoke<ConversationInfo[]>("get_archived_conversations"),
+  getMessages: (conversationId: string) =>
+    invoke<ConversationMessage[]>("get_conversation_messages", { conversationId }),
+  addMessage: (params: { id: string; conversationId: string; role: string; content: string }) =>
+    invoke("add_conversation_message", params),
+};
+
+// ── PTY Sessions ──────────────────────────────────────
+
+export const ptyApi = {
+  start: (params: { sessionId: string; agentName: string; exePath: string; args: string[]; workspaceDir: string }) =>
+    invoke("start_agent_session", params),
+  sendStdin: (params: { sessionId: string; input: string }) =>
+    invoke("send_agent_stdin", params),
+  stop: (sessionId: string) => invoke("stop_agent_session", { sessionId }),
+};
+
+export const runtimeApi = {
+  getAgentCatalog: () => invoke<RuntimeAgentCatalogEntry[]>("runtime_get_agent_catalog"),
+  getModelOptions: (agent: RuntimeAgentId) =>
+    invoke<RuntimeModelOption[]>("runtime_get_model_options", { agent }),
+  getAgentModelPreference: (agent: RuntimeAgentId) =>
+    invoke<string>("runtime_get_agent_model_preference", { agent }),
+  setAgentModelPreference: (agent: RuntimeAgentId, model: string) =>
+    invoke<void>("runtime_set_agent_model_preference", { agent, model }),
+  startSession: (request: {
+    conversation_id: string;
+    agent: RuntimeAgentId;
+    workspace_path: string;
+    model: RuntimeModelSelection;
+    permission: RuntimePermissionPolicy;
+    work_mode: WorkMode;
+  }) => invoke<AgentSessionRecord>("runtime_start_session", { request }),
+  sendMessage: (
+    sessionId: string,
+    prompt: string,
+    displayText?: string,
+    handoff?: boolean,
+    images?: Array<{ mime: string; data: string }>,
+  ) => invoke("runtime_send_message", { sessionId, prompt, displayText, handoff, images }),
+  respondApproval: (params: {
+    sessionId: string;
+    requestId: string;
+    approved: boolean;
+    forSession: boolean;
+    approvalMethod: string;
+    requestedPermissions?: unknown;
+  }) => invoke("runtime_respond_approval", params),
+  setSessionModel: (sessionId: string, model: string) =>
+    invoke<string>("runtime_set_session_model", { sessionId, model }),
+  stopSession: (sessionId: string) => invoke("runtime_stop_session", { sessionId }),
+  resumeSession: (sessionId: string) =>
+    invoke<AgentSessionRecord>("runtime_resume_session", { sessionId }),
+  getSession: (sessionId: string) =>
+    invoke<AgentSessionRecord>("runtime_get_session", { sessionId }),
+  getEvents: (sessionId: string) =>
+    invoke<RuntimeEvent[]>("runtime_get_events", { sessionId }),
+  listConversationSessions: (conversationId: string) =>
+    invoke<AgentSessionRecord[]>("runtime_list_conversation_sessions", { conversationId }),
+};
+
+// ── Agent Detection ───────────────────────────────────
+
+export const agentApi = {
+  detectInstalled: () => invoke<DetectedAgent[]>("detect_installed_agents"),
+  install: (agentName: string) => invoke("install_agent_cli", { agentName }),
+  update: (agentName: string) => invoke("repair_installed_agent", { agentName }),
+  checkUpdates: () => invoke<AgentUpdateInfo[]>("check_agent_updates"),
+};
+
+export const profileApi = {
+  getStats: () => invoke<ProfileStats>("get_profile_stats"),
+};
+
+export const mediaApi = {
+  generateImage: (platformId: string, model: string, prompt: string, size: string) =>
+    invoke<MediaTask>("media_generate_image", { platformId, model, prompt, size }),
+  createVideoTask: (
+    platformId: string,
+    model: string,
+    prompt: string,
+    width: number,
+    height: number,
+    numFrames: number,
+    frameRate: number,
+    imageTaskId: string | null,
+  ) =>
+    invoke<MediaTask>("media_create_video_task", {
+      platformId, model, prompt, width, height, numFrames, frameRate, imageTaskId,
+    }),
+  listTasks: () => invoke<MediaTask[]>("media_list_tasks"),
+  deleteTask: (taskId: string) => invoke("media_delete_task", { taskId }),
+  readFile: (taskId: string) => invoke<string>("media_read_file", { taskId }),
+  readAttachment: (path: string) => invoke<string>("media_read_attachment", { path }),
+  modelSuggestions: () => invoke<MediaModelSuggestions>("media_model_suggestions"),
+};
+
+// Team and workspace runs
+
+export const teamRunApi = {
+  createRun: (title: string, workspacePath: string, managerAgent: string) =>
+    invoke<WorkspaceRun>("create_workspace_run", { title, workspacePath, managerAgent }),
+  listRuns: (includeArchived?: boolean) =>
+    invoke<WorkspaceRun[]>("list_workspace_runs", { includeArchived }),
+  getRun: (runId: string) =>
+    invoke<WorkspaceRun>("get_workspace_run", { runId }),
+  proposePlan: (runId: string, goal: string, assignments: TeamAssignmentInput[]) =>
+    invoke<TeamPlan>("propose_team_plan", { runId, goal, assignments }),
+  getPlan: (runId: string) =>
+    invoke<TeamPlan>("get_team_plan", { runId }),
+  approvePlan: (runId: string) =>
+    invoke<TeamPlan>("approve_team_plan", { runId }),
+  startAgentRun: (runId: string, agentName: string, taskTitle: string, status?: string) =>
+    invoke<AgentRun>("start_agent_run", { runId, agentName, taskTitle, status }),
+  listAgentRuns: (runId: string) =>
+    invoke<AgentRun[]>("list_agent_runs", { runId }),
+  generatePlan: (goal: string, workspacePath: string, managerAgent: string) =>
+    invoke<TeamRunDetail>("team_generate_plan", { goal, workspacePath, managerAgent }),
+  // 编排预设（借鉴 paseo）：不经 AI 队长，直接构造 handoff / advisor 计划，仍进批准
+  buildPreset: (preset: "handoff" | "advisor", task: string, workspacePath: string, plannerAgent: string, workerAgent: string) =>
+    invoke<TeamRunDetail>("team_build_preset", { preset, task, workspacePath, plannerAgent, workerAgent }),
+  getDetail: (runId: string) =>
+    invoke<TeamRunDetail>("team_get_run_detail", { runId }),
+  startApproved: (runId: string, concurrency = 2) =>
+    invoke<TeamRunDetail>("team_start_approved_run", { runId, concurrency }),
+  stop: (runId: string) =>
+    invoke<TeamRunDetail>("team_stop_run", { runId }),
+  retryWorker: (workerId: string) =>
+    invoke<TeamRunDetail>("team_retry_worker", { workerId }),
+  respondWorkerApproval: (workerId: string, requestId: string, approved: boolean, requestedPermissions?: unknown) =>
+    invoke<TeamRunDetail>("team_respond_worker_approval", { workerId, requestId, approved, requestedPermissions }),
+};
+
+export const labsApi = {
+  listFeatures: () => invoke<LabFeature[]>("list_lab_features"),
+};
+
+// ── Cron Tasks ────────────────────────────────────────
+
+export const cronApi = {
+  listTasks: () => invoke<CronTask[]>("get_cron_tasks"),
+  saveTask: (task: CronTask) => invoke("save_cron_task", { task }),
+  deleteTask: (id: string) => invoke("delete_cron_task", { id }),
+  toggleActive: (params: { id: string; isActive: boolean }) =>
+    invoke("toggle_cron_task_active", params),
+  trigger: (id: string) => invoke("trigger_cron_task", { id }),
+  listRuns: () => invoke<CronRun[]>("get_cron_runs"),
+  clearRuns: () => invoke("clear_cron_runs"),
+};
+
+// ── File Preview ──────────────────────────────────────
+
+export const previewApi = {
+  listFiles: (workspacePath: string) =>
+    invoke<string[]>("get_previewable_files", { workspacePath }),
+  readFileAsBase64: (params: { workspacePath: string; fileName: string }) =>
+    invoke<string>("read_file_as_base64", params),
+  readFileContent: (params: { workspacePath: string; fileName: string }) =>
+    invoke<string>("read_file_content_utf8", params),
+  getGitDiff: (workspacePath: string) =>
+    invoke<string>("get_workspace_git_diff", { workspacePath }),
+};
+
+export interface FilePreview {
+  path: string;
+  kind: "text" | "markdown" | "image" | "pdf" | "binary";
+  language: string;
+  content: string;
+  size: number;
+  truncated: boolean;
+}
+export const workspaceApi = {
+  snapshot: (workspacePath: string) =>
+    invoke<WorkspaceSnapshot>("get_workspace_snapshot", { workspacePath }),
+  readFile: (workspacePath: string, relativePath: string) =>
+    invoke<FilePreview>("read_workspace_file", { workspacePath, relativePath }),
+};
+
+// ── Environment Diagnostics ───────────────────────────
+
+export const diagnosticsApi = {
+  run: () => invoke<Record<string, string>>("run_env_diagnostics"),
+  repair: (toolName: string) => invoke("repair_env_tool", { toolName }),
+};
+
+
+export interface MailMessage {
+  id: string; from_agent: string; to_agent: string;
+  subject: string; body: string; read: boolean; created_at: string;
+}
+export const mailboxApi = {
+  send: (fromAgent: string, toAgent: string, subject: string, body: string) =>
+    invoke<string>("send_mail", { fromAgent, toAgent, subject, body }),
+  get: (agentName: string, includeRead?: boolean) =>
+    invoke<MailMessage[]>("get_mail", { agentName, includeRead }),
+  markRead: (messageIds: string[]) =>
+    invoke("mark_mail_read", { messageIds }),
+};
+
+// Enhanced Task Dependencies
+export const taskDependencyApi = {
+  setBlocks: (taskId: string, blocksIds: string[]) =>
+    invoke("set_task_blocks", { taskId, blocksIds }),
+  autoUnblock: (completedTaskId: string) =>
+    invoke<string[]>("auto_unblock_tasks", { completedTaskId }),
+};
+
+// YOLO Full-Auto Mode
+
+export const conversationSkillsApi = {
+  get: (conversationId: string) =>
+    invoke<Array<{ name: string; description: string; category: string | null; usage_count: number; priority_score: number }>>("get_conversation_skills", { conversationId }),
+};
+
+// Tool Call Confirmation Queue
+export interface ToolCallConfirmation {
+  id: string; session_id: string; tool_name: string;
+  tool_input: string; status: string; created_at: string;
+}
+export const toolConfirmationApi = {
+  queue: (sessionId: string, toolName: string, toolInput: string) =>
+    invoke<string>("queue_tool_confirmation", { sessionId, toolName, toolInput }),
+  resolve: (confirmationId: string, approved: boolean) =>
+    invoke("resolve_tool_confirmation", { confirmationId, approved }),
+  getPending: (sessionId: string) =>
+    invoke<ToolCallConfirmation[]>("get_pending_confirmations", { sessionId }),
+  getPendingCount: (sessionId: string) =>
+    invoke<number>("get_pending_confirmation_count", { sessionId }),
+};
+
