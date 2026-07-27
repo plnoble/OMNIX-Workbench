@@ -77,6 +77,9 @@ export function AppHeader({
   onTogglePreview,
 }: AppHeaderProps) {
   const [launcherOpen, setLauncherOpen] = useState(false);
+  // 宫格两态：默认「使用」只有搜索+分类点开；「自定义」才显示固定/收纳/排序按钮。
+  const [launcherEditMode, setLauncherEditMode] = useState(false);
+  const [launcherQuery, setLauncherQuery] = useState("");
   const launcherToggleRef = useRef<HTMLButtonElement>(null);
   const launcherPanelRef = useRef<HTMLDivElement>(null);
   const activeEntry = [...pinnedEntries, ...launcherEntries, ...hiddenEntries].find((entry) => entry.id === activeTab);
@@ -112,6 +115,15 @@ export function AppHeader({
       return acc;
     }, {});
   }, [launcherEntries]);
+
+  // Search across every entry (pinned + grid) by label/title/description.
+  const launcherMatches = useMemo(() => {
+    const q = launcherQuery.trim().toLowerCase();
+    if (!q) return null;
+    return [...pinnedEntries, ...launcherEntries].filter((entry) =>
+      [entry.label, entry.title, entry.description].some((text) => text.toLowerCase().includes(q))
+    );
+  }, [launcherQuery, pinnedEntries, launcherEntries]);
 
   const statusClass = {
     idle: "bg-success",
@@ -214,68 +226,113 @@ export function AppHeader({
           ref={launcherPanelRef}
           className="absolute left-3 right-3 top-16 z-50 max-h-[calc(100vh-5rem)] overflow-y-auto rounded-md border border-border bg-popover p-4 shadow-2xl"
         >
-          <div className="mb-4 flex items-center justify-between gap-3">
+          <div className="mb-3 flex items-center justify-between gap-3">
             <div>
               <div className="text-sm font-semibold">应用宫格</div>
               <div className="text-xs text-muted-foreground">
-                固定显示在标题栏；收纳留在这个应用宫格。
+                {launcherEditMode ? "调整固定、收纳与排序；完成后回到使用模式。" : "点击打开应用；「自定义」可调整导航。"}
               </div>
             </div>
-            <Button size="sm" variant="outline" onClick={onResetNavigation}>
-              <RotateCcw className="h-3.5 w-3.5" />
-              恢复默认
-            </Button>
+            <div className="flex items-center gap-2">
+              {launcherEditMode && (
+                <Button size="sm" variant="outline" onClick={onResetNavigation}>
+                  <RotateCcw className="h-3.5 w-3.5" />
+                  恢复默认
+                </Button>
+              )}
+              <Button size="sm" variant={launcherEditMode ? "default" : "outline"} onClick={() => setLauncherEditMode((v) => !v)}>
+                {launcherEditMode ? "完成" : "自定义"}
+              </Button>
+            </div>
           </div>
 
-          <section className="mb-5">
-            <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-muted-foreground">
-              <Pin className="h-3.5 w-3.5" />
-              已固定到标题栏
-            </div>
-            <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-4">
-              {pinnedEntries.map((entry, index) => (
-                <LauncherItem
-                  key={entry.id}
-                  entry={entry}
-                  active={activeTab === entry.id}
-                  onOpen={() => {
-                    onNavigate(entry.id);
-                    setLauncherOpen(false);
-                  }}
-                  onMove={onMoveEntry}
-                  onReorder={onReorderEntry}
-                  canMoveLeft={index > 0}
-                  canMoveRight={index < pinnedEntries.length - 1}
-                  actions={entry.id === "work" ? [] : ["launcher"]}
-                  launcherLabel="收纳到宫格"
-                />
-              ))}
-            </div>
-          </section>
+          {!launcherEditMode && (
+            <input
+              value={launcherQuery}
+              onChange={(event) => setLauncherQuery(event.target.value)}
+              placeholder="搜索应用…"
+              className="mb-4 h-9 w-full rounded-md border border-border bg-background px-3 text-sm outline-none placeholder:text-muted-foreground/60 focus:border-primary/50"
+              aria-label="搜索应用"
+            />
+          )}
 
-          {Object.entries(launcherGroups).map(([group, entries]) => (
-            <section key={group} className="mb-5">
-              <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-muted-foreground">
-                <ChevronDown className="h-3.5 w-3.5" />
-                {group}
-              </div>
-              <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-4">
-                {entries.map((entry) => (
+          {/* Search results replace the sections while a query is active. */}
+          {!launcherEditMode && launcherMatches ? (
+            <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-4">
+              {launcherMatches.length === 0 ? (
+                <div className="col-span-full py-6 text-center text-xs text-muted-foreground">没有匹配「{launcherQuery}」的应用</div>
+              ) : (
+                launcherMatches.map((entry) => (
                   <LauncherItem
                     key={entry.id}
                     entry={entry}
                     active={activeTab === entry.id}
+                    editable={false}
                     onOpen={() => {
                       onNavigate(entry.id);
                       setLauncherOpen(false);
                     }}
                     onMove={onMoveEntry}
-                    actions={["pinned"]}
+                    actions={[]}
                   />
-                ))}
-              </div>
-            </section>
-          ))}
+                ))
+              )}
+            </div>
+          ) : (
+            <>
+              <section className="mb-5">
+                <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-muted-foreground">
+                  <Pin className="h-3.5 w-3.5" />
+                  已固定到标题栏
+                </div>
+                <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-4">
+                  {pinnedEntries.map((entry, index) => (
+                    <LauncherItem
+                      key={entry.id}
+                      entry={entry}
+                      active={activeTab === entry.id}
+                      editable={launcherEditMode}
+                      onOpen={() => {
+                        onNavigate(entry.id);
+                        setLauncherOpen(false);
+                      }}
+                      onMove={onMoveEntry}
+                      onReorder={onReorderEntry}
+                      canMoveLeft={index > 0}
+                      canMoveRight={index < pinnedEntries.length - 1}
+                      actions={entry.id === "work" ? [] : ["launcher"]}
+                      launcherLabel="收纳到宫格"
+                    />
+                  ))}
+                </div>
+              </section>
+
+              {Object.entries(launcherGroups).map(([group, entries]) => (
+                <section key={group} className="mb-5">
+                  <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-muted-foreground">
+                    <ChevronDown className="h-3.5 w-3.5" />
+                    {group}
+                  </div>
+                  <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-4">
+                    {entries.map((entry) => (
+                      <LauncherItem
+                        key={entry.id}
+                        entry={entry}
+                        active={activeTab === entry.id}
+                        editable={launcherEditMode}
+                        onOpen={() => {
+                          onNavigate(entry.id);
+                          setLauncherOpen(false);
+                        }}
+                        onMove={onMoveEntry}
+                        actions={["pinned"]}
+                      />
+                    ))}
+                  </div>
+                </section>
+              ))}
+            </>
+          )}
 
         </div>
       )}
@@ -293,6 +350,7 @@ function LauncherItem({
   launcherLabel = "收纳",
   canMoveLeft = false,
   canMoveRight = false,
+  editable = true,
 }: {
   entry: AppEntry;
   active: boolean;
@@ -303,6 +361,8 @@ function LauncherItem({
   launcherLabel?: string;
   canMoveLeft?: boolean;
   canMoveRight?: boolean;
+  /** 使用模式下隐藏移动/固定/收纳按钮，卡片只负责打开。 */
+  editable?: boolean;
 }) {
   return (
     <div className={cn("rounded-md border p-3", active ? "border-primary/40 bg-primary/10" : "border-border glass-surface")}>
@@ -326,6 +386,7 @@ function LauncherItem({
         </div>
       </button>
 
+      {editable && (
       <div className="mt-3 flex flex-wrap gap-1.5">
         {onReorder && (
           <>
@@ -366,6 +427,7 @@ function LauncherItem({
           </Button>
         )}
       </div>
+      )}
     </div>
   );
 }

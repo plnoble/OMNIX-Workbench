@@ -83,6 +83,14 @@ export function TokenActivityPanel() {
         </div>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
+        {/* Zero-data: skip the full metric grid + empty chart, offer the next step. */}
+        {!loading && (stats?.total_requests ?? 0) === 0 ? (
+          <p className="py-4 text-center text-xs leading-5 text-muted-foreground">
+            还没有网关请求记录。<br />
+            在「对话」或「工作」里跑一次任务后，这里会出现 token、费用与每日活动图。
+          </p>
+        ) : (
+        <>
         {/* Metric cards */}
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <Metric2 icon={<Hash className="h-3.5 w-3.5" />} label="今日 tokens" value={fmtTokens(stats?.tokens_today ?? 0)} sub={`累计 ${fmtTokens(stats?.total_tokens ?? 0)}`} />
@@ -147,6 +155,8 @@ export function TokenActivityPanel() {
         <p className="text-[10px] text-muted-foreground">
           费用为估算值（按模型定价表，未知模型用默认费率），仅供参考。统计来自 OMNIX 网关经手的请求；直接走 CLI 的 Agent 会话由其自身计费。
         </p>
+        </>
+        )}
       </CardContent>
     </Card>
   );
