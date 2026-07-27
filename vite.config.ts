@@ -1,14 +1,53 @@
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
+import fs from "fs";
+
+/**
+ * Bundle budget gate: fail the production build when any single JS chunk
+ * exceeds its byte budget, so size regressions surface in CI instead of
+ * accumulating silently. Budgets sit ~10% above current sizes — raise them
+ * deliberately (with a reason) when a feature legitimately needs the space.
+ */
+function bundleBudget(budgets: { pattern: RegExp; maxBytes: number; label: string }[]): Plugin {
+  return {
+    name: "omnix-bundle-budget",
+    apply: "build",
+    closeBundle() {
+      const dir = path.resolve(__dirname, "dist/assets");
+      if (!fs.existsSync(dir)) return;
+      const failures: string[] = [];
+      for (const file of fs.readdirSync(dir)) {
+        if (!file.endsWith(".js")) continue;
+        const size = fs.statSync(path.join(dir, file)).size;
+        // First matching budget wins (order: specific → catch-all).
+        const budget = budgets.find(({ pattern }) => pattern.test(file));
+        if (budget && size > budget.maxBytes) {
+          failures.push(`${file} (${(size / 1024).toFixed(0)}KB) 超出 ${budget.label} 预算 ${(budget.maxBytes / 1024).toFixed(0)}KB`);
+        }
+      }
+      if (failures.length) {
+        throw new Error(`bundle budget exceeded:\n  ${failures.join("\n  ")}`);
+      }
+    },
+  };
+}
 
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
-  plugins: [react(), tailwindcss()],
+  plugins: [
+    react(),
+    tailwindcss(),
+    bundleBudget([
+      { pattern: /^index-/, maxBytes: 480_000, label: "主包" },
+      { pattern: /^vendor-/, maxBytes: 150_000, label: "vendor 块" },
+      { pattern: /./, maxBytes: 160_000, label: "懒加载块" },
+    ]),
+  ],
 
   // Tauri v2: use relative paths so assets resolve correctly
   // under the tauri:// protocol in production builds

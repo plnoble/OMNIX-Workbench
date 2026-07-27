@@ -32,8 +32,11 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Typecheck + build frontend (tsc && vite build)
+      - name: Typecheck + build frontend (tsc && vite build, bundle budget enforced)
         run: npm run build
+
+      - name: Frontend unit tests (vitest)
+        run: npm run test
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable

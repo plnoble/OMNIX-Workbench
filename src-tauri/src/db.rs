@@ -7,6 +7,9 @@ use std::path::PathBuf;
 /// Type alias for a pooled SQLite connection
 pub type PooledConn = r2d2::PooledConnection<SqliteConnectionManager>;
 
+/// Clone is cheap: the r2d2 pool is internally reference-counted, so a clone
+/// shares the same pool (used to move DB access onto blocking threads).
+#[derive(Clone)]
 pub struct DbManager {
     pool: Pool<SqliteConnectionManager>,
 }

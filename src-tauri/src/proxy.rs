@@ -2411,7 +2411,9 @@ pub fn mark_platform_unhealthy(db: &DbManager, platform_id: &str, error: &str) {
 
 // ── Request Logging ───────
 
-/// Write a request log entry to the database (async, non-blocking)
+/// Write a request log entry to the database. The INSERT (WAL write + fsync)
+/// runs on the blocking pool so the per-request write never stalls a tokio
+/// worker on the hot async path — callers fire-and-forget.
 pub fn log_request(
     db: &DbManager,
     model: &str,
@@ -2426,29 +2428,37 @@ pub fn log_request(
     request_id: Option<&str>,
     source: &str,
 ) {
-    let conn = match db.get_connection() {
-        Ok(c) => c,
-        Err(_) => return,
-    };
+    let db = db.clone(); // shares the same r2d2 pool
+    let model = model.to_string();
+    let platform = platform.unwrap_or("").to_string();
+    let error_message = error_message.unwrap_or("").to_string();
+    let request_id = request_id.unwrap_or("").to_string();
+    let source = source.to_string();
     let total_tokens = prompt_tokens + completion_tokens;
-    let _ = conn.execute(
-        "INSERT INTO request_logs (model, platform, prompt_tokens, completion_tokens, total_tokens, latency_ms, status_code, is_stream, is_error, error_message, request_id, source)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-        params![
-            model,
-            platform.unwrap_or(""),
-            prompt_tokens,
-            completion_tokens,
-            total_tokens,
-            latency_ms,
-            status_code,
-            is_stream as i32,
-            is_error as i32,
-            error_message.unwrap_or(""),
-            request_id.unwrap_or(""),
-            source,
-        ],
-    );
+    tokio::task::spawn_blocking(move || {
+        let conn = match db.get_connection() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let _ = conn.execute(
+            "INSERT INTO request_logs (model, platform, prompt_tokens, completion_tokens, total_tokens, latency_ms, status_code, is_stream, is_error, error_message, request_id, source)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                model,
+                platform,
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+                latency_ms,
+                status_code,
+                is_stream as i32,
+                is_error as i32,
+                error_message,
+                request_id,
+                source,
+            ],
+        );
+    });
 }
 
 // ── Embeddings Handler ─────────────────────────────────
