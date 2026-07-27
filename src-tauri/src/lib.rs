@@ -414,6 +414,8 @@ pub fn run() {
             commands::get_mailbox_messages,
             commands::get_remote_access_info,
             commands::set_remote_access,
+            commands::rotate_remote_token,
+            commands::get_remote_clients,
             commands::get_all_models_metadata,
             commands::get_cron_tasks,
             commands::save_cron_task,

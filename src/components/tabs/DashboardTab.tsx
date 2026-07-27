@@ -14,7 +14,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { OMNIX_TIPS, DEFAULT_PROXY_PORT } from "@/lib/constants";
 import { TokenActivityPanel } from "@/components/TokenActivityPanel";
 import QRCode from "qrcode";
-import { remoteApi, settingsApi } from "@/lib/tauri-api";
+import { remoteApi, settingsApi, type RemoteClientInfo } from "@/lib/tauri-api";
 import { toast } from "@/components/ui/sonner";
 import type { DetectedAgent, RemoteAccessInfo } from "@/types";
 
@@ -50,10 +50,30 @@ export function DashboardTab({
   const [remoteBusy, setRemoteBusy] = useState(false);
   const [qr, setQr] = useState("");
   const [appVersion, setAppVersion] = useState("");
+  const [remoteClients, setRemoteClients] = useState<RemoteClientInfo[]>([]);
   useEffect(() => { getVersion().then(setAppVersion).catch(() => {}); }, []);
   useEffect(() => {
     settingsApi.get("remote_access_enabled").then((v) => setRemoteEnabled(v === "true")).catch(() => {});
   }, []);
+  // Poll recently connected devices while remote access is on.
+  useEffect(() => {
+    if (!remoteEnabled) { setRemoteClients([]); return; }
+    const load = () => remoteApi.clients().then(setRemoteClients).catch(() => {});
+    load();
+    const t = setInterval(load, 15000);
+    return () => clearInterval(t);
+  }, [remoteEnabled]);
+
+  const rotateToken = async () => {
+    if (!window.confirm("轮换令牌：旧链接与二维码将立刻全部失效，已连接的设备需要用新链接重新打开。确定？")) return;
+    try {
+      await remoteApi.rotateToken();
+      onLoadRemoteAccess();
+      toast.success("令牌已轮换", { description: "旧令牌已全部失效，请用新链接/二维码访问。" });
+    } catch (e) {
+      toast.error("轮换失败", { description: String(e) });
+    }
+  };
   useEffect(() => {
     if (remoteEnabled && remoteInfo?.url) {
       QRCode.toDataURL(remoteInfo.url, { width: 200, margin: 1 }).then(setQr).catch(() => setQr(""));
@@ -216,6 +236,12 @@ export function DashboardTab({
           <p className="mb-3 text-xs text-muted-foreground">
             开启后，手机用浏览器打开下面的链接即可<strong>查看并继续</strong>你电脑上的 Agent 对话。同一 Wi-Fi 直接可用；异地需你自己用 Tailscale / 内网穿透 / 端口转发打通（OMNIX 不内置穿透）。
           </p>
+          {remoteEnabled && (
+            <div className="mb-3 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs leading-5 text-warning">
+              ⚠️ 高风险：服务已绑定 0.0.0.0（监听地址 {remoteInfo?.ip || "本机局域网 IP"}:{DEFAULT_PROXY_PORT}），
+              同一网络内持有令牌的设备可访问你的会话与模型网关。仅在可信网络开启；怀疑令牌泄露时立即轮换。
+            </div>
+          )}
           {remoteEnabled ? (
             remoteInfo ? (
               <div className="flex flex-col gap-2 text-sm">
@@ -230,8 +256,13 @@ export function DashboardTab({
                     <Copy className="h-3.5 w-3.5" />
                   </button>
                 </div>
-                <div className="text-xs text-muted-foreground">
-                  局域网 IP <code className="text-foreground">{remoteInfo.ip}</code> · 令牌 <code className="text-foreground">{remoteInfo.token}</code>
+                <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                  <span>
+                    局域网 IP <code className="text-foreground">{remoteInfo.ip}</code> · 令牌 <code className="text-foreground">{remoteInfo.token.slice(0, 12)}…</code>
+                  </span>
+                  <Button size="sm" variant="outline" className="h-6 px-2 text-xs" onClick={() => void rotateToken()}>
+                    <RefreshCw className="h-3 w-3" /> 轮换令牌
+                  </Button>
                 </div>
                 {qr && (
                   <div className="mt-1 flex items-center gap-3">
@@ -239,6 +270,25 @@ export function DashboardTab({
                     <span className="text-xs text-muted-foreground">手机扫这个二维码直接打开（同一 Wi-Fi）。</span>
                   </div>
                 )}
+                <div className="mt-1">
+                  <div className="mb-1 text-xs font-medium text-muted-foreground">已连接设备（本次运行内）</div>
+                  {remoteClients.length === 0 ? (
+                    <p className="m-0 text-xs text-muted-foreground/70">还没有设备通过令牌访问。</p>
+                  ) : (
+                    <div className="flex flex-col gap-1">
+                      {remoteClients.map((client) => {
+                        const mins = Math.max(0, Math.round(Date.now() / 1000 - client.last_seen) / 60);
+                        const ago = mins < 1 ? "刚刚" : mins < 60 ? `${Math.round(mins)} 分钟前` : `${Math.round(mins / 60)} 小时前`;
+                        return (
+                          <div key={client.ip} className="flex items-center gap-2 text-xs">
+                            <code className="text-foreground">{client.ip}</code>
+                            <span className="text-muted-foreground">{ago}活跃</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
               </div>
             ) : (
               <Button size="sm" variant="outline" onClick={onLoadRemoteAccess}>

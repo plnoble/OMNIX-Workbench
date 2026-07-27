@@ -812,10 +812,20 @@ export const diagnosticsApi = {
 
 // ── Remote Access ─────────────────────────────────────
 
+export interface RemoteClientInfo {
+  ip: string;
+  /** unix seconds of the device's last authenticated request */
+  last_seen: number;
+}
+
 export const remoteApi = {
   getInfo: () => invoke<RemoteAccessInfo>("get_remote_access_info"),
   /** Enable/disable LAN binding for remote phone access; restarts the proxy. */
   setAccess: (enabled: boolean) => invoke<void>("set_remote_access", { enabled }),
+  /** Mint a fresh token — every previously issued URL/QR stops working. */
+  rotateToken: () => invoke<string>("rotate_remote_token"),
+  /** Devices that recently authenticated against the remote panel. */
+  clients: () => invoke<RemoteClientInfo[]>("get_remote_clients"),
 };
 
 // ── Knowledge Base ─────────────────────────────────────

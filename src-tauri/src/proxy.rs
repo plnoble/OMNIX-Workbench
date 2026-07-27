@@ -1981,13 +1981,67 @@ async fn post_remote_cron_trigger(
 // ── Remote chat view + control ─────────────────────────────────────────────
 
 /// Token gate shared by the remote chat endpoints.
+/// Recently authenticated remote-panel clients (ip → last-seen unix ts).
+/// In-memory only — restarting the app clears it. Capped to avoid growth.
+static REMOTE_CLIENTS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, i64>>> =
+    std::sync::OnceLock::new();
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RemoteClientInfo {
+    pub ip: String,
+    pub last_seen: i64,
+}
+
+fn record_remote_client(ip: String) {
+    let map = REMOTE_CLIENTS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    if let Ok(mut m) = map.lock() {
+        m.insert(ip, chrono::Utc::now().timestamp());
+        if m.len() > 32 {
+            if let Some(oldest) = m.iter().min_by_key(|(_, ts)| **ts).map(|(k, _)| k.clone()) {
+                m.remove(&oldest);
+            }
+        }
+    }
+}
+
+pub fn remote_clients_snapshot() -> Vec<RemoteClientInfo> {
+    let map = REMOTE_CLIENTS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    map.lock()
+        .map(|m| {
+            let mut v: Vec<RemoteClientInfo> = m
+                .iter()
+                .map(|(ip, ts)| RemoteClientInfo { ip: ip.clone(), last_seen: *ts })
+                .collect();
+            v.sort_by(|a, b| b.last_seen.cmp(&a.last_seen));
+            v
+        })
+        .unwrap_or_default()
+}
+
+/// Extract a query-string parameter without pulling in a parser dependency.
+/// Our tokens are plain `tok_<hex>` so no percent-decoding is needed.
+fn query_param(query: Option<&str>, key: &str) -> Option<String> {
+    for pair in query?.split('&') {
+        let mut parts = pair.splitn(2, '=');
+        if parts.next() == Some(key) {
+            return Some(parts.next().unwrap_or("").to_string());
+        }
+    }
+    None
+}
+
 /// Gate the raw model-gateway routes (`/v1/*`, `/agent/*`, `/session/*`) to the
 /// local machine unless the caller presents the remote-access token. Local CLI
 /// agents connect over loopback and are always allowed; when "手机远程访问"
 /// binds the proxy to 0.0.0.0, a LAN client must send
 /// `x-omnix-remote-token: <token>` or it gets 403 — otherwise anyone on the
 /// same Wi-Fi could spend the user's API keys straight through /v1/messages.
-/// The `/api/remote/*` panel routes are separately token-gated already.
+///
+/// The remote-panel surface (`/remote`, `/api/remote/*`) is ALSO enforced here
+/// (token via `?token=` or the header, from any peer — matching the per-handler
+/// checks), so a future panel route can't ship without auth. The per-handler
+/// checks stay as defense in depth. Successful panel auths are recorded so the
+/// desktop UI can list connected devices.
 async fn guard_gateway_access(
     axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<SocketAddr>,
     State(state): State<Arc<ProxyState>>,
@@ -1995,6 +2049,30 @@ async fn guard_gateway_access(
     next: axum::middleware::Next,
 ) -> Response {
     let path = req.uri().path();
+
+    // Remote-panel surface: token required from every peer (query or header).
+    let is_remote_surface = path == "/remote" || path.starts_with("/api/remote/");
+    if is_remote_surface {
+        let expected = state
+            .db
+            .get_setting("remote_token")
+            .unwrap_or(None)
+            .unwrap_or_default();
+        let provided = query_param(req.uri().query(), "token")
+            .or_else(|| {
+                req.headers()
+                    .get("x-omnix-remote-token")
+                    .and_then(|v| v.to_str().ok())
+                    .map(|v| v.to_string())
+            })
+            .unwrap_or_default();
+        if expected.is_empty() || provided != expected {
+            return (StatusCode::FORBIDDEN, "远程访问需要有效令牌（在链接中携带 ?token=…）").into_response();
+        }
+        record_remote_client(peer.ip().to_string());
+        return next.run(req).await;
+    }
+
     let is_gateway = path.starts_with("/v1/")
         || path.starts_with("/agent/")
         || path.starts_with("/session/");
@@ -3089,6 +3167,35 @@ mod tests {
     };
 
     use super::resolve_session_model_upstream;
+
+    #[test]
+    fn query_param_extracts_token_and_ignores_others() {
+        assert_eq!(
+            super::query_param(Some("token=tok_abc&x=1"), "token").as_deref(),
+            Some("tok_abc")
+        );
+        assert_eq!(
+            super::query_param(Some("a=1&token=tok_xyz"), "token").as_deref(),
+            Some("tok_xyz")
+        );
+        assert_eq!(super::query_param(Some("a=1&b=2"), "token"), None);
+        assert_eq!(super::query_param(None, "token"), None);
+        // Empty value stays empty (→ auth fails against a non-empty expected).
+        assert_eq!(super::query_param(Some("token="), "token").as_deref(), Some(""));
+    }
+
+    #[test]
+    fn remote_clients_recorded_and_sorted_recent_first() {
+        super::record_remote_client("192.168.1.7".into());
+        super::record_remote_client("192.168.1.9".into());
+        let snapshot = super::remote_clients_snapshot();
+        assert!(snapshot.iter().any(|c| c.ip == "192.168.1.7"));
+        assert!(snapshot.iter().any(|c| c.ip == "192.168.1.9"));
+        // Sorted by last_seen desc.
+        for pair in snapshot.windows(2) {
+            assert!(pair[0].last_seen >= pair[1].last_seen);
+        }
+    }
 
     #[test]
     fn session_upstream_uses_bound_platform_and_primary_key_first() {

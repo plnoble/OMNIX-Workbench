@@ -40,6 +40,28 @@ pub async fn set_remote_access(
     Ok(())
 }
 
+/// Rotate the remote-access token: mint a fresh CSPRNG token and persist it.
+/// Every previously issued URL/QR (and any leaked token) stops working at once;
+/// the caller reloads the access info to show the new URL. Same no-fallback
+/// stance as first-boot generation — if the OS CSPRNG fails we error out.
+#[tauri::command]
+pub fn rotate_remote_token(db: State<'_, Arc<DbManager>>) -> Result<String, String> {
+    let mut bytes = [0u8; 32];
+    getrandom::getrandom(&mut bytes).map_err(|e| format!("CSPRNG (getrandom) unavailable: {e}"))?;
+    let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
+    let token = format!("tok_{hex}");
+    db.set_setting("remote_token", &token).map_err(|e| e.to_string())?;
+    Ok(token)
+}
+
+/// Devices that recently authenticated against the remote panel (`/remote`,
+/// `/api/remote/*`). Tracked in-memory by the proxy middleware; restarting the
+/// app clears the list.
+#[tauri::command]
+pub fn get_remote_clients() -> Vec<crate::proxy::RemoteClientInfo> {
+    crate::proxy::remote_clients_snapshot()
+}
+
 // ══════════════════════════════════════════════════
 // Request Logs & Usage Stats
 // ══════════════════════════════════════════════════
