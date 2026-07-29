@@ -911,6 +911,76 @@ pub struct GitUpdateCheck {
 /// Number of days before cached repos are cleaned up
 const GIT_CACHE_CLEANUP_DAYS: i64 = 30;
 
+/// Validate a skill-source repo URL before it reaches `git clone`.
+///
+/// `git` treats some "URLs" as code execution, so an unvalidated string here is
+/// remote command execution, not just a bad fetch:
+/// - `ext::sh -c <cmd>` runs `<cmd>` through the ext transport;
+/// - a value starting with `-` is parsed as an option, e.g.
+///   `--upload-pack=<cmd>`, even in the positional slot;
+/// - `file://` / local paths would let a crafted link pull from disk.
+///
+/// So: allow only `https://`, `http://`, `git://` and `git@host:path` SSH
+/// shorthand, and reject anything with a leading dash, control characters, or
+/// whitespace. Callers additionally pass `--` before positional arguments.
+pub fn validate_repo_url(repo_url: &str) -> Result<(), String> {
+    let url = repo_url.trim();
+    if url.is_empty() {
+        return Err("仓库地址不能为空".into());
+    }
+    if url.len() > 2048 {
+        return Err("仓库地址过长".into());
+    }
+    if url.starts_with('-') {
+        return Err("仓库地址不能以 - 开头（会被 git 当作命令行选项）".into());
+    }
+    if url.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return Err("仓库地址不能包含空白或控制字符".into());
+    }
+    let lower = url.to_ascii_lowercase();
+    let scheme_ok = lower.starts_with("https://")
+        || lower.starts_with("http://")
+        || lower.starts_with("git://")
+        || lower.starts_with("ssh://")
+        // git@github.com:owner/repo.git shorthand (no scheme)
+        || (url.contains('@') && url.contains(':') && !lower.contains("://"));
+    if !scheme_ok {
+        return Err("仅支持 https:// / http:// / git:// / ssh:// 或 git@host:path 形式的仓库地址".into());
+    }
+    // Explicitly reject the transports that execute commands or read local disk.
+    for banned in ["ext::", "file://", "fd::", "ftp://", "ftps://"] {
+        if lower.contains(banned) {
+            return Err(format!("不允许的 git 传输方式：{banned}"));
+        }
+    }
+    Ok(())
+}
+
+/// Validate a branch/ref name: conservative charset, no leading dash (option
+/// injection), no `..` or control characters.
+pub fn validate_git_ref(name: &str) -> Result<(), String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("分支名不能为空".into());
+    }
+    if name.len() > 255 {
+        return Err("分支名过长".into());
+    }
+    if name.starts_with('-') {
+        return Err("分支名不能以 - 开头（会被 git 当作命令行选项）".into());
+    }
+    if name.contains("..") {
+        return Err("分支名不能包含 ..".into());
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/'))
+    {
+        return Err("分支名只能包含字母、数字、- _ . /".into());
+    }
+    Ok(())
+}
+
 impl SyncEngine {
     /// Clone a Git repository to the skill cache directory
     pub fn clone_skill_repo(
@@ -918,6 +988,11 @@ impl SyncEngine {
         repo_url: &str,
         branch: Option<&str>,
     ) -> Result<GitCloneResult, String> {
+        // Hard-validate before anything reaches `git` — see validate_repo_url.
+        validate_repo_url(repo_url)?;
+        if let Some(b) = branch {
+            validate_git_ref(b)?;
+        }
         let cache_dir = self.git_cache_dir();
         std::fs::create_dir_all(&cache_dir)
             .map_err(|e| format!("Failed to create cache dir: {}", e))?;
@@ -936,7 +1011,8 @@ impl SyncEngine {
             if let Some(b) = branch {
                 cmd.arg("--branch").arg(b);
             }
-            cmd.arg(repo_url).arg(&target_path);
+            // `--` stops option parsing so the URL can never be read as a flag.
+            cmd.arg("--").arg(repo_url).arg(&target_path);
 
             let output = cmd
                 .no_window()
@@ -982,6 +1058,10 @@ impl SyncEngine {
         skill_name: &str,
         revision: &str,
     ) -> Result<String, String> {
+        // skill_name is joined onto both the repo cache path and the central
+        // skills dir (which is then created), so a `../` name would read and
+        // write outside both — same guard as the .skill package importer.
+        crate::input_validation::validate_path_component(skill_name, "技能名")?;
         let cache_dir = self.git_cache_dir();
         let repo_dir_name = sanitize_repo_name(repo_url);
         let repo_path = cache_dir.join(&repo_dir_name);
@@ -1265,5 +1345,48 @@ fn sanitize_repo_name(url: &str) -> String {
         "unknown_repo".to_string()
     } else {
         result
+    }
+}
+
+#[cfg(test)]
+mod git_source_tests {
+    use super::{validate_git_ref, validate_repo_url};
+
+    #[test]
+    fn accepts_normal_repo_urls() {
+        assert!(validate_repo_url("https://github.com/owner/repo.git").is_ok());
+        assert!(validate_repo_url("http://gitlab.local/team/skills").is_ok());
+        assert!(validate_repo_url("git@github.com:owner/repo.git").is_ok());
+        assert!(validate_repo_url("ssh://git@host:22/owner/repo.git").is_ok());
+    }
+
+    #[test]
+    fn rejects_command_executing_transports() {
+        // `ext::` runs the given command through git's ext transport.
+        assert!(validate_repo_url("ext::sh -c whoami").is_err());
+        assert!(validate_repo_url("file:///etc/passwd").is_err());
+        assert!(validate_repo_url("fd::/dev/null").is_err());
+    }
+
+    #[test]
+    fn rejects_option_injection_and_junk() {
+        // Leading dash is parsed by git as an option even positionally.
+        assert!(validate_repo_url("--upload-pack=touch /tmp/pwn").is_err());
+        assert!(validate_repo_url("-o ProxyCommand=evil").is_err());
+        assert!(validate_repo_url("https://host/repo with space").is_err());
+        assert!(validate_repo_url("https://host/repo\nmore").is_err());
+        assert!(validate_repo_url("").is_err());
+        // No recognised scheme at all.
+        assert!(validate_repo_url("just-some-text").is_err());
+    }
+
+    #[test]
+    fn branch_names_are_conservative() {
+        assert!(validate_git_ref("main").is_ok());
+        assert!(validate_git_ref("release/v1.2").is_ok());
+        assert!(validate_git_ref("--upload-pack=evil").is_err());
+        assert!(validate_git_ref("feature/../../etc").is_err());
+        assert!(validate_git_ref("bad name").is_err());
+        assert!(validate_git_ref("").is_err());
     }
 }

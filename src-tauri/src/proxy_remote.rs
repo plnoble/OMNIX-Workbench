@@ -18,7 +18,7 @@ pub(super) async fn serve_remote_html(
         .unwrap_or(None)
         .unwrap_or_default();
 
-    if token.is_empty() || token != expected_token {
+    if !token_matches(&token, &expected_token) {
         return axum::response::Html("<h1>401 Unauthorized - Invalid Access Token</h1>")
             .into_response();
     }
@@ -58,7 +58,7 @@ pub(super) async fn get_remote_status(
         .unwrap_or(None)
         .unwrap_or_default();
 
-    if token.is_empty() || token != expected_token {
+    if !token_matches(&token, &expected_token) {
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
@@ -152,7 +152,7 @@ pub(super) async fn post_remote_approve(
         .unwrap_or(None)
         .unwrap_or_default();
 
-    if token.is_empty() || token != expected_token {
+    if !token_matches(&token, &expected_token) {
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
@@ -186,7 +186,7 @@ pub(super) async fn post_remote_send(
         .unwrap_or(None)
         .unwrap_or_default();
 
-    if token.is_empty() || token != expected_token {
+    if !token_matches(&token, &expected_token) {
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
     if body.message.trim().is_empty() {
@@ -219,7 +219,7 @@ pub(super) async fn post_remote_cron_trigger(
         .unwrap_or(None)
         .unwrap_or_default();
 
-    if token.is_empty() || token != expected_token {
+    if !token_matches(&token, &expected_token) {
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
@@ -264,7 +264,7 @@ pub(super) async fn post_remote_cron_trigger(
 pub(super) fn remote_token_ok(state: &ProxyState, params: &std::collections::HashMap<String, String>) -> bool {
     let token = params.get("token").cloned().unwrap_or_default();
     let expected = state.db.get_setting("remote_token").unwrap_or(None).unwrap_or_default();
-    !token.is_empty() && token == expected
+    token_matches(&token, &expected)
 }
 
 pub(super) fn parse_agent_id(name: &str) -> Option<crate::runtime::AgentId> {

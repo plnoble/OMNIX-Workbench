@@ -78,8 +78,13 @@ impl ProxyServer {
         };
         let addr = SocketAddr::from((bind_ip, port));
 
-        // CORS: restrict to localhost origins when binding to 0.0.0.0
-        let cors_layer = if use_wsl {
+        // CORS: restrict to localhost origins whenever we bind to 0.0.0.0 —
+        // this must follow the *bind* decision, not just WSL. Previously only
+        // `use_wsl` tightened it, so enabling 手机远程访问 exposed the gateway
+        // with `CorsLayer::permissive()`, letting any web page a LAN browser
+        // visits script requests against it. The remote panel is same-origin,
+        // so restricting cross-origin here does not affect it.
+        let cors_layer = if use_wsl || remote_enabled {
             CorsLayer::new()
                 .allow_origin([
                     "http://localhost:1420"
@@ -1771,6 +1776,20 @@ pub fn remote_clients_snapshot() -> Vec<RemoteClientInfo> {
         .unwrap_or_default()
 }
 
+/// Compare a presented credential against the expected one without leaking
+/// length or position through timing. An empty `expected` never matches, so a
+/// DB read failure can't turn into an open door.
+fn token_matches(provided: &str, expected: &str) -> bool {
+    if expected.is_empty() || provided.len() != expected.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (a, b) in provided.as_bytes().iter().zip(expected.as_bytes()) {
+        diff |= a ^ b;
+    }
+    diff == 0
+}
+
 /// Extract a query-string parameter without pulling in a parser dependency.
 /// Our tokens are plain `tok_<hex>` so no percent-decoding is needed.
 fn query_param(query: Option<&str>, key: &str) -> Option<String> {
@@ -1811,15 +1830,18 @@ async fn guard_gateway_access(
             .get_setting("remote_token")
             .unwrap_or(None)
             .unwrap_or_default();
-        let provided = query_param(req.uri().query(), "token")
-            .or_else(|| {
-                req.headers()
-                    .get("x-omnix-remote-token")
-                    .and_then(|v| v.to_str().ok())
-                    .map(|v| v.to_string())
-            })
+        // Header first: query strings leak into browser history, Referer and
+        // screenshots. `?token=` stays as a fallback because the phone opens
+        // the panel from a plain link/QR and can't set headers on that first
+        // navigation — the served page then uses the header for its API calls.
+        let provided = req
+            .headers()
+            .get("x-omnix-remote-token")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.to_string())
+            .or_else(|| query_param(req.uri().query(), "token"))
             .unwrap_or_default();
-        if expected.is_empty() || provided != expected {
+        if !token_matches(&provided, &expected) {
             return (StatusCode::FORBIDDEN, "远程访问需要有效令牌（在链接中携带 ?token=…）").into_response();
         }
         record_remote_client(peer.ip().to_string());
@@ -1830,17 +1852,24 @@ async fn guard_gateway_access(
         || path.starts_with("/agent/")
         || path.starts_with("/session/");
     if is_gateway && !peer.ip().is_loopback() {
-        // WSL agents also reach the host over a non-loopback address; when WSL
-        // mode is on we keep the pre-existing local-dev trust and don't IP-gate
-        // the gateway (WSL can't easily send the token). Otherwise the only
-        // reason we're bound to 0.0.0.0 is 手机远程访问 — require the token.
+        // WSL agents reach the host over a non-loopback address and can't
+        // easily carry the token, so WSL mode keeps the pre-existing local-dev
+        // trust — but ONLY while 手机远程访问 is off. With both enabled the
+        // listener is on 0.0.0.0 for the LAN, and a blanket WSL exemption would
+        // hand every device on that network an unauthenticated model gateway.
         let use_wsl = state
             .db
             .get_setting("use_wsl")
             .unwrap_or(None)
             .as_deref()
             == Some("true");
-        if !use_wsl {
+        let remote_enabled = state
+            .db
+            .get_setting("remote_access_enabled")
+            .unwrap_or(None)
+            .as_deref()
+            == Some("true");
+        if !use_wsl || remote_enabled {
             let expected = state
                 .db
                 .get_setting("remote_token")
@@ -1851,7 +1880,7 @@ async fn guard_gateway_access(
                 .get("x-omnix-remote-token")
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("");
-            if expected.is_empty() || provided != expected {
+            if !token_matches(provided, &expected) {
                 return (
                     StatusCode::FORBIDDEN,
                     "远程访问模型网关需要有效令牌 (x-omnix-remote-token)",
@@ -2587,6 +2616,17 @@ mod tests {
         assert_eq!(super::query_param(None, "token"), None);
         // Empty value stays empty (→ auth fails against a non-empty expected).
         assert_eq!(super::query_param(Some("token="), "token").as_deref(), Some(""));
+    }
+
+    #[test]
+    fn token_matches_is_exact_and_rejects_empty_expected() {
+        assert!(super::token_matches("tok_abc", "tok_abc"));
+        assert!(!super::token_matches("tok_abd", "tok_abc"));
+        assert!(!super::token_matches("tok_ab", "tok_abc"));
+        assert!(!super::token_matches("tok_abcd", "tok_abc"));
+        // A missing/unreadable stored token must never authenticate anyone.
+        assert!(!super::token_matches("", ""));
+        assert!(!super::token_matches("anything", ""));
     }
 
     #[test]

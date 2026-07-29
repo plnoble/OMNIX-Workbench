@@ -4,7 +4,7 @@
 
 [![Tauri v2](https://img.shields.io/badge/Tauri-v2-blue)](https://tauri.app)
 [![React 19](https://img.shields.io/badge/React-19-61dafb)](https://react.dev)
-[![Rust](https://img.shields.io/badge/Rust-2024-orange)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/Rust-2021-orange)](https://www.rust-lang.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue)](https://www.typescriptlang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
@@ -176,7 +176,7 @@ Actual skill content here...
 | **前端** | React + TypeScript (strict) | 19.x |
 | **构建** | Vite | 7.x |
 | **UI 组件** | shadcn/ui (Radix) + Tailwind CSS | 4.x |
-| **后端** | Rust + Tokio (async) | 2024 edition |
+| **后端** | Rust + Tokio (async) | 2021 edition |
 | **HTTP 代理** | Axum | 0.7 |
 | **数据库** | SQLite (rusqlite, bundled) | 0.31 |
 | **终端** | portable-pty | 0.8 |

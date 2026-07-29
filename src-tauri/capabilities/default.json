@@ -20,7 +20,10 @@
     "core:window:allow-center",
     "opener:default",
     "opener:allow-open-path",
-    "opener:allow-open-url",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://*" }, { "url": "http://*" }]
+    },
     "core:event:default",
     "core:event:allow-listen",
     "core:event:allow-emit",
