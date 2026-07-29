@@ -1358,14 +1358,18 @@ pub struct ActiveAccountInfo {
 mod tests {
     use super::*;
 
+    /// Covers the full seed path + active-account switch. Formerly `#[ignore]`d
+    /// as "too slow"; the whole seed now runs in well under a second, so it
+    /// earns its place in the always-on baseline.
     #[test]
-    #[ignore = "manual integration test; full seed path is too slow for the lib test baseline"]
     fn test_db_manager_and_active_account() {
         let temp_dir = std::env::temp_dir();
-        let test_db_path = temp_dir.join("omnix_test.db");
-        if test_db_path.exists() {
-            let _ = std::fs::remove_file(&test_db_path);
-        }
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        // Unique per run so parallel test threads can't share/delete one file.
+        let test_db_path = temp_dir.join(format!("omnix_test_{}.db", timestamp));
 
         let db = DbManager::new_with_path(test_db_path.clone());
 

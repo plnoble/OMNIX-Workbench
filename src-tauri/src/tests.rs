@@ -41,7 +41,10 @@ mod tests {
 
     // Test 2: SQLite Concurrency and Thread Safety
     #[test]
-    #[ignore = "manual SQLite pool stress test; currently slow/flaky on Windows"]
+    // Stays out of the blocking baseline: a pool stress test that has been
+    // flaky on Windows, and CI runs on windows-latest. Surfaced by the
+    // signal-only "ignored tests" CI step so it cannot rot unnoticed.
+    #[ignore = "SQLite pool stress test; flaky on Windows, run via cargo test --lib -- --ignored"]
     fn test_db_concurrency() {
         let temp_db_path = std::env::temp_dir().join("omnix_test_db.sqlite");
         if temp_db_path.exists() {
@@ -109,7 +112,10 @@ mod tests {
 
     // Test 4: Verify spawning and basic interaction for all 5 installed agents
     #[test]
-    #[ignore = "manual integration test that spawns real agent CLIs"]
+    // Needs the real CLIs installed on the machine, so it is vacuous on CI.
+    // Fake-process coverage of the same paths already runs in the baseline
+    // (see runtime_manager fake_claude/fake_codex/fake_acp tests).
+    #[ignore = "spawns real agent CLIs; only meaningful on a machine with them installed"]
     fn test_all_five_agents_interactive() {
         use crate::agent::AgentManager;
         use crate::db::DbManager;

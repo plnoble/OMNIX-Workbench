@@ -1937,23 +1937,24 @@ mod tests {
         assert_eq!(npm_package_for_agent("Google Antigravity"), None);
     }
 
+    /// Guards the per-agent context-file injection. Runs in CI: it only touches
+    /// a temp DB + temp workspace. (It was `#[ignore]`d and silently rotted —
+    /// it still asserted an `OMNIX_MEMORY.md` that injection stopped writing
+    /// once context files became per-agent.)
     #[tokio::test]
-    #[ignore = "manual integration test; depends on full seeded database initialization"]
     async fn test_memory_injection() {
         let temp_dir = std::env::temp_dir();
-        let test_db_path = temp_dir.join("omnix_agent_test.db");
-        if test_db_path.exists() {
-            let _ = std::fs::remove_file(&test_db_path);
-        }
+        let timestamp = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        // Unique per run: a fixed name would collide with parallel test threads.
+        let test_db_path = temp_dir.join(format!("omnix_agent_test_{}.db", timestamp));
 
         let db = Arc::new(DbManager::new_with_path(test_db_path.clone()));
 
         let manager = AgentManager::new(Arc::clone(&db));
 
-        let timestamp = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
         let test_workspace = temp_dir.join(format!("omnix_workspace_{}", timestamp));
         fs::create_dir_all(&test_workspace).unwrap();
 
@@ -1962,11 +1963,14 @@ mod tests {
             .inject_workspace_memories(&test_workspace.to_string_lossy(), "Claude Code")
             .unwrap();
 
-        // Verify files exist
+        // "Claude Code" gets CLAUDE.md only — injection writes the context file
+        // the requested agent actually reads, not a shared memory dump.
         let claude_md = test_workspace.join("CLAUDE.md");
-        let omnix_md = test_workspace.join("OMNIX_MEMORY.md");
-        assert!(claude_md.exists());
-        assert!(omnix_md.exists());
+        assert!(claude_md.exists(), "CLAUDE.md 应被注入");
+        assert!(
+            !test_workspace.join("GEMINI.md").exists(),
+            "只请求 Claude Code 时不应写其他 agent 的上下文文件"
+        );
 
         // Read content and check guidelines
         let content = fs::read_to_string(&claude_md).unwrap();
@@ -1975,7 +1979,6 @@ mod tests {
 
         // Clean up
         let _ = fs::remove_file(claude_md);
-        let _ = fs::remove_file(omnix_md);
         let _ = fs::remove_dir(test_workspace);
         if test_db_path.exists() {
             let _ = fs::remove_file(&test_db_path);

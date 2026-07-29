@@ -52,6 +52,15 @@ jobs:
         working-directory: ./src-tauri
         run: cargo test --lib
 
+      # The remaining #[ignore]d tests need a real machine (installed agent CLIs,
+      # the user's own CLI usage logs) or are known-flaky stress tests, so they
+      # can't gate the build — but running them keeps them from rotting silently
+      # the way test_memory_injection did.
+      - name: Ignored/manual tests (signal)
+        working-directory: ./src-tauri
+        run: cargo test --lib -- --ignored
+        continue-on-error: true
+
       # Signal-only until the pre-existing fmt/clippy debt is cleared. Flip these
       # to blocking (drop continue-on-error) once `cargo fmt` + clippy are green.
       - name: Rustfmt check (signal)
