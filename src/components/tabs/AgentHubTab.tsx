@@ -323,8 +323,16 @@ export function AgentHubTab({
             >
               <div className="flex items-start justify-between gap-3">
                 <AgentMark name={agent.name} active={activeAgent === agent.name} />
+                {/* Anything not "supported" can't be launched (「开始工作」stays
+                    disabled), so an installed-but-unadapted agent must read
+                    待适配 — including agents with no runtime entry at all, which
+                    used to fall through to 已检测 and look runnable. */}
                 <Badge variant={agent.runtime?.runtime_status === "supported" && agent.installed ? "success" : "secondary"}>
-                  {agent.runtime?.runtime_status === "pending" ? "待适配" : agent.installed ? "已检测" : "未安装"}
+                  {!agent.installed
+                    ? "未安装"
+                    : agent.runtime?.runtime_status === "supported"
+                      ? "已检测"
+                      : "待适配"}
                 </Badge>
               </div>
               <div className="mt-5 flex items-center gap-2 text-xl font-semibold">
@@ -378,6 +386,11 @@ export function AgentHubTab({
                         onStartWork?.(agent.name);
                       }}
                       disabled={agent.runtime?.runtime_status !== "supported"}
+                      title={
+                        agent.runtime?.runtime_status === "supported"
+                          ? "在工作页用这个 Agent 开始"
+                          : "已装好，但 OMNIX 还没接入它的运行协议，暂时不能在软件内启动会话"
+                      }
                     >
                       <Play className="h-3.5 w-3.5" />
                       开始工作
