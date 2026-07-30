@@ -83,11 +83,9 @@ pub fn load_runtime_model_options(
         AgentId::Codex => &["gpt-5-codex"],
         // ACP agents run on their own account's default model; OMNIX does not
         // enumerate builtin model choices for them (MVP uses AgentDefault).
-        // Antigravity's model names come from `agy models` and are display-style
-        // strings with reasoning tiers ("Gemini 3.6 Flash (High)"). We don't
-        // hardcode them: the list moves with CLI releases and passing an
-        // unverified `--model` value would break the session. AgentDefault only
-        // for now; the `--model` plumbing in build_launch_spec is already there.
+        // Antigravity has models, but they are read live from `agy models` in
+        // `runtime_get_model_options` rather than hardcoded here — the list moves
+        // with CLI releases.
         AgentId::GeminiCli
         | AgentId::QwenCode
         | AgentId::OpenCode
@@ -368,12 +366,74 @@ fn agent_id_wire_str(agent: AgentId) -> &'static str {
     }
 }
 
+/// Model names reported by a print-mode CLI, e.g. `agy models` →
+/// "Gemini 3.6 Flash (High)". Parsed live instead of hardcoded: the list moves
+/// with CLI releases, and the display names (spaces + a reasoning tier in
+/// parentheses) are exactly what `--model` expects.
+///
+/// Bounded and fail-soft — the CLI has been seen to hang or fail transiently, and
+/// a stuck model dropdown would be worse than falling back to "跟随 Agent 默认".
+async fn list_cli_models(executable: &str) -> Vec<String> {
+    let mut command = tokio::process::Command::new(executable);
+    command
+        .arg("models")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    let Ok(Ok(output)) =
+        tokio::time::timeout(std::time::Duration::from_secs(10), command.output()).await
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            // Keep plain model names; drop banners, blank lines and error text.
+            !line.is_empty()
+                && line.len() <= 80
+                && !line.starts_with('-')
+                && !line.starts_with("Error")
+                && !line.contains("Usage")
+        })
+        .map(str::to_string)
+        .collect()
+}
+
 #[tauri::command]
-pub fn runtime_get_model_options(
+pub async fn runtime_get_model_options(
     agent: AgentId,
     db: State<'_, Arc<DbManager>>,
+    agent_manager: State<'_, Arc<crate::agent::AgentManager>>,
 ) -> Result<Vec<RuntimeModelOption>, String> {
-    load_runtime_model_options(&db, agent)
+    let mut options = load_runtime_model_options(&db, agent)?;
+    // Print-mode agents enumerate their own models through the CLI.
+    if agent.is_print_one_shot() {
+        let executable = agent_manager
+            .find_agent_path(agent.display_name())
+            .unwrap_or_else(|| "agy".to_string());
+        for model_name in list_cli_models(&executable).await {
+            options.push(RuntimeModelOption {
+                id: format!("builtin:{model_name}"),
+                label: format!("{model_name} · Agent 官方"),
+                provider_name: None,
+                provider_type: None,
+                model_name: Some(model_name.clone()),
+                health_status: "native".into(),
+                selection: ModelSelection::Builtin { model_name },
+                compatibility: ModelCompatibility {
+                    level: ModelCompatibilityLevel::Native,
+                    selectable: true,
+                    reason: "由 Agent 官方连接直接使用".into(),
+                },
+                is_default: false,
+            });
+        }
+    }
+    Ok(options)
 }
 
 /// The user's saved model preference for an ACP agent (free-form; may be a model

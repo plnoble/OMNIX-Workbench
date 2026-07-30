@@ -463,12 +463,30 @@ impl RuntimeManager {
             )
             .await;
         }
-        if !output.status.success() {
-            let detail = if stderr.is_empty() {
+        // The CLI is not reliable about exit codes: an auth failure prints
+        // `Error: authentication failed …` and still exits 0. So a turn counts as
+        // failed when the process failed OR the output is error-shaped OR it came
+        // back empty — otherwise the error text would be stored as the agent's
+        // own reply, and a blank turn would look like a real (empty) answer.
+        let answer = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let failure_detail = if !output.status.success() {
+            Some(if stderr.is_empty() {
                 format!("退出码 {:?}", output.status.code())
             } else {
-                stderr
-            };
+                stderr.clone()
+            })
+        } else if let Some(error_line) = print_output_error(&answer) {
+            Some(error_line)
+        } else if answer.is_empty() {
+            Some(if stderr.is_empty() {
+                "本轮没有任何输出（CLI 未报错但也没有回答，通常是瞬时故障，可重试）".to_string()
+            } else {
+                stderr.clone()
+            })
+        } else {
+            None
+        };
+        if let Some(detail) = failure_detail {
             let message = format!(
                 "{} 本轮执行失败：{detail}",
                 print.config.agent.display_name()
@@ -507,17 +525,12 @@ impl RuntimeManager {
             }
         }
 
-        let answer = String::from_utf8_lossy(&output.stdout).trim().to_string();
         persist_and_publish(
             &self.db,
             session_id,
             &RuntimeEvent {
                 kind: RuntimeEventKind::AssistantMessage,
-                text: Some(if answer.is_empty() {
-                    "(本轮没有输出)".to_string()
-                } else {
-                    answer
-                }),
+                text: Some(answer),
                 external_session_id: existing_id.clone(),
                 external_turn_id: None,
                 item_id: None,
@@ -1310,6 +1323,25 @@ fn spawn_log_reader<R>(
     });
 }
 
+/// Detects a print-mode turn that failed while still exiting 0.
+///
+/// `agy` reports auth failures as `Error: authentication failed: …` on the
+/// output stream and returns success, so exit status alone can't be trusted.
+/// Only a leading error marker counts — an answer that merely *mentions* the
+/// word "error" (very common when discussing code) must not be misread.
+fn print_output_error(answer: &str) -> Option<String> {
+    let first = answer.lines().next()?.trim();
+    let is_error = first.starts_with("Error:")
+        || first.starts_with("error:")
+        || first.starts_with("Error ")
+        || first.starts_with("panic:");
+    if is_error && !first.is_empty() {
+        Some(first.to_string())
+    } else {
+        None
+    }
+}
+
 async fn persist_and_publish(
     db: &Arc<DbManager>,
     session_id: &str,
@@ -1338,6 +1370,34 @@ mod tests {
     use std::sync::Arc;
 
     use rusqlite::OptionalExtension;
+
+    /// `agy` prints `Error: authentication failed …` and still exits 0, so a
+    /// turn's success can't be read from the exit status alone. Real answers that
+    /// merely discuss errors must not be misclassified.
+    #[test]
+    fn print_output_error_detects_failures_without_false_positives() {
+        assert_eq!(
+            super::print_output_error(
+                "Error: authentication failed: token exchange failed: oauth2: \"invalid_grant\""
+            )
+            .as_deref(),
+            Some("Error: authentication failed: token exchange failed: oauth2: \"invalid_grant\"")
+        );
+        assert!(super::print_output_error("panic: runtime failure").is_some());
+        assert!(super::print_output_error("error: something broke").is_some());
+
+        // Ordinary answers — including ones that talk about errors — are fine.
+        assert!(super::print_output_error("Hello! I'm Antigravity.").is_none());
+        assert!(
+            super::print_output_error("The Error type should be handled here.").is_none(),
+            "an answer that mentions errors is not a failed turn"
+        );
+        assert!(
+            super::print_output_error("Here is how to fix the Error: check the token").is_none(),
+            "only a leading marker counts"
+        );
+        assert!(super::print_output_error("").is_none());
+    }
 
     /// Grok's `-m` must precede the `stdio` subcommand, else clap exits 2 and the
     /// session dies before returning a session id (the "exit code: 2" report).
