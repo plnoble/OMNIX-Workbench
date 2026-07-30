@@ -41,6 +41,36 @@ fn tokenize(text: &str) -> HashSet<String> {
         .collect()
 }
 
+/// True when a known build manifest identifies the workspace's stack. The
+/// relevance *filter* keys off this rather than off "signals are non-empty":
+/// the directory name alone always yields tokens, so without this check an
+/// unrecognised project would match nothing and get its memory block emptied.
+fn workspace_stack_identified(workspace_path: &str) -> bool {
+    if workspace_path.trim().is_empty() || workspace_path == "direct" {
+        return false;
+    }
+    let root = Path::new(workspace_path);
+    STACK_MARKERS
+        .iter()
+        .any(|(file, _)| root.join(file).exists())
+}
+
+/// Build manifests → the stack tags they imply.
+const STACK_MARKERS: [(&str, &str); 12] = [
+    ("Cargo.toml", "rust cargo tokio"),
+    ("package.json", "javascript typescript node npm"),
+    ("tsconfig.json", "typescript"),
+    ("pyproject.toml", "python"),
+    ("requirements.txt", "python pip"),
+    ("go.mod", "go golang"),
+    ("pom.xml", "java maven"),
+    ("build.gradle", "java kotlin gradle"),
+    ("Gemfile", "ruby rails"),
+    ("composer.json", "php"),
+    ("CMakeLists.txt", "cpp c cmake"),
+    ("tauri.conf.json", "tauri rust"),
+];
+
 /// Pure-local signals describing a workspace's stack (no network) — manifests,
 /// the directory name, and top-level entries.
 fn derive_workspace_signals(workspace_path: &str) -> String {
@@ -52,21 +82,7 @@ fn derive_workspace_signals(workspace_path: &str) -> String {
     if let Some(name) = root.file_name().and_then(|n| n.to_str()) {
         sig.push(name.to_string());
     }
-    let markers = [
-        ("Cargo.toml", "rust cargo tokio"),
-        ("package.json", "javascript typescript node npm"),
-        ("tsconfig.json", "typescript"),
-        ("pyproject.toml", "python"),
-        ("requirements.txt", "python pip"),
-        ("go.mod", "go golang"),
-        ("pom.xml", "java maven"),
-        ("build.gradle", "java kotlin gradle"),
-        ("Gemfile", "ruby rails"),
-        ("composer.json", "php"),
-        ("CMakeLists.txt", "cpp c cmake"),
-        ("tauri.conf.json", "tauri rust"),
-    ];
-    for (file, tags) in markers {
+    for (file, tags) in STACK_MARKERS {
         if root.join(file).exists() {
             sig.push(tags.to_string());
         }
@@ -149,6 +165,12 @@ struct ScoredMemory {
     remediation: String,
     keywords: String,
     score: f64,
+    /// Tagged `universal` — a cross-cutting lesson that applies to any stack, so
+    /// it survives the relevance filter even with zero token overlap.
+    universal: bool,
+    /// Token overlap with the workspace signals; 0 means nothing in this memory
+    /// (tags/keywords/description) matched the workspace's stack.
+    overlap: f64,
 }
 
 /// Build the managed OMNIX memory injection block from experience memories,
@@ -157,6 +179,7 @@ struct ScoredMemory {
 /// (`agent::inject_workspace_memories`) and the evolution preview command.
 pub fn build_memory_block(db: &DbManager, workspace_path: &str) -> Result<Option<String>, String> {
     let ws_tokens = tokenize(&derive_workspace_signals(workspace_path));
+    let stack_identified = workspace_stack_identified(workspace_path);
 
     // Read everything in a scope so the connection + statement drop before scoring.
     #[allow(clippy::type_complexity)]
@@ -221,11 +244,14 @@ pub fn build_memory_block(db: &DbManager, workspace_path: &str) -> Result<Option
             |(idx, (desc, pattern, remediation, keywords, stack_tags, confidence, emb_blob, dim))| {
                 let recency = 1.0 / (1.0 + idx as f64); // rows are created_at DESC
                 let mut score = recency * 0.3 + (confidence - 1.0).max(0.0) * 0.2;
+                let universal = stack_tags
+                    .split(',')
+                    .any(|tag| tag.trim().eq_ignore_ascii_case("universal"));
+                let mut overlap = 0.0;
                 if use_relevance {
                     let mem_tokens =
                         tokenize(&format!("{keywords} {stack_tags} {desc} {pattern}"));
-                    let overlap =
-                        ws_tokens.iter().filter(|t| mem_tokens.contains(*t)).count() as f64;
+                    overlap = ws_tokens.iter().filter(|t| mem_tokens.contains(*t)).count() as f64;
                     score += overlap / (ws_tokens.len() as f64).max(1.0);
                     if let (Some(ws_emb), Some(blob)) = (&ws_embedding, emb_blob) {
                         if dim > 0 && !blob.is_empty() {
@@ -234,12 +260,29 @@ pub fn build_memory_block(db: &DbManager, workspace_path: &str) -> Result<Option
                         }
                     }
                 }
-                ScoredMemory { desc, pattern, remediation, keywords, score }
+                ScoredMemory { desc, pattern, remediation, keywords, score, universal, overlap }
             },
         )
         .collect();
 
     if use_relevance {
+        // Relevance floor — only once a build manifest actually identifies the
+        // stack. Without this the block was effectively "inject everything" (the
+        // cap was never reached), so a Rust workspace paid tokens for
+        // Python/Excel lessons every session. `universal` entries (git safety,
+        // alerting, timeouts…) always stay. For an unrecognised project we keep
+        // everything and merely rank it: filtering on the directory name alone
+        // would wrongly empty the block.
+        if stack_identified {
+            let kept: Vec<ScoredMemory> = scored
+                .into_iter()
+                .filter(|m| m.universal || m.overlap > 0.0)
+                .collect();
+            scored = kept;
+            if scored.is_empty() {
+                return Ok(None);
+            }
+        }
         scored.sort_by(|a, b| {
             b.score
                 .partial_cmp(&a.score)
@@ -527,11 +570,22 @@ mod evolution_tests {
     }
 
     fn insert_mem(db: &DbManager, id: &str, desc: &str, pattern: &str, keywords: &str) {
+        insert_mem_tagged(db, id, desc, pattern, keywords, "");
+    }
+
+    fn insert_mem_tagged(
+        db: &DbManager,
+        id: &str,
+        desc: &str,
+        pattern: &str,
+        keywords: &str,
+        stack_tags: &str,
+    ) {
         let conn = db.get_connection().unwrap();
         conn.execute(
-            "INSERT INTO memories (id, incident_desc, code_pattern, remediation, keywords, type, status)
-             VALUES (?1, ?2, ?3, ?4, 'fix it', 'experience', 'active')",
-            params![id, desc, pattern, keywords],
+            "INSERT INTO memories (id, incident_desc, code_pattern, remediation, keywords, type, status, stack_tags)
+             VALUES (?1, ?2, ?3, ?4, 'fix it', 'experience', 'active', ?5)",
+            params![id, desc, pattern, keywords, stack_tags],
         )
         .unwrap();
     }
@@ -557,17 +611,73 @@ mod evolution_tests {
         let rblock = build_memory_block(&db, rust_ws.to_str().unwrap()).unwrap().unwrap();
         let pblock = build_memory_block(&db, py_ws.to_str().unwrap()).unwrap().unwrap();
 
-        assert!(
-            rblock.find("Tokio deadlock").unwrap() < rblock.find("Python venv").unwrap(),
-            "rust workspace should rank the rust memory first:\n{rblock}"
-        );
-        assert!(
-            pblock.find("Python venv").unwrap() < pblock.find("Tokio deadlock").unwrap(),
-            "python workspace should rank the python memory first:\n{pblock}"
-        );
+        // Relevance is a filter, not just a sort: a workspace must not pay tokens
+        // for another stack's lessons on every single session.
+        assert!(rblock.contains("Tokio deadlock"), "rust ws keeps the rust memory:\n{rblock}");
+        assert!(!rblock.contains("Python venv"), "rust ws drops the python memory:\n{rblock}");
+        assert!(pblock.contains("Python venv"), "python ws keeps the python memory:\n{pblock}");
+        assert!(!pblock.contains("Tokio deadlock"), "python ws drops the rust memory:\n{pblock}");
 
         let _ = std::fs::remove_dir_all(&rust_ws);
         let _ = std::fs::remove_dir_all(&py_ws);
+    }
+
+    /// Cross-cutting lessons (git safety, alerting, timeouts…) must reach every
+    /// workspace regardless of stack, or the filter would hide the rules that
+    /// matter most.
+    #[test]
+    fn universal_memories_survive_the_relevance_filter() {
+        let db = temp_db();
+        db.get_connection().unwrap().execute("DELETE FROM memories", []).unwrap();
+        insert_mem_tagged(&db, "m_uni", "Force push destroys history", "git push -f", "git,safety", "universal");
+        insert_mem_tagged(&db, "m_py", "Python venv issue", "pip install wrong env", "python,pip", "python");
+
+        let rust_ws = mk_workspace("Cargo.toml", "[package]\nname=\"x\"");
+        let block = build_memory_block(&db, rust_ws.to_str().unwrap()).unwrap().unwrap();
+
+        assert!(block.contains("Force push"), "universal memory must always inject:\n{block}");
+        assert!(!block.contains("Python venv"), "off-stack memory still filtered:\n{block}");
+
+        let _ = std::fs::remove_dir_all(&rust_ws);
+    }
+
+    /// An unrecognised project (no build manifest) must still get its memories.
+    /// The directory name alone always produces tokens, so filtering on that
+    /// would silently empty the block for any workspace we can't classify.
+    #[test]
+    fn unidentified_stack_keeps_every_memory() {
+        let db = temp_db();
+        db.get_connection().unwrap().execute("DELETE FROM memories", []).unwrap();
+        insert_mem_tagged(&db, "m_py", "Python venv issue", "pip install wrong env", "python,pip", "python");
+        insert_mem_tagged(&db, "m_rust", "Tokio deadlock", "MutexGuard across await", "rust,tokio", "rust");
+
+        // No Cargo.toml / package.json / … — just an empty directory.
+        let plain_ws = std::env::temp_dir()
+            .join(format!("omnix_plain_{}_{}", std::process::id(), now_nanos()));
+        std::fs::create_dir_all(&plain_ws).unwrap();
+
+        let block = build_memory_block(&db, plain_ws.to_str().unwrap()).unwrap().unwrap();
+        assert!(block.contains("Python venv"), "unclassified ws keeps all:\n{block}");
+        assert!(block.contains("Tokio deadlock"), "unclassified ws keeps all:\n{block}");
+
+        let _ = std::fs::remove_dir_all(&plain_ws);
+    }
+
+    /// A workspace whose stack matches nothing must get no block at all, rather
+    /// than an empty header with zero pitfalls under it.
+    #[test]
+    fn no_block_when_nothing_relevant() {
+        let db = temp_db();
+        db.get_connection().unwrap().execute("DELETE FROM memories", []).unwrap();
+        insert_mem_tagged(&db, "m_py", "Python venv issue", "pip install wrong env", "python,pip", "python");
+
+        let rust_ws = mk_workspace("Cargo.toml", "[package]\nname=\"x\"");
+        assert!(
+            build_memory_block(&db, rust_ws.to_str().unwrap()).unwrap().is_none(),
+            "nothing relevant → no injected block"
+        );
+
+        let _ = std::fs::remove_dir_all(&rust_ws);
     }
 
     #[test]
