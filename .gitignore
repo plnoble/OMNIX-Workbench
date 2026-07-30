@@ -64,3 +64,7 @@ scratch/
 # Reference source (not part of the project)
 cherry-studio-ref/
 
+
+# Antigravity CLI 探针输出（本地临时文件）
+agy_out.txt
+t.txt
