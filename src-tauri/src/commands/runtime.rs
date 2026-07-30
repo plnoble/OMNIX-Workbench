@@ -83,11 +83,17 @@ pub fn load_runtime_model_options(
         AgentId::Codex => &["gpt-5-codex"],
         // ACP agents run on their own account's default model; OMNIX does not
         // enumerate builtin model choices for them (MVP uses AgentDefault).
+        // Antigravity's model names come from `agy models` and are display-style
+        // strings with reasoning tiers ("Gemini 3.6 Flash (High)"). We don't
+        // hardcode them: the list moves with CLI releases and passing an
+        // unverified `--model` value would break the session. AgentDefault only
+        // for now; the `--model` plumbing in build_launch_spec is already there.
         AgentId::GeminiCli
         | AgentId::QwenCode
         | AgentId::OpenCode
         | AgentId::CopilotCli
-        | AgentId::Grok => &[],
+        | AgentId::Grok
+        | AgentId::Antigravity => &[],
     };
     options.extend(builtins.iter().map(|model_name| RuntimeModelOption {
         id: format!("builtin:{model_name}"),
@@ -337,6 +343,9 @@ pub fn runtime_get_agent_catalog(
                     AdapterKind::ClaudeStreamJson | AdapterKind::CodexAppServer => {
                         format!("{name} 结构化运行适配器")
                     }
+                    AdapterKind::PrintOneShot => {
+                        format!("{name} · 单轮 print 适配器（纯文本回答，无工具调用过程）")
+                    }
                 },
             }
         })
@@ -355,6 +364,7 @@ fn agent_id_wire_str(agent: AgentId) -> &'static str {
         AgentId::OpenCode => "open_code",
         AgentId::CopilotCli => "copilot_cli",
         AgentId::Grok => "grok",
+        AgentId::Antigravity => "antigravity",
     }
 }
 

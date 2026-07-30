@@ -77,9 +77,21 @@ pub struct OutgoingUserMessage<'a> {
     pub metadata: serde_json::Value,
 }
 
+/// A print-one-shot session (Antigravity). There is no long-lived child: the
+/// session is just the launch recipe plus the conversation id to resume, and
+/// each turn spawns `agy … --print <prompt>` and reads its answer.
+struct PrintSession {
+    config: AgentSessionConfig,
+    launch: crate::runtime::LaunchSpec,
+    /// Assigned by the CLI on the first turn, then reused to continue.
+    conversation_id: RwLock<Option<String>>,
+}
+
 pub struct RuntimeManager {
     db: Arc<DbManager>,
     active: Arc<RwLock<HashMap<String, Arc<ActiveSession>>>>,
+    /// Sessions driven by spawn-per-turn instead of a persistent process.
+    print_sessions: Arc<RwLock<HashMap<String, Arc<PrintSession>>>>,
     events: broadcast::Sender<SessionEventEnvelope>,
 }
 
@@ -89,6 +101,7 @@ impl RuntimeManager {
         Self {
             db,
             active: Arc::new(RwLock::new(HashMap::new())),
+            print_sessions: Arc::new(RwLock::new(HashMap::new())),
             events,
         }
     }
@@ -150,6 +163,26 @@ impl RuntimeManager {
                 place_grok_model_arg(&mut launch.args, &preferred);
             }
         }
+        // Print-one-shot: nothing to spawn now. Register the recipe and report the
+        // session ready; each turn starts (and ends) its own process. Spawning the
+        // CLI here with no `--print` would drop it into its interactive TUI and
+        // hang on piped stdio.
+        if config.agent.is_print_one_shot() {
+            let seeded = resume_external_id
+                .clone()
+                .or_else(|| crate::runtime::read_antigravity_conversation_id(&config.workspace_path));
+            self.print_sessions.write().await.insert(
+                session_id.to_string(),
+                Arc::new(PrintSession {
+                    config: config.clone(),
+                    launch,
+                    conversation_id: RwLock::new(seeded),
+                }),
+            );
+            update_agent_session_status(&self.db, session_id, AgentSessionStatus::Running, None)?;
+            return Ok(());
+        }
+
         let mut command = runtime_command(&launch.program, &launch.args);
         command
             .current_dir(&launch.cwd)
@@ -301,6 +334,9 @@ impl RuntimeManager {
             // Claude Code needs no handshake — its session id arrives with the
             // first streamed event.
             AdapterKind::ClaudeStreamJson => {}
+            // Print-one-shot never reaches here: launch_session returns before
+            // spawning, since there is no process to hand shake with.
+            AdapterKind::PrintOneShot => {}
         }
 
         Ok(())
@@ -333,6 +369,168 @@ impl RuntimeManager {
         .await
     }
 
+    /// Prompt prefixes carried from the earlier exchange. Composed BEFORE the
+    /// current turn is recorded so they never include the message being sent
+    /// right now. Order: handoff context (agent switch) → branch seed (`/btw`
+    /// opening turn) → active `/goal` reminder.
+    fn compose_prompt_prefixes(&self, conversation_id: &str, with_handoff: bool) -> Vec<String> {
+        let mut prefixes: Vec<String> = Vec::new();
+        if with_handoff {
+            if let Some(context) = build_conversation_handoff_context(&self.db, conversation_id) {
+                prefixes.push(context);
+            }
+        }
+        if conversation_has_no_messages(&self.db, conversation_id) {
+            if let Some(parent) = conversation_parent_id(&self.db, conversation_id) {
+                if let Some(seed) = build_branch_seed_context(&self.db, &parent) {
+                    prefixes.push(seed);
+                }
+            }
+        }
+        if let Some(objective) = get_active_goal_objective(&self.db, conversation_id) {
+            prefixes.push(build_goal_reminder(&objective));
+        }
+        prefixes
+    }
+
+    /// Runs one print-mode turn: spawn the CLI with this turn's prompt, wait for
+    /// it to finish, and record its plain-text answer as the assistant message.
+    ///
+    /// The reply arrives whole (no streaming) and carries no tool-call events —
+    /// that is what `supports_structured_events: false` means for this adapter.
+    async fn send_print_turn(
+        &self,
+        session_id: &str,
+        print: Arc<PrintSession>,
+        message: OutgoingUserMessage<'_>,
+    ) -> Result<(), String> {
+        if !message.images.is_empty() {
+            return Err(format!(
+                "{} 的单轮 print 模式不支持图片输入",
+                print.config.agent.display_name()
+            ));
+        }
+        let conversation_id = print.config.conversation_id.clone();
+        let prefixes = self.compose_prompt_prefixes(&conversation_id, message.with_handoff);
+        let prompt = if prefixes.is_empty() {
+            message.prompt.to_string()
+        } else {
+            format!("{}\n\n{}", prefixes.join("\n\n"), message.prompt)
+        };
+        record_user_message(&self.db, session_id, message.display_text, message.metadata)?;
+        update_agent_session_status(&self.db, session_id, AgentSessionStatus::Running, None)?;
+
+        let existing_id = print.conversation_id.read().await.clone();
+        let args = crate::runtime::build_print_turn_args(
+            &print.launch.args,
+            &prompt,
+            existing_id.as_deref(),
+        );
+        let mut command = runtime_command(&print.launch.program, &args);
+        command
+            .current_dir(&print.launch.cwd)
+            .envs(&print.launch.env)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let output = command.output().await.map_err(|error| {
+            let message = format!("无法运行 {}: {error}", print.config.agent.display_name());
+            let _ = update_agent_session_status(
+                &self.db,
+                session_id,
+                AgentSessionStatus::Failed,
+                Some(&message),
+            );
+            message
+        })?;
+
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if !stderr.is_empty() {
+            persist_and_publish(
+                &self.db,
+                session_id,
+                &RuntimeEvent {
+                    kind: RuntimeEventKind::RawLog,
+                    text: Some(stderr.clone()),
+                    external_session_id: None,
+                    external_turn_id: None,
+                    item_id: None,
+                    request_id: None,
+                    metadata: serde_json::json!({}),
+                },
+                &self.events,
+            )
+            .await;
+        }
+        if !output.status.success() {
+            let detail = if stderr.is_empty() {
+                format!("退出码 {:?}", output.status.code())
+            } else {
+                stderr
+            };
+            let message = format!(
+                "{} 本轮执行失败：{detail}",
+                print.config.agent.display_name()
+            );
+            update_agent_session_status(
+                &self.db,
+                session_id,
+                AgentSessionStatus::Failed,
+                Some(&message),
+            )?;
+            return Err(message);
+        }
+
+        // First turn assigns the conversation id; capture it so follow-ups
+        // continue the same conversation instead of starting a new one.
+        if existing_id.is_none() {
+            if let Some(found) = crate::runtime::read_antigravity_conversation_id(&print.launch.cwd) {
+                *print.conversation_id.write().await = Some(found.clone());
+                // Surfacing it as an event is how the other adapters record the
+                // external id, and it is what resume reads back later.
+                persist_and_publish(
+                    &self.db,
+                    session_id,
+                    &RuntimeEvent {
+                        kind: RuntimeEventKind::SessionStarted,
+                        text: None,
+                        external_session_id: Some(found),
+                        external_turn_id: None,
+                        item_id: None,
+                        request_id: None,
+                        metadata: serde_json::json!({}),
+                    },
+                    &self.events,
+                )
+                .await;
+            }
+        }
+
+        let answer = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        persist_and_publish(
+            &self.db,
+            session_id,
+            &RuntimeEvent {
+                kind: RuntimeEventKind::AssistantMessage,
+                text: Some(if answer.is_empty() {
+                    "(本轮没有输出)".to_string()
+                } else {
+                    answer
+                }),
+                external_session_id: existing_id.clone(),
+                external_turn_id: None,
+                item_id: None,
+                request_id: None,
+                metadata: serde_json::json!({}),
+            },
+            &self.events,
+        )
+        .await;
+        // Turn finished; the session stays usable for the next prompt.
+        update_agent_session_status(&self.db, session_id, AgentSessionStatus::Running, None)
+    }
+
     /// Sends a user message to the running agent.
     /// - `with_handoff`: the user just switched this conversation to a different
     ///   agent — the prior transcript is prepended (sent to the agent, never
@@ -345,29 +543,16 @@ impl RuntimeManager {
         session_id: &str,
         message: OutgoingUserMessage<'_>,
     ) -> Result<(), String> {
+        // Print-one-shot sessions keep no live child — each turn is its own
+        // process, so they take a dedicated path.
+        let print_session = self.print_sessions.read().await.get(session_id).cloned();
+        if let Some(print) = print_session {
+            return self.send_print_turn(session_id, print, message).await;
+        }
+
         let active = self.active_session(session_id).await?;
         let conversation_id = active.config.conversation_id.clone();
-        // Compose prompt prefixes from the earlier exchange BEFORE recording this
-        // turn, so they never contain the message being sent right now. Order:
-        // handoff context (agent switch) → branch seed (/btw first turn) → goal.
-        let mut prefixes: Vec<String> = Vec::new();
-        if message.with_handoff {
-            if let Some(context) = build_conversation_handoff_context(&self.db, &conversation_id) {
-                prefixes.push(context);
-            }
-        }
-        // A `/btw` branch inherits its parent's transcript on its opening turn.
-        if conversation_has_no_messages(&self.db, &conversation_id) {
-            if let Some(parent) = conversation_parent_id(&self.db, &conversation_id) {
-                if let Some(seed) = build_branch_seed_context(&self.db, &parent) {
-                    prefixes.push(seed);
-                }
-            }
-        }
-        // An active `/goal` re-injects its objective every turn.
-        if let Some(objective) = get_active_goal_objective(&self.db, &conversation_id) {
-            prefixes.push(build_goal_reminder(&objective));
-        }
+        let prefixes = self.compose_prompt_prefixes(&conversation_id, message.with_handoff);
         let owned_prompt;
         let prompt: &str = if prefixes.is_empty() {
             message.prompt
@@ -390,6 +575,8 @@ impl RuntimeManager {
                     build_codex_turn_start_request(request_id, &thread_id, prompt, &active.config)?;
                 write_json_line(&active, &request).await
             }
+            // Handled before this match by the print-session branch.
+            AdapterKind::PrintOneShot => Err("print 适配器不走常驻会话发送路径".into()),
             AdapterKind::Acp => {
                 if !message.images.is_empty()
                     && !active.acp_supports_images.load(Ordering::SeqCst)
@@ -460,6 +647,11 @@ impl RuntimeManager {
             }
             AdapterKind::ClaudeStreamJson => {
                 Err("该 Agent 不支持结构化审批回传；请改用计划模式".into())
+            }
+            // Print mode is non-interactive: there is no approval channel at all
+            // (tools either run under 完全访问 or not at all).
+            AdapterKind::PrintOneShot => {
+                Err("该 Agent 的单轮 print 模式没有审批通道；请在会话开始时选择「完全访问」".into())
             }
         }
     }
@@ -690,6 +882,8 @@ fn spawn_output_reader<R>(
                 }
                 AdapterKind::CodexAppServer => parse_codex_message(&line),
                 AdapterKind::ClaudeStreamJson => parse_claude_event(&line),
+                // No persistent process, so no line reader is ever spawned.
+                AdapterKind::PrintOneShot => Ok(Vec::new()),
             };
             let parsed_events = parsed.unwrap_or_else(|error| {
                 vec![RuntimeEvent {

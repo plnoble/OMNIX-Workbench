@@ -23,6 +23,7 @@ const STATIC_RUNTIME_AGENT_IDS: Record<string, RuntimeAgentId> = {
   "OpenCode": "open_code",
   "GitHub Copilot CLI": "copilot_cli",
   "Grok Build": "grok",
+  "Google Antigravity": "antigravity",
 };
 
 let catalog: RuntimeAgentCatalogEntry[] | null = null;

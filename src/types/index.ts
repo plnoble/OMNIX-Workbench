@@ -257,7 +257,8 @@ export type RuntimeAgentId =
   | "qwen_code"
   | "open_code"
   | "copilot_cli"
-  | "grok";
+  | "grok"
+  | "antigravity";
 
 export type RuntimeModelSelection =
   | { kind: "agent_default" }

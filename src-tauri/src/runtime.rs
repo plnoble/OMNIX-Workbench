@@ -16,6 +16,7 @@ pub enum AgentId {
     OpenCode,
     CopilotCli,
     Grok,
+    Antigravity,
 }
 
 impl AgentId {
@@ -25,7 +26,7 @@ impl AgentId {
     /// A new variant MUST be added here too — `all_lists_every_agent` covers this
     /// with an exhaustive match, so forgetting fails the build rather than
     /// silently shipping an agent the runtime reports as 待适配.
-    pub const ALL: [AgentId; 7] = [
+    pub const ALL: [AgentId; 8] = [
         AgentId::ClaudeCode,
         AgentId::Codex,
         AgentId::GeminiCli,
@@ -33,6 +34,7 @@ impl AgentId {
         AgentId::OpenCode,
         AgentId::CopilotCli,
         AgentId::Grok,
+        AgentId::Antigravity,
     ];
 
     pub fn display_name(self) -> &'static str {
@@ -44,7 +46,14 @@ impl AgentId {
             Self::OpenCode => "OpenCode",
             Self::CopilotCli => "GitHub Copilot CLI",
             Self::Grok => "Grok Build",
+            Self::Antigravity => "Google Antigravity",
         }
+    }
+
+    /// Whether the agent is driven by spawning one process per turn (print mode)
+    /// instead of a long-lived stdio session.
+    pub fn is_print_one_shot(self) -> bool {
+        matches!(self, Self::Antigravity)
     }
 
     /// Whether this agent is driven over the universal ACP adapter.
@@ -165,11 +174,14 @@ pub fn evaluate_model_compatibility(
         // grok.com sign-in). They do not route through the OMNIX gateway, so
         // OMNIX-managed provider models are not selectable for them — the session
         // runs on the agent's own default.
+        // Antigravity is the same story: it serves its own Gemini models through
+        // the user's Google sign-in and has no gateway path.
         AgentId::GeminiCli
         | AgentId::QwenCode
         | AgentId::OpenCode
         | AgentId::CopilotCli
-        | AgentId::Grok => {
+        | AgentId::Grok
+        | AgentId::Antigravity => {
             let _ = provider_type;
             ModelCompatibility {
                 level: ModelCompatibilityLevel::Unsupported,
@@ -255,6 +267,10 @@ pub enum AdapterKind {
     ClaudeStreamJson,
     CodexAppServer,
     Acp,
+    /// One process per turn: the CLI is invoked with `-p <prompt>`, prints a
+    /// plain-text answer and exits (Antigravity's `agy`). There is no long-lived
+    /// child to write to, and no structured tool-call events to stream.
+    PrintOneShot,
 }
 
 impl AdapterKind {
@@ -263,6 +279,7 @@ impl AdapterKind {
             Self::ClaudeStreamJson => "claude_stream_json",
             Self::CodexAppServer => "codex_app_server",
             Self::Acp => "acp",
+            Self::PrintOneShot => "print_one_shot",
         }
     }
 }
@@ -347,6 +364,20 @@ pub fn agent_definition(agent: AgentId) -> AgentDefinition {
             // `loadSession: true`, so the universal ACP adapter drives it as-is.
             runtime_adapter: AdapterKind::Acp,
             supports_structured_events: true,
+            supports_resume: true,
+        },
+        AgentId::Antigravity => AgentDefinition {
+            id: agent,
+            display_name: agent.display_name(),
+            executable_names: vec!["agy", "agy.exe"],
+            // Installed by Google's own installer script, not npm — see
+            // `agent::install_agent`'s Antigravity branch.
+            managed_package: None,
+            // `agy` has no ACP/stdio server mode; it answers a single `-p`
+            // prompt as plain text and exits. So: no structured events, but
+            // resume works via `--conversation <uuid>`.
+            runtime_adapter: AdapterKind::PrintOneShot,
+            supports_structured_events: false,
             supports_resume: true,
         },
     }
@@ -929,6 +960,7 @@ pub(crate) fn agent_id_str(agent: AgentId) -> &'static str {
         AgentId::OpenCode => "opencode",
         AgentId::CopilotCli => "copilot_cli",
         AgentId::Grok => "grok",
+        AgentId::Antigravity => "antigravity",
     }
 }
 
@@ -941,6 +973,7 @@ fn parse_agent_id(value: &str) -> Result<AgentId, String> {
         "opencode" => Ok(AgentId::OpenCode),
         "copilot_cli" => Ok(AgentId::CopilotCli),
         "grok" => Ok(AgentId::Grok),
+        "antigravity" => Ok(AgentId::Antigravity),
         other => Err(format!("unknown Agent id: {other}")),
     }
 }
@@ -1538,6 +1571,30 @@ pub fn build_launch_spec(config: &AgentSessionConfig) -> Result<LaunchSpec, Stri
         AgentId::OpenCode => args.push("acp".into()),
         // Grok's ACP mode is a subcommand pair rather than a single flag.
         AgentId::Grok => args.extend(["agent", "stdio"].into_iter().map(str::to_string)),
+        // Print-one-shot: the prompt is appended per turn (see
+        // `build_print_turn_args`), so the base spec only carries the standing
+        // flags that apply to every turn of this session.
+        AgentId::Antigravity => {
+            args.push("--add-dir".into());
+            args.push(config.workspace_path.clone());
+            // Print mode is non-interactive: there is no way to answer an
+            // approval prompt, so tools can only run when the user already chose
+            // 完全访问. Under the ask_* policies the flag is withheld and the
+            // agent stays advisory (reads/answers; edits will fail).
+            if matches!(config.permission, PermissionPolicy::FullAccess { .. }) {
+                args.push("--dangerously-skip-permissions".into());
+            }
+            match &config.model {
+                ModelSelection::AgentDefault => {}
+                // Antigravity serves its own Gemini models; there is no OMNIX
+                // gateway path, so both selections just pass `--model`.
+                ModelSelection::Builtin { model_name }
+                | ModelSelection::Omnix { model_name, .. } => {
+                    args.push("--model".into());
+                    args.push(model_name.clone());
+                }
+            }
+        }
     }
 
     Ok(LaunchSpec {
@@ -1547,6 +1604,51 @@ pub fn build_launch_spec(config: &AgentSessionConfig) -> Result<LaunchSpec, Stri
         cwd: config.workspace_path.clone(),
         adapter: agent_definition(config.agent).runtime_adapter.as_str().into(),
     })
+}
+
+/// Build the argv for one print-mode turn: the standing session flags plus this
+/// turn's prompt, and `--conversation <id>` once Antigravity has assigned one so
+/// follow-up turns continue the same conversation instead of starting over.
+///
+/// `--print-timeout` is pinned so a wedged turn fails instead of hanging for the
+/// CLI's 5-minute default.
+pub fn build_print_turn_args(
+    base_args: &[String],
+    prompt: &str,
+    conversation_id: Option<&str>,
+) -> Vec<String> {
+    let mut args = base_args.to_vec();
+    if let Some(id) = conversation_id.map(str::trim).filter(|id| !id.is_empty()) {
+        args.push("--conversation".into());
+        args.push(id.to_string());
+    }
+    args.push("--print-timeout".into());
+    args.push("4m".into());
+    args.push("--print".into());
+    args.push(prompt.to_string());
+    args
+}
+
+/// Antigravity's CLI records the conversation it last used per workspace in
+/// `~/.gemini/antigravity-cli/cache/last_conversations.json` (`{ "<abs
+/// workspace path>": "<uuid>" }`). Reading it after a turn is how we learn the
+/// id to resume with — print mode itself only prints the answer text.
+pub fn read_antigravity_conversation_id(workspace_path: &str) -> Option<String> {
+    let cache = dirs::home_dir()?
+        .join(".gemini")
+        .join("antigravity-cli")
+        .join("cache")
+        .join("last_conversations.json");
+    let raw = std::fs::read_to_string(cache).ok()?;
+    let map: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&raw).ok()?;
+    // Match on the normalized path so separator/case differences on Windows
+    // don't cause a miss.
+    let want = workspace_path.replace('/', "\\").to_lowercase();
+    map.iter()
+        .find(|(key, _)| key.replace('/', "\\").to_lowercase() == want)
+        .and_then(|(_, value)| value.as_str())
+        .map(str::to_string)
+        .filter(|id| !id.trim().is_empty())
 }
 
 pub fn build_resume_launch_spec(
@@ -1559,6 +1661,12 @@ pub fn build_resume_launch_spec(
     let mut spec = build_launch_spec(config)?;
     if config.agent == AgentId::ClaudeCode {
         spec.args.push("--resume".into());
+        spec.args.push(external_session_id.into());
+    }
+    // Print-one-shot agents resume by conversation id on each turn's argv; keep
+    // it on the spec so the driver picks it up without another lookup.
+    if config.agent.is_print_one_shot() {
+        spec.args.push("--conversation".into());
         spec.args.push(external_session_id.into());
     }
     Ok(spec)
@@ -1580,6 +1688,7 @@ mod tests {
         ModelCompatibilityLevel, ModelSelection, PermissionPolicy,
         RuntimeEventKind, WorkMode,
     };
+    use super::build_print_turn_args;
     use crate::db::DbManager;
 
     #[test]
@@ -2068,6 +2177,92 @@ mod tests {
             .any(|pair| { pair == ["--resume", "claude-persisted-session"] }));
     }
 
+    fn antigravity_config(permission: PermissionPolicy) -> AgentSessionConfig {
+        AgentSessionConfig {
+            conversation_id: "conv-agy".into(),
+            agent: AgentId::Antigravity,
+            executable_path: "agy".into(),
+            workspace_path: "D:/work/project".into(),
+            model: ModelSelection::AgentDefault,
+            permission,
+            work_mode: WorkMode::Direct,
+        }
+    }
+
+    /// Print mode is non-interactive, so tool use is only possible when the user
+    /// already chose 完全访问 — under the ask_* policies the auto-approve flag must
+    /// stay off (the agent then behaves as advisory).
+    #[test]
+    fn antigravity_only_auto_approves_under_confirmed_full_access() {
+        let advisory = build_launch_spec(&antigravity_config(PermissionPolicy::AskOnRisk))
+            .expect("advisory spec");
+        assert!(!advisory
+            .args
+            .iter()
+            .any(|arg| arg == "--dangerously-skip-permissions"));
+        // The workspace is always shared with the CLI.
+        assert!(advisory
+            .args
+            .windows(2)
+            .any(|pair| pair == ["--add-dir", "D:/work/project"]));
+        assert_eq!(advisory.adapter, "print_one_shot");
+
+        let full = build_launch_spec(&antigravity_config(PermissionPolicy::FullAccess {
+            confirmed: true,
+        }))
+        .expect("full-access spec");
+        assert!(full
+            .args
+            .iter()
+            .any(|arg| arg == "--dangerously-skip-permissions"));
+    }
+
+    /// The prompt is appended per turn, and once a conversation id is known every
+    /// later turn must carry it so the exchange continues instead of restarting.
+    #[test]
+    fn print_turn_args_carry_prompt_and_resume_conversation() {
+        let base = vec!["--add-dir".to_string(), "D:/work".to_string()];
+
+        let first = build_print_turn_args(&base, "hello", None);
+        assert!(!first.iter().any(|arg| arg == "--conversation"));
+        assert_eq!(
+            first.last().map(String::as_str),
+            Some("hello"),
+            "prompt must be the final argument"
+        );
+        assert!(first.windows(2).any(|pair| pair == ["--print", "hello"]));
+        // A wedged turn must fail rather than hang on the CLI's 5-minute default.
+        assert!(first.iter().any(|arg| arg == "--print-timeout"));
+
+        let second = build_print_turn_args(&base, "again", Some("uuid-1"));
+        assert!(second
+            .windows(2)
+            .any(|pair| pair == ["--conversation", "uuid-1"]));
+        assert_eq!(second.last().map(String::as_str), Some("again"));
+
+        // Blank/whitespace ids are treated as "no id yet", never passed through.
+        let blank = build_print_turn_args(&base, "x", Some("   "));
+        assert!(!blank.iter().any(|arg| arg == "--conversation"));
+    }
+
+    /// Antigravity ships no structured events and is not an ACP agent — the UI
+    /// keys off both to decide what it can render.
+    #[test]
+    fn antigravity_declares_print_one_shot_capabilities() {
+        let definition = agent_definition(AgentId::Antigravity);
+        assert_eq!(definition.runtime_adapter, AdapterKind::PrintOneShot);
+        assert!(!definition.supports_structured_events);
+        assert!(definition.supports_resume);
+        assert!(definition.managed_package.is_none(), "installed by Google's own script");
+        assert!(AgentId::Antigravity.is_print_one_shot());
+        assert!(!AgentId::Antigravity.is_acp());
+        assert_eq!(agent_id_str(AgentId::Antigravity), "antigravity");
+        assert_eq!(
+            parse_agent_id("antigravity").expect("parses"),
+            AgentId::Antigravity
+        );
+    }
+
     /// Position of each agent in `AgentId::ALL`. The match is exhaustive, so a new
     /// `AgentId` variant fails to compile here until it is given an index — and the
     /// index has to be a real slot in `ALL`, which `all_lists_every_agent` checks.
@@ -2080,6 +2275,7 @@ mod tests {
             AgentId::OpenCode => 4,
             AgentId::CopilotCli => 5,
             AgentId::Grok => 6,
+            AgentId::Antigravity => 7,
         }
     }
 
