@@ -236,6 +236,51 @@ pub struct AgentManager {
     active_processes: Arc<Mutex<HashMap<String, ActiveProcess>>>,
 }
 
+/// Where the injected lessons are written, relative to the workspace.
+/// Kept out of the agent context files on purpose — see the write site.
+pub(crate) const MEMORY_SIDECAR_DIR: &str = ".omnix";
+pub(crate) const MEMORY_SIDECAR_FILE: &str = "memory.md";
+
+/// The managed block that goes into CLAUDE.md / AGENTS.md / GEMINI.md.
+/// Deliberately contains no lesson text — only a path — so committing the
+/// context file never publishes the user's memory bank.
+fn memory_pointer_block(sidecar_rel: &str) -> String {
+    format!(
+        "\n<!--- OMNIX MEMORY START --->\n\
+         ## 🧠 OMNIX Anti-Failure Guidelines\n\
+         改动本项目前，先读 `{sidecar_rel}`：那里是与本工作区相关的历史踩坑记录与规约，\
+         请严加防范、避免重犯。（该文件是本机个人经验，已被 .gitignore 排除，不随仓库分发。）\n\
+         <!--- OMNIX MEMORY END --->\n"
+    )
+}
+
+/// Make sure the sidecar can't be committed. Appends to `.gitignore` only
+/// inside a git repo, only once, and never rewrites existing entries.
+fn ensure_sidecar_ignored(workspace_path: &Path) {
+    if !workspace_path.join(".git").exists() {
+        return; // not a repo — nothing to leak into
+    }
+    let gitignore = workspace_path.join(".gitignore");
+    let existing = fs::read_to_string(&gitignore).unwrap_or_default();
+    let entry = format!("{MEMORY_SIDECAR_DIR}/");
+    if existing.lines().any(|l| {
+        let l = l.trim();
+        l == entry || l == MEMORY_SIDECAR_DIR || l == format!("/{entry}")
+    }) {
+        return;
+    }
+    let mut next = existing;
+    if !next.is_empty() && !next.ends_with('\n') {
+        next.push('\n');
+    }
+    next.push_str(
+        "\n# OMNIX 注入的个人踩坑经验（本机资产，不随仓库分发）\n",
+    );
+    next.push_str(&entry);
+    next.push('\n');
+    let _ = fs::write(&gitignore, next);
+}
+
 impl AgentManager {
     pub fn new(db: Arc<DbManager>) -> Self {
         Self {
@@ -1399,6 +1444,19 @@ impl AgentManager {
                 vec!["CLAUDE.md", "GEMINI.md", "AGENTS.md"]
             };
 
+        // The lessons themselves live in a gitignored sidecar, never in the
+        // agent context file. Those files (CLAUDE.md / AGENTS.md / GEMINI.md) are
+        // normally committed and shared, while the memory bank records what THIS
+        // user hit on THIS machine — personal data that must not ride along with
+        // a repo. The context file only gets a neutral pointer, which is safe to
+        // commit and still routes every agent to the lessons.
+        let sidecar_rel = format!("{MEMORY_SIDECAR_DIR}/{MEMORY_SIDECAR_FILE}");
+        let sidecar_dir = workspace_path.join(MEMORY_SIDECAR_DIR);
+        let _ = fs::create_dir_all(&sidecar_dir);
+        let _ = fs::write(sidecar_dir.join(MEMORY_SIDECAR_FILE), &memories_md);
+        ensure_sidecar_ignored(&workspace_path);
+
+        let pointer = memory_pointer_block(&sidecar_rel);
         for filename in &context_files {
             let file_path = workspace_path.join(filename);
 
@@ -1419,14 +1477,16 @@ impl AgentManager {
                         } else {
                             end_idx
                         };
-                        content.replace_range(start_idx..actual_end, &memories_md);
+                        // Replaces any previously inlined lessons too, so upgrading
+                        // scrubs personal content out of an already-written file.
+                        content.replace_range(start_idx..actual_end, &pointer);
                     } else {
-                        content.push_str(&memories_md);
+                        content.push_str(&pointer);
                     }
                     let _ = fs::write(&file_path, content);
                 }
             } else {
-                let _ = fs::write(&file_path, &memories_md);
+                let _ = fs::write(&file_path, &pointer);
             }
         }
 
@@ -1972,14 +2032,87 @@ mod tests {
             "只请求 Claude Code 时不应写其他 agent 的上下文文件"
         );
 
-        // Read content and check guidelines
+        // The context file is committable: it points at the lessons, it does not
+        // contain them. This is the privacy guarantee — CLAUDE.md/AGENTS.md are
+        // normally shared, the memory bank is personal to this machine.
         let content = fs::read_to_string(&claude_md).unwrap();
         assert!(content.contains("OMNIX Anti-Failure Guidelines"));
-        assert!(content.contains("std::sync::MutexGuard across await point")); // seeded default memory
+        assert!(
+            content.contains(".omnix/memory.md"),
+            "上下文文件应指向旁挂文件:\n{content}"
+        );
+        assert!(
+            !content.contains("std::sync::MutexGuard across await point"),
+            "经验正文绝不能写进会被提交的上下文文件:\n{content}"
+        );
+
+        // The lessons themselves live in the sidecar.
+        let sidecar = test_workspace.join(".omnix").join("memory.md");
+        let sidecar_body = fs::read_to_string(&sidecar).expect("旁挂记忆文件应存在");
+        assert!(
+            sidecar_body.contains("std::sync::MutexGuard across await point"),
+            "旁挂文件才装经验正文:\n{sidecar_body}"
+        );
 
         // Clean up
         let _ = fs::remove_file(claude_md);
+        let _ = fs::remove_dir_all(test_workspace.join(".omnix"));
         let _ = fs::remove_dir(test_workspace);
+        if test_db_path.exists() {
+            let _ = fs::remove_file(&test_db_path);
+        }
+    }
+
+    /// In a git repo the sidecar must be gitignored on write, and an older
+    /// version that had inlined the lessons must get them scrubbed out.
+    #[tokio::test]
+    async fn injection_gitignores_sidecar_and_scrubs_inlined_lessons() {
+        let temp_dir = std::env::temp_dir();
+        let timestamp = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let test_db_path = temp_dir.join(format!("omnix_ignore_test_{}.db", timestamp));
+        let db = Arc::new(DbManager::new_with_path(test_db_path.clone()));
+        let manager = AgentManager::new(Arc::clone(&db));
+
+        let ws = temp_dir.join(format!("omnix_gitws_{}", timestamp));
+        fs::create_dir_all(ws.join(".git")).unwrap();
+        // Simulate a workspace upgraded from the old behaviour: lessons inline.
+        fs::write(
+            ws.join("CLAUDE.md"),
+            "# Project rules\nkeep me\n\n<!--- OMNIX MEMORY START --->\n\
+             ### ❌ 坑点 1: std::sync::MutexGuard across await point\n\
+             <!--- OMNIX MEMORY END --->\n",
+        )
+        .unwrap();
+
+        manager
+            .inject_workspace_memories(&ws.to_string_lossy(), "Claude Code")
+            .unwrap();
+
+        let content = fs::read_to_string(ws.join("CLAUDE.md")).unwrap();
+        assert!(content.contains("keep me"), "手写内容不能被破坏:\n{content}");
+        assert!(
+            !content.contains("MutexGuard across await point"),
+            "升级后必须把已内联的经验清出去:\n{content}"
+        );
+
+        let gitignore = fs::read_to_string(ws.join(".gitignore")).expect(".gitignore 应被创建");
+        assert!(gitignore.contains(".omnix/"), "旁挂目录必须被忽略:\n{gitignore}");
+
+        // Idempotent: a second run must not append a duplicate entry.
+        manager
+            .inject_workspace_memories(&ws.to_string_lossy(), "Claude Code")
+            .unwrap();
+        let again = fs::read_to_string(ws.join(".gitignore")).unwrap();
+        assert_eq!(
+            again.matches(".omnix/").count(),
+            1,
+            "重复注入不应重复写 .gitignore:\n{again}"
+        );
+
+        let _ = fs::remove_dir_all(&ws);
         if test_db_path.exists() {
             let _ = fs::remove_file(&test_db_path);
         }
