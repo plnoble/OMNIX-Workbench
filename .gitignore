@@ -68,3 +68,8 @@ cherry-studio-ref/
 # Antigravity CLI 探针输出（本地临时文件）
 agy_out.txt
 t.txt
+
+# OMNIX 注入的避坑记忆是本机个人资产（踩过的坑、机器配置、做过的项目），
+# 不随开源仓库分发。这两个文件在本项目里只有注入内容，没有手写约定。
+CLAUDE.md
+AGENTS.md
