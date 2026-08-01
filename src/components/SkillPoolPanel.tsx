@@ -67,6 +67,9 @@ export function SkillPoolPanel() {
   const [fusePicks, setFusePicks] = useState<Set<string>>(new Set());
   const [fusing, setFusing] = useState(false);
   const [fusionProposal, setFusionProposal] = useState<SkillFusionProposal | null>(null);
+  // 默认让源技能退出正式池：融合的本意是「取代」，不是再多一个重叠技能
+  // （留着会被审核判为与源技能重复，越忠实融合越吃亏）。可取消。
+  const [retireSources, setRetireSources] = useState(true);
 
   // AI 改造
   const [reformOpen, setReformOpen] = useState(false);
@@ -352,12 +355,20 @@ export function SkillPoolPanel() {
   const handleApplyFusion = async () => {
     if (!fusionProposal) return;
     try {
+      const sources = fusionProposal.sources ?? [];
       await skillPoolApi.applyFusion(
         fusionProposal.name,
         fusionProposal.description,
         fusionProposal.content,
+        sources,
+        retireSources,
       );
-      toast.success(`融合技能「${fusionProposal.name}」已进入待定池`);
+      toast.success(
+        `融合技能「${fusionProposal.name}」已进入待定池`,
+        retireSources && sources.length
+          ? { description: `源技能 ${sources.join("、")} 已退回待定池，可随时恢复` }
+          : undefined,
+      );
       setFusionProposal(null);
       setFuseMode(false);
       setFusePicks(new Set());
@@ -889,6 +900,23 @@ export function SkillPoolPanel() {
               <p className="rounded-lg bg-primary/5 p-2 text-xs leading-5 text-primary">
                 {fusionProposal.explanation}
               </p>
+            )}
+            {(fusionProposal.sources?.length ?? 0) > 0 && (
+              <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-border bg-muted/10 p-2 text-xs leading-5">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={retireSources}
+                  onChange={(e) => setRetireSources(e.target.checked)}
+                />
+                <span>
+                  入库后让源技能 <strong>{fusionProposal.sources.join("、")}</strong> 退出正式池
+                  <span className="block text-muted-foreground">
+                    融合的本意是取代它们。留着的话，本技能会因为「与源技能高度重叠」被审核扣分。
+                    退回的是待定池，不删除文件，随时可以恢复。
+                  </span>
+                </span>
+              </label>
             )}
             <pre className="max-h-[50vh] flex-1 overflow-auto whitespace-pre-wrap rounded-lg bg-muted/20 p-3 text-xs leading-5">
               {fusionProposal.content}

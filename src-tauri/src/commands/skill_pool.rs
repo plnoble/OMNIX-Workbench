@@ -250,15 +250,39 @@ fn read_skill_content(db: &DbManager, name: &str) -> Result<String, String> {
         .map_err(|e| format!("读取技能内容失败: {e}"))
 }
 
-fn build_review_prompt(name: &str, content: &str, official: &[(String, String)]) -> String {
-    let official_list = if official.is_empty() {
+fn build_review_prompt(
+    name: &str,
+    content: &str,
+    official: &[(String, String)],
+    superseded: &[String],
+) -> String {
+    // A fusion's own sources must not count as "duplicates" — it exists to
+    // replace them. Leaving them in the comparison list is what made honest
+    // fusions score worst: the more faithfully they merged, the more they
+    // "overlapped".
+    let comparable: Vec<&(String, String)> = official
+        .iter()
+        .filter(|(n, _)| !superseded.iter().any(|s| s == n))
+        .collect();
+    let official_list = if comparable.is_empty() {
         "（正式池目前为空）".to_string()
     } else {
-        official
+        comparable
             .iter()
             .map(|(n, d)| format!("- {n}: {d}"))
             .collect::<Vec<_>>()
             .join("\n")
+    };
+    let lineage = if superseded.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n## 血缘说明（重要）\n本技能是 {} 的**融合版**，入库后将取代它们（源技能已退出正式池）。\
+             因此不要因为它包含这些源技能的内容而判为重复——那正是它的职责。\
+             请改为评估：是否**完整覆盖**了各源技能的干货？有没有在合并中**丢失**关键步骤？\
+             合并后的结构是否比分开更好用？\n",
+            superseded.join(" + ")
+        )
     };
     let capped: String = content.chars().take(12000).collect();
     format!(
@@ -272,7 +296,7 @@ fn build_review_prompt(name: &str, content: &str, official: &[(String, String)])
 
 ## 正式池已有技能
 {official_list}
-
+{lineage}
 ## 待审技能：{name}
 {capped}
 
@@ -290,7 +314,7 @@ pub async fn review_skill_ai(
     db: State<'_, Arc<DbManager>>,
 ) -> Result<SkillReview, String> {
     let content = read_skill_content(&db, &name)?;
-    let official: Vec<(String, String)> = {
+    let (official, superseded): (Vec<(String, String)>, Vec<String>) = {
         let conn = db.get_connection().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare("SELECT name, description FROM skills WHERE pool = 'official' LIMIT 100")
@@ -298,10 +322,19 @@ pub async fn review_skill_ai(
         let rows = stmt
             .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
             .map_err(|e| e.to_string())?;
-        rows.flatten().collect()
+        let official: Vec<(String, String)> = rows.flatten().collect();
+        // Fusions carry their lineage in source_ref (`omnix:fusion(a+b)`).
+        let source_ref: String = conn
+            .query_row(
+                "SELECT COALESCE(source_ref, '') FROM skills WHERE name = ?1",
+                params![name],
+                |r| r.get(0),
+            )
+            .unwrap_or_default();
+        (official, fusion_sources(&source_ref))
     };
 
-    let prompt = build_review_prompt(&name, &content, &official);
+    let prompt = build_review_prompt(&name, &content, &official, &superseded);
     let reply = knowledge::chat_once(&db, &chat_model, &prompt).await?;
     let json = crate::slides::extract_json(&reply).ok_or("审核回复里找不到 JSON")?;
     let mut review: SkillReview =
@@ -475,6 +508,10 @@ pub struct SkillFusionProposal {
     pub description: String,
     pub content: String,
     pub explanation: String,
+    /// The skills this one was fused from. Carried through to `apply_pool_fusion`
+    /// so fusion can *supersede* its sources instead of quietly adding a third
+    /// overlapping skill (which review then rejects for overlapping).
+    pub sources: Vec<String>,
 }
 
 /// AI 融合：把多个技能合成一个更强的（R2）。只生成不落盘。
@@ -526,15 +563,27 @@ pub async fn fuse_pool_skills_ai(
         description,
         content,
         explanation,
+        sources: names,
     })
 }
 
-/// Persist a fusion proposal as a NEW pending-pool skill in the central store.
+/// Persist a fusion proposal as a pending-pool skill that *supersedes* its
+/// sources.
+///
+/// Fusion used to be a pure add: it wrote a third skill and left the two it was
+/// merged from sitting in the official pool. Review then (correctly) flagged the
+/// result as overlapping those very skills — the tool told you to fuse, then
+/// rejected the fusion. So we record the lineage in `source_ref` and, unless the
+/// caller opts out, retire the sources by moving them back to the pending pool.
+/// Retiring is reversible on purpose: nothing is deleted, the files and rows
+/// stay, they just leave the official pool.
 #[tauri::command]
 pub fn apply_pool_fusion(
     name: String,
     description: String,
     content: String,
+    sources: Vec<String>,
+    retire_sources: bool,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<(), String> {
     let conn = db.get_connection().map_err(|e| e.to_string())?;
@@ -559,14 +608,49 @@ pub fn apply_pool_fusion(
         std::fs::write(dir.join(file), &content).map_err(|e| format!("写入失败: {e}"))?;
     }
     let dir_str = dir.to_string_lossy().to_string();
+    // Lineage in source_ref: review reads it to judge "does this cover both?"
+    // instead of "does this duplicate them?".
+    let source_ref = if sources.is_empty() {
+        "omnix:fusion".to_string()
+    } else {
+        format!("omnix:fusion({})", sources.join("+"))
+    };
     conn.execute(
         "INSERT INTO skills (name, description, file_path, profile, is_active, dependencies,
                              source_type, source_ref, central_path)
-         VALUES (?1, ?2, ?3, 'Core', 1, '[]', 'fusion', 'omnix:fusion', ?3)",
-        params![name, description, dir_str],
+         VALUES (?1, ?2, ?3, 'Core', 1, '[]', 'fusion', ?4, ?3)",
+        params![name, description, dir_str, source_ref],
     )
     .map_err(|e| e.to_string())?;
+
+    if retire_sources {
+        for src in &sources {
+            // Back to the pending pool — reversible, nothing deleted.
+            conn.execute(
+                "UPDATE skills SET pool = 'pending' WHERE name = ?1 AND pool = 'official'",
+                params![src],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
     Ok(())
+}
+
+/// Source skills that a fused skill replaces, parsed from its `source_ref`
+/// (`omnix:fusion(a+b)`). Empty for skills that aren't fusions.
+pub(crate) fn fusion_sources(source_ref: &str) -> Vec<String> {
+    source_ref
+        .strip_prefix("omnix:fusion(")
+        .and_then(|rest| rest.strip_suffix(')'))
+        .map(|inner| {
+            inner
+                .split('+')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Delete a skill completely: central files + DB row (+ sync targets via
@@ -675,4 +759,57 @@ pub fn get_skill_pool_content(
     db: State<'_, Arc<DbManager>>,
 ) -> Result<String, String> {
     read_skill_content(&db, &name)
+}
+
+#[cfg(test)]
+mod fusion_tests {
+    use super::{build_review_prompt, fusion_sources};
+
+    #[test]
+    fn fusion_sources_parses_lineage() {
+        assert_eq!(
+            fusion_sources("omnix:fusion(browse+gstack)"),
+            vec!["browse".to_string(), "gstack".to_string()]
+        );
+        assert_eq!(fusion_sources("omnix:fusion(a + b)"), vec!["a", "b"]);
+        // Non-fusion skills carry no lineage.
+        assert!(fusion_sources("omnix:fusion").is_empty());
+        assert!(fusion_sources("local").is_empty());
+        assert!(fusion_sources("").is_empty());
+    }
+
+    /// The bug this fixes: a fusion was compared against the very skills it
+    /// merges, so the more faithfully it merged the worse it scored.
+    #[test]
+    fn review_prompt_excludes_superseded_sources_and_states_lineage() {
+        let official = vec![
+            ("browse".to_string(), "网页浏览".to_string()),
+            ("gstack".to_string(), "调用栈分析".to_string()),
+            ("unrelated".to_string(), "别的技能".to_string()),
+        ];
+        let superseded = vec!["browse".to_string(), "gstack".to_string()];
+        let prompt = build_review_prompt("gstack_browse", "内容", &official, &superseded);
+
+        // Sources must not appear in the comparison list…
+        let list_section = prompt
+            .split("## 待审技能")
+            .next()
+            .expect("prompt has a comparison section");
+        assert!(list_section.contains("- unrelated:"), "无关技能仍应参与比对");
+        assert!(!list_section.contains("- browse:"), "源技能不应出现在比对列表:\n{list_section}");
+        assert!(!list_section.contains("- gstack:"), "源技能不应出现在比对列表:\n{list_section}");
+
+        // …and the reviewer must be told why.
+        assert!(prompt.contains("融合版"), "应说明血缘:\n{prompt}");
+        assert!(prompt.contains("browse + gstack"), "应列出被取代的源技能");
+        assert!(prompt.contains("完整覆盖"), "评判标准应改为覆盖度而非重复度");
+    }
+
+    #[test]
+    fn ordinary_skill_review_keeps_full_comparison_list() {
+        let official = vec![("browse".to_string(), "网页浏览".to_string())];
+        let prompt = build_review_prompt("some_skill", "内容", &official, &[]);
+        assert!(prompt.contains("- browse:"), "非融合技能仍要与全池比对");
+        assert!(!prompt.contains("融合版"), "非融合技能不应出现血缘段");
+    }
 }

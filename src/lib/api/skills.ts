@@ -31,6 +31,8 @@ export interface SkillFusionProposal {
   description: string;
   content: string;
   explanation: string;
+  /** 被融合的源技能——落盘时用于记录血缘并（可选）让它们退出正式池。 */
+  sources: string[];
 }
 export interface CollectReport {
   tools_scanned: number;
@@ -78,8 +80,15 @@ export const skillPoolApi = {
     invoke<void>("apply_skill_reform", { name, newContent }),
   fuse: (names: string[], chatModel: string) =>
     invoke<SkillFusionProposal>("fuse_pool_skills_ai", { names, chatModel }),
-  applyFusion: (name: string, description: string, content: string) =>
-    invoke<void>("apply_pool_fusion", { name, description, content }),
+  /** 落盘融合结果。retireSources=true 时源技能退回待定池（可逆，不删除）。 */
+  applyFusion: (
+    name: string,
+    description: string,
+    content: string,
+    sources: string[],
+    retireSources: boolean,
+  ) =>
+    invoke<void>("apply_pool_fusion", { name, description, content, sources, retireSources }),
   remove: (name: string) => invoke<void>("delete_pool_skill", { name }),
 };
 
