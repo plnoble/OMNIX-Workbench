@@ -47,6 +47,44 @@ pub const PAGE_ROLES: &[PageRole] = &[
     PageRole { key: "closing", label: "结尾", layouts: &["section", "cover"], intent: "致谢/联系方式/下一步" },
 ];
 
+/// 全部版式，按「文字 / 数据 / 分析模型」分组。前端的版式下拉和控件目录都由此生成，
+/// 加版式只改这一处（外加渲染分支），不会出现清单和渲染对不上。
+pub const ALL_LAYOUTS: &[&str] = &[
+    // 文字类
+    "cover", "section", "bullets", "content", "two-column", "quote", "image", "image-left",
+    // 数据类（读 Slide.items）
+    "metrics", "chart", "process", "timeline", "gantt", "risk", "compare-table",
+    // 分析模型（读 Slide.columns）
+    "swot", "matrix-2x2", "porter", "pest", "bmc",
+];
+
+/// 版式的中文名（界面下拉显示）。
+pub fn layout_label(layout: &str) -> &'static str {
+    match layout {
+        "cover" => "封面",
+        "section" => "章节页",
+        "bullets" => "要点",
+        "content" => "标题+正文",
+        "two-column" => "双栏",
+        "quote" => "引用",
+        "image" => "图片",
+        "image-left" => "左图右文",
+        "metrics" => "指标卡",
+        "chart" => "图表",
+        "process" => "流程",
+        "timeline" => "时间线",
+        "gantt" => "甘特图",
+        "risk" => "风险",
+        "compare-table" => "对比表",
+        "swot" => "SWOT",
+        "matrix-2x2" => "四象限",
+        "porter" => "波特五力",
+        "pest" => "PEST",
+        "bmc" => "商业模式画布",
+        _ => "自定义",
+    }
+}
+
 pub fn role(key: &str) -> Option<&'static PageRole> {
     PAGE_ROLES.iter().find(|r| r.key == key)
 }
@@ -183,6 +221,7 @@ fn select(
 }
 
 const DENSITY: &[(&str, &str)] = &[("loose", "疏"), ("normal", "适中"), ("tight", "密")];
+const MEDIA_SLOTS: &[(&str, &str)] = &[("none", "不配图"), ("right", "右侧"), ("left", "左侧")];
 const EMPHASIS: &[(&str, &str)] = &[("none", "不强调"), ("first", "首项"), ("last", "末项")];
 const CHART_KINDS: &[(&str, &str)] = &[
     ("bar", "柱状"),
@@ -216,6 +255,7 @@ pub fn controls_for(layout: &str) -> Vec<Control> {
             range("columns", "分栏数", 1, 3, 1, "要点分几栏排布"),
             select("emphasis", "强调项", EMPHASIS, "none", "把某一条要点放大强调"),
             toggle("show_index", "显示序号", false, "给每条要点加编号"),
+            select("media_slot", "配图位", MEDIA_SLOTS, "none", "为图片预留位置——图还没有时先占位，配好图后版面不跳"),
         ],
         "two-column" => vec![
             range("column_count", "栏数", 2, 4, 2, "并列几栏"),
@@ -250,6 +290,7 @@ pub fn controls_for(layout: &str) -> Vec<Control> {
         "timeline" | "gantt" => vec![
             range("milestone_count", "节点数", 3, 8, 5, "时间线上的里程碑数量"),
             toggle("show_today", "显示今天", false, "标出当前时间位置"),
+            toggle("show_values", "显示工期", true, "甘特条右侧的时长标注"),
         ],
         "risk" => vec![
             range("risk_count", "风险项数", 2, 6, 3, "列出几条风险"),
@@ -265,6 +306,36 @@ pub fn controls_for(layout: &str) -> Vec<Control> {
     out
 }
 
+/// 告诉模型这个版式该往**哪些字段**里放内容。
+///
+/// 结构版式的数据落在 `items`（数据类）或 `columns`（定格类），
+/// 模型不知道就只会填 bullets——那样虽然有兜底解析，但拿不到数值和分组。
+pub fn fields_hint_for(layout: &str) -> &'static str {
+    match layout {
+        "metrics" => "用 items：每项 label=指标名、value=数字、detail=同比/环比说明。",
+        "chart" => "用 items：label=横轴标签、value=数值、group=系列名（单系列可省）。\
+                    并在 params.chart_kind 选 bar/line/area/radar/funnel/waterfall/treemap/heatmap。\
+                    瀑布图用 value 表示增减量，合计那一项写 group:\"total\"。\
+                    热力图用 group=行、label=列、value=强度。",
+        "process" => "用 items：label=步骤名、detail=一句话说明，按顺序排列。",
+        "timeline" => "用 items：label=里程碑、detail=时间（如「3月」）。",
+        "gantt" => "用 items：label=任务名、value=起始（数字刻度）、span=持续长度、detail=工期文字。",
+        "risk" => "用 items：label=风险、detail=**应对措施**（必须给）、group=high/mid/low。",
+        "compare-table" => "用 columns 当被比较的方案（title=方案名、bullets 按行给值），\
+                            items 当行维度（label=维度名，group 写更优方案的名字）。",
+        "swot" => "用 columns 给四格，顺序=优势/劣势/机会/威胁，每格 title + bullets。",
+        "matrix-2x2" => "用 columns 给四格（title=象限名 + bullets）；\
+                         body 写「横轴名 | 纵轴名」。",
+        "porter" => "用 columns 给五力，顺序=同业竞争/供应商议价/买方议价/新进入者/替代品。",
+        "pest" => "用 columns 给四格，顺序=政治/经济/社会/技术。",
+        "bmc" => "用 columns 给九格，顺序=重要伙伴/关键业务/核心资源/价值主张/客户关系/\
+                  渠道通路/客户细分/成本结构/收入来源。",
+        "two-column" => "用 columns：每栏 title + bullets。",
+        "quote" => "body 放引文正文，subtitle 放出处。",
+        _ => "用 title / subtitle / bullets / body。",
+    }
+}
+
 /// 版式的控件默认值——新建页面时写进 params，用户没调过也有确定的渲染结果。
 pub fn default_params(layout: &str) -> serde_json::Map<String, serde_json::Value> {
     let mut map = serde_json::Map::new();
@@ -277,6 +348,79 @@ pub fn default_params(layout: &str) -> serde_json::Map<String, serde_json::Value
         map.insert(c.key.to_string(), v);
     }
     map
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// 每页多候选：不调模型就能给出的备选方案
+// ─────────────────────────────────────────────────────────────────────────
+
+/// 同一页内容还能换成哪些版式。先按页面角色推荐（角色知道这页在讲什么），
+/// 角色缺失时按内容形状猜——有数据表就往图表/指标靠，有分栏就往对比靠。
+pub fn alternative_layouts(
+    role_key: &str,
+    current: &str,
+    has_items: bool,
+    has_columns: bool,
+) -> Vec<&'static str> {
+    let mut pool: Vec<&'static str> = role(role_key).map(|r| r.layouts.to_vec()).unwrap_or_default();
+    if pool.len() < 2 {
+        let shape: &[&'static str] = if has_items {
+            &["metrics", "chart", "bullets"]
+        } else if has_columns {
+            &["two-column", "compare-table", "swot"]
+        } else {
+            &["bullets", "content", "two-column"]
+        };
+        pool.extend_from_slice(shape);
+    }
+    let mut out = Vec::new();
+    for l in pool {
+        if l != current && !out.contains(&l) {
+            out.push(l);
+        }
+    }
+    out.truncate(2);
+    out
+}
+
+/// 同版式的另一种参数组合：第一个数量控件挪一格、第一个开关取反、
+/// 第一个下拉换下一个选项。通用规则，加新版式不用再写一遍候选逻辑。
+/// 通用控件（密度/页码）不参与——那是整页偏好，不是这一页的排布方案。
+pub fn variant_params(
+    layout: &str,
+    base: &serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut out = base.clone();
+    let (mut did_range, mut did_toggle, mut did_select) = (false, false, false);
+    for ctl in controls_for(layout) {
+        if ctl.key == "density" || ctl.key == "show_page_number" {
+            continue;
+        }
+        match ctl.kind {
+            ControlKind::Range if !did_range => {
+                let (min, max) = (ctl.min.unwrap_or(0), ctl.max.unwrap_or(0));
+                let cur = param_int(base, layout, ctl.key);
+                // 往上挪一格，到顶就回到最小值——总是给出一个不同的值。
+                let next = if cur < max { cur + 1 } else { min };
+                out.insert(ctl.key.to_string(), serde_json::json!(next));
+                did_range = next != cur;
+            }
+            ControlKind::Toggle if !did_toggle => {
+                let cur = param_bool(base, layout, ctl.key);
+                out.insert(ctl.key.to_string(), serde_json::json!(!cur));
+                did_toggle = true;
+            }
+            ControlKind::Select if !did_select && ctl.options.len() > 1 => {
+                let cur = param_text(base, layout, ctl.key);
+                let i = ctl.options.iter().position(|(k, _)| *k == cur).unwrap_or(0);
+                let next = ctl.options[(i + 1) % ctl.options.len()].0;
+                out.insert(ctl.key.to_string(), serde_json::json!(next));
+                did_select = true;
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// 读一个整数参数，越界或类型不对时回落到该版式的默认值。
@@ -341,6 +485,25 @@ mod tests {
         assert_eq!(default_layout_for_role("nonsense"), "content");
     }
 
+    /// 清单、标签、角色推荐、渲染分支必须彼此对得上——
+    /// 任何一处漏了，用户就会看到一个选得中却渲染不出来的版式。
+    #[test]
+    fn layout_catalog_is_consistent() {
+        for l in ALL_LAYOUTS {
+            assert_ne!(layout_label(l), "自定义", "{l} 缺中文名");
+            assert!(!fields_hint_for(l).is_empty(), "{l} 缺字段提示");
+        }
+        for r in PAGE_ROLES {
+            for l in r.layouts {
+                assert!(ALL_LAYOUTS.contains(l), "角色 {} 推荐了不在清单里的版式 {l}", r.key);
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        for l in ALL_LAYOUTS {
+            assert!(seen.insert(*l), "版式清单里 {l} 重复");
+        }
+    }
+
     #[test]
     fn controls_always_include_common_ones() {
         for layout in ["cover", "bullets", "chart", "swot", "完全没见过的版式"] {
@@ -355,6 +518,47 @@ mod tests {
         let params = default_params("process");
         for c in controls_for("process") {
             assert!(params.contains_key(c.key), "默认值漏了 {}", c.key);
+        }
+    }
+
+    /// 候选的意义在于「不一样」。给出跟当前一模一样的方案等于没给。
+    #[test]
+    fn variant_params_actually_differ() {
+        for layout in ["bullets", "process", "chart", "metrics", "two-column", "cover"] {
+            let base = default_params(layout);
+            let v = variant_params(layout, &base);
+            assert_ne!(v, base, "{layout} 的候选参数跟默认值一样");
+            // 通用控件不该被候选改掉——那是整页偏好
+            assert_eq!(v.get("density"), base.get("density"), "{layout} 候选不该动密度");
+            assert_eq!(
+                v.get("show_page_number"),
+                base.get("show_page_number"),
+                "{layout} 候选不该动页码"
+            );
+            // 候选值仍须合法：读回来不能被夹回默认
+            for c in controls_for(layout) {
+                if let ControlKind::Range = c.kind {
+                    let got = param_int(&v, layout, c.key);
+                    assert!(
+                        got >= c.min.unwrap_or(i64::MIN) && got <= c.max.unwrap_or(i64::MAX),
+                        "{layout}.{} 候选值越界",
+                        c.key
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn alternatives_never_repeat_the_current_layout() {
+        let alts = alternative_layouts("matrix", "swot", false, true);
+        assert!(!alts.contains(&"swot"), "候选里不该有当前版式: {alts:?}");
+        assert!(!alts.is_empty());
+        // 没有角色时按内容形状兜底，也不能给空
+        assert!(!alternative_layouts("", "bullets", true, false).is_empty());
+        assert!(!alternative_layouts("不存在的角色", "content", false, false).is_empty());
+        for l in alternative_layouts("", "bullets", true, false) {
+            assert!(ALL_LAYOUTS.contains(&l), "候选版式 {l} 不在清单里");
         }
     }
 

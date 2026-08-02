@@ -219,8 +219,19 @@ fn slide_xml(slide: &Slide, deck: &Deck, media: &mut Option<SlideMedia>) -> Stri
             if !slide.subtitle.is_empty() {
                 p.push_str(&para(&slide.subtitle, 20, &body_c, false, false));
             }
-            for b in &slide.bullets {
-                p.push_str(&para(b, 18, &body_c, false, true));
+            // P3 结构版式（图表/分析模型）在 pptx 里没有对应图形能力，但**内容不能丢**：
+            // 降级成条目文本。视觉不对等是已知取舍，导出一页空白不是。
+            match crate::slides_blocks::text_fallback(slide) {
+                Some(lines) => {
+                    for line in &lines {
+                        p.push_str(&para(line, 18, &body_c, false, true));
+                    }
+                }
+                None => {
+                    for b in &slide.bullets {
+                        p.push_str(&para(b, 18, &body_c, false, true));
+                    }
+                }
             }
             for line in slide.body.split('\n').filter(|l| !l.trim().is_empty()) {
                 p.push_str(&para(line, 18, &body_c, false, false));

@@ -116,6 +116,36 @@ pub struct Slide {
     /// 键取自 `slides_layout::controls_for(layout)`；脏值在读取时回落默认。
     #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
     pub params: serde_json::Map<String, serde_json::Value>,
+    /// P3 结构化数据：指标/图表/流程/时间线/风险/对比表共用的一张表。
+    /// 空着也没关系——`slides_blocks` 会从 `bullets` 解析出来。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<SlideItem>,
+}
+
+/// 一条结构化数据。一张表喂全部数据类版式，不给每个版式发明字段：
+/// 柱状图的 `label/value`、流程的 `label/detail`、风险的 `label/detail/group`
+/// （group=等级）、甘特的 `value/span`（起始/时长）、热力图的 `group/label/value`
+/// （行/列/强度）都落在这五个字段上。
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct SlideItem {
+    #[serde(default)]
+    pub label: String,
+    /// 主数值：柱高、指标数字、甘特起点、热力强度
+    #[serde(default)]
+    pub value: f64,
+    /// 第二个数值：目前只有甘特用（条长）
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub span: f64,
+    /// 说明文本：同比、步骤描述、应对措施、日期
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub detail: String,
+    /// 分组：图表系列、风险等级、热力图行、对比表优胜列
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub group: String,
+}
+
+fn is_zero(v: &f64) -> bool {
+    *v == 0.0
 }
 
 impl Slide {
@@ -222,7 +252,7 @@ pub fn parse_deck(raw: &str) -> Result<Deck, String> {
 // Rendering — the ONE canonical renderer (preview == export)
 // ─────────────────────────────────────────────────────────────────────────
 
-fn esc(s: &str) -> String {
+pub(crate) fn esc(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
@@ -231,7 +261,7 @@ fn esc(s: &str) -> String {
 
 /// Minimal inline formatting: `**bold**` → <strong>, plus HTML-escape. Keeps
 /// slide text safe (content comes from a model) while allowing light emphasis.
-fn inline(s: &str) -> String {
+pub(crate) fn inline(s: &str) -> String {
     let escaped = esc(s);
     let mut out = String::with_capacity(escaped.len());
     let mut rest = escaped.as_str();
@@ -342,9 +372,11 @@ fn brand_css(brand: &Brand) -> String {
         ));
     }
     if !brand.accent.trim().is_empty() {
+        // --acc 同时驱动 P3 的图表与分析模型配色，母版换色时图表跟着换，
+        // 不会出现「版面是品牌色、图表还是主题色」的脱节。
         css.push_str(&format!(
-            ".bullets li:before,.accent{{background:{};}}",
-            brand.accent
+            ".bullets li:before,.accent{{background:{c};}}.slide{{--acc:{c};}}",
+            c = brand.accent
         ));
     }
     if !brand.logo.trim().is_empty() {
@@ -381,14 +413,25 @@ fn render_slide_inner(slide: &Slide) -> String {
             .collect();
         format!("<div class=\"s-body\">{paras}</div>")
     };
-    let image = {
+    // 媒体槽：图还没配好也把位置**留出来**（虚线占位框）。这样先排版后配图，
+    // 图片落位时版面不会整个跳一次——空 image 直接不渲染才是版面会跳的原因。
+    let media = |reserve: bool| -> String {
         let src = image_src(&slide.image);
-        if src.is_empty() {
-            String::new()
-        } else {
+        if !src.is_empty() {
             format!("<div class=\"s-image\"><img src=\"{}\" alt=\"\"/></div>", esc(&src))
+        } else if reserve {
+            "<div class=\"s-image ph\"><span>图片位 · 点「配图」生成</span></div>".to_string()
+        } else {
+            String::new()
         }
     };
+    let image = media(false);
+
+    // P3 结构版式（分析模型 / 图表）自带内容区，标题行仍由这里统一出，
+    // 保证所有版式的标题排版一致。
+    if let Some(block) = crate::slides_blocks::render_body(slide) {
+        return format!("<div class=\"box content block\">{title}{subtitle}{block}</div>");
+    }
 
     match slide.layout.as_str() {
         "cover" => {
@@ -410,15 +453,15 @@ fn render_slide_inner(slide: &Slide) -> String {
                 format!("<cite>— {}</cite>", inline(&slide.subtitle))
             }
         ),
-        "bullets" => format!(
-            "<div class=\"box content\">{title}{subtitle}{}</div>",
-            bullets_html_with(
+        "bullets" => {
+            let list = bullets_html_with(
                 &slide.bullets,
                 param_int(p, lay, "columns"),
                 &param_text(p, lay, "emphasis"),
                 param_bool(p, lay, "show_index"),
-            )
-        ),
+            );
+            with_media_slot(p, lay, &media, format!("{title}{subtitle}{list}"))
+        }
         "two-column" => {
             let cols: String = slide
                 .columns
@@ -442,19 +485,44 @@ fn render_slide_inner(slide: &Slide) -> String {
                 "<div class=\"box content\">{title}{subtitle}<div class=\"cols{divider} bal-{balance}\">{cols}</div></div>"
             )
         }
+        // 图片版式的槽位是版式自带的，永远预留。
         "image" => format!(
-            "<div class=\"box image-layout\">{title}{subtitle}{image}</div>"
+            "<div class=\"box image-layout\">{title}{subtitle}{}</div>",
+            media(true)
         ),
         "image-left" => format!(
-            "<div class=\"box split\">{image}<div class=\"split-text\">{title}{subtitle}{}{body}</div></div>",
+            "<div class=\"box split\">{}<div class=\"split-text\">{title}{subtitle}{}{body}</div></div>",
+            media(true),
             bullets_html(&slide.bullets)
         ),
         // "content" and any unknown layout: generic title + subtitle + bullets + body.
-        _ => format!(
-            "<div class=\"box content\">{title}{subtitle}{}{body}{image}</div>",
-            bullets_html(&slide.bullets)
-        ),
+        _ => {
+            let list = bullets_html(&slide.bullets);
+            with_media_slot(p, lay, &media, format!("{title}{subtitle}{list}{body}{image}"))
+        }
     }
+}
+
+/// 把内容和媒体槽拼成一页。`media_slot` = none（或该版式没有这个控件）时
+/// 原样返回，所以不带媒体槽的版式走这里零开销、零改动。
+fn with_media_slot(
+    p: &serde_json::Map<String, serde_json::Value>,
+    layout: &str,
+    media: &dyn Fn(bool) -> String,
+    content: String,
+) -> String {
+    let slot = crate::slides_layout::param_text(p, layout, "media_slot");
+    if slot != "left" && slot != "right" {
+        return format!("<div class=\"box content\">{content}</div>");
+    }
+    let pic = media(true);
+    let text = format!("<div class=\"slot-text\">{content}</div>");
+    let inner = if slot == "left" {
+        format!("{pic}{text}")
+    } else {
+        format!("{text}{pic}")
+    };
+    format!("<div class=\"box content slotted\">{inner}</div>")
 }
 
 /// Full self-contained HTML document. If `only` is `Some(i)`, render just that
@@ -622,27 +690,128 @@ body{font-family:'Inter','PingFang SC','Microsoft YaHei',system-ui,sans-serif;ba
 .split .s-image img{width:100%;height:100%;object-fit:cover}
 .split .split-text{flex:1;padding:80px;display:flex;flex-direction:column;justify-content:center;gap:20px}
 .pagenum{position:absolute;bottom:28px;right:40px;font-size:18px;opacity:.5}
+/* 媒体槽：图未就位时的占位框，保证「先排版后配图」不改变版面 */
+.s-image.ph{border:2px dashed var(--grid);border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:20px;opacity:.55;min-height:180px}
+.split .s-image.ph{border-radius:0;min-height:100%}
+.box.slotted{flex-direction:row;align-items:center;gap:56px}
+.box.slotted .slot-text{flex:1;min-width:0;display:flex;flex-direction:column;gap:20px}
+.box.slotted .s-image{flex:0 0 38%;max-height:100%;display:flex;align-items:center;justify-content:center}
+.box.slotted .s-image img{max-width:100%;max-height:520px;border-radius:14px;object-fit:cover}
+.box.slotted .s-image.ph{align-self:stretch;max-height:none}
+/* ── P3 结构版式：分析模型 + 图表 ── */
+.box.block{justify-content:flex-start;gap:18px}
+.box.block>.s-title{font-size:44px}
+.box.block .metrics,.box.block .steps,.box.block .quad,.box.block .porter,
+.box.block .pest,.box.block .canvas,.box.block .chart,.box.block .quadwrap,
+.box.block .risks,.box.block .tline{flex:1;min-height:0}
+/* table 不吃 flex:1，用 auto 外边距把它在纵向居中 */
+.box.block .ctable{margin:auto 0}
+.metrics{display:grid;gap:28px;align-content:center}
+.metric{background:var(--surface);border-radius:16px;padding:28px 32px;display:flex;flex-direction:column;gap:8px;justify-content:center}
+.mval{font-size:64px;font-weight:800;line-height:1;color:var(--acc)}
+.mlab{font-size:24px;font-weight:600}
+.mdelta{font-size:19px;opacity:.7}
+/* 步骤卡按内容高度收缩再整体居中——拉满高度会得到一排空荡荡的长条 */
+.steps{display:flex;align-items:center;gap:12px}
+.steps.horiz{flex-direction:row}
+.steps.vert{flex-direction:column;justify-content:center}
+.step{flex:1;background:var(--surface);border-radius:14px;padding:22px;display:flex;gap:14px;align-items:flex-start}
+.steps.vert .step{flex:0 0 auto}
+.stepno{flex:0 0 auto;width:38px;height:38px;border-radius:50%;background:var(--acc);color:var(--on-acc);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:20px}
+.stepbody h3{font-size:24px;font-weight:700;line-height:1.25}
+.stepbody p{font-size:19px;line-height:1.45;opacity:.8;margin-top:6px}
+.arrow{flex:0 0 auto;display:flex;align-items:center;font-size:30px;opacity:.5}
+.ctable{width:100%;border-collapse:collapse;font-size:22px}
+.ctable th,.ctable td{padding:14px 18px;text-align:left;border-bottom:1px solid var(--grid)}
+.ctable thead th{font-size:24px;color:var(--acc);font-weight:700}
+.ctable tbody th{font-weight:600;opacity:.85}
+.ctable td.win{background:var(--surface2);font-weight:700}
+.tline{display:flex;align-items:center;position:relative;padding:40px 0}
+.tline:before{content:'';position:absolute;left:0;right:0;top:50%;height:3px;background:var(--grid)}
+.tline ol{list-style:none;display:grid;width:100%;position:relative}
+.tmark{position:relative;display:flex;flex-direction:column;align-items:center}
+.tdot{width:18px;height:18px;border-radius:50%;background:var(--acc);z-index:1}
+.tlab{position:absolute;width:92%;text-align:center;font-size:20px;line-height:1.3;display:flex;flex-direction:column;gap:4px}
+.tmark.up .tlab{bottom:28px}
+.tmark.down .tlab{top:28px}
+.tdate{font-size:17px;opacity:.65}
+.tnow{font-size:15px;color:var(--acc);font-weight:700}
+.risks{list-style:none;display:flex;flex-direction:column;gap:14px;justify-content:center}
+.risk-row{display:grid;grid-template-columns:64px 1fr 1.3fr;gap:18px;align-items:center;background:var(--surface);border-radius:12px;padding:16px 20px;font-size:21px}
+.sev{font-size:17px;font-weight:800;text-align:center;border-radius:999px;padding:4px 0;color:#0b1020}
+/* 等级色是语义色（红/琥珀/蓝），不跟主题变——换主题不该把"高危"变成品牌色 */
+.sev-high{background:#ff7a6b}.sev-mid{background:#f6c453}.sev-low{background:#8fb6ff}
+.rname{font-weight:700}
+.rplan{opacity:.82}
+.noplan{opacity:.45;font-style:italic}
+.quadwrap{display:flex;gap:14px;align-items:stretch}
+.quadcol{flex:1;display:flex;flex-direction:column;gap:10px;min-width:0}
+.axis-y{writing-mode:vertical-rl;transform:rotate(180deg);font-size:18px;opacity:.6;text-align:center}
+.axis-x{font-size:18px;opacity:.6;text-align:center}
+.quad{flex:1;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:14px}
+.qcell,.force,.pcell,.bcell{background:var(--surface);border-radius:14px;padding:18px 22px;overflow:hidden}
+.qcell.hot{background:var(--surface2);outline:2px solid var(--acc)}
+.qcell h3,.force h3,.pcell h3,.bcell h3{font-size:22px;font-weight:700;color:var(--acc);margin-bottom:8px}
+.qcell ul,.force ul,.pcell ul,.bcell ul{list-style:none;display:flex;flex-direction:column;gap:6px}
+.qcell li,.force li,.pcell li,.bcell li{font-size:19px;line-height:1.35;padding-left:14px;position:relative}
+.qcell li:before,.force li:before,.pcell li:before,.bcell li:before{content:'·';position:absolute;left:2px;opacity:.6}
+.porter{display:grid;grid-template-columns:1fr 1fr 1fr;grid-template-rows:1fr 1fr 1fr;gap:12px}
+.porter .f1{grid-area:2/1}.porter .f2{grid-area:2/3}.porter .f3{grid-area:1/2}.porter .f4{grid-area:3/2}
+.porter .center{grid-area:2/2;background:var(--surface2);outline:2px solid var(--acc)}
+.porter.nocenter{grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr}
+.porter.nocenter .f1,.porter.nocenter .f2,.porter.nocenter .f3,.porter.nocenter .f4{grid-area:auto}
+.pest{display:grid;gap:14px}
+.pest.grid{grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr}
+.pest.row{grid-template-columns:repeat(4,1fr)}
+.canvas{display:grid;gap:10px;grid-template-columns:repeat(5,1fr);grid-template-rows:1fr 1fr .62fr;
+  grid-template-areas:"kp ka vp cr cs" "kp kr vp ch cs" "cost cost cost rev rev"}
+.canvas .bcell h3{font-size:19px}
+.canvas .bcell li{font-size:16px}
+.canvas.compact .bcell{padding:12px 14px}
+.canvas.compact .bcell h3{font-size:17px;margin-bottom:4px}
+.canvas.compact .bcell li{font-size:14px;line-height:1.25}
+.chart{display:flex;flex-direction:column;gap:10px;justify-content:center}
+.chart svg{width:100%;height:auto;max-height:100%;overflow:visible}
+.chart .grid{stroke:var(--grid);stroke-width:1}
+.chart .tick,.chart .xlab{fill:currentColor;opacity:.62;font-size:17px}
+.chart .val{fill:currentColor;font-size:18px;font-weight:700}
+.chart .inbar{fill:currentColor;font-size:18px;font-weight:600}
+.chart .tmrect{stroke:var(--grid)}
+.legend{display:flex;gap:20px;justify-content:center;font-size:18px;opacity:.8}
+.legend .lg{display:inline-flex;align-items:center;gap:7px}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+.slide.dense-tight .box.block{gap:10px}
+.slide.dense-tight .metric{padding:18px 22px}
+.slide.dense-tight .mval{font-size:52px}
 /* ── theme: midnight ── */
-.theme-midnight .slide{background:linear-gradient(135deg,#111a33 0%,#0b1020 100%);color:#eaf0ff}
+.theme-midnight .slide{background:linear-gradient(135deg,#111a33 0%,#0b1020 100%);color:#eaf0ff;
+  --acc:#4dd0e1;--acc2:#8fb6ff;--acc3:#ffb86b;--on-acc:#0b1020;--grid:rgba(234,240,255,.16);
+  --surface:rgba(255,255,255,.07);--surface2:rgba(255,255,255,.15)}
 .theme-midnight .s-sub,.theme-midnight .col p{color:#aab8dd}
 .theme-midnight .bullets li:before,.theme-midnight .accent{background:#4dd0e1}
 .theme-midnight .s-title,.theme-midnight .quote blockquote{background:linear-gradient(90deg,#eaf0ff,#8fb6ff);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
 .theme-midnight .col h2{color:#4dd0e1}
 /* ── theme: minimal ── */
-.theme-minimal .slide{background:#ffffff;color:#1a1a2e}
+.theme-minimal .slide{background:#ffffff;color:#1a1a2e;
+  --acc:#111827;--acc2:#4b5563;--acc3:#b45309;--on-acc:#ffffff;--grid:rgba(0,0,0,.14);
+  --surface:rgba(0,0,0,.045);--surface2:rgba(0,0,0,.10)}
 .theme-minimal .s-sub,.theme-minimal .col p{color:#5a5a72}
 .theme-minimal .bullets li:before,.theme-minimal .accent{background:#111}
 .theme-minimal .col h2{color:#111}
 .theme-minimal .quote blockquote{color:#111}
 /* ── theme: corporate ── */
-.theme-corporate .slide{background:#f4f7fb;color:#0f2540}
+.theme-corporate .slide{background:#f4f7fb;color:#0f2540;
+  --acc:#2f6fed;--acc2:#1b4fb5;--acc3:#b45309;--on-acc:#ffffff;--grid:rgba(15,37,64,.16);
+  --surface:rgba(47,111,237,.09);--surface2:rgba(47,111,237,.19)}
 .theme-corporate .s-sub,.theme-corporate .col p{color:#3d5a80}
 .theme-corporate .bullets li:before,.theme-corporate .accent{background:#2f6fed}
 .theme-corporate .col h2{color:#2f6fed}
 .theme-corporate .box.cover,.theme-corporate .box.section{background:linear-gradient(135deg,#0f2540,#1b3a5c);color:#fff;margin:0}
 .theme-corporate .box.cover .s-sub{color:#bcd3f5}
 /* ── theme: sunset ── */
-.theme-sunset .slide{background:linear-gradient(135deg,#2b1055 0%,#7597de 100%);color:#fff}
+.theme-sunset .slide{background:linear-gradient(135deg,#2b1055 0%,#7597de 100%);color:#fff;
+  --acc:#ff8f6b;--acc2:#ffcf8f;--acc3:#c9a7ff;--on-acc:#2b1055;--grid:rgba(255,255,255,.22);
+  --surface:rgba(255,255,255,.12);--surface2:rgba(255,255,255,.22)}
 .theme-sunset .s-sub,.theme-sunset .col p{color:#ffe0c7}
 .theme-sunset .bullets li:before,.theme-sunset .accent{background:#ff8f6b}
 .theme-sunset .col h2{color:#ffcf8f}
@@ -661,17 +830,25 @@ JSON 结构：
   "theme": "midnight | minimal | corporate | sunset 之一",
   "slides": [
     {
-      "layout": "cover | section | bullets | content | two-column | quote | image | image-left",
+      "layout": "见下方版式清单",
       "title": "标题（cover/section 用大标题）",
       "subtitle": "副标题/署名（quote 里作为出处）",
       "bullets": ["要点1", "要点2"],
       "body": "正文段落（quote 里作为引文正文，可用 \n 分段）",
       "columns": [{"title":"列标题","bullets":["..."]}],
+      "items": [{"label":"名称","value":0,"detail":"说明","group":"分组"}],
       "image": "图片URL（可留空）"
     }
   ]
 }
-规则：首页用 cover；每页只放该 layout 需要的字段；bullets 每条精炼不超过一行；要点用 **加粗** 强调关键词；一份演示 8-14 页为宜，宁少而精。用与用户需求相同的语言撰写。"#;
+版式清单：
+- 文字类：cover / section / bullets / content / two-column / quote / image / image-left
+- 数据类（内容放 items）：metrics 指标卡 · chart 图表 · process 流程 · timeline 时间线 ·
+  gantt 甘特 · risk 风险（detail 写应对措施） · compare-table 对比表
+- 分析模型（内容放 columns，每格 title + bullets）：swot · matrix-2x2 四象限 ·
+  porter 波特五力 · pest · bmc 商业模式画布
+
+规则：首页用 cover；每页只放该 layout 需要的字段；bullets 每条精炼不超过一行；要点用 **加粗** 强调关键词；一份演示 8-14 页为宜，宁少而精；数字只用有依据的，**不要编造精确数值**。用与用户需求相同的语言撰写。"#;
 
 pub fn build_generate_prompt(topic: &str, slide_count: u32) -> String {
     format!(
@@ -731,9 +908,12 @@ pub fn build_expand_slide_prompt(
         r#"你是专业的演示文稿设计师。把下面这一页的提纲展开成正式的幻灯内容。只输出**一个幻灯页的 JSON 对象**，不要数组、不要解释、不要代码围栏。
 
 单页 JSON 结构（只放该 layout 需要的字段）：
-{{"layout":"{layout}","title":"...","subtitle":"...","bullets":["..."],"body":"...","columns":[{{"title":"...","bullets":["..."]}}],"notes":"演讲备注"}}
+{{"layout":"{layout}","title":"...","subtitle":"...","bullets":["..."],"body":"...","columns":[{{"title":"...","bullets":["..."]}}],"items":[{{"label":"...","value":0,"span":0,"detail":"...","group":"..."}}],"notes":"演讲备注"}}
+
+**本页版式的填法**：{hint}
 
 规则：bullets 每条精炼不超过一行、用 **加粗** 强调关键词；notes 写 1-3 句口播提示；用与提纲相同的语言。
+数值必须来自提纲或常识，**不要编造精确数字**；没有可靠数字时宁可不用 value。
 
 演示标题：{deck_title}（第 {n}/{total} 页）
 本页 layout：{layout}
@@ -743,6 +923,7 @@ pub fn build_expand_slide_prompt(
         layout = item.layout,
         title = item.title,
         n = index + 1,
+        hint = crate::slides_layout::fields_hint_for(&item.layout),
     )
 }
 
@@ -968,6 +1149,29 @@ mod param_render_tests {
             !render_deck_html(&deck, None, false).contains(element),
             "关掉页码后不应再渲染页码元素"
         );
+    }
+
+    /// 媒体槽：图还没配好也要把位置留出来，否则配好图那一刻整页版面会跳。
+    #[test]
+    fn media_slot_reserves_space_before_the_image_exists() {
+        let plain = render_slide_inner(&slide_with("bullets", serde_json::json!({})));
+        assert!(!plain.contains("s-image"), "没开配图位就不该有图片区");
+
+        let reserved =
+            render_slide_inner(&slide_with("bullets", serde_json::json!({"media_slot": "right"})));
+        assert!(reserved.contains("s-image ph"), "开了配图位应出现占位框:\n{reserved}");
+        assert!(reserved.contains("slotted"), "应切成图文并排");
+
+        // 图片版式即使没有图也永远留位
+        let empty_img = render_slide_inner(&slide_with("image", serde_json::json!({})));
+        assert!(empty_img.contains("s-image ph"), "图片版式必须留位:\n{empty_img}");
+
+        // 真有图时占位框让位给图片
+        let mut with_pic = slide_with("bullets", serde_json::json!({"media_slot": "left"}));
+        with_pic.image = "https://example.com/a.png".into();
+        let html = render_slide_inner(&with_pic);
+        assert!(html.contains("<img src=\"https://example.com/a.png\""), "{html}");
+        assert!(!html.contains("ph"), "有图就不该再显示占位框");
     }
 
     /// P0 模板锁：模型改了版式/参数也要被还原，只留文案改动。

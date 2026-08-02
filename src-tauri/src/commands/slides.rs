@@ -402,6 +402,43 @@ pub async fn generate_deck(
     persist_deck(&db, deck)
 }
 
+// ── P2：版式目录（角色 + 控件契约）──────────────────────────────────────────
+
+/// 前端控件面板的数据源。**契约只有后端一份**——控件的取值范围、默认值、
+/// 选项都由 `slides_layout` 说了算，前端只负责画滑杆和开关。这样加一个新
+/// 控件不需要改两处，也不会出现「前端允许拖到 10、后端夹到 6」的错位。
+#[derive(Debug, Clone, Serialize)]
+pub struct LayoutInfo {
+    pub key: &'static str,
+    pub label: &'static str,
+    /// 这个版式内容该往哪些字段放（编辑器提示用）
+    pub fields_hint: &'static str,
+    pub controls: Vec<crate::slides_layout::Control>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LayoutCatalog {
+    pub roles: &'static [crate::slides_layout::PageRole],
+    pub layouts: Vec<LayoutInfo>,
+}
+
+#[tauri::command]
+pub fn slides_layout_catalog() -> LayoutCatalog {
+    use crate::slides_layout as L;
+    LayoutCatalog {
+        roles: L::PAGE_ROLES,
+        layouts: L::ALL_LAYOUTS
+            .iter()
+            .map(|k| LayoutInfo {
+                key: k,
+                label: L::layout_label(k),
+                fields_hint: L::fields_hint_for(k),
+                controls: L::controls_for(k),
+            })
+            .collect(),
+    }
+}
+
 // ── A：两阶段生成（大纲 → 展开）─────────────────────────────────────────────
 
 /// Stage 1: plan the deck as an outline the user can fix in seconds before any
@@ -548,6 +585,146 @@ pub async fn edit_slide_ai(
     }
     new_slide.fill_default_params();
     deck.slides[slide_index] = new_slide;
+    deck.id = id;
+    persist_deck(&db, deck)
+}
+
+// ── 每页多候选：先给不要钱的，AI 只出一个 ───────────────────────────────────
+
+/// 一个候选方案。`html` 是这一页的完整渲染，前端直接塞 iframe 对比。
+#[derive(Debug, Clone, Serialize)]
+pub struct SlideCandidate {
+    pub label: String,
+    /// `template` = 本地重排（秒出、免费）；`ai` = 模型重构
+    pub kind: &'static str,
+    pub slide_json: String,
+    pub html: String,
+}
+
+/// 给这一页出几个候选：**模板候选是本地算的**（换版式、换排布），只有最后一个
+/// 才调模型。多数时候用户想要的只是「换个样子」，那不该花一次模型调用。
+///
+/// AI 候选失败不影响其他候选——拿不到就少一个选项，不是整个功能报错。
+#[tauri::command]
+pub async fn slide_candidates(
+    id: String,
+    slide_index: usize,
+    chat_model: String,
+    include_ai: Option<bool>,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<Vec<SlideCandidate>, String> {
+    let deck: Deck = {
+        let conn = db.get_connection().map_err(|e| e.to_string())?;
+        let json = conn
+            .query_row("SELECT model_json FROM decks WHERE id = ?1", params![id], |r| {
+                r.get::<_, String>(0)
+            })
+            .map_err(|_| "演示不存在".to_string())?;
+        serde_json::from_str(&json).map_err(|e| e.to_string())?
+    };
+    let current = deck
+        .slides
+        .get(slide_index)
+        .ok_or_else(|| "页码超出范围".to_string())?
+        .clone();
+
+    // 渲染时把候选放回原 deck，主题/母版/页码都保持真实上下文。
+    let render = |s: &slides::Slide| -> String {
+        let mut d = deck.clone();
+        d.slides[slide_index] = s.clone();
+        slides::render_deck_html(&d, Some(slide_index), false)
+    };
+    let mut out = vec![SlideCandidate {
+        label: "当前".to_string(),
+        kind: "template",
+        slide_json: serde_json::to_string(&current).unwrap_or_default(),
+        html: render(&current),
+    }];
+
+    // 1) 同版式换排布
+    let tweaked = {
+        let mut s = current.clone();
+        s.params = crate::slides_layout::variant_params(&s.layout, &s.params);
+        s
+    };
+    if tweaked.params != current.params {
+        out.push(SlideCandidate {
+            label: "换个排布".to_string(),
+            kind: "template",
+            slide_json: serde_json::to_string(&tweaked).unwrap_or_default(),
+            html: render(&tweaked),
+        });
+    }
+
+    // 2) 换版式（角色推荐的兄弟版式）
+    for alt in crate::slides_layout::alternative_layouts(
+        &current.role,
+        &current.layout,
+        !current.items.is_empty(),
+        !current.columns.is_empty(),
+    ) {
+        let mut s = current.clone();
+        s.layout = alt.to_string();
+        s.fill_default_params();
+        out.push(SlideCandidate {
+            label: format!("改用「{}」", crate::slides_layout::layout_label(alt)),
+            kind: "template",
+            slide_json: serde_json::to_string(&s).unwrap_or_default(),
+            html: render(&s),
+        });
+    }
+
+    // 3) AI 候选：唯一一次模型调用，且**允许**它换结构（与模板锁相反的那一档）
+    if include_ai.unwrap_or(true) && !chat_model.trim().is_empty() {
+        let slide_json = serde_json::to_string_pretty(&current).unwrap_or_default();
+        let prompt = slides::build_slide_edit_prompt(
+            &deck.title,
+            slide_index,
+            deck.slides.len(),
+            &slide_json,
+            "请重新设计这一页：可以换 layout、重组内容结构，目标是让信息更好读、更有说服力。内容含义不变。",
+        );
+        if let Ok(reply) = knowledge::chat_once(&db, &chat_model, &prompt).await {
+            if let Some(mut s) = slides::extract_json(&reply)
+                .and_then(|j| serde_json::from_str::<slides::Slide>(&j).ok())
+            {
+                s.fill_default_params();
+                out.push(SlideCandidate {
+                    label: "AI 重构".to_string(),
+                    kind: "ai",
+                    slide_json: serde_json::to_string(&s).unwrap_or_default(),
+                    html: render(&s),
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// 采用一个候选。和别的 AI 改动一样先快照，选错了可以撤销。
+#[tauri::command]
+pub fn apply_slide_candidate(
+    id: String,
+    slide_index: usize,
+    slide_json: String,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<DeckRecord, String> {
+    let mut slide: slides::Slide =
+        serde_json::from_str(&slide_json).map_err(|e| format!("候选 JSON 无效: {e}"))?;
+    let current = {
+        let conn = db.get_connection().map_err(|e| e.to_string())?;
+        conn.query_row("SELECT model_json FROM decks WHERE id = ?1", params![id], |r| {
+            r.get::<_, String>(0)
+        })
+        .map_err(|_| "演示不存在".to_string())?
+    };
+    let mut deck: Deck = serde_json::from_str(&current).map_err(|e| e.to_string())?;
+    if slide_index >= deck.slides.len() {
+        return Err("页码超出范围".to_string());
+    }
+    snapshot(&db, &id, &format!("换第 {} 页方案前", slide_index + 1));
+    slide.fill_default_params();
+    deck.slides[slide_index] = slide;
     deck.id = id;
     persist_deck(&db, deck)
 }

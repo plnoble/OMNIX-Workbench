@@ -31,6 +31,7 @@ mod skill_dag;
 mod skill_frontmatter;
 mod skill_library;
 mod slides;
+mod slides_blocks;
 mod slides_layout;
 mod storage;
 mod sync_engine;
@@ -784,6 +785,9 @@ pub fn run() {
             commands::export_deck_pptx,
             commands::list_deck_versions,
             commands::restore_deck_version,
+            commands::slides_layout_catalog,
+            commands::slide_candidates,
+            commands::apply_slide_candidate,
             commands::generate_outline,
             commands::expand_outline,
             commands::edit_slide_ai,
