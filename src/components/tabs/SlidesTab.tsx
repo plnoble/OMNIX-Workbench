@@ -19,6 +19,8 @@ import {
   Play,
   Plus,
   Presentation,
+  Shuffle,
+  Sliders,
   Sparkles,
   Trash2,
   Undo2,
@@ -40,8 +42,13 @@ import {
   type Deck,
   type DeckMeta,
   type DeckVersion,
+  type LayoutCatalog,
+  type LayoutControl,
+  type LayoutInfo,
   type Outline,
   type Slide,
+  type SlideCandidate,
+  type SlideItem,
 } from "@/lib/tauri-api";
 
 const THEME_LABEL: Record<string, string> = {
@@ -51,16 +58,31 @@ const THEME_LABEL: Record<string, string> = {
   sunset: "落日紫",
 };
 
-const LAYOUTS: { id: string; label: string }[] = [
-  { id: "cover", label: "封面" },
-  { id: "section", label: "章节页" },
-  { id: "bullets", label: "要点" },
-  { id: "content", label: "图文" },
-  { id: "two-column", label: "双栏" },
-  { id: "quote", label: "引用" },
-  { id: "image", label: "大图" },
-  { id: "image-left", label: "左图右文" },
+/** 版式清单在后端（slides_layout::ALL_LAYOUTS），目录加载失败时的最小兜底。 */
+const FALLBACK_LAYOUTS: LayoutInfo[] = [
+  "cover", "section", "bullets", "content", "two-column", "quote", "image", "image-left",
+].map((key) => ({ key, label: key, fields_hint: "", controls: [] }));
+
+/** 版式分组：三类的填法完全不同，混在一个下拉里选不出来。 */
+const LAYOUT_GROUPS: { title: string; keys: string[] }[] = [
+  { title: "文字", keys: ["cover", "section", "bullets", "content", "two-column", "quote", "image", "image-left"] },
+  { title: "数据", keys: ["metrics", "chart", "process", "timeline", "gantt", "risk", "compare-table"] },
+  { title: "分析模型", keys: ["swot", "matrix-2x2", "porter", "pest", "bmc"] },
 ];
+/** 内容放 items 的版式——编辑器给它们出数据表而不是要点框。 */
+const DATA_LAYOUTS = new Set(["metrics", "chart", "process", "timeline", "gantt", "risk", "compare-table"]);
+/** 内容放 columns 的定格版式，格子数固定（改不了，改了渲染也只认前 N 个）。 */
+const SLOT_COUNTS: Record<string, number> = {
+  swot: 4, "matrix-2x2": 4, porter: 5, pest: 4, bmc: 9, "two-column": 2, "compare-table": 2,
+};
+/** 各格的默认名（占位提示），与后端 slides_blocks 的默认标题一致。 */
+const SLOT_LABELS: Record<string, string[]> = {
+  swot: ["优势 S", "劣势 W", "机会 O", "威胁 T"],
+  pest: ["政治 Political", "经济 Economic", "社会 Social", "技术 Technological"],
+  porter: ["同业竞争", "供应商议价能力", "买方议价能力", "新进入者威胁", "替代品威胁"],
+  bmc: ["重要伙伴", "关键业务", "核心资源", "价值主张", "客户关系", "渠道通路", "客户细分", "成本结构", "收入来源"],
+  "compare-table": ["方案 A", "方案 B"],
+};
 
 function slideSummary(s: Slide): string {
   return s.title || s.body?.slice(0, 24) || s.bullets?.[0] || "（空白页）";
@@ -102,6 +124,14 @@ export function SlidesTab() {
   // 放映
   const [presenting, setPresenting] = useState(false);
   const [presentHtml, setPresentHtml] = useState("");
+  // P2: 版式目录 —— 控件契约来自后端，前端只负责画滑杆/开关/下拉
+  const [catalog, setCatalog] = useState<LayoutCatalog | null>(null);
+  // P0: 模板锁（AI 精修默认只换文案）
+  const [lockTemplate, setLockTemplate] = useState(true);
+  // 每页多候选
+  const [candOpen, setCandOpen] = useState(false);
+  const [candidates, setCandidates] = useState<SlideCandidate[]>([]);
+  const [candLoading, setCandLoading] = useState(false);
 
   const previewBoxRef = useRef<HTMLDivElement | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -132,6 +162,8 @@ export function SlidesTab() {
         }
       })
       .catch(() => {});
+    // 目录拿不到不该让整个面板瘫掉——退到最小版式清单，控件面板不显示。
+    slidesApi.layoutCatalog().then(setCatalog).catch(() => {});
   }, [loadDecks]);
 
   // ── preview: deterministic re-render of the selected slide ──
@@ -206,6 +238,61 @@ export function SlidesTab() {
     },
     [mutateDeck, selected],
   );
+
+  // ── P2 控件面板 ──
+  const slide = deck?.slides[Math.min(selected, (deck?.slides.length ?? 1) - 1)];
+  const layoutInfo = useMemo<LayoutInfo | undefined>(
+    () => catalog?.layouts.find((l) => l.key === slide?.layout),
+    [catalog, slide?.layout],
+  );
+  const layoutList = catalog?.layouts ?? FALLBACK_LAYOUTS;
+  const slotCount = SLOT_COUNTS[slide?.layout ?? ""] ?? 0;
+
+  /** 控件值：优先取页面 params，缺失时用契约默认值——渲染端也是这么回落的。 */
+  const paramValue = (c: LayoutControl): number | boolean | string => {
+    const v = slide?.params?.[c.key];
+    return v === undefined || v === null ? c.default : (v as number | boolean | string);
+  };
+  const setParam = (key: string, value: number | boolean | string) =>
+    mutateSlide((s) => {
+      s.params = { ...(s.params ?? {}), [key]: value };
+    });
+
+  /** 数据类版式的条目表。空数组时给一行空的，用户不用先想「怎么加第一行」。 */
+  const items: SlideItem[] = slide?.items?.length ? slide.items : [{ label: "" }];
+  const setItems = (next: SlideItem[]) =>
+    mutateSlide((s) => {
+      s.items = next.filter((it) => (it.label ?? "").trim() || it.detail?.trim() || it.value);
+    });
+
+  // ── 每页多候选 ──
+  const openCandidates = async () => {
+    if (!deck) return;
+    setCandOpen(true);
+    setCandidates([]);
+    setCandLoading(true);
+    try {
+      setCandidates(await slidesApi.candidates(deck.id, selected, chatModel));
+    } catch (e) {
+      toast.error(`生成候选失败：${e}`);
+      setCandOpen(false);
+    } finally {
+      setCandLoading(false);
+    }
+  };
+
+  const applyCandidate = async (c: SlideCandidate) => {
+    if (!deck) return;
+    try {
+      const rec = await slidesApi.applyCandidate(deck.id, selected, c.slide_json);
+      setDeck(JSON.parse(rec.model_json) as Deck);
+      setCandOpen(false);
+      void refreshVersions(deck.id);
+      toast.success(`已换成「${c.label}」，可撤销`);
+    } catch (e) {
+      toast.error(`应用候选失败：${e}`);
+    }
+  };
 
   const openDeck = async (id: string) => {
     try {
@@ -322,7 +409,7 @@ export function SlidesTab() {
       await slidesApi.save(deck.id, JSON.stringify(deck));
       const rec =
         editScope === "slide"
-          ? await slidesApi.editSlide(deck.id, selected, instruction.trim(), chatModel)
+          ? await slidesApi.editSlide(deck.id, selected, instruction.trim(), chatModel, lockTemplate)
           : await slidesApi.editAi(deck.id, instruction.trim(), chatModel);
       const next = JSON.parse(rec.model_json) as Deck;
       setDeck(next);
@@ -509,8 +596,6 @@ export function SlidesTab() {
     }
   };
 
-  const slide = deck?.slides[Math.min(selected, (deck?.slides.length ?? 1) - 1)];
-
   const modelOptions = useMemo(
     () =>
       models.map((m) => ({
@@ -618,17 +703,26 @@ export function SlidesTab() {
                 {outline.items.map((item, i) => (
                   <div key={i} className="flex items-start gap-2 rounded-lg border border-border bg-background/60 p-2">
                     <span className="mt-1.5 w-5 shrink-0 text-center font-mono text-[10px] text-muted-foreground">{i + 1}</span>
+                    {/* 大纲阶段选的是**角色**（这页干什么），版式由角色推导——
+                        这样规划时想的是叙事，不是排版 */}
                     <select
-                      value={item.layout}
+                      value={item.role || ""}
                       onChange={(e) => {
+                        const role = catalog?.roles.find((r) => r.key === e.target.value);
                         const items = [...outline.items];
-                        items[i] = { ...item, layout: e.target.value };
+                        items[i] = {
+                          ...item,
+                          role: e.target.value,
+                          layout: role?.layouts[0] ?? item.layout,
+                        };
                         setOutline({ ...outline, items });
                       }}
+                      title={catalog?.roles.find((r) => r.key === item.role)?.intent}
                       className="h-7 shrink-0 rounded border border-border bg-background px-1 text-[11px]"
                     >
-                      {LAYOUTS.map((l) => (
-                        <option key={l.id} value={l.id}>{l.label}</option>
+                      {!item.role && <option value="">（未定）</option>}
+                      {(catalog?.roles ?? []).map((r) => (
+                        <option key={r.key} value={r.key}>{r.label}</option>
                       ))}
                     </select>
                     <div className="flex min-w-0 flex-1 flex-col gap-1">
@@ -874,7 +968,7 @@ export function SlidesTab() {
                 <div className="flex items-center justify-between">
                   <span className="font-mono text-[10px] text-muted-foreground">{i + 1}</span>
                   <span className="rounded bg-muted/60 px-1 py-0.5 text-[10px] text-muted-foreground">
-                    {LAYOUTS.find((l) => l.id === s.layout)?.label ?? s.layout}
+                    {layoutList.find((l) => l.key === s.layout)?.label ?? s.layout}
                   </span>
                 </div>
                 <div className="mt-1 truncate font-medium">{slideSummary(s)}</div>
@@ -975,14 +1069,153 @@ export function SlidesTab() {
               版式
               <select
                 value={slide.layout}
-                onChange={(e) => mutateSlide((s) => { s.layout = e.target.value; })}
+                onChange={(e) =>
+                  mutateSlide((s) => {
+                    s.layout = e.target.value;
+                    // 换版式时补上新版式的控件默认值；旧键留着，换回去还能复原。
+                    const info = layoutList.find((l) => l.key === e.target.value);
+                    const next = { ...(s.params ?? {}) };
+                    for (const c of info?.controls ?? []) {
+                      if (next[c.key] === undefined) next[c.key] = c.default;
+                    }
+                    s.params = next;
+                  })
+                }
                 className="mt-1 h-9 w-full rounded-lg border border-border bg-background px-2 text-sm text-foreground"
               >
-                {LAYOUTS.map((l) => (
-                  <option key={l.id} value={l.id}>{l.label}</option>
-                ))}
+                {LAYOUT_GROUPS.map((g) => {
+                  const opts = layoutList.filter((l) => g.keys.includes(l.key));
+                  if (opts.length === 0) return null;
+                  return (
+                    <optgroup key={g.title} label={g.title}>
+                      {opts.map((l) => (
+                        <option key={l.key} value={l.key}>{l.label}</option>
+                      ))}
+                    </optgroup>
+                  );
+                })}
+                {/* 目录里没有的版式（老 deck / 模型编的）仍要能选中显示 */}
+                {!layoutList.some((l) => l.key === slide.layout) && (
+                  <option value={slide.layout}>{slide.layout}</option>
+                )}
               </select>
             </label>
+
+            {/* P2 控件面板：拖一下就重渲染，不跑模型 */}
+            {layoutInfo && layoutInfo.controls.length > 0 && (
+              <div className="rounded-lg border border-border p-2.5">
+                <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                  <Sliders className="h-3.5 w-3.5" /> 版式参数
+                </div>
+                <div className="flex flex-col gap-2.5">
+                  {layoutInfo.controls.map((c) => (
+                    <div key={c.key} title={c.desc} className="text-xs">
+                      {c.kind === "toggle" ? (
+                        <label className="flex cursor-pointer items-center justify-between gap-2">
+                          <span className="text-muted-foreground">{c.label}</span>
+                          <input
+                            type="checkbox"
+                            checked={Boolean(paramValue(c))}
+                            onChange={(e) => setParam(c.key, e.target.checked)}
+                            className="h-4 w-4 accent-primary"
+                          />
+                        </label>
+                      ) : c.kind === "range" ? (
+                        <label className="flex flex-col gap-1">
+                          <span className="flex justify-between text-muted-foreground">
+                            {c.label}
+                            <span className="tabular-nums text-foreground">{String(paramValue(c))}</span>
+                          </span>
+                          <input
+                            type="range"
+                            min={c.min ?? 0}
+                            max={c.max ?? 10}
+                            value={Number(paramValue(c))}
+                            onChange={(e) => setParam(c.key, Number(e.target.value))}
+                            className="h-1.5 w-full accent-primary"
+                          />
+                        </label>
+                      ) : (
+                        <label className="flex items-center justify-between gap-2">
+                          <span className="shrink-0 text-muted-foreground">{c.label}</span>
+                          <select
+                            value={String(paramValue(c))}
+                            onChange={(e) => setParam(c.key, e.target.value)}
+                            className="h-7 min-w-0 flex-1 rounded border border-border bg-background px-1.5 text-xs text-foreground"
+                          >
+                            {(c.options ?? []).map(([k, label]) => (
+                              <option key={k} value={k}>{label}</option>
+                            ))}
+                          </select>
+                        </label>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* 数据类版式：内容是一张表，不是要点框 */}
+            {DATA_LAYOUTS.has(slide.layout) && (
+              <div className="rounded-lg border border-border p-2.5">
+                <div className="mb-1.5 text-xs font-medium text-muted-foreground">数据</div>
+                {layoutInfo?.fields_hint && (
+                  <p className="mb-2 text-[11px] leading-snug text-muted-foreground/70">
+                    {layoutInfo.fields_hint}
+                  </p>
+                )}
+                <div className="flex flex-col gap-1.5">
+                  {items.map((it, i) => (
+                    <div key={i} className="flex gap-1">
+                      <input
+                        placeholder="名称"
+                        value={it.label ?? ""}
+                        onChange={(e) => {
+                          const next = [...items];
+                          next[i] = { ...next[i], label: e.target.value };
+                          setItems(next);
+                        }}
+                        className="h-7 min-w-0 flex-1 rounded border border-border bg-background px-1.5 text-xs text-foreground"
+                      />
+                      <input
+                        placeholder="数值"
+                        type="number"
+                        value={it.value ?? ""}
+                        onChange={(e) => {
+                          const next = [...items];
+                          next[i] = { ...next[i], value: e.target.value === "" ? 0 : Number(e.target.value) };
+                          setItems(next);
+                        }}
+                        className="h-7 w-16 shrink-0 rounded border border-border bg-background px-1.5 text-xs text-foreground"
+                      />
+                      <input
+                        placeholder={slide.layout === "risk" ? "应对" : "说明"}
+                        value={it.detail ?? ""}
+                        onChange={(e) => {
+                          const next = [...items];
+                          next[i] = { ...next[i], detail: e.target.value };
+                          setItems(next);
+                        }}
+                        className="h-7 min-w-0 flex-1 rounded border border-border bg-background px-1.5 text-xs text-foreground"
+                      />
+                      <button
+                        onClick={() => setItems(items.filter((_, j) => j !== i))}
+                        title="删除这一行"
+                        className="h-7 w-6 shrink-0 rounded border border-border text-xs hover:bg-muted/40"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                <button
+                  onClick={() => setItems([...items, { label: "" }])}
+                  className="mt-1.5 inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs hover:bg-muted/40"
+                >
+                  <Plus className="h-3 w-3" /> 加一行
+                </button>
+              </div>
+            )}
             <label className="text-xs font-medium text-muted-foreground">
               标题
               <input
@@ -999,7 +1232,9 @@ export function SlidesTab() {
                 className="mt-1 h-9 w-full rounded-lg border border-border bg-background px-2 text-sm text-foreground"
               />
             </label>
-            {slide.layout !== "quote" && (
+            {/* 结构版式的内容归数据表/格子编辑器管，这里再出一个要点框只会让人
+                填了没效果——两处都填时后端优先用结构字段 */}
+            {slide.layout !== "quote" && !DATA_LAYOUTS.has(slide.layout) && slotCount === 0 && (
               <label className="text-xs font-medium text-muted-foreground">
                 要点（每行一条，**词** 可加粗）
                 <textarea
@@ -1023,20 +1258,25 @@ export function SlidesTab() {
                 className="mt-1 w-full resize-none rounded-lg border border-border bg-background px-2 py-1.5 text-sm text-foreground"
               />
             </label>
-            {slide.layout === "two-column" && (
+            {/* 定格类版式：格子数由版式固定（SWOT 四格、五力五格、画布九格），
+                所以这里不给"加一格"——加了也渲染不出来 */}
+            {slotCount > 0 && (
               <div className="flex flex-col gap-2">
-                {[0, 1].map((ci) => {
+                {Array.from({ length: slotCount }, (_, ci) => {
                   const col = slide.columns?.[ci] ?? {};
+                  const fill = (s: Slide) => {
+                    s.columns = s.columns ?? [];
+                    while (s.columns.length < slotCount) s.columns.push({});
+                    return s.columns;
+                  };
                   return (
                     <div key={ci} className="rounded-lg border border-border p-2">
                       <input
-                        placeholder={`第 ${ci + 1} 栏标题`}
+                        placeholder={SLOT_LABELS[slide.layout]?.[ci] ?? `第 ${ci + 1} 栏标题`}
                         value={col.title ?? ""}
                         onChange={(e) =>
                           mutateSlide((s) => {
-                            s.columns = s.columns ?? [{}, {}];
-                            while (s.columns.length < 2) s.columns.push({});
-                            s.columns[ci] = { ...s.columns[ci], title: e.target.value };
+                            fill(s)[ci] = { ...s.columns![ci], title: e.target.value };
                           })
                         }
                         className="h-8 w-full rounded border border-border bg-background px-2 text-sm text-foreground"
@@ -1046,10 +1286,8 @@ export function SlidesTab() {
                         value={(col.bullets ?? []).join("\n")}
                         onChange={(e) =>
                           mutateSlide((s) => {
-                            s.columns = s.columns ?? [{}, {}];
-                            while (s.columns.length < 2) s.columns.push({});
-                            s.columns[ci] = {
-                              ...s.columns[ci],
+                            fill(s)[ci] = {
+                              ...s.columns![ci],
                               bullets: e.target.value.split("\n").filter((l) => l.trim().length > 0),
                             };
                           })
@@ -1125,6 +1363,27 @@ export function SlidesTab() {
         >
           <ImageIcon className="h-3.5 w-3.5" /> 配图
         </button>
+        <button
+          onClick={() => void openCandidates()}
+          title="给这一页出几个方案对比（换版式/换排布是本地算的，只有「AI 重构」花一次调用）"
+          className="inline-flex h-9 shrink-0 items-center gap-1 rounded-lg border border-border px-2.5 text-xs hover:bg-muted/40"
+        >
+          <Shuffle className="h-3.5 w-3.5" /> 换方案
+        </button>
+        {editScope === "slide" && (
+          <label
+            title="锁上时 AI 只换文案，不动版式/参数/图片槽——解析后会确定性还原，不指望模型守规矩"
+            className="inline-flex h-9 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg border border-border px-2.5 text-xs hover:bg-muted/40"
+          >
+            <input
+              type="checkbox"
+              checked={lockTemplate}
+              onChange={(e) => setLockTemplate(e.target.checked)}
+              className="h-3.5 w-3.5 accent-primary"
+            />
+            锁版式
+          </label>
+        )}
         <input
           value={instruction}
           onChange={(e) => setInstruction(e.target.value)}
@@ -1209,6 +1468,66 @@ export function SlidesTab() {
       )}
 
       {/* C: 配图 */}
+      {/* 每页多候选：一屏并排比，选中即应用（可撤销） */}
+      {candOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-8"
+          onClick={() => !candLoading && setCandOpen(false)}
+        >
+          <div
+            className="flex max-h-full w-full max-w-6xl flex-col gap-3 rounded-xl border border-border bg-background p-4 shadow-2xl animate-sheet-in"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-semibold">
+                <Shuffle className="mr-1 inline h-4 w-4 text-primary" /> 第 {selected + 1} 页 · 换个方案
+              </span>
+              <button onClick={() => setCandOpen(false)} disabled={candLoading}>
+                <X className="h-4 w-4 text-muted-foreground hover:text-foreground" />
+              </button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              换版式、换排布都是本地重排——秒出且不花模型调用；只有「AI 重构」调了一次模型。选中即替换，可撤销。
+            </p>
+            {candLoading && candidates.length === 0 ? (
+              <div className="flex items-center gap-2 py-10 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" /> 正在生成候选…
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-3 overflow-y-auto md:grid-cols-3">
+                {candidates.map((c, i) => (
+                  <button
+                    key={i}
+                    onClick={() => void applyCandidate(c)}
+                    className="group flex flex-col gap-1.5 rounded-lg border border-border p-2 text-left hover:border-primary"
+                  >
+                    <div className="h-[135px] w-full overflow-hidden rounded bg-muted/20">
+                      <iframe
+                        title={`candidate-${i}`}
+                        sandbox=""
+                        srcDoc={c.html}
+                        style={{
+                          width: 1328,
+                          height: 792,
+                          transform: "scale(0.181)",
+                          transformOrigin: "top left",
+                          border: "none",
+                          pointerEvents: "none",
+                        }}
+                      />
+                    </div>
+                    <span className="flex items-center gap-1.5 text-xs">
+                      {c.kind === "ai" && <Sparkles className="h-3 w-3 text-primary" />}
+                      <span className={cn(i === 0 && "text-muted-foreground")}>{c.label}</span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {imgOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-8" onClick={() => !imaging && setImgOpen(false)}>
           <div className="flex w-full max-w-xl flex-col gap-3 rounded-xl border border-border bg-background p-4 shadow-2xl animate-sheet-in" onClick={(e) => e.stopPropagation()}>

@@ -47,6 +47,11 @@ pub(super) fn persist_deck(db: &DbManager, mut deck: Deck) -> Result<DeckRecord,
     if deck.id.is_empty() {
         deck.id = make_id();
     }
+    // 每份存下去的 deck 都带齐控件默认值。放在这一个收口点，新建/生成/导入/
+    // 回退/手改都自动覆盖到——旧 deck 打开一次也就补齐了，控件面板不会出现空值。
+    for s in deck.slides.iter_mut() {
+        s.fill_default_params();
+    }
     let model_json = serde_json::to_string(&deck).map_err(|e| e.to_string())?;
     let count = deck.slides.len() as i64;
     let conn = db.get_connection().map_err(|e| e.to_string())?;
@@ -498,8 +503,7 @@ pub async fn expand_outline(
         });
     }
     let mut expanded: Vec<slides::Slide> = futures::future::join_all(tasks).await;
-    // 角色决定版式（模型漏填或编造 layout 时兜底），并补齐控件默认值，
-    // 让每一页从诞生起就有确定的可调参数。
+    // 角色决定版式（模型漏填或编造 layout 时兜底）。控件默认值由 persist_deck 统一补。
     for (slide, item) in expanded.iter_mut().zip(outline.items.iter()) {
         if slide.role.is_empty() {
             slide.role = item.role.clone();
@@ -507,7 +511,6 @@ pub async fn expand_outline(
         if slide.layout.is_empty() && !slide.role.is_empty() {
             slide.layout = crate::slides_layout::default_layout_for_role(&slide.role).to_string();
         }
-        slide.fill_default_params();
     }
 
     let deck = Deck {

@@ -12,6 +12,15 @@ export interface SlideColumn {
   bullets?: string[];
   body?: string;
 }
+/** P3 结构化条目：一张表喂全部数据类版式（图表/指标/流程/时间线/风险…）。 */
+export interface SlideItem {
+  label?: string;
+  value?: number;
+  /** 第二个数值，目前只有甘特用（条长） */
+  span?: number;
+  detail?: string;
+  group?: string;
+}
 export interface Slide {
   layout: SlideLayout | string;
   title?: string;
@@ -21,6 +30,47 @@ export interface Slide {
   columns?: SlideColumn[];
   image?: string;
   notes?: string;
+  /** P1 页面角色（cover/metric/risk…） */
+  role?: string;
+  /** P2 控件值。键取自版式目录，脏值由后端回落——前端不做二次校验。 */
+  params?: Record<string, unknown>;
+  items?: SlideItem[];
+}
+
+// ── P2 版式目录：控件契约由后端单点定义，前端只负责画 ──
+
+export type ControlKind = "range" | "toggle" | "select";
+export interface LayoutControl {
+  key: string;
+  label: string;
+  kind: ControlKind;
+  min?: number;
+  max?: number;
+  default: number | boolean | string;
+  options?: [string, string][];
+  desc: string;
+}
+export interface PageRole {
+  key: string;
+  label: string;
+  layouts: string[];
+  intent: string;
+}
+export interface LayoutInfo {
+  key: string;
+  label: string;
+  fields_hint: string;
+  controls: LayoutControl[];
+}
+export interface LayoutCatalog {
+  roles: PageRole[];
+  layouts: LayoutInfo[];
+}
+export interface SlideCandidate {
+  label: string;
+  kind: "template" | "ai";
+  slide_json: string;
+  html: string;
 }
 export interface Brand {
   name: string;
@@ -40,6 +90,8 @@ export interface Deck {
   brand?: Brand | null;
 }
 export interface OutlineItem {
+  /** P1 页面角色：先定「这页干什么」，版式由角色推导 */
+  role?: string;
   layout: string;
   title: string;
   points: string[];
@@ -103,9 +155,27 @@ export const slidesApi = {
     invoke<Outline>("generate_outline", { topic, chatModel, slideCount: slideCount ?? null }),
   expandOutline: (outline: Outline, chatModel: string) =>
     invoke<DeckRecord>("expand_outline", { outline, chatModel }),
-  // B: single-slide diff edit
-  editSlide: (id: string, slideIndex: number, instruction: string, chatModel: string) =>
-    invoke<DeckRecord>("edit_slide_ai", { id, slideIndex, instruction, chatModel }),
+  // B: single-slide diff edit. lockTemplate（默认 true）= 只换文案，
+  // 版式/角色/控件参数/图片槽由后端确定性还原，不指望模型守规矩。
+  editSlide: (
+    id: string,
+    slideIndex: number,
+    instruction: string,
+    chatModel: string,
+    lockTemplate = true,
+  ) =>
+    invoke<DeckRecord>("edit_slide_ai", {
+      id, slideIndex, instruction, chatModel, lockTemplate,
+    }),
+  // P2: 版式目录（页面角色 + 每个版式的控件契约）
+  layoutCatalog: () => invoke<LayoutCatalog>("slides_layout_catalog"),
+  // 每页多候选：模板候选本地算，只有 AI 那个花调用
+  candidates: (id: string, slideIndex: number, chatModel: string, includeAi = true) =>
+    invoke<SlideCandidate[]>("slide_candidates", {
+      id, slideIndex, chatModel, includeAi,
+    }),
+  applyCandidate: (id: string, slideIndex: number, slideJson: string) =>
+    invoke<DeckRecord>("apply_slide_candidate", { id, slideIndex, slideJson }),
   // C: auto illustration
   suggestImagePrompt: (modelJson: string, slideIndex: number) =>
     invoke<string>("suggest_slide_image_prompt", { modelJson, slideIndex }),
