@@ -31,6 +31,7 @@ mod skill_dag;
 mod skill_frontmatter;
 mod skill_library;
 mod slides;
+mod slides_layout;
 mod storage;
 mod sync_engine;
 mod token_economy;

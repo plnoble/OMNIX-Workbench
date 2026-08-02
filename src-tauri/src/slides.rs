@@ -63,6 +63,10 @@ pub struct Brand {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutlineItem {
+    /// P1 页面角色。模型先挑角色（这页干什么），版式由角色推导——
+    /// 模型漏填 layout 或编造一个没见过的版式时，角色是可靠的兜底。
+    #[serde(default)]
+    pub role: String,
     #[serde(default = "default_layout")]
     pub layout: String,
     #[serde(default)]
@@ -104,6 +108,33 @@ pub struct Slide {
     /// Speaker notes — shown in the editor, not on the slide face.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub notes: String,
+    /// P1 页面角色（cover/metric/risk…）：这一页在叙事里干什么。大纲阶段定下，
+    /// 决定默认版式，也让模型知道该往里放什么内容。空 = 未指定。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub role: String,
+    /// P2 控件值：模块数量、强调项、图表类型这类可以不调模型就改的参数。
+    /// 键取自 `slides_layout::controls_for(layout)`；脏值在读取时回落默认。
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub params: serde_json::Map<String, serde_json::Value>,
+}
+
+impl Slide {
+    /// 补齐该版式缺失的控件默认值——旧 deck 或模型没给 params 时，
+    /// 渲染和控件面板都要有确定的值可用。
+    pub fn fill_default_params(&mut self) {
+        for (k, v) in crate::slides_layout::default_params(&self.layout) {
+            self.params.entry(k).or_insert(v);
+        }
+    }
+
+    /// 只保留文案的字段清单之外的一切（版式、参数、图片槽）都算「模板属性」。
+    /// 模板锁就是把这些复原。
+    pub fn restore_template_from(&mut self, original: &Slide) {
+        self.layout = original.layout.clone();
+        self.role = original.role.clone();
+        self.params = original.params.clone();
+        self.image = original.image.clone();
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -222,14 +253,36 @@ fn inline(s: &str) -> String {
 }
 
 fn bullets_html(bullets: &[String]) -> String {
+    bullets_html_with(bullets, 1, "none", false)
+}
+
+/// 受控件驱动的要点渲染（P2）：分栏数、强调项、序号都是参数，
+/// 用户拖控件即时生效，不需要再跑一次模型。
+fn bullets_html_with(bullets: &[String], columns: i64, emphasis: &str, show_index: bool) -> String {
     if bullets.is_empty() {
         return String::new();
     }
+    let last = bullets.len().saturating_sub(1);
     let items: String = bullets
         .iter()
-        .map(|b| format!("<li>{}</li>", inline(b)))
+        .enumerate()
+        .map(|(i, b)| {
+            let strong = (emphasis == "first" && i == 0) || (emphasis == "last" && i == last);
+            let cls = if strong { " class=\"em\"" } else { "" };
+            let idx = if show_index {
+                format!("<span class=\"idx\">{}</span>", i + 1)
+            } else {
+                String::new()
+            };
+            format!("<li{cls}>{idx}{}</li>", inline(b))
+        })
         .collect();
-    format!("<ul class=\"bullets\">{items}</ul>")
+    let col_style = if columns > 1 {
+        format!(" style=\"column-count:{columns}\"")
+    } else {
+        String::new()
+    };
+    format!("<ul class=\"bullets\"{col_style}>{items}</ul>")
 }
 
 /// Render one slide as an inner HTML fragment (without the outer `<section>`).
@@ -304,6 +357,9 @@ fn brand_css(brand: &Brand) -> String {
 }
 
 fn render_slide_inner(slide: &Slide) -> String {
+    use crate::slides_layout::{param_bool, param_int, param_text};
+    let lay = slide.layout.as_str();
+    let p = &slide.params;
     let title = if slide.title.is_empty() {
         String::new()
     } else {
@@ -335,9 +391,15 @@ fn render_slide_inner(slide: &Slide) -> String {
     };
 
     match slide.layout.as_str() {
-        "cover" => format!(
-            "<div class=\"box cover\"><div class=\"accent\"></div>{title}{subtitle}</div>"
-        ),
+        "cover" => {
+            let accent = if param_bool(p, lay, "show_accent") {
+                "<div class=\"accent\"></div>"
+            } else {
+                ""
+            };
+            let align = param_text(p, lay, "align");
+            format!("<div class=\"box cover align-{align}\">{accent}{title}{subtitle}</div>")
+        }
         "section" => format!("<div class=\"box section\">{title}{subtitle}</div>"),
         "quote" => format!(
             "<div class=\"box quote\"><blockquote>{}</blockquote>{}</div>",
@@ -350,7 +412,12 @@ fn render_slide_inner(slide: &Slide) -> String {
         ),
         "bullets" => format!(
             "<div class=\"box content\">{title}{subtitle}{}</div>",
-            bullets_html(&slide.bullets)
+            bullets_html_with(
+                &slide.bullets,
+                param_int(p, lay, "columns"),
+                &param_text(p, lay, "emphasis"),
+                param_bool(p, lay, "show_index"),
+            )
         ),
         "two-column" => {
             let cols: String = slide
@@ -369,7 +436,11 @@ fn render_slide_inner(slide: &Slide) -> String {
                     )
                 })
                 .collect();
-            format!("<div class=\"box content\">{title}{subtitle}<div class=\"cols\">{cols}</div></div>")
+            let divider = if param_bool(p, lay, "show_divider") { " divided" } else { "" };
+            let balance = param_text(p, lay, "balance");
+            format!(
+                "<div class=\"box content\">{title}{subtitle}<div class=\"cols{divider} bal-{balance}\">{cols}</div></div>"
+            )
         }
         "image" => format!(
             "<div class=\"box image-layout\">{title}{subtitle}{image}</div>"
@@ -467,12 +538,20 @@ pub fn render_deck_html(deck: &Deck, only: Option<usize>, print: bool) -> String
         .filter(|(i, _)| only.map(|o| o == *i).unwrap_or(true))
         .map(|(i, s)| {
             let s = effective_slide(s);
+            // 密度与页码开关是通用控件，作用在整页上（P2）。
+            let density = crate::slides_layout::param_text(&s.params, &s.layout, "density");
+            let pagenum = if crate::slides_layout::param_bool(&s.params, &s.layout, "show_page_number")
+            {
+                format!("<div class=\"pagenum\">{}</div>", i + 1)
+            } else {
+                String::new()
+            };
             format!(
-                "<section class=\"slide layout-{}\" data-index=\"{}\">{}{logo_el}{footer_el}<div class=\"pagenum\">{}</div></section>",
+                "<section class=\"slide layout-{} dense-{}\" data-index=\"{}\">{}{logo_el}{footer_el}{pagenum}</section>",
                 esc(&s.layout),
+                esc(&density),
                 i,
                 render_slide_inner(&s),
-                i + 1
             )
         })
         .collect();
@@ -516,7 +595,22 @@ body{font-family:'Inter','PingFang SC','Microsoft YaHei',system-ui,sans-serif;ba
 .bullets li{font-size:27px;line-height:1.4;padding-left:38px;position:relative}
 .bullets li:before{content:'';position:absolute;left:0;top:14px;width:16px;height:16px;border-radius:4px;transform:rotate(45deg)}
 .accent{width:120px;height:10px;border-radius:6px;margin-bottom:12px}
+/* P2 控件驱动的样式：分栏/序号/强调/栏宽/密度都由 params 决定 */
+.bullets[style*="column-count"]{display:block}
+.bullets[style*="column-count"] li{break-inside:avoid;margin-bottom:18px}
+.bullets li.em{font-size:32px;font-weight:700}
+.bullets li .idx{position:absolute;left:0;top:0;width:26px;text-align:center;opacity:.65;font-weight:700}
+.bullets li .idx+*{margin-left:0}
+.cover.align-center{align-items:center;text-align:center}
+.cover.align-center .accent{margin-left:auto;margin-right:auto}
 .cols{display:grid;grid-template-columns:1fr 1fr;gap:56px;margin-top:12px}
+.cols.bal-left-heavy{grid-template-columns:1.6fr 1fr}
+.cols.bal-right-heavy{grid-template-columns:1fr 1.6fr}
+.cols.divided .col+.col{border-left:1px solid currentColor;padding-left:32px;opacity:1}
+.cols.divided .col+.col{border-left-color:rgba(128,128,128,.35)}
+.slide.dense-loose .box{gap:14px}
+.slide.dense-tight .bullets{gap:10px}
+.slide.dense-tight .bullets li{font-size:24px}
 .col h2{font-size:30px;margin-bottom:16px;font-weight:700}
 .col p{font-size:24px;line-height:1.5;opacity:.9}
 .quote blockquote{font-size:44px;line-height:1.4;font-weight:700}
@@ -593,13 +687,26 @@ pub fn build_edit_prompt(current_json: &str, instruction: &str) -> String {
 
 // ── A：两阶段（大纲 → 展开）────────────────────────────────────────────────
 
-pub const OUTLINE_SPEC: &str = r#"只输出一个 JSON 对象，不要解释文字、不要代码围栏。
-{"title":"演示标题","theme":"midnight | minimal | corporate | sunset 之一","items":[{"layout":"cover | section | bullets | content | two-column | quote | image | image-left","title":"这一页的标题","points":["这页要讲的要点提纲1","要点2"]}]}
-规则：首页 layout 用 cover；points 是提纲级要点（短语即可，正式措辞留到展开阶段）；8-14 页为宜，宁少而精；用与用户需求相同的语言。"#;
+/// 大纲规格。P1 起先选**角色**（这页干什么）再选版式——角色让模型在规划阶段
+/// 就把「风险页」和「指标页」区分开，而不是事后把什么内容都套进通用 bullets。
+pub fn outline_spec() -> String {
+    format!(
+        r#"只输出一个 JSON 对象，不要解释文字、不要代码围栏。
+{{"title":"演示标题","theme":"midnight | minimal | corporate | sunset 之一","items":[{{"role":"页面角色 key","layout":"该角色的推荐版式","title":"这一页的标题","points":["这页要讲的要点提纲1","要点2"]}}]}}
+
+可选页面角色（先按叙事需要挑角色，再用它的推荐版式）：
+{roles}
+
+规则：首页角色用 cover；points 是提纲级要点（短语即可，正式措辞留到展开阶段）；
+8-14 页为宜，宁少而精；同一角色不要连着出现三页以上；用与用户需求相同的语言。"#,
+        roles = crate::slides_layout::roles_for_prompt()
+    )
+}
 
 pub fn build_outline_prompt(topic: &str, slide_count: u32) -> String {
     format!(
-        "你是专业的演示文稿设计师。先为下面的主题规划**大纲**（还不写正式内容）。\n{OUTLINE_SPEC}\n\n主题（约 {slide_count} 页）：\n{topic}"
+        "你是专业的演示文稿设计师。先为下面的主题规划**大纲**（还不写正式内容）。\n{}\n\n主题（约 {slide_count} 页）：\n{topic}",
+        outline_spec()
     )
 }
 
@@ -654,6 +761,10 @@ pub fn build_slide_edit_prompt(
         r#"你是专业的演示文稿设计师。修改下面这**一页**幻灯。只输出修改后的**单个幻灯页 JSON 对象**，不要数组、不要解释、不要代码围栏。
 
 保持 JSON 结构不变（可增删字段以匹配 layout）；只改动指令要求的部分；用与原内容相同的语言。
+
+**模板锁**：除非指令明确要求换版式或改结构，否则不得改动 layout、role、params、image
+（版式、页面角色、控件参数、图片槽都属于模板属性）——只替换可见文案。这些字段
+即使你改了系统也会还原，改了等于白费。
 
 所属演示：{deck_title}（第 {n}/{total} 页）
 
@@ -779,5 +890,107 @@ mod tests {
         let html = render_deck_html(&deck, Some(1), false);
         assert!(html.contains("BBB"));
         assert!(!html.contains("AAA"));
+    }
+}
+
+#[cfg(test)]
+mod param_render_tests {
+    use super::*;
+
+    fn slide_with(layout: &str, params: serde_json::Value) -> Slide {
+        let mut s = Slide {
+            layout: layout.into(),
+            title: "标题".into(),
+            bullets: vec!["第一条".into(), "第二条".into(), "第三条".into()],
+            ..Default::default()
+        };
+        if let serde_json::Value::Object(m) = params {
+            s.params = m;
+        }
+        s.fill_default_params();
+        s
+    }
+
+    /// P2 的核心承诺：改参数就改渲染，不需要跑模型。
+    #[test]
+    fn controls_change_the_rendered_html() {
+        let plain = render_slide_inner(&slide_with("bullets", serde_json::json!({})));
+        assert!(!plain.contains("column-count"), "默认单栏");
+        assert!(!plain.contains("class=\"em\""), "默认不强调");
+        assert!(!plain.contains("class=\"idx\""), "默认无序号");
+
+        let tuned = render_slide_inner(&slide_with(
+            "bullets",
+            serde_json::json!({"columns": 2, "emphasis": "first", "show_index": true}),
+        ));
+        assert!(tuned.contains("column-count:2"), "分栏参数应生效:\n{tuned}");
+        assert!(tuned.contains("class=\"em\""), "强调参数应生效");
+        assert!(tuned.contains("class=\"idx\""), "序号参数应生效");
+    }
+
+    #[test]
+    fn emphasis_last_marks_only_the_last_bullet() {
+        let html = render_slide_inner(&slide_with("bullets", serde_json::json!({"emphasis": "last"})));
+        assert_eq!(html.matches("class=\"em\"").count(), 1, "只强调一条");
+        // 强调的应该是最后一条
+        let em_pos = html.find("class=\"em\"").unwrap();
+        assert!(html[em_pos..].contains("第三条"), "应强调最后一条:\n{html}");
+    }
+
+    /// 脏参数不能让渲染崩或画歪——模型可能填出任何东西。
+    #[test]
+    fn dirty_params_still_render() {
+        let html = render_slide_inner(&slide_with(
+            "bullets",
+            serde_json::json!({"columns": 99, "emphasis": "斜着", "show_index": "yes"}),
+        ));
+        assert!(html.contains("column-count:3"), "越界夹到 max=3:\n{html}");
+        assert!(!html.contains("class=\"em\""), "非法强调值回落 none");
+    }
+
+    #[test]
+    fn page_number_toggle_controls_the_footer() {
+        let mut deck = Deck {
+            id: String::new(),
+            title: "T".into(),
+            theme: "midnight".into(),
+            brand: None,
+            slides: vec![slide_with("bullets", serde_json::json!({}))],
+        };
+        // 只看元素，不看 CSS——样式表里始终有 .pagenum 规则。
+        let element = "<div class=\"pagenum\">";
+        assert!(render_deck_html(&deck, None, false).contains(element));
+
+        deck.slides[0]
+            .params
+            .insert("show_page_number".into(), serde_json::json!(false));
+        assert!(
+            !render_deck_html(&deck, None, false).contains(element),
+            "关掉页码后不应再渲染页码元素"
+        );
+    }
+
+    /// P0 模板锁：模型改了版式/参数也要被还原，只留文案改动。
+    #[test]
+    fn template_lock_restores_structure_but_keeps_text() {
+        let original = slide_with("bullets", serde_json::json!({"columns": 2}));
+        let mut edited = Slide {
+            layout: "quote".into(),          // 模型擅自换版式
+            role: "closing".into(),          // 擅自改角色
+            title: "新标题".into(),          // 文案改动——应保留
+            bullets: vec!["改写后的要点".into()],
+            image: "evil.png".into(),        // 擅自塞图
+            ..Default::default()
+        };
+        edited.params.insert("columns".into(), serde_json::json!(3));
+
+        edited.restore_template_from(&original);
+
+        assert_eq!(edited.layout, "bullets", "版式应还原");
+        assert_eq!(edited.role, original.role, "角色应还原");
+        assert_eq!(edited.image, "", "图片槽应还原");
+        assert_eq!(edited.params.get("columns"), Some(&serde_json::json!(2)), "参数应还原");
+        assert_eq!(edited.title, "新标题", "文案改动必须保留");
+        assert_eq!(edited.bullets, vec!["改写后的要点".to_string()], "文案改动必须保留");
     }
 }

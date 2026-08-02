@@ -460,7 +460,18 @@ pub async fn expand_outline(
             }
         });
     }
-    let expanded: Vec<slides::Slide> = futures::future::join_all(tasks).await;
+    let mut expanded: Vec<slides::Slide> = futures::future::join_all(tasks).await;
+    // 角色决定版式（模型漏填或编造 layout 时兜底），并补齐控件默认值，
+    // 让每一页从诞生起就有确定的可调参数。
+    for (slide, item) in expanded.iter_mut().zip(outline.items.iter()) {
+        if slide.role.is_empty() {
+            slide.role = item.role.clone();
+        }
+        if slide.layout.is_empty() && !slide.role.is_empty() {
+            slide.layout = crate::slides_layout::default_layout_for_role(&slide.role).to_string();
+        }
+        slide.fill_default_params();
+    }
 
     let deck = Deck {
         id: make_id(),
@@ -487,12 +498,17 @@ fn fallback_slide(item: &slides::OutlineItem) -> slides::Slide {
 /// Edit ONE slide: only that slide's JSON goes to the model and only that slide
 /// comes back. Much faster/cheaper than a whole-deck round trip, and it
 /// physically cannot corrupt other pages.
+///
+/// `lock_template`（默认 true）= 只换文案，不动版式/角色/控件参数/图片槽。
+/// 提示词里也写了这条，但光靠提示词约束模型不可靠——解析后会确定性还原这些
+/// 字段，所以精心调好的版式不会被一句「文字再精炼点」顺手改掉。
 #[tauri::command]
 pub async fn edit_slide_ai(
     id: String,
     slide_index: usize,
     instruction: String,
     chat_model: String,
+    lock_template: Option<bool>,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<DeckRecord, String> {
     if instruction.trim().is_empty() {
@@ -523,8 +539,14 @@ pub async fn edit_slide_ai(
     let reply = knowledge::chat_once(&db, &chat_model, &prompt).await?;
     snapshot(&db, &id, &format!("AI 改第 {} 页前", slide_index + 1));
     let json = slides::extract_json(&reply).ok_or("回复里找不到这一页的 JSON")?;
-    let new_slide: slides::Slide =
+    let mut new_slide: slides::Slide =
         serde_json::from_str(&json).map_err(|e| format!("单页 JSON 解析失败: {e}"))?;
+    if lock_template.unwrap_or(true) {
+        // 锁模板：模型改了也还原。保住的是精心设计的版式，模型只被允许改文案。
+        let original = deck.slides[slide_index].clone();
+        new_slide.restore_template_from(&original);
+    }
+    new_slide.fill_default_params();
     deck.slides[slide_index] = new_slide;
     deck.id = id;
     persist_deck(&db, deck)
