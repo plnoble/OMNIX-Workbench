@@ -944,6 +944,60 @@ mod candidate_tests {
         }
     }
 
+    /// 版式目录的 JSON 形状是前后端唯一的契约，前端照着它画控件面板。
+    /// 字段名或枚举写法一变，面板就会静默变空——TS 那边只有 interface，
+    /// 编译期查不出来。这条用例把形状钉死在后端。
+    #[test]
+    fn layout_catalog_json_matches_the_frontend_contract() {
+        let v = serde_json::to_value(slides_layout_catalog()).unwrap();
+
+        let role = &v["roles"][0];
+        for k in ["key", "label", "layouts", "intent"] {
+            assert!(!role[k].is_null(), "roles[] 缺字段 {k}");
+        }
+        assert!(role["layouts"].is_array());
+
+        let layouts = v["layouts"].as_array().unwrap();
+        assert_eq!(layouts.len(), crate::slides_layout::ALL_LAYOUTS.len());
+        for l in layouts {
+            for k in ["key", "label", "fields_hint", "controls"] {
+                assert!(!l[k].is_null(), "layouts[] 缺字段 {k}");
+            }
+            for c in l["controls"].as_array().unwrap() {
+                for k in ["key", "label", "kind", "default", "desc"] {
+                    assert!(!c[k].is_null(), "controls[] 缺字段 {k}（版式 {}）", l["key"]);
+                }
+                // TS: type ControlKind = "range" | "toggle" | "select"
+                let kind = c["kind"].as_str().unwrap();
+                assert!(
+                    ["range", "toggle", "select"].contains(&kind),
+                    "控件类型 {kind} 不在前端的联合类型里"
+                );
+                match kind {
+                    "range" => {
+                        assert!(c["min"].is_i64() && c["max"].is_i64(), "range 缺 min/max");
+                        assert!(c["default"].is_i64(), "range 的默认值应是整数");
+                    }
+                    "toggle" => assert!(c["default"].is_boolean(), "toggle 的默认值应是布尔"),
+                    _ => {
+                        let opts = c["options"].as_array().expect("select 必须带 options");
+                        assert!(opts.len() >= 2, "select 少于两个选项没有意义");
+                        // TS: options?: [string, string][]
+                        for o in opts {
+                            let pair = o.as_array().unwrap();
+                            assert_eq!(pair.len(), 2, "选项应是 [key, 中文名]");
+                        }
+                        let def = c["default"].as_str().expect("select 的默认值应是字符串");
+                        assert!(
+                            opts.iter().any(|o| o[0] == def),
+                            "select 的默认值 {def} 不在自己的选项里"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// 候选只换呈现，不改文案——用户点「换方案」不该发现字被改了。
     #[test]
     fn candidates_never_touch_the_text() {
