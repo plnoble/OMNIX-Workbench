@@ -545,6 +545,12 @@ fn render_slide_inner(slide: &Slide) -> String {
     }
 }
 
+/// 一页的内容片段（不含外层 `<section>` 与整页控件）。用来比较两个方案是不是
+/// 长得一样——「换方案」不该给出跟当前一模一样的候选。
+pub(crate) fn render_slide_fragment(slide: &Slide) -> String {
+    render_slide_inner(&effective_slide(slide))
+}
+
 /// 受控件驱动的要点渲染。没有这些控件的版式（param_* 会回落到 0/""/false）
 /// 得到的就是朴素列表，所以对所有版式都能安全调用。
 fn tuned_bullets(

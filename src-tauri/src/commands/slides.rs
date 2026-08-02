@@ -604,6 +604,43 @@ pub struct SlideCandidate {
     pub html: String,
 }
 
+/// 本地能算出的候选：`(标签, 幻灯)`。不碰 DB、不调模型，所以可以直接测。
+/// 第一项恒为「当前」，方便前端把原状放在第一格做对照。
+pub(super) fn template_candidates(current: &slides::Slide) -> Vec<(String, slides::Slide)> {
+    let mut out = vec![("当前".to_string(), current.clone())];
+    // 按**渲染结果**去重：换了参数不等于看起来不一样。比如指标卡只有 3 条数据时，
+    // 「指标数」从 3 拖到 4 什么也不会变；那种候选摆出来是在浪费用户的一次点击。
+    let mut seen = std::collections::HashSet::from([slides::render_slide_fragment(current)]);
+    let mut push = |label: String, s: slides::Slide, out: &mut Vec<_>| {
+        if seen.insert(slides::render_slide_fragment(&s)) {
+            out.push((label, s));
+        }
+    };
+
+    // 1) 同版式换排布
+    let mut tweaked = current.clone();
+    tweaked.params = crate::slides_layout::variant_params(&tweaked.layout, &tweaked.params);
+    push("换个排布".to_string(), tweaked, &mut out);
+
+    // 2) 换版式（角色推荐的兄弟版式）
+    for alt in crate::slides_layout::alternative_layouts(
+        &current.role,
+        &current.layout,
+        !current.items.is_empty(),
+        !current.columns.is_empty(),
+    ) {
+        let mut s = current.clone();
+        s.layout = alt.to_string();
+        s.fill_default_params();
+        push(
+            format!("改用「{}」", crate::slides_layout::layout_label(alt)),
+            s,
+            &mut out,
+        );
+    }
+    out
+}
+
 /// 给这一页出几个候选：**模板候选是本地算的**（换版式、换排布），只有最后一个
 /// 才调模型。多数时候用户想要的只是「换个样子」，那不该花一次模型调用。
 ///
@@ -637,45 +674,15 @@ pub async fn slide_candidates(
         d.slides[slide_index] = s.clone();
         slides::render_deck_html(&d, Some(slide_index), false)
     };
-    let mut out = vec![SlideCandidate {
-        label: "当前".to_string(),
-        kind: "template",
-        slide_json: serde_json::to_string(&current).unwrap_or_default(),
-        html: render(&current),
-    }];
-
-    // 1) 同版式换排布
-    let tweaked = {
-        let mut s = current.clone();
-        s.params = crate::slides_layout::variant_params(&s.layout, &s.params);
-        s
-    };
-    if tweaked.params != current.params {
-        out.push(SlideCandidate {
-            label: "换个排布".to_string(),
-            kind: "template",
-            slide_json: serde_json::to_string(&tweaked).unwrap_or_default(),
-            html: render(&tweaked),
-        });
-    }
-
-    // 2) 换版式（角色推荐的兄弟版式）
-    for alt in crate::slides_layout::alternative_layouts(
-        &current.role,
-        &current.layout,
-        !current.items.is_empty(),
-        !current.columns.is_empty(),
-    ) {
-        let mut s = current.clone();
-        s.layout = alt.to_string();
-        s.fill_default_params();
-        out.push(SlideCandidate {
-            label: format!("改用「{}」", crate::slides_layout::layout_label(alt)),
+    let mut out: Vec<SlideCandidate> = template_candidates(&current)
+        .into_iter()
+        .map(|(label, s)| SlideCandidate {
+            label,
             kind: "template",
             slide_json: serde_json::to_string(&s).unwrap_or_default(),
             html: render(&s),
-        });
-    }
+        })
+        .collect();
 
     // 3) AI 候选：唯一一次模型调用，且**允许**它换结构（与模板锁相反的那一档）
     if include_ai.unwrap_or(true) && !chat_model.trim().is_empty() {
@@ -886,4 +893,65 @@ pub async fn edit_deck_ai(
     snapshot(&db, &id, "AI 改整份前");
     deck.id = id;
     persist_deck(&db, deck)
+}
+
+#[cfg(test)]
+mod candidate_tests {
+    use super::*;
+
+    fn slide(layout: &str, role: &str) -> slides::Slide {
+        let mut s = slides::Slide {
+            layout: layout.into(),
+            role: role.into(),
+            title: "标题".into(),
+            bullets: vec!["一".into(), "二".into(), "三".into()],
+            ..Default::default()
+        };
+        s.fill_default_params();
+        s
+    }
+
+    /// 候选的全部价值在于「不一样」。给出两个渲染一致的方案等于没给。
+    #[test]
+    fn candidates_are_all_distinct() {
+        for (layout, role) in [
+            ("bullets", "agenda"),
+            ("metrics", "metric"),
+            ("swot", "matrix"),
+            ("chart", "trend"),
+            ("content", ""),
+        ] {
+            let cur = slide(layout, role);
+            let cands = template_candidates(&cur);
+            assert!(cands.len() >= 2, "{layout} 只出了 {} 个候选", cands.len());
+            assert_eq!(cands[0].0, "当前", "第一格必须是原状");
+
+            let mut seen = std::collections::HashSet::new();
+            for (label, s) in &cands {
+                let html = slides::render_deck_html(
+                    &slides::Deck {
+                        id: String::new(),
+                        title: "T".into(),
+                        theme: "midnight".into(),
+                        brand: None,
+                        slides: vec![s.clone()],
+                    },
+                    None,
+                    false,
+                );
+                assert!(seen.insert(html), "{layout} 的候选「{label}」跟前面某个渲染一样");
+            }
+        }
+    }
+
+    /// 候选只换呈现，不改文案——用户点「换方案」不该发现字被改了。
+    #[test]
+    fn candidates_never_touch_the_text() {
+        let cur = slide("bullets", "agenda");
+        for (label, s) in template_candidates(&cur) {
+            assert_eq!(s.title, cur.title, "候选「{label}」改了标题");
+            assert_eq!(s.bullets, cur.bullets, "候选「{label}」改了要点");
+            assert_eq!(s.body, cur.body, "候选「{label}」改了正文");
+        }
+    }
 }
