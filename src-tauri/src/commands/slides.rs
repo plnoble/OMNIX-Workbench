@@ -466,9 +466,7 @@ pub async fn generate_outline(
     if outline.items.is_empty() {
         return Err("生成的大纲是空的".to_string());
     }
-    if !slides::THEMES.contains(&outline.theme.as_str()) {
-        outline.theme = "midnight".to_string();
-    }
+    outline.normalize();
     Ok(outline)
 }
 
@@ -477,13 +475,15 @@ pub async fn generate_outline(
 /// content instead of sinking the whole deck.
 #[tauri::command]
 pub async fn expand_outline(
-    outline: slides::Outline,
+    mut outline: slides::Outline,
     chat_model: String,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<DeckRecord, String> {
     if outline.items.is_empty() {
         return Err("大纲是空的".to_string());
     }
+    // 大纲可能被前端改过，这里再兜一次底：版式必须是认识的，否则按角色推导。
+    outline.normalize();
     let total = outline.items.len();
     let title = outline.title.clone();
 

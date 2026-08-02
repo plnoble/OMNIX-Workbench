@@ -67,7 +67,9 @@ pub struct OutlineItem {
     /// 模型漏填 layout 或编造一个没见过的版式时，角色是可靠的兜底。
     #[serde(default)]
     pub role: String,
-    #[serde(default = "default_layout")]
+    /// 缺省是**空**而不是 content——空才能让 `normalize` 用角色推导出版式。
+    /// 默认成 content 的话，模型只填角色不填版式时角色的推荐就白给了。
+    #[serde(default)]
     pub layout: String,
     #[serde(default)]
     pub title: String,
@@ -84,6 +86,23 @@ pub struct Outline {
     pub theme: String,
     #[serde(default)]
     pub items: Vec<OutlineItem>,
+}
+
+impl Outline {
+    /// 补齐每一项的版式：模型漏填、或编了一个不存在的版式时，用角色的推荐兜底
+    /// （角色也不认识就退到 content）。生成大纲和展开大纲都要过这一道，
+    /// 因为大纲既可能来自模型，也可能被前端改过。
+    pub fn normalize(&mut self) {
+        for item in self.items.iter_mut() {
+            let known = crate::slides_layout::ALL_LAYOUTS.contains(&item.layout.as_str());
+            if !known {
+                item.layout = crate::slides_layout::default_layout_for_role(&item.role).to_string();
+            }
+        }
+        if !THEMES.contains(&self.theme.as_str()) {
+            self.theme = default_theme();
+        }
+    }
 }
 
 /// One slide. `layout` selects how the typed fields are arranged; unknown
@@ -1055,6 +1074,25 @@ mod tests {
         let raw = r#"{"title":"a } b","slides":[{"title":"x{y}"}]}"#;
         let j = extract_json(raw).unwrap();
         assert_eq!(j, raw);
+    }
+
+    /// 模型只挑角色不填版式是常态（提示词就是这么引导的）。
+    /// 那时角色的推荐必须真的生效，而不是所有页都退成 content。
+    #[test]
+    fn outline_derives_layout_from_role() {
+        let mut o: Outline = serde_json::from_str(
+            r#"{"items":[{"role":"matrix","title":"a"},
+                         {"role":"metric","title":"b","layout":"编的版式"},
+                         {"role":"不存在","title":"c"},
+                         {"role":"trend","title":"d","layout":"bullets"}]}"#,
+        )
+        .unwrap();
+        o.normalize();
+        assert_eq!(o.items[0].layout, "swot", "漏填版式应取角色首选");
+        assert_eq!(o.items[1].layout, "metrics", "编造的版式应被角色首选顶掉");
+        assert_eq!(o.items[2].layout, "content", "角色也不认识才退到 content");
+        assert_eq!(o.items[3].layout, "bullets", "模型给了合法版式就尊重它");
+        assert_eq!(o.theme, "midnight", "缺省主题");
     }
 
     #[test]

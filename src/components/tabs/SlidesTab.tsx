@@ -278,6 +278,11 @@ export function SlidesTab() {
     setCandidates([]);
     setCandLoading(true);
     try {
+      // 候选是后端按**库里那份**算的——先把待保存的手改刷下去，
+      // 否则会拿到改之前的文案（AI 精修那条路径也是这么做的）。
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+      await slidesApi.save(deck.id, JSON.stringify(deck));
+      setSaveState("saved");
       setCandidates(await slidesApi.candidates(deck.id, selected, chatModel));
     } catch (e) {
       toast.error(`生成候选失败：${e}`);
