@@ -443,7 +443,6 @@ fn render_slide_inner(slide: &Slide) -> String {
             String::new()
         }
     };
-    let image = media(false);
 
     // P3 结构版式（分析模型 / 图表）自带内容区，标题行仍由这里统一出，
     // 保证所有版式的标题排版一致。
@@ -522,7 +521,7 @@ fn render_slide_inner(slide: &Slide) -> String {
         // "content" and any unknown layout: generic title + subtitle + bullets + body.
         _ => {
             let list = tuned_bullets(&slide.bullets, p, lay);
-            with_media_slot(p, lay, &media, format!("{title}{subtitle}{list}{body}{image}"))
+            with_media_slot(p, lay, &media, format!("{title}{subtitle}{list}{body}"))
         }
     }
 }
@@ -543,8 +542,11 @@ fn tuned_bullets(
     )
 }
 
-/// 把内容和媒体槽拼成一页。`media_slot` = none（或该版式没有这个控件）时
-/// 原样返回，所以不带媒体槽的版式走这里零开销、零改动。
+/// 把内容和媒体槽拼成一页。图片**只由这里出**——`content` 不该自带图片，
+/// 否则开了槽位就会画两张。
+///
+/// `media_slot` = none（或该版式没有这个控件）时退回旧行为：有图放在内容下方，
+/// 没图什么也不加。
 fn with_media_slot(
     p: &serde_json::Map<String, serde_json::Value>,
     layout: &str,
@@ -553,7 +555,8 @@ fn with_media_slot(
 ) -> String {
     let slot = crate::slides_layout::param_text(p, layout, "media_slot");
     if slot != "left" && slot != "right" {
-        return format!("<div class=\"box content\">{content}</div>");
+        let pic = media(false);
+        return format!("<div class=\"box content\">{content}{pic}</div>");
     }
     let pic = media(true);
     let text = format!("<div class=\"slot-text\">{content}</div>");
@@ -738,9 +741,11 @@ body{font-family:'Inter','PingFang SC','Microsoft YaHei',system-ui,sans-serif;ba
 .split .s-image.ph{border-radius:0;min-height:100%}
 .box.slotted{flex-direction:row;align-items:center;gap:56px}
 .box.slotted .slot-text{flex:1;min-width:0;display:flex;flex-direction:column;gap:20px}
-.box.slotted .s-image{flex:0 0 38%;max-height:100%;display:flex;align-items:center;justify-content:center}
-.box.slotted .s-image img{max-width:100%;max-height:520px;border-radius:14px;object-fit:cover}
-.box.slotted .s-image.ph{align-self:stretch;max-height:none}
+/* 占位框与真图必须占**同一个盒子**，否则配好图那一刻图区仍会变大变小——
+   「版面不跳」的承诺就落空了 */
+.box.slotted .s-image{flex:0 0 38%;align-self:center;height:66%;display:flex;align-items:center;justify-content:center}
+.box.slotted .s-image img{width:100%;height:100%;border-radius:14px;object-fit:cover}
+.box.slotted .s-image.ph{min-height:0}
 /* ── P3 结构版式：分析模型 + 图表 ── */
 .box.block{justify-content:flex-start;gap:18px}
 .box.block>.s-title{font-size:44px}
@@ -1288,6 +1293,24 @@ mod param_render_tests {
         let html = render_slide_inner(&with_pic);
         assert!(html.contains("<img src=\"https://example.com/a.png\""), "{html}");
         assert!(!html.contains("ph"), "有图就不该再显示占位框");
+    }
+
+    /// 图片只能由媒体槽出一次。content 分支曾经把图片拼进内容里，
+    /// 开了槽位就会画两张——同一张图出现两次是很难在断言里看出来的那种 bug。
+    #[test]
+    fn image_is_never_rendered_twice() {
+        for layout in ["content", "bullets", "image", "image-left"] {
+            for slot in ["none", "left", "right"] {
+                let mut s = slide_with(layout, serde_json::json!({ "media_slot": slot }));
+                s.image = "https://example.com/a.png".into();
+                let html = render_slide_inner(&s);
+                assert_eq!(
+                    html.matches("<img src=").count(),
+                    1,
+                    "{layout} + slot={slot} 画了不止一张图:\n{html}"
+                );
+            }
+        }
     }
 
     /// P0 模板锁：模型改了版式/参数也要被还原，只留文案改动。

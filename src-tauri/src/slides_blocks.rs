@@ -1490,6 +1490,22 @@ mod tests {
                 ..Default::default()
             },
         ];
+        // 媒体槽：图未就位的占位框，以及有图时的图文并排
+        let pic = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0MDAiIGhlaWdodD0iMzAwIj48cmVjdCB3aWR0aD0iNDAwIiBoZWlnaHQ9IjMwMCIgZmlsbD0iIzQ0N2FjYyIvPjwvc3ZnPg==";
+        for (slot, image, title) in [
+            ("right", "", "配图位 · 图还没有"),
+            ("left", pic, "配图位 · 图已就位"),
+        ] {
+            let mut s = Slide {
+                layout: "bullets".into(),
+                title: title.into(),
+                bullets: vec!["先排版".into(), "后配图".into(), "版面不跳".into()],
+                image: image.into(),
+                ..Default::default()
+            };
+            s.params.insert("media_slot".into(), serde_json::json!(slot));
+            slides.push(s);
+        }
         for kind in ["bar", "line", "area", "radar", "funnel", "waterfall", "treemap", "heatmap"] {
             let mut s = Slide {
                 layout: "chart".into(),
