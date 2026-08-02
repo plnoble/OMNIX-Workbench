@@ -77,11 +77,20 @@ fn leading_number(s: &str) -> (f64, &str) {
 }
 
 /// 这一页的结构化条目：优先用 `items`，没有就从 `bullets` 解析。
+///
+/// 全空的条目在这里丢弃，而不是在编辑器里边打字边过滤——那样删掉前面一行空行
+/// 会让正在编辑的行号跳动。编辑器保留用户输入的原样，渲染层负责不画空条目。
 pub fn items_of(slide: &Slide) -> Vec<SlideItem> {
-    if !slide.items.is_empty() {
-        return slide.items.clone();
-    }
-    slide.bullets.iter().map(|b| parse_bullet(b)).collect()
+    let src: Vec<SlideItem> = if slide.items.is_empty() {
+        slide.bullets.iter().map(|b| parse_bullet(b)).collect()
+    } else {
+        slide.items.clone()
+    };
+    src.into_iter()
+        .filter(|it| {
+            !it.label.trim().is_empty() || !it.detail.trim().is_empty() || it.value != 0.0
+        })
+        .collect()
 }
 
 /// 定格类版式的格子：优先用 `columns`，没有就把 bullets 轮流分进默认格。
@@ -1264,6 +1273,19 @@ mod tests {
             assert!(!html.trim().is_empty(), "{lay} 渲染成空");
             assert!(html.contains('甲') || html.contains('乙'), "{lay} 丢了内容:\n{html}");
         }
+    }
+
+    /// 编辑器会留下空行（用户加了行还没填），渲染不能因此画出空柱子/空卡片。
+    #[test]
+    fn empty_items_are_dropped_at_render_time() {
+        let mut s = slide("metrics", &[]);
+        s.items = vec![
+            SlideItem { label: "有效".into(), value: 5.0, ..Default::default() },
+            SlideItem::default(),                                    // 完全空的一行
+            SlideItem { detail: "只有说明".into(), ..Default::default() }, // 有内容就保留
+        ];
+        assert_eq!(items_of(&s).len(), 2, "只应丢弃完全空的那一行");
+        assert!(render_body(&s).unwrap().contains("有效"));
     }
 
     #[test]

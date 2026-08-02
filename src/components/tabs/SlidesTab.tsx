@@ -262,11 +262,13 @@ export function SlidesTab() {
       s.params = { ...(s.params ?? {}), [key]: value };
     });
 
-  /** 数据类版式的条目表。空数组时给一行空的，用户不用先想「怎么加第一行」。 */
+  /** 数据类版式的条目表。空数组时给一行空的，用户不用先想「怎么加第一行」。
+   *  这里**原样保存**用户输入（含空行）——边打字边过滤会让行号跳动；
+   *  空条目由渲染层的 items_of 丢弃。 */
   const items: SlideItem[] = slide?.items?.length ? slide.items : [{ label: "" }];
   const setItems = (next: SlideItem[]) =>
     mutateSlide((s) => {
-      s.items = next.filter((it) => (it.label ?? "").trim() || it.detail?.trim() || it.value);
+      s.items = next;
     });
 
   // ── 每页多候选 ──

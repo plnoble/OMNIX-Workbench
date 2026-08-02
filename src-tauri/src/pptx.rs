@@ -561,6 +561,44 @@ mod tests {
         }
     }
 
+    /// P3 结构版式（图表/分析模型）在 pptx 里没有对应图形能力。视觉不对等是
+    /// 已知取舍，但**内容不能丢**——导出一页只剩标题的空白页是不能接受的。
+    #[test]
+    fn structural_layouts_export_their_content_as_text() {
+        use crate::slides::SlideItem;
+        let mut d = deck();
+        d.slides = vec![
+            Slide {
+                layout: "swot".into(),
+                title: "SWOT".into(),
+                bullets: vec!["渠道深".into(), "品牌弱".into(), "行业提速".into(), "巨头下沉".into()],
+                ..Default::default()
+            },
+            Slide {
+                layout: "chart".into(),
+                title: "季度营收".into(),
+                items: vec![
+                    SlideItem { label: "Q1".into(), value: 128.0, ..Default::default() },
+                    SlideItem { label: "Q2".into(), value: 164.0, ..Default::default() },
+                ],
+                ..Default::default()
+            },
+        ];
+        let bytes = build_pptx(&d).unwrap();
+        let mut z = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        use std::io::Read;
+        let mut swot = String::new();
+        z.by_name("ppt/slides/slide1.xml").unwrap().read_to_string(&mut swot).unwrap();
+        for t in ["优势 S", "渠道深", "威胁 T", "巨头下沉"] {
+            assert!(swot.contains(t), "SWOT 内容 {t} 没进 pptx");
+        }
+        let mut chart = String::new();
+        z.by_name("ppt/slides/slide2.xml").unwrap().read_to_string(&mut chart).unwrap();
+        for t in ["Q1", "128", "Q2", "164"] {
+            assert!(chart.contains(t), "图表数据 {t} 没进 pptx");
+        }
+    }
+
     /// Writes a deck exercising every layout + notes + brand to the OS temp dir,
     /// for inspection with real PowerPoint or an external OOXML validator
     /// (`npm run test:integration` convention: `cargo test --lib -- --ignored`).
