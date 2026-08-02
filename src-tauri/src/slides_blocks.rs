@@ -143,7 +143,12 @@ pub fn render_body(slide: &Slide) -> Option<String> {
         "gantt" => {
             let mut items = items_of(slide);
             items.truncate(param_int(p, lay, "milestone_count").max(1) as usize);
-            chart_svg("gantt", &items, param_bool(p, lay, "show_values"), false)
+            let svg = gantt(&items, param_bool(p, lay, "show_values"), param_bool(p, lay, "show_today"));
+            if items.is_empty() {
+                String::new()
+            } else {
+                svg_wrap(svg, String::new())
+            }
         }
         "chart" => {
             let items = items_of(slide);
@@ -579,7 +584,8 @@ fn chart_svg(kind: &str, items: &[SlideItem], show_values: bool, show_legend: bo
         "waterfall" => waterfall(items, show_values),
         "treemap" => treemap(items, show_values),
         "heatmap" => heatmap(items, show_values),
-        "gantt" => gantt(items, show_values),
+        // chart 版式里的甘特没有「今天」开关（那是 gantt 版式的旋钮）
+        "gantt" => gantt(items, show_values, false),
         _ => bars(items, show_values),
     };
     svg_wrap(inner, legend)
@@ -1131,7 +1137,7 @@ fn heatmap(items: &[SlideItem], show_values: bool) -> String {
     format!("{heads}{cells}")
 }
 
-fn gantt(items: &[SlideItem], show_values: bool) -> String {
+fn gantt(items: &[SlideItem], show_values: bool, show_today: bool) -> String {
     // value = 起始，span = 持续（缺省 1）。终点最大值决定横轴刻度。
     let end = |it: &SlideItem| it.value + if it.span > 0.0 { it.span } else { 1.0 };
     let max = nice_max(items.iter().map(end));
@@ -1188,7 +1194,23 @@ fn gantt(items: &[SlideItem], show_values: bool) -> String {
             )
         })
         .collect();
-    format!("{ticks}{bars}")
+    // 「今天」竖线：没有真实日期轴，落在刻度中点——它标的是「进行到这里」，
+    // 不是某个具体日期，所以不假装精确。
+    let today = if show_today {
+        let x = left + w * 0.5;
+        format!(
+            "<line x1=\"{x0}\" y1=\"{}\" x2=\"{x0}\" y2=\"{}\" stroke=\"var(--acc3)\" \
+             stroke-width=\"2\" stroke-dasharray=\"6 5\"/>\
+             <text x=\"{x0}\" y=\"{}\" class=\"val\" text-anchor=\"middle\">今天</text>",
+            c(top),
+            c(CH - 30.0),
+            c(top - 4.0),
+            x0 = c(x)
+        )
+    } else {
+        String::new()
+    };
+    format!("{ticks}{bars}{today}")
 }
 
 // ─────────────────────────────────────────────────────────────────────────

@@ -397,10 +397,18 @@ fn render_slide_inner(slide: &Slide) -> String {
     } else {
         format!("<h1 class=\"s-title\">{}</h1>", inline(&slide.title))
     };
-    let subtitle = if slide.subtitle.is_empty() {
+    // 图片版式的副标题就是图注，字号档位 0 = 不显示。
+    let caption_size = param_int(p, lay, "caption_size");
+    let hide_caption = (lay == "image" || lay == "image-left") && caption_size == 0;
+    let subtitle = if slide.subtitle.is_empty() || hide_caption {
         String::new()
     } else {
-        format!("<p class=\"s-sub\">{}</p>", inline(&slide.subtitle))
+        let cls = if lay == "image" || lay == "image-left" {
+            format!(" cap-{caption_size}")
+        } else {
+            String::new()
+        };
+        format!("<p class=\"s-sub{cls}\">{}</p>", inline(&slide.subtitle))
     };
     let body = if slide.body.is_empty() {
         String::new()
@@ -418,7 +426,17 @@ fn render_slide_inner(slide: &Slide) -> String {
     let media = |reserve: bool| -> String {
         let src = image_src(&slide.image);
         if !src.is_empty() {
-            format!("<div class=\"s-image\"><img src=\"{}\" alt=\"\"/></div>", esc(&src))
+            // fit 决定图片是裁切填满还是完整显示（构图重要时选后者）。
+            let fit = param_text(p, lay, "fit");
+            let style = if fit == "contain" || fit == "cover" {
+                format!(" style=\"object-fit:{fit}\"")
+            } else {
+                String::new()
+            };
+            format!(
+                "<div class=\"s-image\"><img src=\"{}\"{style} alt=\"\"/></div>",
+                esc(&src)
+            )
         } else if reserve {
             "<div class=\"s-image ph\"><span>图片位 · 点「配图」生成</span></div>".to_string()
         } else {
@@ -453,13 +471,10 @@ fn render_slide_inner(slide: &Slide) -> String {
                 format!("<cite>— {}</cite>", inline(&slide.subtitle))
             }
         ),
+        // bullets 和 content 共用同一套要点控件，所以要点渲染也必须共用——
+        // 各写各的就会出现「content 上拖分栏没反应」。
         "bullets" => {
-            let list = bullets_html_with(
-                &slide.bullets,
-                param_int(p, lay, "columns"),
-                &param_text(p, lay, "emphasis"),
-                param_bool(p, lay, "show_index"),
-            );
+            let list = tuned_bullets(&slide.bullets, p, lay);
             with_media_slot(p, lay, &media, format!("{title}{subtitle}{list}"))
         }
         "two-column" => {
@@ -481,8 +496,17 @@ fn render_slide_inner(slide: &Slide) -> String {
                 .collect();
             let divider = if param_bool(p, lay, "show_divider") { " divided" } else { "" };
             let balance = param_text(p, lay, "balance");
+            // 栏数控件必须真的改网格，否则第 3、4 栏会掉到下一行——
+            // 栏宽偏置只有两栏时说得通，多栏一律等宽。
+            let n = param_int(p, lay, "column_count").max(1);
+            let grid = if n == 2 {
+                String::new()
+            } else {
+                format!(" style=\"grid-template-columns:repeat({n},1fr)\"")
+            };
+            let bal = if n == 2 { balance } else { "equal".to_string() };
             format!(
-                "<div class=\"box content\">{title}{subtitle}<div class=\"cols{divider} bal-{balance}\">{cols}</div></div>"
+                "<div class=\"box content\">{title}{subtitle}<div class=\"cols{divider} bal-{bal}\"{grid}>{cols}</div></div>"
             )
         }
         // 图片版式的槽位是版式自带的，永远预留。
@@ -497,10 +521,26 @@ fn render_slide_inner(slide: &Slide) -> String {
         ),
         // "content" and any unknown layout: generic title + subtitle + bullets + body.
         _ => {
-            let list = bullets_html(&slide.bullets);
+            let list = tuned_bullets(&slide.bullets, p, lay);
             with_media_slot(p, lay, &media, format!("{title}{subtitle}{list}{body}{image}"))
         }
     }
+}
+
+/// 受控件驱动的要点渲染。没有这些控件的版式（param_* 会回落到 0/""/false）
+/// 得到的就是朴素列表，所以对所有版式都能安全调用。
+fn tuned_bullets(
+    bullets: &[String],
+    p: &serde_json::Map<String, serde_json::Value>,
+    layout: &str,
+) -> String {
+    use crate::slides_layout::{param_bool, param_int, param_text};
+    bullets_html_with(
+        bullets,
+        param_int(p, layout, "columns").max(1),
+        &param_text(p, layout, "emphasis"),
+        param_bool(p, layout, "show_index"),
+    )
 }
 
 /// 把内容和媒体槽拼成一页。`media_slot` = none（或该版式没有这个控件）时
@@ -683,8 +723,11 @@ body{font-family:'Inter','PingFang SC','Microsoft YaHei',system-ui,sans-serif;ba
 .col p{font-size:24px;line-height:1.5;opacity:.9}
 .quote blockquote{font-size:44px;line-height:1.4;font-weight:700}
 .quote cite{display:block;margin-top:28px;font-size:26px;font-style:normal;opacity:.75}
-.image-layout .s-image{flex:1;display:flex;align-items:center;justify-content:center;margin-top:12px}
-.image-layout .s-image img{max-width:100%;max-height:100%;border-radius:12px}
+.image-layout .s-image{flex:1;display:flex;align-items:center;justify-content:center;margin-top:12px;min-height:0}
+.image-layout .s-image img{max-width:100%;max-height:100%;width:100%;height:100%;border-radius:12px;object-fit:contain}
+/* 图注字号档位（caption_size 控件） */
+.s-sub.cap-1{font-size:22px}
+.s-sub.cap-2{font-size:30px;font-weight:600}
 .split{padding:0}
 .split .s-image{width:46%;height:100%}
 .split .s-image img{width:100%;height:100%;object-fit:cover}
@@ -1149,6 +1192,79 @@ mod param_render_tests {
             !render_deck_html(&deck, None, false).contains(element),
             "关掉页码后不应再渲染页码元素"
         );
+    }
+
+    /// 面板上能拖的**每个**旋钮都必须改渲染。这条用例逐版式核对：
+    /// 控件契约里声明的键，要么出现在渲染出的 HTML 里、要么改变了输出。
+    /// 加了控件却忘了接线，是这个设计最容易犯的错。
+    #[test]
+    fn every_declared_control_changes_the_render() {
+        use crate::slides_layout::{controls_for, variant_params, ALL_LAYOUTS};
+        for layout in ALL_LAYOUTS {
+            for c in controls_for(layout) {
+                if c.key == "show_page_number" {
+                    continue; // 整页控件，作用在 render_deck_html 而非单页片段
+                }
+                let mut base = slide_with(layout, serde_json::json!({}));
+                base.subtitle = "副标题".into();
+                base.image = "https://example.com/a.png".into();
+                base.columns = (1..=4)
+                    .map(|i| Column { title: format!("栏{i}"), bullets: vec!["条目".into()], ..Default::default() })
+                    .collect();
+                base.items = (1..=6)
+                    .map(|i| SlideItem {
+                        label: format!("项{i}"),
+                        value: i as f64,
+                        span: 1.0,
+                        detail: "说明".into(),
+                        // 分组用栏名：对比表的「优胜列」认列名，图表认系列名，
+                        // 一个值同时满足两种读法，用例才不用给每个版式定制夹具。
+                        group: format!("栏{}", i % 2 + 1),
+                    })
+                    .collect();
+                let mut tweaked = base.clone();
+                // 只改这一个控件，其余保持默认——差异必定来自它。
+                tweaked.params = {
+                    let one = variant_params(layout, &base.params);
+                    let mut p = base.params.clone();
+                    if let Some(v) = one.get(c.key) {
+                        p.insert(c.key.to_string(), v.clone());
+                    }
+                    p
+                };
+                if tweaked.params == base.params {
+                    continue; // variant 没能给出不同值（如单选项下拉），跳过
+                }
+                assert_ne!(
+                    render_slide_inner(&base),
+                    render_slide_inner(&tweaked),
+                    "{layout} 的控件「{}」({}) 拖了没反应——声明了但没接线",
+                    c.label,
+                    c.key
+                );
+            }
+        }
+    }
+
+    /// 控件必须真的改渲染。栏数曾经是个摆设（网格写死两栏），
+    /// 这条用例守住「面板上能拖的每个旋钮都有效果」。
+    #[test]
+    fn two_column_count_changes_the_grid() {
+        let mut s = slide_with("two-column", serde_json::json!({}));
+        s.columns = (1..=4)
+            .map(|i| Column { title: format!("栏{i}"), ..Default::default() })
+            .collect();
+        let two = render_slide_inner(&s);
+        assert!(!two.contains("grid-template-columns:repeat"), "两栏用默认网格");
+        assert!(two.contains("bal-equal"));
+
+        s.params.insert("column_count".into(), serde_json::json!(4));
+        let four = render_slide_inner(&s);
+        assert!(four.contains("grid-template-columns:repeat(4,1fr)"), "栏数应改网格:\n{four}");
+
+        // 多栏时栏宽偏置无意义，不该带着一个只对两栏成立的类名
+        s.params.insert("balance".into(), serde_json::json!("left-heavy"));
+        assert!(render_slide_inner(&s).contains("bal-equal"), "多栏应强制等宽");
     }
 
     /// 媒体槽：图还没配好也要把位置留出来，否则配好图那一刻整页版面会跳。

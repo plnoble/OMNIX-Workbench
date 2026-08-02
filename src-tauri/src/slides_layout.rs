@@ -287,8 +287,14 @@ pub fn controls_for(layout: &str) -> Vec<Control> {
         "porter" => vec![toggle("show_center", "显示中心力", true, "中心的「同业竞争」块")],
         "pest" => vec![select("layout_mode", "排布", &[("grid", "田字格"), ("row", "横排")], "grid", "四个维度怎么摆")],
         "bmc" => vec![toggle("compact", "紧凑模式", false, "九宫格压缩到一屏")],
-        "timeline" | "gantt" => vec![
+        // timeline 和 gantt 的旋钮不完全一样——合并声明会留下一个拖了没反应的
+        // 假控件（工期标注对时间线无意义），所以分开写。
+        "timeline" => vec![
             range("milestone_count", "节点数", 3, 8, 5, "时间线上的里程碑数量"),
+            toggle("show_today", "显示今天", false, "标出当前时间位置"),
+        ],
+        "gantt" => vec![
+            range("milestone_count", "任务数", 3, 8, 5, "甘特图里的任务条数量"),
             toggle("show_today", "显示今天", false, "标出当前时间位置"),
             toggle("show_values", "显示工期", true, "甘特条右侧的时长标注"),
         ],

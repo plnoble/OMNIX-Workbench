@@ -246,7 +246,11 @@ export function SlidesTab() {
     [catalog, slide?.layout],
   );
   const layoutList = catalog?.layouts ?? FALLBACK_LAYOUTS;
-  const slotCount = SLOT_COUNTS[slide?.layout ?? ""] ?? 0;
+  // 双栏的格子数由「栏数」控件决定，其余定格版式是版式固有的。
+  const slotCount =
+    slide?.layout === "two-column"
+      ? Number(slide.params?.column_count ?? 2)
+      : (SLOT_COUNTS[slide?.layout ?? ""] ?? 0);
 
   /** 控件值：优先取页面 params，缺失时用契约默认值——渲染端也是这么回落的。 */
   const paramValue = (c: LayoutControl): number | boolean | string => {
