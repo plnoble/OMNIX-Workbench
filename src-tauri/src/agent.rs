@@ -137,6 +137,88 @@ pub struct AgentUpdateInfo {
 /// range with no shell metacharacters, and resolves identically under sh and cmd.exe.
 pub const GROK_NPM_SPEC: &str = "@xai-official/grok@0.2";
 
+/// OMNIX 在别的 AI 应用的 `mcpServers` 里用的键名。稳定不变——改了会在用户配置里
+/// 留下一个孤儿条目，而我们再也认不出它是自己写的。
+pub const OMNIX_MCP_KEY: &str = "omnix";
+
+/// OMNIX 在别人配置里长什么样：一个指向本机网关 `/mcp` 的远程 MCP 服务器。
+///
+/// 走 loopback，所以不用带令牌——网关对本机请求本来就放行（见
+/// `proxy::guard_gateway_access`）。把令牌写进别人的配置文件反而是在到处撒密钥。
+fn omnix_mcp_entry(port: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "http",
+        "url": format!("http://127.0.0.1:{port}/mcp"),
+    })
+}
+
+/// Claude Desktop 的配置目录（各平台不同）。返回 `None` = 这个平台我们没适配，
+/// 那就什么都别做，而不是往一个猜出来的路径写文件。
+fn claude_desktop_config_dir(home: &Path) -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        Some(home.join("AppData/Roaming/Claude"))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Some(home.join("Library/Application Support/Claude"))
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        Some(home.join(".config/Claude"))
+    }
+}
+
+/// 写文件：先写临时文件再原子改名。临时名带进程号，两个 OMNIX 同时跑也不会
+/// 互相写同一个临时文件、把半截内容改名成正式配置。
+fn atomic_write(file_path: &Path, content: &str) -> Result<(), String> {
+    let tmp_path = file_path.with_extension(format!("omnix-{}.tmp", std::process::id()));
+    fs::write(&tmp_path, content).map_err(|e| format!("写临时文件失败: {e}"))?;
+    fs::rename(&tmp_path, file_path).map_err(|e| {
+        let _ = fs::remove_file(&tmp_path);
+        format!("原子替换配置文件失败: {e}")
+    })
+}
+
+/// 安全地改写**别人家**的 JSON 配置文件，返回是否真的写了。
+///
+/// 这里的每一条规矩都是为了同一件事：**宁可什么都不做，也不能把用户配好的东西
+/// 弄丢。** 原来的写法是「读失败或解析失败就当成空对象，然后写回去」——用户的
+/// Claude Desktop 配置只要有一个逗号写错，所有 MCP 服务器就被清空了。
+///
+/// - 文件读不出来（权限、被占用）→ 放弃，不写
+/// - 有内容但不是合法 JSON → 放弃，不写（**绝不**回落成 `{}`）
+/// - 顶层不是对象 → 放弃，不写
+/// - 改完跟改之前一模一样 → 不写（少写一次就少一次损坏机会）
+fn merge_json_config(
+    path: &Path,
+    edit: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>),
+) -> Result<bool, String> {
+    let mut val = if path.exists() {
+        let content = fs::read_to_string(path)
+            .map_err(|e| format!("读不了 {}，已跳过（未改动）：{e}", path.display()))?;
+        if content.trim().is_empty() {
+            serde_json::json!({})
+        } else {
+            serde_json::from_str::<serde_json::Value>(&content)
+                .map_err(|e| format!("{} 不是合法 JSON，已跳过（未改动）：{e}", path.display()))?
+        }
+    } else {
+        serde_json::json!({})
+    };
+
+    let Some(obj) = val.as_object_mut() else {
+        return Err(format!("{} 顶层不是 JSON 对象，已跳过（未改动）", path.display()));
+    };
+    let before = obj.clone();
+    edit(obj);
+    if *obj == before {
+        return Ok(false);
+    }
+    atomic_write(path, &val.to_string())?;
+    Ok(true)
+}
+
 /// The npm package an agent CLI ships as (without the `@latest` tag), or `None`
 /// for agents installed by a non-npm mechanism (e.g. Antigravity's installer).
 pub fn npm_package_for_agent(display_name: &str) -> Option<&'static str> {
@@ -1166,71 +1248,63 @@ impl AgentManager {
         Ok(())
     }
 
+    /// 把 OMNIX 的设置同步进**其它 AI 应用**的配置文件。
+    ///
+    /// 这些是别人家的文件，出错代价是删掉用户自己配的东西，所以规矩比改我们自己
+    /// 的配置严得多——具体见 [`merge_json_config`]。一个文件坏了不影响其它文件，
+    /// 但会在返回值里说清楚哪个跳过了、为什么。
     pub fn sync_agent_configs(&self) -> Result<(), String> {
-        let home_dir = dirs::home_dir().expect("Failed to determine home directory");
+        let home_dir = dirs::home_dir().ok_or("找不到用户主目录，已跳过配置同步")?;
+        let mut skipped: Vec<String> = Vec::new();
 
-        // A. Sync Claude Code config
-        let mut claude_code_config = home_dir.clone();
-        claude_code_config.push(".config");
-        claude_code_config.push("claude-code");
-        claude_code_config.push("config.json");
-
+        // A. Claude Code
+        let claude_code_config = home_dir.join(".config/claude-code/config.json");
         if claude_code_config
             .parent()
             .map(|p| p.exists())
             .unwrap_or(false)
         {
-            let mut val = if claude_code_config.exists() {
-                let content = fs::read_to_string(&claude_code_config).unwrap_or_default();
-                serde_json::from_str::<serde_json::Value>(&content).unwrap_or(serde_json::json!({}))
-            } else {
-                serde_json::json!({})
-            };
-
-            if let Some(obj) = val.as_object_mut() {
-                obj.insert("tosAccepted".to_string(), serde_json::Value::Bool(true));
-                obj.insert(
-                    "analyticsConsent".to_string(),
-                    serde_json::Value::String("opt-out".to_string()),
-                );
+            if let Err(e) = merge_json_config(&claude_code_config, |obj| {
+                obj.insert("tosAccepted".into(), serde_json::Value::Bool(true));
+                obj.insert("analyticsConsent".into(), "opt-out".into());
+            }) {
+                skipped.push(e);
             }
-            self.atomic_write_config(&claude_code_config, &val.to_string())?;
         }
 
-        // B. Sync Claude Desktop config
-        let mut claude_desktop_dir = home_dir.clone();
-        claude_desktop_dir.push("AppData");
-        claude_desktop_dir.push("Roaming");
-        claude_desktop_dir.push("Claude");
-
-        let mut claude_desktop_config = claude_desktop_dir.clone();
-        claude_desktop_config.push("claude_desktop_config.json");
-
-        if claude_desktop_dir.exists() {
-            let mut val = if claude_desktop_config.exists() {
-                let content = fs::read_to_string(&claude_desktop_config).unwrap_or_default();
-                serde_json::from_str::<serde_json::Value>(&content).unwrap_or(serde_json::json!({}))
-            } else {
-                serde_json::json!({})
-            };
-
-            if let Some(obj) = val.as_object_mut() {
-                let mut mcp_servers = obj
-                    .remove("mcpServers")
-                    .unwrap_or_else(|| serde_json::json!({}));
-                if mcp_servers.as_object().is_none() {
-                    mcp_servers = serde_json::json!({});
+        // B. Claude Desktop —— 把 OMNIX 注册成一个 MCP 服务器，让它的能力
+        // 在 Claude Desktop 里也用得上（P1 的对外入口）。
+        let claude_desktop_dir = claude_desktop_config_dir(&home_dir);
+        if claude_desktop_dir.as_ref().is_some_and(|d| d.exists()) {
+            let port = self
+                .db
+                .get_setting("proxy_port")
+                .unwrap_or(None)
+                .unwrap_or_else(|| "1421".to_string());
+            let path = claude_desktop_dir.unwrap().join("claude_desktop_config.json");
+            match merge_json_config(&path, |obj| {
+                // 只加/更新我们那一项，别人配的 MCP 服务器原样保留。
+                let servers = obj
+                    .entry("mcpServers")
+                    .or_insert_with(|| serde_json::json!({}));
+                if !servers.is_object() {
+                    *servers = serde_json::json!({});
                 }
-
-                // Inject custom MCP server settings pointing to OMNIX
-                obj.insert("mcpServers".to_string(), mcp_servers);
+                if let Some(m) = servers.as_object_mut() {
+                    m.insert(OMNIX_MCP_KEY.into(), omnix_mcp_entry(&port));
+                }
+            }) {
+                Ok(true) => println!("已把 OMNIX 注册进 Claude Desktop 的 MCP 配置"),
+                Ok(false) => {}
+                Err(e) => skipped.push(e),
             }
-
-            self.atomic_write_config(&claude_desktop_config, &val.to_string())?;
-            println!("Synchronized OMNIX configuration to Claude Desktop.");
         }
 
-        Ok(())
+        if skipped.is_empty() {
+            Ok(())
+        } else {
+            Err(skipped.join("；"))
+        }
     }
 
     pub async fn uninstall_agent(&self, agent_name: &str) -> Result<(), String> {
@@ -1302,15 +1376,6 @@ impl AgentManager {
         Ok(())
     }
 
-    fn atomic_write_config(&self, file_path: &Path, content: &str) -> Result<(), String> {
-        let mut tmp_path = file_path.to_path_buf();
-        tmp_path.set_extension("tmp");
-
-        fs::write(&tmp_path, content).map_err(|e| format!("Failed to write tmp file: {}", e))?;
-        fs::rename(&tmp_path, file_path)
-            .map_err(|e| format!("Failed to atomically replace config file: {}", e))?;
-        Ok(())
-    }
 
     pub fn get_active_session_ids(&self) -> Vec<String> {
         if let Ok(procs) = self.active_processes.lock() {
@@ -2116,5 +2181,120 @@ mod tests {
         if test_db_path.exists() {
             let _ = fs::remove_file(&test_db_path);
         }
+    }
+}
+
+#[cfg(test)]
+mod foreign_config_tests {
+    use super::*;
+
+    fn tmp(name: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(format!("omnix_cfg_{}_{}", std::process::id(), name));
+        let _ = fs::remove_file(&p);
+        p
+    }
+
+    /// 核心承诺：**宁可什么都不做，也不能把用户配好的东西弄丢。**
+    /// 原来的写法是解析失败就当空对象写回去，用户 Claude Desktop 里所有
+    /// MCP 服务器会被一次清空。
+    #[test]
+    fn malformed_json_is_never_overwritten() {
+        let p = tmp("malformed.json");
+        // 一个多了逗号的配置——手写 JSON 很常见的毛病
+        let original = r#"{"mcpServers":{"filesystem":{"command":"npx"},}}"#;
+        fs::write(&p, original).unwrap();
+
+        let err = merge_json_config(&p, |o| {
+            o.insert("touched".into(), serde_json::Value::Bool(true));
+        })
+        .unwrap_err();
+
+        assert!(err.contains("不是合法 JSON"), "{err}");
+        assert_eq!(fs::read_to_string(&p).unwrap(), original, "文件必须一个字节都没动");
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn top_level_non_object_is_never_overwritten() {
+        let p = tmp("array.json");
+        fs::write(&p, "[1,2,3]").unwrap();
+        assert!(merge_json_config(&p, |o| {
+            o.insert("x".into(), 1.into());
+        })
+        .is_err());
+        assert_eq!(fs::read_to_string(&p).unwrap(), "[1,2,3]");
+        let _ = fs::remove_file(&p);
+    }
+
+    /// 别人配的 MCP 服务器必须原样保留——我们只加自己那一项。
+    #[test]
+    fn other_mcp_servers_survive_the_merge() {
+        let p = tmp("keep.json");
+        fs::write(
+            &p,
+            r#"{"mcpServers":{"filesystem":{"command":"npx","args":["-y","fs"]}},"theme":"dark"}"#,
+        )
+        .unwrap();
+
+        assert!(merge_json_config(&p, |o| {
+            let s = o.entry("mcpServers").or_insert_with(|| serde_json::json!({}));
+            if let Some(m) = s.as_object_mut() {
+                m.insert(OMNIX_MCP_KEY.into(), omnix_mcp_entry("1421"));
+            }
+        })
+        .unwrap());
+
+        let v: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["mcpServers"]["filesystem"]["command"], "npx", "别人的条目要还在");
+        assert_eq!(v["theme"], "dark", "无关字段要还在");
+        assert_eq!(v["mcpServers"][OMNIX_MCP_KEY]["url"], "http://127.0.0.1:1421/mcp");
+        let _ = fs::remove_file(&p);
+    }
+
+    /// 没有变化就不写。少写一次就少一次损坏机会，也不会无谓刷新文件时间。
+    #[test]
+    fn no_change_means_no_write() {
+        let p = tmp("noop.json");
+        fs::write(&p, r#"{"a":1}"#).unwrap();
+        let before = fs::metadata(&p).unwrap().modified().unwrap();
+        assert!(!merge_json_config(&p, |_| {}).unwrap(), "没改动不该写");
+        assert_eq!(fs::metadata(&p).unwrap().modified().unwrap(), before);
+        let _ = fs::remove_file(&p);
+    }
+
+    /// mcpServers 被写成了别的类型（字符串/数组）时不能 panic，也不能连累别的字段。
+    #[test]
+    fn wrong_typed_mcp_servers_is_replaced_not_crashed() {
+        let p = tmp("wrongtype.json");
+        fs::write(&p, r#"{"mcpServers":"oops","keep":true}"#).unwrap();
+        assert!(merge_json_config(&p, |o| {
+            let s = o.entry("mcpServers").or_insert_with(|| serde_json::json!({}));
+            if !s.is_object() {
+                *s = serde_json::json!({});
+            }
+            if let Some(m) = s.as_object_mut() {
+                m.insert(OMNIX_MCP_KEY.into(), omnix_mcp_entry("1421"));
+            }
+        })
+        .unwrap());
+        let v: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&p).unwrap()).unwrap();
+        assert!(v["mcpServers"][OMNIX_MCP_KEY].is_object());
+        assert_eq!(v["keep"], true);
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn missing_file_is_created_from_scratch() {
+        let p = tmp("new.json");
+        assert!(merge_json_config(&p, |o| {
+            o.insert("tosAccepted".into(), serde_json::Value::Bool(true));
+        })
+        .unwrap());
+        let v: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["tosAccepted"], true);
+        let _ = fs::remove_file(&p);
     }
 }
