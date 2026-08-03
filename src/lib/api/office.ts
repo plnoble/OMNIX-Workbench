@@ -72,6 +72,42 @@ export interface SlideCandidate {
   slide_json: string;
   html: string;
 }
+
+// ── P0 体检：报出渲染时会静默咽下去的问题 ──
+
+export type LintSeverity = "error" | "warning" | "info";
+export interface LintFinding {
+  /** 稳定的机器可读码，如 "bullets-over-budget" */
+  code: string;
+  severity: LintSeverity;
+  /** 0 起的页码；缺省 = 整份演示层面的问题 */
+  slide?: number;
+  message: string;
+}
+export interface LintReport {
+  ok: boolean;
+  errors: number;
+  warnings: number;
+  infos: number;
+  findings: LintFinding[];
+}
+
+/** 演讲者视图窗口与放映主窗之间的同步事件。 */
+export const SPEAKER_EVENT = {
+  /** 主窗 → 演讲者视图：当前状态 */
+  state: "slides-present-state",
+  /** 演讲者视图 → 主窗：翻页 */
+  nav: "slides-present-nav",
+  /** 演讲者视图 → 主窗：刚开窗，把状态再发一遍 */
+  hello: "slides-present-hello",
+} as const;
+
+export interface SpeakerState {
+  deckJson: string;
+  index: number;
+  /** 主窗还在放映吗——退出放映时演讲者视图要知道 */
+  presenting: boolean;
+}
 export interface Brand {
   name: string;
   primary: string;
@@ -145,6 +181,14 @@ export const slidesApi = {
     invoke<DeckRecord>("edit_deck_ai", { id, instruction, chatModel }),
   exportHtml: (modelJson: string) =>
     invoke<string>("export_deck_html", { modelJson }),
+  // P3: 导出的 HTML 里嵌了 deck JSON，能原样读回来继续编辑
+  importHtml: (filePath: string) =>
+    invoke<DeckRecord>("import_deck_html", { filePath }),
+  // P0: 体检
+  lint: (modelJson: string) => invoke<LintReport>("lint_deck", { modelJson }),
+  // P2: 演讲者视图（另开一个窗口——备注只能给讲的人看）
+  openSpeakerView: () => invoke<void>("open_speaker_view"),
+  closeSpeakerView: () => invoke<void>("close_speaker_view"),
   exportPdf: (modelJson: string) =>
     invoke<string>("export_deck_pdf", { modelJson }),
   // E: real PowerPoint from the same JSON model, QA'd by OfficeCLI on the way out

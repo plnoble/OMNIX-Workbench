@@ -1,11 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window, status dock, and quick assistant",
+  "description": "Capability for the main window, status dock, quick assistant, and slides speaker view",
   "windows": [
     "main",
     "status-dock",
-    "quick-assistant"
+    "quick-assistant",
+    "slides-speaker"
   ],
   "permissions": [
     "core:default",

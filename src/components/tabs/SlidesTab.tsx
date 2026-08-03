@@ -5,6 +5,7 @@
  * （预览 == 导出），所以“细微修改”精准可控，而且随时可手动编辑，不是一张图。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { emit, listen } from "@tauri-apps/api/event";
 import {
   ArrowDown,
   ArrowLeft,
@@ -18,10 +19,12 @@ import {
   Palette,
   Play,
   Plus,
+  MonitorSpeaker,
   Presentation,
   Shuffle,
   Sliders,
   Sparkles,
+  Stethoscope,
   Trash2,
   Undo2,
   Wand2,
@@ -33,6 +36,7 @@ import { cn } from "@/lib/utils";
 import type { PlatformModel, ModelPlatform } from "@/types";
 import {
   DECK_THEMES,
+  SPEAKER_EVENT,
   modelApi,
   platformApi,
   officeApi,
@@ -45,10 +49,12 @@ import {
   type LayoutCatalog,
   type LayoutControl,
   type LayoutInfo,
+  type LintReport,
   type Outline,
   type Slide,
   type SlideCandidate,
   type SlideItem,
+  type SpeakerState,
 } from "@/lib/tauri-api";
 
 const THEME_LABEL: Record<string, string> = {
@@ -132,8 +138,12 @@ export function SlidesTab() {
   const [candOpen, setCandOpen] = useState(false);
   const [candidates, setCandidates] = useState<SlideCandidate[]>([]);
   const [candLoading, setCandLoading] = useState(false);
+  // P0 体检
+  const [lintOpen, setLintOpen] = useState(false);
+  const [lint, setLint] = useState<LintReport | null>(null);
 
   const previewBoxRef = useRef<HTMLDivElement | null>(null);
+  const presentFrame = useRef<HTMLIFrameElement | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const deckRef = useRef<Deck | null>(null);
   deckRef.current = deck;
@@ -526,6 +536,108 @@ export function SlidesTab() {
     }
   };
 
+  /// 放映翻页的唯一入口。iframe 内的键盘、演讲者视图、缩略图点击都走这里，
+  /// 否则三者会各自跑偏——尤其是"观众屏翻了页、演讲者视图还停在上一页"。
+  const gotoSlide = useCallback((delta: number) => {
+    setSelected((i) => {
+      const total = deckRef.current?.slides.length ?? 0;
+      return Math.max(0, Math.min(total - 1, i + delta));
+    });
+  }, []);
+
+  // selected 变了就把放映中的 iframe 滚过去
+  useEffect(() => {
+    if (!presenting) return;
+    const d = presentFrame.current?.contentDocument;
+    d?.querySelectorAll(".slide")[selected]?.scrollIntoView({ behavior: "smooth" });
+  }, [selected, presenting]);
+
+  // ── P2 演讲者视图：页码归主窗所有，另一个窗口只显示和请求 ──
+  // 两边各存一份索引迟早会对不上，而讲到一半版面对不上是没法现场修的。
+  const broadcastSpeaker = useCallback(
+    (idx: number, isPresenting: boolean) => {
+      const d = deckRef.current;
+      if (!d) return;
+      void emit(SPEAKER_EVENT.state, {
+        deckJson: JSON.stringify(d),
+        index: idx,
+        presenting: isPresenting,
+      } satisfies SpeakerState);
+    },
+    [],
+  );
+
+  useEffect(() => {
+    broadcastSpeaker(selected, presenting);
+  }, [selected, presenting, deck, broadcastSpeaker]);
+
+  useEffect(() => {
+    // 演讲者视图刚开窗时会讨一次状态——它不知道主窗放到第几页了
+    const hello = listen(SPEAKER_EVENT.hello, () => broadcastSpeaker(selected, presenting));
+    const nav = listen<{ delta: number }>(SPEAKER_EVENT.nav, (e) => gotoSlide(e.payload.delta));
+    return () => {
+      void hello.then((f) => f());
+      void nav.then((f) => f());
+    };
+  }, [broadcastSpeaker, gotoSlide, selected, presenting]);
+
+  // ── P0 体检 ──
+  const runLint = async () => {
+    if (!deck) return;
+    setLintOpen(true);
+    setLint(null);
+    try {
+      setLint(await slidesApi.lint(JSON.stringify(deck)));
+    } catch (e) {
+      toast.error(`体检失败：${e}`);
+      setLintOpen(false);
+    }
+  };
+
+  // 体检是纯函数、很快，改完立刻重跑，报告不会停在旧结论上
+  useEffect(() => {
+    if (!lintOpen || !deck) return;
+    let cancelled = false;
+    slidesApi
+      .lint(JSON.stringify(deck))
+      .then((r) => !cancelled && setLint(r))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [deck, lintOpen]);
+
+  // ── P3 从导出的 HTML 导回 ──
+  const handleImportHtml = async () => {
+    try {
+      const picked = await shellApi.pickFile();
+      if (!picked) return;
+      if (!/\.html?$/i.test(picked)) {
+        toast.error("请选择 OMNIX 导出的 .html 文件");
+        return;
+      }
+      const rec = await slidesApi.importHtml(picked);
+      setDeck(JSON.parse(rec.model_json) as Deck);
+      setSelected(0);
+      setSaveState("saved");
+      void loadDecks();
+      toast.success("已导回，可以继续编辑");
+    } catch (e) {
+      toast.error(`导入失败：${e}`);
+    }
+  };
+
+  const openSpeaker = async () => {
+    try {
+      await slidesApi.openSpeakerView();
+      // 建窗是异步的，监听器挂上前发的状态会丢——它自己会用 hello 讨一次，
+      // 这里再补发一次只是让常见情况更快。
+      setTimeout(() => broadcastSpeaker(selected, presenting), 400);
+    } catch (e) {
+      toast.error(`打开演讲者视图失败：${e}`);
+    }
+  };
+
   // ── D：母版 ──
   const openBrandDialog = async () => {
     setBrandOpen(true);
@@ -833,6 +945,13 @@ export function SlidesTab() {
                   <FileUp className="h-4 w-4" /> 导入 PPTX
                 </button>
                 <button
+                  onClick={() => void handleImportHtml()}
+                  className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-3 text-sm hover:bg-muted/40"
+                  title="导回 OMNIX 导出的 HTML——里面嵌了原始模型，结构和参数一个不丢"
+                >
+                  <FileText className="h-4 w-4" /> 导回 HTML
+                </button>
+                <button
                   onClick={handleCreate}
                   className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-3 text-sm hover:bg-muted/40"
                 >
@@ -922,11 +1041,30 @@ export function SlidesTab() {
             撤销{versions.length > 0 ? ` (${versions.length})` : ""}
           </button>
           <button
+            onClick={() => void runLint()}
+            title="体检：把渲染时会被悄悄裁掉、悄悄截断的问题一次报出来"
+            className={cn(
+              "inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-sm hover:bg-muted/40",
+              lint && !lint.ok ? "border-warning/60 text-warning" : "border-border",
+            )}
+          >
+            <Stethoscope className="h-4 w-4" />
+            体检
+            {lint && lint.errors + lint.warnings > 0 && ` (${lint.errors + lint.warnings})`}
+          </button>
+          <button
             onClick={() => void startPresent()}
             title="全屏放映（方向键翻页，Esc 退出）"
             className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-2.5 text-sm hover:bg-muted/40"
           >
             <Play className="h-4 w-4" /> 放映
+          </button>
+          <button
+            onClick={() => void openSpeaker()}
+            title="演讲者视图：另开一个窗口，拖到第二块屏——备注只给你自己看"
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-2.5 text-sm hover:bg-muted/40"
+          >
+            <MonitorSpeaker className="h-4 w-4" /> 演讲者
           </button>
           <button
             onClick={() => void openBrandDialog()}
@@ -1439,6 +1577,7 @@ export function SlidesTab() {
             srcDoc={presentHtml}
             className="h-full w-full border-0"
             ref={(el) => {
+              presentFrame.current = el;
               if (!el) return;
               // 让每页占满一屏并支持滚动吸附（放映体验）
               el.onload = () => {
@@ -1450,18 +1589,19 @@ export function SlidesTab() {
                   ".slide{scroll-snap-align:start;border-radius:0;box-shadow:none;flex:0 0 auto;" +
                   "transform-origin:center;zoom:min(calc(100vw/1280),calc(100vh/720));}";
                 d.head.appendChild(st);
-                const goto = (n: number) => d.querySelectorAll(".slide")[n]?.scrollIntoView();
-                goto(selected);
+                d.querySelectorAll(".slide")[selected]?.scrollIntoView();
                 d.addEventListener("keydown", (e) => {
                   const ev = e as KeyboardEvent;
                   if (ev.key === "Escape") setPresenting(false);
+                  // 翻页只改 selected，滚动交给下面那个 effect。iframe 自己
+                  // scrollBy 的话，演讲者视图和缩略图都不知道翻到哪儿了。
                   if (["ArrowRight", "ArrowDown", " ", "PageDown"].includes(ev.key)) {
                     ev.preventDefault();
-                    d.defaultView?.scrollBy({ top: d.defaultView.innerHeight, behavior: "smooth" });
+                    gotoSlide(1);
                   }
                   if (["ArrowLeft", "ArrowUp", "PageUp"].includes(ev.key)) {
                     ev.preventDefault();
-                    d.defaultView?.scrollBy({ top: -d.defaultView.innerHeight, behavior: "smooth" });
+                    gotoSlide(-1);
                   }
                 });
                 d.body.tabIndex = 0;
@@ -1479,6 +1619,80 @@ export function SlidesTab() {
       )}
 
       {/* C: 配图 */}
+      {/* P0 体检报告：点一条跳到那一页 */}
+      {lintOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-8"
+          onClick={() => setLintOpen(false)}
+        >
+          <div
+            className="flex max-h-full w-full max-w-2xl flex-col gap-3 rounded-xl border border-border bg-background p-4 shadow-2xl animate-sheet-in"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-semibold">
+                <Stethoscope className="mr-1 inline h-4 w-4 text-primary" /> 体检报告
+              </span>
+              <button onClick={() => setLintOpen(false)}>
+                <X className="h-4 w-4 text-muted-foreground hover:text-foreground" />
+              </button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              报的是<strong>结构预算</strong>（条数、字数、格子数），不是实测像素——留白密度、分栏、主题字号都会影响真实结果。
+              它负责把值得看一眼的页挑出来，不代替你看一眼。
+            </p>
+
+            {!lint ? (
+              <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" /> 检查中…
+              </div>
+            ) : lint.findings.length === 0 ? (
+              <div className="py-8 text-center text-sm text-muted-foreground">
+                没发现问题。
+              </div>
+            ) : (
+              <>
+                <div className="flex gap-3 text-xs">
+                  {lint.errors > 0 && <span className="text-destructive">{lint.errors} 个错误</span>}
+                  {lint.warnings > 0 && <span className="text-warning">{lint.warnings} 个警告</span>}
+                  {lint.infos > 0 && <span className="text-muted-foreground">{lint.infos} 条提示</span>}
+                </div>
+                <div className="flex flex-col gap-1.5 overflow-y-auto">
+                  {lint.findings.map((f, i) => (
+                    <button
+                      key={i}
+                      onClick={() => {
+                        if (f.slide !== undefined && f.slide !== null) setSelected(f.slide);
+                        setLintOpen(false);
+                      }}
+                      disabled={f.slide === undefined || f.slide === null}
+                      className="flex items-start gap-2.5 rounded-lg border border-border p-2.5 text-left text-xs hover:border-primary disabled:cursor-default disabled:hover:border-border"
+                    >
+                      <span
+                        className={cn(
+                          "mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold",
+                          f.severity === "error"
+                            ? "bg-destructive/15 text-destructive"
+                            : f.severity === "warning"
+                              ? "bg-warning/15 text-warning"
+                              : "bg-muted text-muted-foreground",
+                        )}
+                      >
+                        {f.severity === "error" ? "错误" : f.severity === "warning" ? "警告" : "提示"}
+                      </span>
+                      <span className="min-w-0 flex-1 leading-relaxed">{f.message}</span>
+                      <span className="mt-0.5 shrink-0 font-mono text-[10px] text-muted-foreground/60">
+                        {f.code}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* 每页多候选：一屏并排比，选中即应用（可撤销） */}
       {candOpen && (
         <div

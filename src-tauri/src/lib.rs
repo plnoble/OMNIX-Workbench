@@ -33,6 +33,7 @@ mod skill_library;
 mod slides;
 mod slides_blocks;
 mod slides_layout;
+mod slides_lint;
 mod storage;
 mod sync_engine;
 mod token_economy;
@@ -788,6 +789,10 @@ pub fn run() {
             commands::slides_layout_catalog,
             commands::slide_candidates,
             commands::apply_slide_candidate,
+            commands::lint_deck,
+            commands::import_deck_html,
+            commands::open_speaker_view,
+            commands::close_speaker_view,
             commands::generate_outline,
             commands::expand_outline,
             commands::edit_slide_ai,

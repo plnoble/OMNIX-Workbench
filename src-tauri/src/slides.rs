@@ -712,6 +712,41 @@ pub fn render_deck_html(deck: &Deck, only: Option<usize>, print: bool) -> String
     )
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// P3 · 可往返的 HTML 导出
+// ─────────────────────────────────────────────────────────────────────────
+
+/// 导出 HTML 里那段演示源数据的 id。保持稳定——老文件要一直导得回来。
+pub const DECK_SOURCE_ID: &str = "omnix-deck";
+
+/// 把 deck JSON 嵌进导出的 HTML。
+///
+/// 没有它，导出就是**单向**的：结构化模型被压成一堆 div，改一个字都得回
+/// OMNIX 重做一遍。存成明文而不是压缩/编码，是为了外部工具（包括 AI）也能
+/// 直接读改这一段。
+pub fn embed_deck_source(html: &str, deck: &Deck) -> Result<String, String> {
+    let json = serde_json::to_string(deck).map_err(|e| e.to_string())?;
+    // 内容里只要出现 `</script>` 就会提前闭合脚本标签，剩下的 JSON 会被当成
+    // 页面正文显示出来。把 `<` 转成 <——JSON 合法转义，解析回来一模一样，
+    // 而标签根本无从形成。
+    let safe = json.replace('<', "\\u003c");
+    let block =
+        format!("<script type=\"application/json\" id=\"{DECK_SOURCE_ID}\">{safe}</script>");
+    Ok(match html.rfind("</body>") {
+        Some(i) => format!("{}{block}{}", &html[..i], &html[i..]),
+        None => format!("{html}{block}"),
+    })
+}
+
+/// 从导出的 HTML 里取回 deck JSON。`None` = 这不是 OMNIX 导出的文件。
+pub fn extract_deck_source(html: &str) -> Option<String> {
+    let needle = format!("id=\"{DECK_SOURCE_ID}\">");
+    // 从尾部找：数据块永远贴在 </body> 前，这样也不会被正文里的巧合抢先命中。
+    let start = html.rfind(&needle)? + needle.len();
+    let end = html[start..].find("</script>")? + start;
+    Some(html[start..end].to_string())
+}
+
 /// Shared slide CSS + all theme palettes. Slides are a fixed 1280×720 canvas so
 /// preview and PDF export are pixel-consistent; the preview iframe scales it.
 const BASE_CSS: &str = r#"
@@ -1146,6 +1181,70 @@ mod tests {
         };
         let html = render_deck_html(&deck, None, false);
         assert!(html.contains("Still shows"));
+    }
+
+    /// P3 往返：导出再导回，模型必须一模一样。
+    #[test]
+    fn html_export_round_trips_the_model() {
+        let deck = Deck {
+            id: "d1".into(),
+            title: "带 <特殊> & \"符号\" 的标题".into(),
+            theme: "sunset".into(),
+            brand: Some(Brand { name: "B".into(), accent: "#ff0000".into(), ..Default::default() }),
+            slides: vec![
+                Slide {
+                    layout: "bullets".into(),
+                    title: "第一页".into(),
+                    bullets: vec!["要点 **一**".into()],
+                    params: serde_json::json!({"columns": 2}).as_object().unwrap().clone(),
+                    ..Default::default()
+                },
+                Slide {
+                    layout: "chart".into(),
+                    title: "图".into(),
+                    items: vec![SlideItem { label: "Q1".into(), value: 12.5, ..Default::default() }],
+                    ..Default::default()
+                },
+            ],
+        };
+        let html = embed_deck_source(&render_deck_html(&deck, None, true), &deck).unwrap();
+        let back: Deck = serde_json::from_str(&extract_deck_source(&html).unwrap()).unwrap();
+
+        assert_eq!(
+            serde_json::to_string(&deck).unwrap(),
+            serde_json::to_string(&back).unwrap(),
+            "导出再导回必须字节一致"
+        );
+        // 数据块不能破坏页面：脚本标签只能有我们加的这一个开闭对
+        assert_eq!(html.matches("<script").count(), 1);
+        assert_eq!(html.matches("</script>").count(), 1);
+    }
+
+    /// 内容里出现 `</script>` 不能把数据块提前截断——那会同时毁掉页面和往返。
+    #[test]
+    fn embedded_source_cannot_be_broken_out_of() {
+        let deck = Deck {
+            id: String::new(),
+            title: "x".into(),
+            theme: "midnight".into(),
+            brand: None,
+            slides: vec![Slide {
+                layout: "bullets".into(),
+                title: "</script><script>alert(1)</script>".into(),
+                bullets: vec!["<img src=x onerror=alert(2)>".into()],
+                ..Default::default()
+            }],
+        };
+        let html = embed_deck_source(&render_deck_html(&deck, None, true), &deck).unwrap();
+        assert_eq!(html.matches("<script").count(), 1, "内容不该造出第二个脚本标签:\n{html}");
+        let back: Deck = serde_json::from_str(&extract_deck_source(&html).unwrap()).unwrap();
+        assert_eq!(back.slides[0].title, deck.slides[0].title, "转义后仍要原样还原");
+    }
+
+    #[test]
+    fn foreign_html_is_rejected_not_guessed() {
+        assert!(extract_deck_source("<html><body>别人的网页</body></html>").is_none());
+        assert!(extract_deck_source("").is_none());
     }
 
     #[test]

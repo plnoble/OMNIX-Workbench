@@ -58,6 +58,7 @@ import { evolutionApi, projectProtocolApi } from "@/lib/tauri-api";
 
 // ── Lazy-loaded tabs (code-split per route) ──────────
 const StatusDock = lazy(() => import("./StatusDock"));
+const SpeakerView = lazy(() => import("./SpeakerView"));
 const QuickAssistant = lazy(() => import("./QuickAssistant").then(m => ({ default: m.QuickAssistant })));
 const DashboardTab = lazy(() => import("@/components/tabs/DashboardTab").then(m => ({ default: m.DashboardTab })));
 const ChatTab = lazy(() => import("@/components/tabs/ChatTab").then(m => ({ default: m.ChatTab })));
@@ -145,6 +146,15 @@ function App() {
     return (
       <Suspense fallback={<LazyFallback />}>
         <StatusDock />
+      </Suspense>
+    );
+  }
+
+  // 演讲者视图：第二块屏上的独立窗口，备注只给讲的人看
+  if (urlParams.get("window") === "slides-speaker") {
+    return (
+      <Suspense fallback={<LazyFallback />}>
+        <SpeakerView />
       </Suspense>
     );
   }

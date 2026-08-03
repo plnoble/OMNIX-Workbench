@@ -315,15 +315,88 @@ pub(super) fn reveal_in_folder(path: &std::path::Path) {
 }
 
 /// Export the deck as a self-contained HTML file into ~/.omnix/exports.
+///
+/// 导出的文件里**嵌了一份 deck JSON**，所以它不是死路：`import_deck_html`
+/// 能原样读回来继续编辑。以前导出等于把结构化模型压成一堆 div，改一个字
+/// 都得回来重做。
 #[tauri::command]
 pub fn export_deck_html(model_json: String) -> Result<String, String> {
     let deck: Deck =
         serde_json::from_str(&model_json).map_err(|e| format!("演示 JSON 无效: {e}"))?;
     let html = crate::slides::render_deck_html(&deck, None, true);
+    let html = crate::slides::embed_deck_source(&html, &deck)?;
     let path = exports_dir()?.join(format!("{}.html", sanitize_filename(&deck.title)));
     std::fs::write(&path, html).map_err(|e| format!("写出 HTML 失败: {e}"))?;
     reveal_in_folder(&path);
     Ok(path.to_string_lossy().to_string())
+}
+
+/// 把导出的 HTML 读回成一份可编辑的演示（P3 往返）。
+/// 只认自己导出的文件——别人的 HTML 里没有那个数据块，明确报错而不是瞎猜。
+#[tauri::command]
+pub fn import_deck_html(
+    file_path: String,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<DeckRecord, String> {
+    let html = std::fs::read_to_string(&file_path).map_err(|e| format!("读取失败: {e}"))?;
+    let json = crate::slides::extract_deck_source(&html).ok_or_else(|| {
+        "这个 HTML 里没有 OMNIX 的演示数据块——只有从 OMNIX 导出的 HTML 才能导回。".to_string()
+    })?;
+    let mut deck: Deck =
+        serde_json::from_str(&json).map_err(|e| format!("演示数据损坏: {e}"))?;
+    if deck.slides.is_empty() {
+        return Err("这份演示没有任何幻灯页".to_string());
+    }
+    // 新 id：导回来是「另存一份」，不覆盖库里可能还在的原稿。
+    deck.id = make_id();
+    persist_deck(&db, deck)
+}
+
+/// 打开演讲者视图窗口（P2）。
+///
+/// 必须是**另一个窗口**：备注只能给讲的人看。同一块屏幕上放备注等于把小抄
+/// 投给全场——那样的"演讲者视图"不如不做。第二块屏拖过去全屏即可。
+///
+/// 幂等：已经开着就聚焦，不重复建窗。
+#[tauri::command]
+pub fn open_speaker_view(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    if let Some(w) = app.get_webview_window(SPEAKER_WINDOW) {
+        let _ = w.show();
+        let _ = w.set_focus();
+        return Ok(());
+    }
+    tauri::WebviewWindowBuilder::new(
+        &app,
+        SPEAKER_WINDOW,
+        tauri::WebviewUrl::App(format!("/?window={SPEAKER_WINDOW}").into()),
+    )
+    .title("OMNIX 演讲者视图")
+    .inner_size(1100.0, 700.0)
+    .build()
+    .map_err(|e| format!("创建演讲者视图失败: {e}"))?;
+    Ok(())
+}
+
+/// 窗口 label —— 必须同时出现在 `capabilities/default.json` 的 windows 列表里，
+/// 否则新窗口拿不到任何权限，invoke 会被直接拒掉（是个很难查的静默失败）。
+pub const SPEAKER_WINDOW: &str = "slides-speaker";
+
+#[tauri::command]
+pub fn close_speaker_view(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    if let Some(w) = app.get_webview_window(SPEAKER_WINDOW) {
+        let _ = w.close();
+    }
+    Ok(())
+}
+
+/// 体检（P0）：把渲染时会静默咽下去的问题一次报出来。纯函数，不碰 DB。
+#[tauri::command]
+pub fn lint_deck(model_json: String) -> Result<crate::slides_lint::LintReport, String> {
+    let deck: Deck =
+        serde_json::from_str(&model_json).map_err(|e| format!("演示 JSON 无效: {e}"))?;
+    Ok(crate::slides_lint::lint_deck(&deck))
 }
 
 #[cfg(windows)]
