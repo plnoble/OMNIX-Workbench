@@ -29,8 +29,9 @@ mod runtime_manager;
 mod selection;
 mod skill_dag;
 mod skill_frontmatter;
-mod skill_library;
 mod mcp_server;
+mod skill_library;
+mod skill_lock;
 mod slides;
 mod slides_blocks;
 mod slides_layout;
@@ -790,6 +791,8 @@ pub fn run() {
             commands::slides_layout_catalog,
             commands::slide_candidates,
             commands::apply_slide_candidate,
+            commands::skill_lock_audit,
+            commands::relock_skill,
             commands::lint_deck,
             commands::import_deck_html,
             commands::open_speaker_view,

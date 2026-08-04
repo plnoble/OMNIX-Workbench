@@ -314,6 +314,10 @@ impl DbManager {
             "ALTER TABLE skills ADD COLUMN summary_zh TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE skills ADD COLUMN review_problems TEXT NOT NULL DEFAULT '[]'",
             "ALTER TABLE skills ADD COLUMN review_improve TEXT NOT NULL DEFAULT ''",
+            // P2 技能锁：晋升正式池那一刻的内容指纹（SHA-256）与时间。
+            // 审核认可的是**当时那份内容**，不是这个文件名——之后文件被改了要查得出来。
+            "ALTER TABLE skills ADD COLUMN approved_hash TEXT NULL",
+            "ALTER TABLE skills ADD COLUMN approved_at TEXT NULL",
         ];
         for sql in &migrations {
             // ALTER TABLE ADD COLUMN silently fails if column already exists in SQLite,

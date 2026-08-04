@@ -279,6 +279,26 @@ fn load_capability(db: &Arc<DbManager>, name: &str) -> Result<String, String> {
             format!("没有名为「{name}」的可用技能——先用 {SEARCH_TOOL} 查一下确切的名字。")
         })?;
 
+    // P2 技能锁：交出去之前核一遍内容指纹。审核认可的是晋升那一刻的内容，
+    // 不是这个文件名——这里是「OMNIX 已审核」这个身份流向别的 agent 前的最后一道检查。
+    let status = crate::skill_lock::verify(db, name);
+    if !status.is_trusted() {
+        return Err(match status {
+            crate::skill_lock::LockStatus::Drifted { .. } => format!(
+                "技能「{name}」的内容在通过审核之后被改动过，已拒绝提供。\
+                 请在 OMNIX 里重新审核并晋升，存证更新后即可正常使用。"
+            ),
+            crate::skill_lock::LockStatus::Unlocked => format!(
+                "技能「{name}」没有内容存证（早于技能锁功能），已拒绝提供。\
+                 在 OMNIX 里重新晋升一次即可补上存证。"
+            ),
+            crate::skill_lock::LockStatus::Missing { reason } => {
+                format!("技能「{name}」的文件不可用：{reason}")
+            }
+            crate::skill_lock::LockStatus::Ok => unreachable!("is_trusted 已排除"),
+        });
+    }
+
     let file = std::path::Path::new(&path);
     let file = if file.is_dir() { file.join("SKILL.md") } else { file.to_path_buf() };
     let content = std::fs::read_to_string(&file)

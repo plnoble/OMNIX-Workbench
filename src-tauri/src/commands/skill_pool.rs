@@ -749,6 +749,17 @@ pub fn set_skill_pool(
     if changed == 0 {
         return Err(format!("技能不存在: {name}"));
     }
+    if pool == "official" {
+        // P2：晋升那一刻把内容指纹钉下来。审核认可的是**这份内容**，不是这个名字；
+        // 之后文件在磁盘上被改了，/mcp 交给别的 agent 之前要查得出来。
+        drop(conn);
+        if let Err(e) = crate::skill_lock::lock(&db, &name) {
+            return Err(format!(
+                "已晋升正式池，但内容存证失败：{e}。\
+                 存证补上之前，这个技能不会通过 /mcp 提供给其它 agent。"
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -812,4 +823,19 @@ mod fusion_tests {
         assert!(prompt.contains("- browse:"), "非融合技能仍要与全池比对");
         assert!(!prompt.contains("融合版"), "非融合技能不应出现血缘段");
     }
+}
+
+/// P2：正式池技能的存证清单（内容是否还是审核时那份 + 来源）。
+#[tauri::command]
+pub fn skill_lock_audit(
+    db: State<'_, Arc<DbManager>>,
+) -> Result<Vec<crate::skill_lock::SkillProvenance>, String> {
+    crate::skill_lock::audit(&db)
+}
+
+/// 重新上锁：确认当前内容就是想要的之后，把指纹更新到现在这份。
+/// 单独一个动作而不是自动跟随——「内容变了」和「我认可这个变化」是两件事。
+#[tauri::command]
+pub fn relock_skill(name: String, db: State<'_, Arc<DbManager>>) -> Result<String, String> {
+    crate::skill_lock::lock(&db, &name)
 }
