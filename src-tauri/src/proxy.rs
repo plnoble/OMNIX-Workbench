@@ -274,7 +274,7 @@ fn inject_official_skills(db: &DbManager, payload: &mut AnthropicRequest) {
         Some(AnthropicMessageContent::Blocks(blocks)) => blocks.push(AnthropicContentBlock {
             block_type: "text".to_string(),
             text: Some(injection),
-            source: None,
+            ..Default::default()
         }),
         None => payload.system = Some(AnthropicMessageContent::String(injection)),
     }
@@ -311,7 +311,7 @@ fn inject_recalled_memory(db: &DbManager, payload: &mut AnthropicRequest) {
         Some(AnthropicMessageContent::Blocks(blocks)) => blocks.push(AnthropicContentBlock {
             block_type: "text".to_string(),
             text: Some(injection),
-            source: None,
+            ..Default::default()
         }),
         None => payload.system = Some(AnthropicMessageContent::String(injection)),
     }
@@ -631,6 +631,19 @@ async fn handle_messages_impl(
             }));
         }
 
+        // 已知缺口：这条 Anthropic→OpenAI 翻译路径还不搬运工具。
+        //
+        // 不做「只翻译请求不翻译响应」的半吊子版本——那样模型会返回 tool_calls，
+        // 而我们没有反向翻译，agent 收到的是一堆看不懂的东西，比它压根不知道有
+        // 工具更糟。要做就得连响应（含流式 SSE）一起做。
+        //
+        // 在此之前至少让它可诊断：静默丢能力最难查。
+        if payload.extra.contains_key("tools") {
+            log::warn!(
+                "网关：请求声明了工具，但上游是 {api_type} 类型，当前的 Anthropic→OpenAI \
+                 翻译尚未搬运工具定义，本次请求的工具会失效。改用 anthropic 类型的上游可避免。"
+            );
+        }
         let openai_req = OpenAIRequest {
             model: actual_model_name,
             messages,
@@ -1564,6 +1577,7 @@ async fn handle_openai_forward_impl(
             temperature: openai_req.temperature,
             stream: openai_req.stream,
             reasoning_effort: None,
+            ..Default::default()
         };
 
         let upstream_url = join_url(&api_host, "/v1/messages");
