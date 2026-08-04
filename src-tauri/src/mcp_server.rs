@@ -35,6 +35,7 @@ const PROTOCOL_VERSION: &str = "2025-06-18";
 
 const SEARCH_TOOL: &str = "search_capabilities";
 const LOAD_TOOL: &str = "load_capability";
+const DECK_TOOL: &str = "create_deck";
 
 /// 搜索一次最多回几条。给对面塞 50 条技能只会挤爆它的上下文。
 const MAX_RESULTS: usize = 8;
@@ -105,6 +106,28 @@ fn tool_definitions() -> Value {
                     }
                 },
                 "required": ["query"]
+            }
+        },
+        {
+            "name": DECK_TOOL,
+            "description":
+                "把你写好的幻灯内容渲染成**真正的文件**（.pptx + .html），返回文件路径。                 你负责内容，OMNIX 负责排版和导出——不需要你懂版式细节。                 常用 layout：cover 封面 / bullets 要点 / metrics 指标卡 / chart 图表 /                  swot 分析模型 / compare-table 对比表 / quote 引用 / section 章节页。                 返回里会附带体检结果（内容是否会溢出、图表有没有数据等）。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string", "description": "演示标题，也用作文件名" },
+                    "theme": {
+                        "type": "string",
+                        "description": "midnight 午夜蓝 / minimal 极简白 / corporate 商务蓝 / sunset 落日紫",
+                    },
+                    "slides": {
+                        "type": "array",
+                        "description":
+                            "每页一个对象：{layout, title, subtitle, bullets[], body,                              columns[{title,bullets[]}], items[{label,value,detail,group}], notes}",
+                        "items": { "type": "object" }
+                    }
+                },
+                "required": ["title", "slides"]
             }
         },
         {
@@ -183,6 +206,7 @@ fn call_tool(db: &Arc<DbManager>, params: &Value) -> Result<String, String> {
             }
             load_capability(db, n)
         }
+        DECK_TOOL => create_deck(&args),
         other => Err(format!("没有这个工具: {other}")),
     }
 }
@@ -351,13 +375,14 @@ mod tests {
         assert_eq!(v["serverInfo"]["name"], "omnix");
     }
 
-    /// 只有两个工具是刻意的设计，多了会让调用方选错。
+    /// 工具数量刻意压到最少：搜 + 取（能力）＋ 产出文件（交付物）。
+    /// 每加一个都要能说清它为什么不能并进已有的——工具越多调用方越容易挑错。
     #[test]
-    fn exactly_two_tools_with_schemas() {
+    fn tool_surface_stays_minimal_and_fully_specified() {
         let d = db();
         let r = handle_rpc(&d, req("tools/list", json!({}), Some(json!(2)))).unwrap();
         let tools = r.result.unwrap()["tools"].as_array().unwrap().clone();
-        assert_eq!(tools.len(), 2);
+        assert_eq!(tools.len(), 3, "多一个工具就要多一条理由");
         for t in &tools {
             assert!(t["name"].is_string());
             assert!(!t["description"].as_str().unwrap().is_empty());
@@ -365,7 +390,9 @@ mod tests {
             assert!(t["inputSchema"]["required"].is_array());
         }
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert!(names.contains(&SEARCH_TOOL) && names.contains(&LOAD_TOOL));
+        for t in [SEARCH_TOOL, LOAD_TOOL, DECK_TOOL] {
+            assert!(names.contains(&t), "{t} 不在工具清单里");
+        }
     }
 
     /// 工具层面的失败要走 isError，而不是 JSON-RPC error——
@@ -416,10 +443,121 @@ mod tests {
         assert!(e.contains(&"excel".to_string()), "{e:?}");
     }
 
+    /// Q3：调用方写内容，OMNIX 出文件。这里**不调模型**——对方本来就是个
+    /// 带模型的 agent，OMNIX 只做它做不了的排版和导出。
+    #[test]
+    fn create_deck_writes_real_files_and_reports_problems() {
+        let d = db();
+        let r = handle_rpc(&d, req("tools/call", json!({
+            "name": DECK_TOOL,
+            "arguments": {
+                "title": format!("MCP 交付物测试 {}", std::process::id()),
+                "slides": [
+                    {"layout": "cover", "title": "标题页"},
+                    {"layout": "chart", "title": "没有数据的图"}
+                ]
+            }
+        }), Some(json!(9)))).unwrap();
+        let v = r.result.unwrap();
+        assert_eq!(v["isError"], false, "{v}");
+        let text = v["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains(".html"), "要返回文件路径: {text}");
+        // 体检结果必须一并返回：调用方看不到渲染结果，这是它唯一的反馈渠道
+        assert!(text.contains("体检"), "要附体检结果: {text}");
+        assert!(text.contains("没有任何数据条目"), "空图表要被点出来: {text}");
+    }
+
+    #[test]
+    fn create_deck_rejects_empty_input_with_a_usable_message() {
+        let d = db();
+        for args in [json!({"title": "", "slides": [{}]}), json!({"title": "x", "slides": []})] {
+            let r = handle_rpc(&d, req("tools/call",
+                json!({"name": DECK_TOOL, "arguments": args}), Some(json!(10)))).unwrap();
+            assert_eq!(r.result.unwrap()["isError"], true);
+        }
+    }
+
     /// 待审核的技能不能对外暴露：没人看过的说明书不该被别的 agent 当可信的执行。
     #[test]
     fn only_official_skills_are_visible() {
         assert!(VISIBLE_WHERE.contains("pool = 'official'"));
         assert!(VISIBLE_WHERE.contains("is_active = 1"));
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Q3 · 产出交付物
+// ─────────────────────────────────────────────────────────────────────────
+
+/// 把调用方写好的幻灯内容渲染成真文件。
+///
+/// **分工是刻意的**：调用方本来就是个带模型的 agent，让它写内容；OMNIX 只做它
+/// 擅长且对方做不了的事——排版、渲染、导出成 .pptx。这里**不调模型**，
+/// 所以不花钱、不慢、也不会跟对方的模型抢着写内容。
+fn create_deck(args: &Value) -> Result<String, String> {
+    let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("").trim();
+    if title.is_empty() {
+        return Err("title 不能为空。".into());
+    }
+    let slides = args.get("slides").and_then(|v| v.as_array()).ok_or("slides 必须是数组。")?;
+    if slides.is_empty() {
+        return Err("slides 至少要有一页。".into());
+    }
+    let theme = args.get("theme").and_then(|v| v.as_str()).unwrap_or("midnight");
+
+    let mut deck: crate::slides::Deck = serde_json::from_value(serde_json::json!({
+        "title": title, "theme": theme, "slides": slides,
+    }))
+    .map_err(|e| format!("幻灯内容解析失败：{e}"))?;
+    for s in deck.slides.iter_mut() {
+        s.fill_default_params();
+    }
+
+    let dir = crate::storage::exports_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建导出目录失败：{e}"))?;
+    let stem: String = title
+        .chars()
+        .map(|c| if r#"/\:*?"<>|"#.contains(c) { '_' } else { c })
+        .collect();
+
+    let html_path = dir.join(format!("{stem}.html"));
+    let html = crate::slides::render_deck_html(&deck, None, true);
+    let html = crate::slides::embed_deck_source(&html, &deck)?;
+    std::fs::write(&html_path, html).map_err(|e| format!("写出 HTML 失败：{e}"))?;
+
+    let pptx_path = dir.join(format!("{stem}.pptx"));
+    let pptx_note = match crate::pptx::build_pptx(&deck) {
+        Ok(bytes) => match std::fs::write(&pptx_path, bytes) {
+            Ok(_) => format!("\n- PowerPoint：{}", pptx_path.display()),
+            Err(e) => format!("\n- PowerPoint 写出失败：{e}"),
+        },
+        Err(e) => format!("\n- PowerPoint 生成失败：{e}"),
+    };
+
+    // 体检结果一并返回：调用方看不到渲染结果，这是它唯一能知道
+    // 「内容会不会溢出、图表有没有数据」的途径。
+    let report = crate::slides_lint::lint_deck(&deck);
+    let issues = if report.findings.is_empty() {
+        "\n\n体检：没发现问题。".to_string()
+    } else {
+        let lines: Vec<String> = report
+            .findings
+            .iter()
+            .filter(|f| !matches!(f.severity, crate::slides_lint::Severity::Info))
+            .take(8)
+            .map(|f| format!("  - {}", f.message))
+            .collect();
+        if lines.is_empty() {
+            "\n\n体检：没发现需要处理的问题。".to_string()
+        } else {
+            format!("\n\n体检发现 {} 处需要注意：\n{}", lines.len(), lines.join("\n"))
+        }
+    };
+
+    Ok(format!(
+        "已生成 {} 页的《{title}》：\n- 网页：{}{pptx_note}\n\
+         （网页文件里嵌了原始数据，可以在 OMNIX 里「导回 HTML」继续编辑）{issues}",
+        deck.slides.len(),
+        html_path.display(),
+    ))
 }
