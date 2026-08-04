@@ -571,105 +571,16 @@ pub fn get_conversation_skills(
     Ok(skills)
 }
 
-// ══════════════════════════════════════════════════
-// Tool Call Confirmation Queue
-// ══════════════════════════════════════════════════
-
-/// Pending tool call confirmation
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolCallConfirmation {
-    pub id: String,
-    pub session_id: String,
-    pub tool_name: String,
-    pub tool_input: String,
-    pub status: String,  // "pending" | "approved" | "rejected"
-    pub created_at: String,
-}
-
-/// Queue a tool call for user confirmation
-#[tauri::command]
-pub fn queue_tool_confirmation(
-    session_id: String,
-    tool_name: String,
-    tool_input: String,
-    db: State<'_, Arc<DbManager>>,
-) -> Result<String, String> {
-    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
-    let _ = conn.execute(
-        "CREATE TABLE IF NOT EXISTS tool_confirmations (
-            id TEXT PRIMARY KEY,
-            session_id TEXT NOT NULL,
-            tool_name TEXT NOT NULL,
-            tool_input TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'pending',
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )", [],
-    );
-    let id = format!("tc_{}", chrono::Utc::now().timestamp_millis());
-    conn.execute(
-        "INSERT INTO tool_confirmations (id, session_id, tool_name, tool_input) VALUES (?1, ?2, ?3, ?4)",
-        params![id, session_id, tool_name, tool_input],
-    ).map_err(|e: rusqlite::Error| e.to_string())?;
-    Ok(id)
-}
-
-/// Approve or reject a tool call
-#[tauri::command]
-pub fn resolve_tool_confirmation(
-    confirmation_id: String,
-    approved: bool,
-    db: State<'_, Arc<DbManager>>,
-) -> Result<(), String> {
-    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
-    let status = if approved { "approved" } else { "rejected" };
-    conn.execute(
-        "UPDATE tool_confirmations SET status = ?1 WHERE id = ?2",
-        params![status, confirmation_id],
-    ).map_err(|e: rusqlite::Error| e.to_string())?;
-    Ok(())
-}
-
-/// Get pending tool confirmations for a session
-#[tauri::command]
-pub fn get_pending_confirmations(
-    session_id: String,
-    db: State<'_, Arc<DbManager>>,
-) -> Result<Vec<ToolCallConfirmation>, String> {
-    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
-    let _ = conn.execute(
-        "CREATE TABLE IF NOT EXISTS tool_confirmations (
-            id TEXT PRIMARY KEY, session_id TEXT NOT NULL, tool_name TEXT NOT NULL,
-            tool_input TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )", [],
-    );
-    let mut stmt = conn.prepare(
-        "SELECT id, session_id, tool_name, tool_input, status, created_at FROM tool_confirmations WHERE session_id = ?1 AND status = 'pending' ORDER BY created_at ASC"
-    ).map_err(|e: rusqlite::Error| e.to_string())?;
-    let rows = stmt.query_map(params![session_id], |row| {
-        Ok(ToolCallConfirmation {
-            id: row.get(0)?,
-            session_id: row.get(1)?,
-            tool_name: row.get(2)?,
-            tool_input: row.get(3)?,
-            status: row.get(4)?,
-            created_at: row.get(5)?,
-        })
-    }).map_err(|e: rusqlite::Error| e.to_string())?;
-    Ok(rows.flatten().collect())
-}
-
-/// Get pending confirmation count (for badge display)
-#[tauri::command]
-pub fn get_pending_confirmation_count(
-    session_id: String,
-    db: State<'_, Arc<DbManager>>,
-) -> Result<i32, String> {
-    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
-    let count: i32 = conn.query_row(
-        "SELECT COUNT(*) FROM tool_confirmations WHERE session_id = ?1 AND status = 'pending'",
-        params![session_id],
-        |r| r.get(0),
-    ).unwrap_or(0);
-    Ok(count)
-}
+// 工具审批队列（已移除）
+//
+// 这里曾有 tool_confirmations 表 + 四个命令（queue/resolve/get_pending/count）。
+// 四个都注册了、前端也定义了 API 包装，但**两边都没有任何地方调用过**——
+// 表永远是空的，读它的 UI 也不存在。
+//
+// 留着比删掉更危险：它让人以为「OMNIX 有工具审批」，而实际上 OMNIX 是把
+// agent CLI 当子进程拉起来的，工具审批完全由那些 CLI 自己在内部处理，
+// 网关看不见也管不着。要真做拦截式审批得改网关（解析响应里的 tool_use、
+// 拦住、等人批），那是另一件事，不是补几个函数。
+//
+// 建库语句一并从 db_schema 移除；已存在的空表不动——删表是不可逆的，
+// 留一张空表无害。

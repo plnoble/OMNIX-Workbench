@@ -770,10 +770,6 @@ pub fn run() {
             // Conversation Skills Indicator
             commands::get_conversation_skills,
             // Tool Call Confirmation Queue
-            commands::queue_tool_confirmation,
-            commands::resolve_tool_confirmation,
-            commands::get_pending_confirmations,
-            commands::get_pending_confirmation_count,
             // PPT / Presentation panel (结构化幻灯模型 + 网关生成/编辑)
             commands::list_decks,
             commands::get_deck,

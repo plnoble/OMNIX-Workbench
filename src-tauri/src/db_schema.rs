@@ -807,19 +807,9 @@ impl DbManager {
             [],
         )?;
 
-        // 25. Tool Confirmation Queue
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS tool_confirmations (
-                id TEXT PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                tool_name TEXT NOT NULL,
-                tool_input TEXT NOT NULL DEFAULT '',
-                status TEXT NOT NULL DEFAULT 'pending',
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                resolved_at DATETIME NULL
-            )",
-            [],
-        )?;
+        // 25.（已移除）工具审批队列 tool_confirmations —— 四个命令和前端包装都
+        // 存在过，但两边都没有任何地方调用，表永远是空的。见 commands/automation.rs
+        // 的说明。已存在的空表不删：删表不可逆，留着无害。
 
         // Platform API Keys (multi-key per platform, encrypted storage)
         let _ = conn.execute(

@@ -269,18 +269,3 @@ export const conversationSkillsApi = {
 };
 
 // Tool Call Confirmation Queue
-export interface ToolCallConfirmation {
-  id: string; session_id: string; tool_name: string;
-  tool_input: string; status: string; created_at: string;
-}
-export const toolConfirmationApi = {
-  queue: (sessionId: string, toolName: string, toolInput: string) =>
-    invoke<string>("queue_tool_confirmation", { sessionId, toolName, toolInput }),
-  resolve: (confirmationId: string, approved: boolean) =>
-    invoke("resolve_tool_confirmation", { confirmationId, approved }),
-  getPending: (sessionId: string) =>
-    invoke<ToolCallConfirmation[]>("get_pending_confirmations", { sessionId }),
-  getPendingCount: (sessionId: string) =>
-    invoke<number>("get_pending_confirmation_count", { sessionId }),
-};
-
