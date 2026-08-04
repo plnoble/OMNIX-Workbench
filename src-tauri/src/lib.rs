@@ -30,6 +30,7 @@ mod selection;
 mod skill_dag;
 mod skill_frontmatter;
 mod skill_library;
+mod mcp_server;
 mod slides;
 mod slides_blocks;
 mod slides_layout;

@@ -52,23 +52,59 @@ jobs:
         working-directory: ./src-tauri
         run: cargo test --lib
 
-      # The remaining #[ignore]d tests need a real machine (installed agent CLIs,
-      # the user's own CLI usage logs) or are known-flaky stress tests, so they
-      # can't gate the build — but running them keeps them from rotting silently
-      # the way test_memory_injection did.
-      - name: Ignored/manual tests (signal)
-        working-directory: ./src-tauri
-        run: cargo test --lib -- --ignored
-        continue-on-error: true
+      # ── 阻塞门：这个项目自己踩过的坑 ──────────────────────────────────
+      # CLAUDE.md 记着三条历史事故。写下来跟拦得住是两回事，这两步负责拦。
 
-      # Signal-only until the pre-existing fmt/clippy debt is cleared. Flip these
-      # to blocking (drop continue-on-error) once `cargo fmt` + clippy are green.
-      - name: Rustfmt check (signal)
-        working-directory: ./src-tauri
-        run: cargo fmt --check
-        continue-on-error: true
+      - name: 坑点守卫（阻塞）
+        shell: bash
+        run: bash .github/scripts/pitfall-guard.sh
 
-      - name: Clippy (signal)
+      # 坑点2「跨 await 持有 std::sync 锁」交给 clippy 做真正的作用域分析，
+      # 文本匹配判不了作用域。只开这一条 lint，所以不受下面那堆 clippy 欠债影响。
+      - name: 坑点2 · 跨 await 持锁（阻塞）
         working-directory: ./src-tauri
-        run: cargo clippy --lib -- -D warnings
-        continue-on-error: true
+        run: cargo clippy --lib --quiet -- -A clippy::all -D clippy::await_holding_lock
+
+      # ── 非阻塞信号：但**必须看得见** ──────────────────────────────────
+      # 这三步以前是 continue-on-error，失败也显示绿勾——等于没有这一步，还
+      # 骗人。现在自己捕获退出码，把失败写进 Job Summary 和 ::warning:: 注解：
+      # 不阻塞合并，但绝不假装通过。
+      #
+      # 现状（2026-08-03 实测）：rustfmt 有 922 处待重排、clippy 有历史欠债，
+      # 清干净之前不能设成阻塞，否则 CI 会一直红到没人看。
+
+      - name: 遗留检查（不阻塞，但如实报告）
+        shell: bash
+        working-directory: ./src-tauri
+        run: |
+          set +e
+          status=0
+          report() {  # $1=名称 $2=退出码 $3=日志文件
+            if [ "$2" -ne 0 ]; then
+              echo "### ❌ $1 未通过" >> "$GITHUB_STEP_SUMMARY"
+              echo '```' >> "$GITHUB_STEP_SUMMARY"
+              tail -n 25 "$3" >> "$GITHUB_STEP_SUMMARY"
+              echo '```' >> "$GITHUB_STEP_SUMMARY"
+              echo "::warning::$1 未通过（不阻塞，详情见 Job Summary）"
+              status=1
+            else
+              echo "### ✅ $1 通过" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          }
+
+          # 被 #[ignore] 的用例需要真机环境或是已知不稳定的压力测试，不能当门；
+          # 但要跑，否则会像 test_memory_injection 那样烂在那里没人发现。
+          cargo test --lib -- --ignored > ignored.log 2>&1
+          report "手动/ignored 用例" $? ignored.log
+
+          cargo fmt --check > fmt.log 2>&1
+          report "rustfmt" $? fmt.log
+
+          cargo clippy --lib -- -D warnings > clippy.log 2>&1
+          report "clippy（全量）" $? clippy.log
+
+          if [ "$status" -ne 0 ]; then
+            echo ""
+            echo "以上为非阻塞信号：不拦合并，但确实没通过。"
+          fi
+          exit 0

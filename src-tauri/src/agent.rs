@@ -1835,6 +1835,35 @@ pub(crate) async fn run_cron_task(
     args_str: String,
     workspace_dir: String,
 ) -> Result<(), String> {
+    // 这两件事必须在**最前面**：上一轮还没结束时，连查 agent 装没装都不该做。
+    //
+    // 同一个任务不叠加——定时周期短于单次耗时是很常见的配置错误，不拦的话会越堆
+    // 越多，最后把机器占满。
+    let timeout_min = (cron_timeout(&db).as_secs() / 60).max(1);
+    if let Ok(conn) = db.get_connection() {
+        // 先把陈旧的 'running' 收干净：应用被强杀、或这次修复之前卡住的那些，
+        // 会永远停在 running。不清理的话下面这道保护会把任务永久锁死——
+        // 一道保护措施把功能彻底关掉，比没有保护更糟。
+        let _ = conn.execute(
+            "UPDATE cron_runs SET status = 'timeout', finished_at = CURRENT_TIMESTAMP
+             WHERE status = 'running'
+               AND started_at < datetime('now', ?1)",
+            params![format!("-{} minutes", timeout_min)],
+        );
+        let running: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM cron_runs WHERE task_id = ?1 AND status = 'running'",
+                params![task_id],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        if running > 0 {
+            let msg = "上一轮还在运行，本轮跳过".to_string();
+            log_cron_run_skipped(&db, &task_id, &msg).await;
+            return Err(msg);
+        }
+    }
+
     let resolved_workspace = resolve_sandbox_path(&workspace_dir);
     let exe_path = match AgentManager::find_agent_path_static(&agent_name, Some(&db)) {
         Some(path) => path,
@@ -1927,6 +1956,10 @@ pub(crate) async fn run_cron_task(
 
     cmd.current_dir(resolved_workspace)
         .no_window()
+        // stdin 必须显式置空。不设的话 tokio 默认继承，子进程碰到交互提示时
+        // 的行为就取决于应用是怎么被启动的（有没有控制台），而不是确定的。
+        // 置空 = 任何等输入的地方立刻拿到 EOF，快速失败而不是挂住。
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
@@ -1985,17 +2018,50 @@ pub(crate) async fn run_cron_task(
         let _ = file.flush().await;
     });
 
-    let status = child.wait().await;
-    let _ = log_writer.await;
-
-    let success = match status {
-        Ok(s) => s.success(),
-        Err(_) => false,
+    // 定时任务必须有上限。没有超时的后台进程是慢性泄漏：卡住的那次永远停在
+    // 'running'，进程不退，而下一次触发照样再开一个——跑一夜能攒出一堆。
+    // 卡住的原因可以是网络挂起、agent 等一个永远不会来的输入、或者它自己死循环，
+    // 这里不区分，一律按超时处理。
+    let limit = cron_timeout(&db);
+    let timed_out = match tokio::time::timeout(limit, child.wait()).await {
+        Ok(status) => {
+            let _ = log_writer.await;
+            let success = matches!(status, Ok(s) if s.success());
+            log_cron_run_status(&db, &run_id, if success { "success" } else { "failed" }).await;
+            false
+        }
+        Err(_) => {
+            // 先杀进程再收日志：不杀的话 log_writer 会一直等一个不会关闭的管道。
+            let _ = child.kill().await;
+            let _ = log_writer.await;
+            log_cron_run_status(&db, &run_id, "timeout").await;
+            true
+        }
     };
-
-    log_cron_run_status(&db, &run_id, if success { "success" } else { "failed" }).await;
+    if timed_out {
+        return Err(format!(
+            "定时任务超时（{} 分钟未结束），已终止",
+            limit.as_secs() / 60
+        ));
+    }
 
     Ok(())
+}
+
+/// 定时任务的单次上限。可用 `cron_timeout_minutes` 设置调整；
+/// 默认 30 分钟——足够跑完一次正经的 agent 任务，又不至于卡一整夜。
+/// 设成 0 表示不限制（明确选择放弃这道保护，不是默认行为）。
+fn cron_timeout(db: &DbManager) -> Duration {
+    let minutes = db
+        .get_setting("cron_timeout_minutes")
+        .unwrap_or(None)
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(30);
+    if minutes == 0 {
+        Duration::from_secs(u64::MAX / 2) // 实质不限制，又不会溢出
+    } else {
+        Duration::from_secs(minutes * 60)
+    }
 }
 
 async fn log_cron_run_status(db: &DbManager, run_id: &str, status: &str) {
@@ -2003,6 +2069,19 @@ async fn log_cron_run_status(db: &DbManager, run_id: &str, status: &str) {
         let _ = conn.execute(
             "UPDATE cron_runs SET status = ?1, finished_at = CURRENT_TIMESTAMP WHERE id = ?2",
             params![status, run_id],
+        );
+    }
+}
+
+/// 记一条「跳过」。用独立状态而不是 failed——跳过是保护动作，
+/// 混进失败里会让人以为任务坏了，反而去关掉这道保护。
+async fn log_cron_run_skipped(db: &DbManager, task_id: &str, reason: &str) {
+    let run_id = format!("run_skip_{}_{}", task_id, Local::now().format("%Y%m%d_%H%M%S"));
+    if let Ok(conn) = db.get_connection() {
+        let _ = conn.execute(
+            "INSERT INTO cron_runs (id, task_id, status, log_path, started_at, finished_at)
+             VALUES (?1, ?2, 'skipped', ?3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            params![run_id, task_id, reason],
         );
     }
 }
@@ -2296,5 +2375,104 @@ mod foreign_config_tests {
             serde_json::from_str(&fs::read_to_string(&p).unwrap()).unwrap();
         assert_eq!(v["tosAccepted"], true);
         let _ = fs::remove_file(&p);
+    }
+}
+
+#[cfg(test)]
+mod cron_guard_tests {
+    use super::*;
+
+    fn db_at(tag: &str) -> Arc<DbManager> {
+        let p = std::env::temp_dir().join(format!("omnix_cron_{}_{tag}.db", std::process::id()));
+        let _ = fs::remove_file(&p);
+        Arc::new(DbManager::new_with_path(p))
+    }
+
+    #[test]
+    fn timeout_defaults_to_thirty_minutes_and_is_configurable() {
+        let db = db_at("timeout");
+        assert_eq!(cron_timeout(&db), Duration::from_secs(30 * 60), "默认 30 分钟");
+
+        let _ = db.set_setting("cron_timeout_minutes", "5");
+        assert_eq!(cron_timeout(&db), Duration::from_secs(5 * 60));
+
+        // 0 = 明确放弃这道保护，但不能变成 0 秒（那等于每次都立刻超时）
+        let _ = db.set_setting("cron_timeout_minutes", "0");
+        assert!(cron_timeout(&db) > Duration::from_secs(365 * 24 * 3600), "0 应表示不限制");
+
+        // 填了非数字不能崩，回落默认
+        let _ = db.set_setting("cron_timeout_minutes", "abc");
+        assert_eq!(cron_timeout(&db), Duration::from_secs(30 * 60));
+    }
+
+    /// 陈旧的 running 行必须能被回收，否则一次卡死会把任务永久锁住——
+    /// 保护措施把功能关掉，比没有保护更糟。
+    #[tokio::test]
+    async fn stale_running_rows_do_not_lock_a_task_forever() {
+        let db = db_at("stale");
+        {
+            let conn = db.get_connection().unwrap();
+            conn.execute(
+                "INSERT INTO cron_runs (id, task_id, status, log_path, started_at)
+                 VALUES ('old', 't1', 'running', '', datetime('now', '-3 hours'))",
+                [],
+            )
+            .unwrap();
+        }
+        // 触发一次（agent 不存在会提前返回，但陈旧回收在那之前已经跑过）
+        let _ = run_cron_task(
+            Arc::clone(&db),
+            "t1".into(),
+            "不存在的Agent".into(),
+            "[]".into(),
+            std::env::temp_dir().to_string_lossy().to_string(),
+        )
+        .await;
+
+        let conn = db.get_connection().unwrap();
+        let still_running: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM cron_runs WHERE id = 'old' AND status = 'running'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(still_running, 0, "三小时前的 running 应被收成 timeout");
+    }
+
+    /// 上一轮真的还在跑（刚开始）时，这一轮要跳过而不是叠加。
+    #[tokio::test]
+    async fn a_still_running_task_skips_instead_of_stacking() {
+        let db = db_at("overlap");
+        {
+            let conn = db.get_connection().unwrap();
+            conn.execute(
+                "INSERT INTO cron_runs (id, task_id, status, log_path, started_at)
+                 VALUES ('fresh', 't2', 'running', '', CURRENT_TIMESTAMP)",
+                [],
+            )
+            .unwrap();
+        }
+        let err = run_cron_task(
+            Arc::clone(&db),
+            "t2".into(),
+            "不存在的Agent".into(),
+            "[]".into(),
+            std::env::temp_dir().to_string_lossy().to_string(),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("跳过"), "{err}");
+
+        let conn = db.get_connection().unwrap();
+        // 跳过要留痕，且用独立状态，不能混进 failed
+        let skipped: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM cron_runs WHERE task_id = 't2' AND status = 'skipped'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(skipped, 1, "跳过要记一条 skipped");
     }
 }

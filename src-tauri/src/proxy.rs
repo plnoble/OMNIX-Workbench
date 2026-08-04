@@ -100,6 +100,9 @@ impl ProxyServer {
                 .allow_methods(tower_http::cors::Any)
                 .allow_headers(tower_http::cors::Any)
         } else {
+            // 坑点1-ack: 走到这个分支时监听地址是 127.0.0.1，只有本机进程够得着；
+            // 而且网关不使用 cookie 凭证（鉴权走 header/令牌），不构成
+            // 「通配符 + credentials」的组合。绑 0.0.0.0 的分支在上面，是白名单。
             CorsLayer::permissive()
         };
 
@@ -119,6 +122,9 @@ impl ProxyServer {
         });
 
         let app = Router::new()
+            // P1：OMNIX 作为能力提供方。挂在网关上而不是另起一个进程，
+            // 鉴权、CORS、绑定地址都沿用同一套（见 guard_gateway_access）。
+            .route("/mcp", post(handle_mcp))
             .route("/v1/messages", post(handle_messages))
             .route("/v1/chat/completions", post(handle_openai_forward))
             .route("/v1/embeddings", post(handle_embeddings))
@@ -1848,9 +1854,12 @@ async fn guard_gateway_access(
         return next.run(req).await;
     }
 
+    // `/mcp` 必须在这一行里：它把技能库交给调用方，开了手机远程访问之后网关
+    // 绑的是 0.0.0.0，漏掉它等于把整个技能库对局域网无鉴权敞开。
     let is_gateway = path.starts_with("/v1/")
         || path.starts_with("/agent/")
-        || path.starts_with("/session/");
+        || path.starts_with("/session/")
+        || path == "/mcp";
     if is_gateway && !peer.ip().is_loopback() {
         // WSL agents reach the host over a non-loopback address and can't
         // easily carry the token, so WSL mode keeps the pre-existing local-dev
@@ -2704,5 +2713,44 @@ mod tests {
 
         drop(db);
         let _ = std::fs::remove_file(db_path);
+    }
+}
+
+/// P1：MCP 端点。JSON-RPC 2.0，通知不回响应（按规范返回 202 空体）。
+async fn handle_mcp(
+    State(state): State<Arc<ProxyState>>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    // 批量请求：规范允许数组。逐条处理，过滤掉通知的空响应。
+    if let Some(batch) = body.as_array() {
+        let mut out = Vec::new();
+        for item in batch {
+            if let Ok(req) = serde_json::from_value::<crate::mcp_server::RpcRequest>(item.clone()) {
+                if let Some(resp) = crate::mcp_server::handle_rpc(&state.db, req) {
+                    out.push(serde_json::to_value(resp).unwrap_or(serde_json::Value::Null));
+                }
+            }
+        }
+        if out.is_empty() {
+            return StatusCode::ACCEPTED.into_response();
+        }
+        return Json(out).into_response();
+    }
+
+    let req = match serde_json::from_value::<crate::mcp_server::RpcRequest>(body) {
+        Ok(r) => r,
+        Err(e) => {
+            return Json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": serde_json::Value::Null,
+                "error": { "code": -32700, "message": format!("请求解析失败: {e}") }
+            }))
+            .into_response()
+        }
+    };
+    match crate::mcp_server::handle_rpc(&state.db, req) {
+        Some(resp) => Json(resp).into_response(),
+        // 通知按规范不能回 body
+        None => StatusCode::ACCEPTED.into_response(),
     }
 }
