@@ -1,3 +1,4 @@
+mod action_audit;
 mod agent;
 mod agent_templates;
 mod backup;

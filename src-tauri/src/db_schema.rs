@@ -316,6 +316,7 @@ impl DbManager {
             "ALTER TABLE skills ADD COLUMN review_improve TEXT NOT NULL DEFAULT ''",
             // P2 技能锁：晋升正式池那一刻的内容指纹（SHA-256）与时间。
             // 审核认可的是**当时那份内容**，不是这个文件名——之后文件被改了要查得出来。
+            "ALTER TABLE cron_runs ADD COLUMN action_summary TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE skills ADD COLUMN approved_hash TEXT NULL",
             "ALTER TABLE skills ADD COLUMN approved_at TEXT NULL",
         ];
@@ -804,6 +805,25 @@ impl DbManager {
                 enabled INTEGER NOT NULL DEFAULT 1,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )",
+            [],
+        )?;
+
+        // 25b. Q2′ 事后审计：agent 实际调用过的工具。主键是 tool_use 的 id，
+        // 对话历史每轮重发也只记一次。
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS agent_actions (
+                id TEXT PRIMARY KEY,
+                agent TEXT NOT NULL,
+                tool_name TEXT NOT NULL,
+                risk_tier TEXT NOT NULL,
+                detail TEXT NOT NULL DEFAULT '',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_actions_agent_time
+             ON agent_actions(agent, created_at)",
             [],
         )?;
 

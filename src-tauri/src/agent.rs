@@ -2023,11 +2023,15 @@ pub(crate) async fn run_cron_task(
     // 卡住的原因可以是网络挂起、agent 等一个永远不会来的输入、或者它自己死循环，
     // 这里不区分，一律按超时处理。
     let limit = cron_timeout(&db);
+    // 时间窗的起点。网关只知道是哪个 agent 在请求，不知道这是哪一次定时运行，
+    // 所以用时间窗关联——这是已知的近似，摘要里说的是「这段时间内」。
+    let started_at = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let timed_out = match tokio::time::timeout(limit, child.wait()).await {
         Ok(status) => {
             let _ = log_writer.await;
             let success = matches!(status, Ok(s) if s.success());
             log_cron_run_status(&db, &run_id, if success { "success" } else { "failed" }).await;
+            summarize_run(&db, &run_id, &agent_name, &started_at).await;
             false
         }
         Err(_) => {
@@ -2035,6 +2039,7 @@ pub(crate) async fn run_cron_task(
             let _ = child.kill().await;
             let _ = log_writer.await;
             log_cron_run_status(&db, &run_id, "timeout").await;
+            summarize_run(&db, &run_id, &agent_name, &started_at).await;
             true
         }
     };
@@ -2474,5 +2479,38 @@ mod cron_guard_tests {
             )
             .unwrap();
         assert_eq!(skipped, 1, "跳过要记一条 skipped");
+    }
+}
+
+/// Q1′：把这次运行时间窗内观察到的动作摘要写进运行记录。
+///
+/// 用**时间窗**关联而不是运行 id：网关只知道是哪个 agent 在请求，不知道这是
+/// 哪一次定时运行。窗口内如果同时开着手动会话，会一并算进来——已知的近似，
+/// 所以摘要措辞是「这段时间内」而不是「这次运行」。
+async fn summarize_run(db: &DbManager, run_id: &str, agent: &str, started_at: &str) {
+    let end = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let Ok(summary) = crate::action_audit::summarize_window(db, agent, started_at, &end) else {
+        return;
+    };
+    let line = summary.headline();
+    if let Ok(conn) = db.get_connection() {
+        let _ = conn.execute(
+            "UPDATE cron_runs SET action_summary = ?1 WHERE id = ?2",
+            params![line, run_id],
+        );
+    }
+    // 对外动作是唯一值得单独喊一声的：它收不回来。
+    if summary.send > 0 {
+        log::warn!(
+            "定时任务 {run_id}（{agent}）期间观察到 {} 次对外动作：{}",
+            summary.send,
+            summary
+                .notable
+                .iter()
+                .filter(|a| a.risk_tier == "send")
+                .map(|a| a.detail.as_str())
+                .collect::<Vec<_>>()
+                .join(" / ")
+        );
     }
 }

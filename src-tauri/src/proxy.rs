@@ -324,6 +324,17 @@ async fn handle_messages_impl(
     headers: axum::http::HeaderMap,
     mut payload: AnthropicRequest,
 ) -> Response {
+    // Q2′ 事后审计：请求历史里带着 agent 上一轮**真实调用过**的工具，记下来。
+    // 放在最前面，因为下面的分支会把 payload 改成各家上游的形状。
+    // 纯观察：不改请求、不拦截、出错咽掉——审计绝不能影响正在转发的请求。
+    {
+        let uses = crate::action_audit::extract_tool_uses(&payload);
+        if !uses.is_empty() {
+            let who = agent_name_opt.as_deref().unwrap_or("（未指定 agent）");
+            crate::action_audit::record(&state.db, who, &uses);
+        }
+    }
+
     // Concurrency limiting
     let _permit = match state.concurrency_semaphore.try_acquire() {
         Ok(p) => p,
