@@ -71,6 +71,10 @@ export function SkillPoolPanel() {
   // 默认让源技能退出正式池：融合的本意是「取代」，不是再多一个重叠技能
   // （留着会被审核判为与源技能重复，越忠实融合越吃亏）。可取消。
   const [retireSources, setRetireSources] = useState(true);
+  /** 融合结果的落库名。可编辑——见 freeSkillName 的注释。 */
+  const [fusionName, setFusionName] = useState("");
+  /** 非空表示我们替模型改过名，界面要说明原名是什么、为什么改。 */
+  const [fusionRenamed, setFusionRenamed] = useState("");
 
   // AI 改造
   const [reformOpen, setReformOpen] = useState(false);
@@ -138,6 +142,20 @@ export function SkillPoolPanel() {
     () => items.find((i) => i.name === selectedName) ?? null,
     [items, selectedName],
   );
+
+  /**
+   * 融合名的实时校验。撞名这件事必须在**点保存之前**就说清楚——
+   * 原来是存的时候后端才报「已存在——换个名字」，而那个对话框里根本没有
+   * 能改名字的地方，用户只剩「放弃」。
+   */
+  const fusionNameError = useMemo(() => {
+    const n = fusionName.trim();
+    if (!n) return "技能名不能为空";
+    if (/[/\:*?"<>|]/.test(n)) return "技能名会作为文件夹名，不能含 / \ : * ? \" < > |";
+    if (n === "." || n === ".." || n.includes("..")) return "技能名不能是 . 或 .. ，也不能含 ..";
+    if (items.some((i) => i.name === n)) return `已有技能叫「${n}」，换一个`;
+    return "";
+  }, [fusionName, items]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -357,6 +375,26 @@ export function SkillPoolPanel() {
     }
   };
 
+  /**
+   * 融合结果起个不撞车的名字。
+   *
+   * 模型几乎必然把「gstack + browse 的融合」命名为 gstack——它就是想表达
+   * 「这是升级版的 gstack」。但技能名是唯一键，撞上就存不进去。
+   * 原来这是个死路：名字在对话框里只是只读文本，报错之后只剩「放弃」，
+   * 融合结果整个丢掉。**最常见的路径被当成了异常路径。**
+   *
+   * 现在打开对话框时就先让开，并在界面上说明为什么改了名。用户仍可改回
+   * 任何没被占用的名字。
+   */
+  const freeSkillName = (proposed: string, taken: Set<string>): string => {
+    if (!taken.has(proposed)) return proposed;
+    if (!taken.has(`${proposed}-merged`)) return `${proposed}-merged`;
+    for (let i = 2; i < 100; i += 1) {
+      if (!taken.has(`${proposed}-merged${i}`)) return `${proposed}-merged${i}`;
+    }
+    return `${proposed}-${Date.now()}`;
+  };
+
   const handleFuse = async () => {
     if (fusePicks.size < 2) {
       toast.error("至少勾选 2 个技能");
@@ -366,7 +404,11 @@ export function SkillPoolPanel() {
     setFusing(true);
     try {
       const p = await skillPoolApi.fuse([...fusePicks], chatModel);
+      const taken = new Set(items.map((i) => i.name));
+      const safe = freeSkillName(p.name, taken);
       setFusionProposal(p);
+      setFusionName(safe);
+      setFusionRenamed(safe !== p.name ? p.name : "");
     } catch (e) {
       toast.error(`融合失败：${e}`);
     } finally {
@@ -378,20 +420,23 @@ export function SkillPoolPanel() {
     if (!fusionProposal) return;
     try {
       const sources = fusionProposal.sources ?? [];
+      const finalName = fusionName.trim();
       await skillPoolApi.applyFusion(
-        fusionProposal.name,
+        finalName,
         fusionProposal.description,
         fusionProposal.content,
         sources,
         retireSources,
       );
       toast.success(
-        `融合技能「${fusionProposal.name}」已进入待定池`,
+        `融合技能「${finalName}」已进入待定池`,
         retireSources && sources.length
           ? { description: `源技能 ${sources.join("、")} 已退回待定池，可随时恢复` }
           : undefined,
       );
       setFusionProposal(null);
+      setFusionName("");
+      setFusionRenamed("");
       setFuseMode(false);
       setFusePicks(new Set());
       void load();
@@ -920,7 +965,7 @@ export function SkillPoolPanel() {
             <div className="flex items-center justify-between">
               <span className="text-sm font-semibold">
                 <Combine className="mr-1 inline h-4 w-4 text-primary" />
-                融合结果：{fusionProposal.name}
+                融合结果：{fusionName || "（未命名）"}
               </span>
               <button onClick={() => setFusionProposal(null)}>
                 <X className="h-4 w-4 text-muted-foreground hover:text-foreground" />
@@ -932,6 +977,29 @@ export function SkillPoolPanel() {
                 {fusionProposal.explanation}
               </p>
             )}
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground" htmlFor="fusion-name">
+                技能名（落库用，不能与已有技能重名）
+              </label>
+              <input
+                id="fusion-name"
+                value={fusionName}
+                onChange={(e) => setFusionName(e.target.value)}
+                spellCheck={false}
+                className={cn(
+                  "h-9 w-full rounded-lg border bg-background px-3 font-mono text-sm outline-none focus:border-primary",
+                  fusionNameError ? "border-destructive" : "border-border",
+                )}
+              />
+              {fusionNameError ? (
+                <p className="text-xs text-destructive">{fusionNameError}</p>
+              ) : fusionRenamed ? (
+                <p className="text-xs text-muted-foreground">
+                  模型起的名字是 <span className="font-mono">{fusionRenamed}</span>
+                  ，与已有技能重名，已自动让开。可以再改。
+                </p>
+              ) : null}
+            </div>
             {(fusionProposal.sources?.length ?? 0) > 0 && (
               <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-border bg-muted/10 p-2 text-xs leading-5">
                 <input
@@ -961,7 +1029,9 @@ export function SkillPoolPanel() {
               </button>
               <button
                 onClick={() => void handleApplyFusion()}
-                className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
+                disabled={!!fusionNameError}
+                title={fusionNameError || undefined}
+                className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
               >
                 <CheckCircle2 className="h-4 w-4" /> 存入待定池
               </button>

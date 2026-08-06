@@ -586,6 +586,11 @@ pub fn apply_pool_fusion(
     retire_sources: bool,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<(), String> {
+    // 名字直接拼成目录名，而它是**模型产出**的——前端的校验是给人看的提示，
+    // 挡穿越必须在这里做。
+    let name = name.trim().to_string();
+    crate::input_validation::validate_path_component(&name, "name")?;
+
     let conn = db.get_connection().map_err(|e| e.to_string())?;
     let exists: i64 = conn
         .query_row(
@@ -595,7 +600,12 @@ pub fn apply_pool_fusion(
         )
         .map_err(|e| e.to_string())?;
     if exists > 0 {
-        return Err(format!("技能 {name} 已存在——换个名字"));
+        // 融合模型几乎必然把结果命名为其中一个源技能（gstack+browse → gstack），
+        // 所以这条**是常见路径不是异常路径**。前端在打开对话框时就会自动让开
+        // 并把名字做成可编辑的；这里只是兜底，错误话术也要说清怎么办。
+        return Err(format!(
+            "已有技能叫「{name}」。在融合结果对话框顶部的「技能名」里改一个没被占用的名字再存。"
+        ));
     }
     let dir = crate::storage::skills_dir().join(&name);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -795,6 +805,24 @@ pub fn get_skill_pool_content(
 #[cfg(test)]
 mod fusion_tests {
     use super::{build_review_prompt, fusion_sources};
+
+    /// 融合结果的名字来自**模型**，会直接拼成目录名（`skills_dir().join(&name)`）。
+    /// 前端那道校验是给人看的提示，挡目录穿越必须在后端。
+    ///
+    /// 这里断言的是 `validate_path_component` 真正承诺的东西——路径分隔符与
+    /// `.`/`..`。Windows 非法字符（`* ? < > |`）不在它的契约里，那是前端输入框
+    /// 负责的可用性问题，不是安全边界；写进来只会让测试断言一个不存在的保证。
+    #[test]
+    fn a_model_supplied_fusion_name_cannot_escape_the_skills_dir() {
+        use crate::input_validation::validate_path_component;
+        for evil in [r"../../etc", r"..\..\windows", r"a/b", r"a\b", r"..", r".", r"a:b"] {
+            assert!(
+                validate_path_component(evil, "name").is_err(),
+                "「{evil}」应当被挡下"
+            );
+        }
+        assert!(validate_path_component("gstack-merged", "name").is_ok());
+    }
 
     #[test]
     fn fusion_sources_parses_lineage() {
