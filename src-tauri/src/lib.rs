@@ -40,6 +40,7 @@ mod slides_layout;
 mod slides_lint;
 mod storage;
 mod sync_engine;
+mod team_board;
 mod token_economy;
 mod tool_adapters;
 mod tool_translate;

@@ -36,6 +36,9 @@ const PROTOCOL_VERSION: &str = "2025-06-18";
 const SEARCH_TOOL: &str = "search_capabilities";
 const LOAD_TOOL: &str = "load_capability";
 const DECK_TOOL: &str = "create_deck";
+/// T4：团队任务板。看板 + 上报，让跑起来的 agent 参与协作而不只是被编排。
+const BOARD_TOOL: &str = "team_board";
+const REPORT_TOOL: &str = "team_report";
 
 /// 搜索一次最多回几条。给对面塞 50 条技能只会挤爆它的上下文。
 const MAX_RESULTS: usize = 8;
@@ -131,6 +134,36 @@ fn tool_definitions() -> Value {
             }
         },
         {
+            "name": BOARD_TOOL,
+            "description":
+                "看这次团队协作的任务板：有哪些分工、各自什么状态、谁卡在谁后面。                 开工前先看一眼——你依赖的分工没完成时不要动手。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "run_id": { "type": "string", "description": "团队运行 id" }
+                },
+                "required": ["run_id"]
+            }
+        },
+        {
+            "name": REPORT_TOOL,
+            "description":
+                "上报你负责的那条分工的状态。做完、失败、或被别的分工卡住时都要报——                 队友靠这个判断能不能开工。只改你指定的那一条，不影响别人。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "run_id": { "type": "string", "description": "团队运行 id" },
+                    "assignment_id": { "type": "string", "description": "分工 id，从 team_board 拿" },
+                    "status": {
+                        "type": "string",
+                        "description": "running 进行中 / completed 已完成 / failed 失败 / blocked 被卡住"
+                    },
+                    "note": { "type": "string", "description": "一句话进展或失败原因（可选）" }
+                },
+                "required": ["run_id", "assignment_id", "status"]
+            }
+        },
+        {
             "name": LOAD_TOOL,
             "description":
                 "取回一个技能的完整说明（SKILL.md 正文），取回后照着执行。\
@@ -207,6 +240,17 @@ fn call_tool(db: &Arc<DbManager>, params: &Value) -> Result<String, String> {
             load_capability(db, n)
         }
         DECK_TOOL => create_deck(&args),
+        BOARD_TOOL => {
+            let run = args.get("run_id").and_then(|v| v.as_str()).unwrap_or("").trim();
+            crate::team_board::board(db, run)
+        }
+        REPORT_TOOL => crate::team_board::report(
+            db,
+            args.get("run_id").and_then(|v| v.as_str()).unwrap_or("").trim(),
+            args.get("assignment_id").and_then(|v| v.as_str()).unwrap_or("").trim(),
+            args.get("status").and_then(|v| v.as_str()).unwrap_or("").trim(),
+            args.get("note").and_then(|v| v.as_str()),
+        ),
         other => Err(format!("没有这个工具: {other}")),
     }
 }
@@ -382,7 +426,9 @@ mod tests {
         let d = db();
         let r = handle_rpc(&d, req("tools/list", json!({}), Some(json!(2)))).unwrap();
         let tools = r.result.unwrap()["tools"].as_array().unwrap().clone();
-        assert_eq!(tools.len(), 3, "多一个工具就要多一条理由");
+        // 每个工具都占着对面每一轮的上下文，所以数字写死在这里：多一个就要多一条理由。
+        // 现在的 5 个分两组——能力（查/取/出片）与团队协作（看板/上报）。
+        assert_eq!(tools.len(), 5, "多一个工具就要多一条理由");
         for t in &tools {
             assert!(t["name"].is_string());
             assert!(!t["description"].as_str().unwrap().is_empty());
@@ -390,7 +436,7 @@ mod tests {
             assert!(t["inputSchema"]["required"].is_array());
         }
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-        for t in [SEARCH_TOOL, LOAD_TOOL, DECK_TOOL] {
+        for t in [SEARCH_TOOL, LOAD_TOOL, DECK_TOOL, BOARD_TOOL, REPORT_TOOL] {
             assert!(names.contains(&t), "{t} 不在工具清单里");
         }
     }
