@@ -842,6 +842,11 @@ async fn write_json_line(
 /// which then left the next stdin write to hit a closing pipe (os error 232).
 const CODEX_THREAD_START_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// Blocks the handshake until the stdout reader has captured the agent's session
+/// id. Returning also means the id is already on the `agent_sessions` row — the
+/// reader publishes it only after persisting the event (see
+/// [`persist_capture_and_publish`]), which is what lets `start_session` read the
+/// record straight back.
 async fn wait_for_external_session(active: &ActiveSession) -> Result<String, String> {
     let deadline = std::time::Instant::now() + CODEX_THREAD_START_TIMEOUT;
     loop {
@@ -910,10 +915,7 @@ fn spawn_output_reader<R>(
                 }]
             });
             for event in parsed_events {
-                if let Some(external_id) = event.external_session_id.clone() {
-                    *active.external_session_id.write().await = Some(external_id);
-                }
-                persist_and_publish(&db, &session_id, &event, &events).await;
+                persist_capture_and_publish(&db, &session_id, &event, &active, &events).await;
             }
         }
 
@@ -956,8 +958,9 @@ async fn handle_acp_line(
     match classify_acp_message(line) {
         Ok(AcpInbound::Emit(runtime_events)) => {
             for mut event in runtime_events {
-                // Capture the agent's model config id (set before external id so
-                // the handshake wait observes it once the session id is visible).
+                // Capture the agent's model config id (set before the external id
+                // is published so the handshake wait observes it once the session
+                // id is visible).
                 if let Some(config_id) = event
                     .metadata
                     .pointer("/acp_model_option/config_id")
@@ -973,9 +976,6 @@ async fn handle_acp_line(
                     .and_then(|value| value.as_bool())
                 {
                     active.acp_supports_images.store(image, Ordering::SeqCst);
-                }
-                if let Some(external_id) = event.external_session_id.clone() {
-                    *active.external_session_id.write().await = Some(external_id);
                 }
 
                 let chunk_kind = event
@@ -1022,7 +1022,7 @@ async fn handle_acp_line(
                     }
                     flush_acp_assistant_message(session_id, db, active, events).await;
                 }
-                persist_and_publish(db, session_id, &event, events).await;
+                persist_capture_and_publish(db, session_id, &event, active, events).await;
             }
         }
         Ok(AcpInbound::ReadFile {
@@ -1348,6 +1348,47 @@ async fn persist_and_publish(
     event: &RuntimeEvent,
     events: &broadcast::Sender<SessionEventEnvelope>,
 ) {
+    if persist_runtime_event(db, session_id, event).await {
+        publish_event(session_id, event, events);
+    }
+}
+
+/// Persists the event, THEN captures the agent-assigned session id it carries,
+/// then broadcasts. Used by the stdout readers, where the order is the whole
+/// point.
+///
+/// `wait_for_external_session` treats the in-memory `external_session_id` as the
+/// handshake's readiness signal, and `start_session` reads the session row back
+/// from the database the instant that wait returns. Capturing the id first (as
+/// this used to) left a window in which the id was visible but the row was not
+/// yet updated — a loaded machine that descheduled the reader between the two
+/// writes handed the caller a record with `external_session_id: None`. Writing
+/// the row first makes the in-memory id a valid release marker for it.
+async fn persist_capture_and_publish(
+    db: &Arc<DbManager>,
+    session_id: &str,
+    event: &RuntimeEvent,
+    active: &ActiveSession,
+    events: &broadcast::Sender<SessionEventEnvelope>,
+) {
+    let persisted = persist_runtime_event(db, session_id, event).await;
+    // Captured even when the row write failed: the live session can still run on
+    // an id the database missed, and withholding it would only strand the
+    // handshake on a timeout.
+    if let Some(external_id) = event.external_session_id.clone() {
+        *active.external_session_id.write().await = Some(external_id);
+    }
+    if persisted {
+        publish_event(session_id, event, events);
+    }
+}
+
+/// Writes one runtime event to the database. Returns whether it landed.
+async fn persist_runtime_event(
+    db: &Arc<DbManager>,
+    session_id: &str,
+    event: &RuntimeEvent,
+) -> bool {
     let db = Arc::clone(db);
     let persisted_event = event.clone();
     let persisted_session_id = session_id.to_string();
@@ -1357,8 +1398,16 @@ async fn persist_and_publish(
     .await;
     if !matches!(persisted, Ok(Ok(()))) {
         log::error!("Failed to persist runtime event for session {session_id}");
-        return;
+        return false;
     }
+    true
+}
+
+fn publish_event(
+    session_id: &str,
+    event: &RuntimeEvent,
+    events: &broadcast::Sender<SessionEventEnvelope>,
+) {
     let _ = events.send(SessionEventEnvelope {
         session_id: session_id.to_string(),
         event: event.clone(),

@@ -5,10 +5,25 @@ mod tests {
     use std::thread;
     use crate::db::DbManager;
 
+    /// 进程 + 时间唯一的后缀，避免并行跑的测试进程撞同一个临时路径。
+    fn unique_tag() -> String {
+        format!(
+            "{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        )
+    }
+
     // Test 1: Atomic File Replacement Safety
     #[test]
     fn test_atomic_write_safety() {
-        let temp_dir = std::env::temp_dir().join("omnix_atomic_test");
+        // 路径带唯一后缀：固定路径在「多个测试进程并行跑同一套件」时会互相
+        // 删对方的文件（os error 5）。cargo test --lib 单进程不会撞，但压力
+        // 复现时会——测试自己不该成为噪声源。
+        let temp_dir = std::env::temp_dir().join(format!("omnix_atomic_test_{}", unique_tag()));
         fs::create_dir_all(&temp_dir).unwrap();
 
         let target_file = temp_dir.join("config.json");
@@ -46,7 +61,8 @@ mod tests {
     // signal-only "ignored tests" CI step so it cannot rot unnoticed.
     #[ignore = "SQLite pool stress test; flaky on Windows, run via cargo test --lib -- --ignored"]
     fn test_db_concurrency() {
-        let temp_db_path = std::env::temp_dir().join("omnix_test_db.sqlite");
+        let temp_db_path =
+            std::env::temp_dir().join(format!("omnix_test_db_{}.sqlite", unique_tag()));
         if temp_db_path.exists() {
             fs::remove_file(&temp_db_path).ok();
         }
