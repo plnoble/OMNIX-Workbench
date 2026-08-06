@@ -235,6 +235,57 @@ pub fn summarize_window(
     Ok(s)
 }
 
+/// T1：蒸馏用的证据文本——这段时间里 agent **真的**调用过哪些工具。
+///
+/// 借鉴 GenericAgent 的第一公理「无行动，不记忆」：
+///
+/// > 任何写入记忆的信息，必须源自成功的工具调用结果。严禁将模型的"固有知识"、
+/// > "推理猜测"、"未执行的计划"或"未验证的假设"作为事实写入。
+///
+/// 蒸馏原来只喂三样：会话 transcript、协议事件、`.omx/development` 记录。
+/// **三样都是「谁说过什么」**——transcript 里 agent 说"我改好了并测过了"，
+/// 和它真的跑过 `cargo test` 在文本上分不出来。这个台账是网关侧记录的
+/// 真实 `tool_use` 调用，是唯一能回答「到底做没做」的一手材料。
+///
+/// 空窗口返回空串：没观察到就如实说没有，绝不能让蒸馏器以为「没记录 = 没做过」
+/// 或反过来编一个出来。
+pub fn evidence_block(db: &DbManager, agent: &str, start: &str, end: &str) -> String {
+    let Ok(conn) = db.get_connection() else {
+        return String::new();
+    };
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT created_at, tool_name, risk_tier, detail FROM agent_actions
+         WHERE agent = ?1 AND created_at >= ?2 AND created_at <= ?3
+         ORDER BY created_at ASC LIMIT 200",
+    ) else {
+        return String::new();
+    };
+    let lines: Vec<String> = stmt
+        .query_map(params![agent, start, end], |r| {
+            let at: String = r.get(0)?;
+            let tool: String = r.get(1)?;
+            let tier: String = r.get(2)?;
+            let detail: String = r.get(3)?;
+            Ok(if detail.trim().is_empty() {
+                format!("- [{at}] {tool}（{tier}）")
+            } else {
+                format!("- [{at}] {tool}（{tier}）：{detail}")
+            })
+        })
+        .map(|rows| rows.flatten().collect())
+        .unwrap_or_default();
+
+    if lines.is_empty() {
+        return String::new();
+    }
+    format!(
+        "\n\n## 已核实的动作台账（网关侧记录的真实工具调用）\n\
+         这一节是**做过什么**的一手证据，其余材料只是**说过什么**。\n\
+         只有能对上这里某条记录的结论，才算「行动验证过」。\n\n{}\n",
+        lines.join("\n")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,5 +392,31 @@ mod tests {
         let d = db("empty");
         let s = summarize_window(&d, "A", "2000-01-01", "2999-01-01").unwrap();
         assert_eq!(s.headline(), "未观察到工具调用", "没数据不能显示成「很安全」");
+    }
+
+    #[test]
+    fn evidence_block_reports_what_was_actually_done() {
+        let d = db("evidence");
+        record(
+            &d,
+            "A",
+            &[
+                ("a".into(), "Edit".into(), serde_json::json!({"file_path": "src/proxy.rs"})),
+                ("b".into(), "Bash".into(), serde_json::json!({"command": "cargo test --lib"})),
+            ],
+        );
+        let block = evidence_block(&d, "A", "2000-01-01", "2999-01-01");
+        assert!(block.contains("cargo test --lib"), "跑过的命令要出现在证据里: {block}");
+        assert!(block.contains("src/proxy.rs"));
+        // 蒸馏器必须知道这一节和其余材料的性质不同。
+        assert!(block.contains("一手证据"), "要说清这节是「做过什么」: {block}");
+    }
+
+    #[test]
+    fn no_observed_actions_yields_no_evidence_section_at_all() {
+        // 空窗口给空串，而不是一个写着「无」的小节——后者会让蒸馏器
+        // 把「没记录」读成「确认什么都没做」，反而更容易编出结论。
+        let d = db("evidence_empty");
+        assert!(evidence_block(&d, "A", "2000-01-01", "2999-01-01").is_empty());
     }
 }

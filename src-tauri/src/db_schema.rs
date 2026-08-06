@@ -325,6 +325,10 @@ impl DbManager {
             // 是明细，用来回答「这次到底命中了多少缓存」。
             "ALTER TABLE request_logs ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE request_logs ADD COLUMN cache_creation_tokens INTEGER NOT NULL DEFAULT 0",
+            // T1 证据等级（借鉴 GenericAgent「无行动，不记忆」）：
+            // acted = 结论能对上网关记录的真实工具调用；claimed = 材料里只有陈述。
+            // 默认 claimed——存量数据是在没有这道校验时写的，不能追认为已验证。
+            "ALTER TABLE distillation_inbox ADD COLUMN verified TEXT NOT NULL DEFAULT 'claimed'",
         ];
         for sql in &migrations {
             // ALTER TABLE ADD COLUMN silently fails if column already exists in SQLite,
@@ -341,7 +345,11 @@ impl DbManager {
                 remediation TEXT NOT NULL,
                 keywords TEXT NOT NULL, -- comma-separated tags
                 type TEXT NOT NULL DEFAULT 'experience', -- 'preference' | 'experience'
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                -- T1 证据等级。注意：这张表的 CREATE 排在上面那批 migrations
+                -- **之后**，所以新库走不到那条 ALTER——列必须写在这里，
+                -- 否则全新安装的库里压根没有 verified，召回查询直接失败。
+                verified TEXT NOT NULL DEFAULT 'claimed'
             )",
             [],
         )?;
@@ -950,6 +958,9 @@ impl DbManager {
             "ALTER TABLE memories ADD COLUMN dimensions INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE memories ADD COLUMN stack_tags TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE memories ADD COLUMN confidence REAL NOT NULL DEFAULT 1",
+            // T1 证据等级，老库升级用；新库由 CREATE TABLE 直接带上。
+            // 必须放在这一批——上面那批 migrations 跑在 CREATE TABLE memories 之前。
+            "ALTER TABLE memories ADD COLUMN verified TEXT NOT NULL DEFAULT 'claimed'",
             "ALTER TABLE memories ADD COLUMN seen_count INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE memories ADD COLUMN repeated_count INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE memories ADD COLUMN last_matched_at TEXT NULL",

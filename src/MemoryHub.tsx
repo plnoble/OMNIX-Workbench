@@ -43,6 +43,7 @@ interface MemoryRecord {
   confidence?: number;
   seen_count?: number;
   repeated_count?: number;
+  verified?: string;
   status?: string;
 }
 
@@ -372,6 +373,11 @@ export function MemoryHub() {
                     {(memory.repeated_count ?? 0) > 0 && (
                       <span className="rounded-full bg-destructive/15 px-2 py-0.5 font-medium text-destructive" title="该经验注入后又发生了同类错误，可能需要改写或加强">
                         失效 ×{memory.repeated_count}
+                      </span>
+                    )}
+                    {memory.verified !== "acted" && (
+                      <span className="rounded-full bg-muted px-2 py-0.5 font-medium" title="这条经验来自会话里的陈述，没有对上网关记录的真实工具调用。仍会被召回，但排序靠后。">
+                        未经动作验证
                       </span>
                     )}
                     {retiredFromRecall(memory) && (

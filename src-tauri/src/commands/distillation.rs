@@ -23,6 +23,8 @@ pub struct DistillationCandidate {
     pub evidence_json: String,
     pub model_id: String,
     pub status: String,
+    /// T1："acted" = 结论能对上网关记录的真实工具调用；"claimed" = 材料里只有陈述。
+    pub verified: String,
     pub created_at: String,
     pub reviewed_at: Option<String>,
 }
@@ -38,6 +40,15 @@ struct GeneratedCandidate {
     payload: Value,
     #[serde(default)]
     evidence_message_ids: Vec<String>,
+    /// T1 证据等级："acted"（对得上动作台账）| "claimed"（材料里只有陈述）。
+    /// 缺省按 claimed 处理——**只有明确说自己验证过的才算验证过**。
+    #[serde(default)]
+    verified: String,
+}
+
+/// 收敛证据等级。模型可能返回任何字符串，只有精确的 "acted" 才算数。
+fn normalize_verified(raw: &str) -> &'static str {
+    if raw.trim().eq_ignore_ascii_case("acted") { "acted" } else { "claimed" }
 }
 
 #[derive(Debug, Deserialize)]
@@ -85,7 +96,7 @@ fn get_candidate(db: &DbManager, candidate_id: &str) -> Result<DistillationCandi
     let conn = db.get_connection().map_err(|error| error.to_string())?;
     conn.query_row(
         "SELECT id, conversation_id, workspace_path, candidate_type, title, summary,
-                payload_json, evidence_json, model_id, status, created_at, reviewed_at
+                payload_json, evidence_json, model_id, status, verified, created_at, reviewed_at
          FROM distillation_inbox WHERE id = ?1",
         params![candidate_id],
         |row| {
@@ -100,18 +111,47 @@ fn get_candidate(db: &DbManager, candidate_id: &str) -> Result<DistillationCandi
                 evidence_json: row.get(7)?,
                 model_id: row.get(8)?,
                 status: row.get(9)?,
-                created_at: row.get(10)?,
-                reviewed_at: row.get(11)?,
+                verified: row.get::<_, Option<String>>(10)?.unwrap_or_else(|| "claimed".into()),
+                created_at: row.get(11)?,
+                reviewed_at: row.get(12)?,
             })
         },
     )
     .map_err(|error| error.to_string())
 }
 
+/// T1：把这次会话时间窗内 agent 真实调用过的工具取出来当证据。
+///
+/// 用 agent + 时间窗关联，而不是 conversation_id——`agent_actions` 是网关侧
+/// 记录的，网关只知道是哪个 agent 在请求，不知道属于哪个会话。同一时间窗里
+/// 若有别的会话在跑，会一并算进来；这是已知的近似，所以证据块里写的是
+/// 「这段时间」而不是「这次会话」。
+fn gather_action_evidence(db: &DbManager, conversation_id: &str) -> String {
+    let Ok(conn) = db.get_connection() else {
+        return String::new();
+    };
+    let window = conn.query_row(
+        "SELECT c.active_agent, MIN(m.timestamp), MAX(m.timestamp)
+         FROM conversations c JOIN messages m ON m.conversation_id = c.id
+         WHERE c.id = ?1",
+        params![conversation_id],
+        |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, Option<String>>(2)?,
+            ))
+        },
+    );
+    let Ok((agent, Some(start), Some(end))) = window else {
+        return String::new();
+    };
+    crate::action_audit::evidence_block(db, &agent, &start, &end)
+}
+
 /// Gather extra distillation evidence for a workspace: OMNIX-recorded protocol
 /// events (DB) + the agent's own `.omx/development/*.md` records. Returns a markdown
-/// block (possibly empty) appended to the conversation transcript so distillation
-/// sees all three sources together — the "三源合流" the evolution loop relies on.
+/// block (possibly empty) appended to the conversation transcript.
 fn gather_workspace_evidence(db: &DbManager, workspace_path: &str) -> String {
     if workspace_path.trim().is_empty() || workspace_path == "direct" {
         return String::new();
@@ -222,13 +262,11 @@ pub async fn distill_conversation_to_inbox(
         return Err("该会话没有可蒸馏的真实消息".into());
     }
 
-    // 三源合流：会话 transcript + OMNIX 协议事件 + Agent 的 .omx/development 记录。
+    // 四源合流：会话 transcript + OMNIX 协议事件 + Agent 的 .omx/development 记录
+    // + T1 已核实的动作台账。前三样都是「谁说过什么」，第四样是「到底做没做」。
     let extra = gather_workspace_evidence(&db, &workspace_path);
-    let evidence = if extra.is_empty() {
-        transcript
-    } else {
-        format!("{transcript}{extra}")
-    };
+    let actions = gather_action_evidence(&db, &conversation_id);
+    let evidence = format!("{transcript}{extra}{actions}");
 
     run_distillation(&db, &model_id, &evidence, &conversation_id, &workspace_path).await
 }
@@ -270,8 +308,22 @@ async fn run_distillation(
     conversation_id: &str,
     workspace_path: &str,
 ) -> Result<Vec<DistillationCandidate>, String> {
-    let system = r#"你是 OMNIX Workbench 的开发经验蒸馏器。只从给定材料（开发会话、OMNIX 自动捕获的协议事件、Agent 写的 .omx/development 记录）中提取有证据支持、可复用的候选，不得臆造。
-返回严格 JSON：{"candidates":[{"type":"memory|skill|protocol","title":"...","summary":"...","payload":{},"evidence_message_ids":["..."]}]}。
+    let system = r#"你是 OMNIX Workbench 的开发经验蒸馏器。只从给定材料（开发会话、OMNIX 自动捕获的协议事件、Agent 写的 .omx/development 记录、已核实的动作台账）中提取有证据支持、可复用的候选，不得臆造。
+
+## 第一公理：无行动，不记忆
+写入记忆的每一条结论，都必须能追溯到**真实发生过的操作**。严禁把模型的固有知识、推理猜测、未执行的计划、未验证的假设当作事实写入。
+会话记录里 agent 说"我改好了并且测过了"，和它真的跑过测试，在文本上是分不出来的——「已核实的动作台账」那一节才是一手证据，其余材料只是「说过什么」。
+每个候选必须带 `verified` 字段：
+- `"acted"`：结论能对上动作台账里的某条记录（做过这个操作，且材料显示结果成立）
+- `"claimed"`：材料里只有陈述，没有对应的动作记录
+拿不准就填 `"claimed"`。**宁可标低也不要标高**——标高会让一条没验证过的经验被当成铁律反复注入。
+
+## 关键词（keywords）的写法
+关键词是将来召回这条记忆的唯一钩子。判定标准：**假设用户说出这个词，你能否想到该查这条经验？能想到→不必写；想不到→必须写。**
+- 该写：反直觉的场景触发词——不提这个词就根本想不到会牵扯这条经验
+- 不该写：名字的翻译、内容的描述、实现细节、通用词（如"错误""问题""配置"）
+
+返回严格 JSON：{"candidates":[{"type":"memory|skill|protocol","title":"...","summary":"...","verified":"acted|claimed","payload":{},"evidence_message_ids":["..."]}]}。
 memory payload 必须包含 incident_desc、code_pattern、remediation、keywords；skill payload 必须包含 name、description、content；protocol payload 必须包含 target_file、proposed_change、rationale。没有足够证据时返回较少候选。"#;
     let proxy_port = db
         .get_setting("proxy_port")
@@ -314,8 +366,8 @@ memory payload 必须包含 incident_desc、code_pattern、remediation、keyword
         conn.execute(
             "INSERT INTO distillation_inbox
              (id, conversation_id, workspace_path, candidate_type, title, summary,
-              payload_json, evidence_json, model_id, status)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'pending')",
+              payload_json, evidence_json, model_id, status, verified)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'pending', ?10)",
             params![
                 id,
                 conversation_id,
@@ -326,6 +378,7 @@ memory payload 必须包含 incident_desc、code_pattern、remediation、keyword
                 payload_json,
                 evidence_json,
                 model_id,
+                normalize_verified(&candidate.verified),
             ],
         )
         .map_err(|error| error.to_string())?;
@@ -381,11 +434,12 @@ pub fn review_distillation_candidate(
                 conn.execute(
                     "INSERT INTO memories
                      (id, incident_desc, code_pattern, remediation, keywords, type, source,
-                      workspace_path, evidence_json, status)
-                     VALUES (?1, ?2, ?3, ?4, ?5, 'experience', 'distillation_inbox', ?6, ?7, 'active')",
+                      workspace_path, evidence_json, status, verified)
+                     VALUES (?1, ?2, ?3, ?4, ?5, 'experience', 'distillation_inbox', ?6, ?7, 'active', ?8)",
                     params![
                         make_id("memory"), incident_desc, field("code_pattern"), remediation,
-                        field("keywords"), candidate.workspace_path, candidate.evidence_json
+                        field("keywords"), candidate.workspace_path, candidate.evidence_json,
+                        candidate.verified
                     ],
                 )
                 .map_err(|error| error.to_string())?;
