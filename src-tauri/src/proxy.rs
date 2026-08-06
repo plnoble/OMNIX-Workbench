@@ -404,11 +404,13 @@ async fn handle_messages_impl(
     let mut resolved_model = target_model_name.clone();
     if resolved_model == "Auto" {
         let (need_vis, need_reas, need_cod, need_spd) = classify_anthropic_capabilities(&payload);
+        // 声明了 tools 就是要用工具。这个信号比任何启发式都准。
+        let need_tools = payload.extra.contains_key("tools");
         println!("OMNIX Router: Classification result -> Need Vision: {}, Reasoning: {}, Coding: {}, Speedy: {}", need_vis, need_reas, need_cod, need_spd);
 
         if let Ok(active_models) = state.db.get_connection().and_then(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT pm.model_name, pm.platform_id, pm.has_vision, pm.has_reasoning, pm.has_coding, mp.api_key, mp.api_address, mp.api_type, pm.has_speedy
+                "SELECT pm.model_name, pm.platform_id, pm.has_vision, pm.has_reasoning, pm.has_coding, mp.api_key, mp.api_address, mp.api_type, pm.has_speedy, pm.has_tool_use
                  FROM platform_models pm
                  JOIN model_platforms mp ON pm.platform_id = mp.id
                  WHERE pm.is_enabled = 1 AND mp.is_enabled = 1
@@ -420,6 +422,8 @@ async fn handle_messages_impl(
                 let has_cod: i32 = row.get(4)?;
                 // has_speedy is column index 8 (guaranteed present by schema + migration).
                 let has_spd: bool = row.get::<_, i32>(8).unwrap_or(0) != 0;
+                // R0：工具支持是**硬条件**不是加分项，所以单独取出来做过滤。
+                let has_tools: bool = row.get::<_, i32>(9).unwrap_or(1) != 0;
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
@@ -430,6 +434,7 @@ async fn handle_messages_impl(
                     row.get::<_, String>(5)?,
                     row.get::<_, String>(6)?,
                     row.get::<_, String>(7)?,
+                    has_tools,
                 ))
             })?;
             let mut res = Vec::new();
@@ -442,8 +447,14 @@ async fn handle_messages_impl(
         }) {
             let mut best_model = None;
             let mut highest_score = -1;
-            for (model_name, platform_id, vis, reas, cod, spd, api_key, _api_address, api_type) in active_models {
+            for (model_name, platform_id, vis, reas, cod, spd, api_key, _api_address, api_type, tools_ok) in active_models {
                 if api_key.trim().is_empty() && api_type != "ollama" {
+                    continue;
+                }
+                // R0：请求声明了工具，就**只在支持工具的模型里选**。视觉/推理/编码
+                // 是偏好（打分），工具支持是资格——挑一个不会调工具的模型去跑工具
+                // 任务，产出是废的，而且失败得很隐蔽。
+                if need_tools && !tools_ok {
                     continue;
                 }
                 let mut score = 0;
@@ -458,8 +469,16 @@ async fn handle_messages_impl(
                     best_model = Some(format!("{}:{}", platform_id, model_name));
                 }
             }
-            if let Some(m) = best_model {
-                resolved_model = m;
+            match best_model {
+                Some(m) => resolved_model = m,
+                None if need_tools => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        "这次请求需要工具调用，但当前启用的模型里没有一个标记为支持工具。请到「模型中心」为要用的模型勾上「工具调用」，或改用支持工具的平台。",
+                    )
+                        .into_response();
+                }
+                None => {}
             }
         }
     }

@@ -73,6 +73,64 @@ pub(super) fn persist_deck(db: &DbManager, mut deck: Deck) -> Result<DeckRecord,
     })
 }
 
+/// 读 deck，同时记下**读的那一刻**的内容指纹。
+///
+/// AI 编辑是「读 → 调模型（几秒到几十秒）→ 写回」。这中间前端的自动保存会把
+/// 用户新打的字写进库，而写回用的是最初读到的底稿——用户在 AI 思考期间的编辑
+/// 就被静默盖掉了。要挡住它，先得知道我们当初读的是哪一份。
+fn read_deck_fingerprinted(db: &DbManager, id: &str) -> Result<(String, String), String> {
+    let conn = db.get_connection().map_err(|e| e.to_string())?;
+    let json: String = conn
+        .query_row(
+            "SELECT model_json FROM decks WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .map_err(|_| "演示不存在".to_string())?;
+    let fp = crate::skill_lock::sha256_hex(&json);
+    Ok((json, fp))
+}
+
+/// 写回前确认库里还是我们读的那一份；变了就**不覆盖**。
+///
+/// 关键取舍：拒绝写入不能等于丢掉 AI 的结果——那只是把「丢用户的字」换成
+/// 「丢模型的活」。所以冲突时把 AI 结果存进版本历史，用户可以从「撤销/版本」
+/// 里取回来，两边都不丢。
+fn persist_unless_changed(
+    db: &DbManager,
+    id: &str,
+    deck: Deck,
+    expected_fp: &str,
+    what: &str,
+) -> Result<DeckRecord, String> {
+    let current: Option<String> = db
+        .get_connection()
+        .ok()
+        .and_then(|c| {
+            c.query_row(
+                "SELECT model_json FROM decks WHERE id = ?1",
+                params![id],
+                |r| r.get::<_, String>(0),
+            )
+            .ok()
+        });
+    if let Some(cur) = current {
+        if crate::skill_lock::sha256_hex(&cur) != expected_fp {
+            // 先把 AI 的成果落到版本历史里，再报错——顺序反了就真丢了。
+            if let (Ok(conn), Ok(json)) = (db.get_connection(), serde_json::to_string(&deck)) {
+                let _ = conn.execute(
+                    "INSERT INTO deck_versions (deck_id, model_json, label) VALUES (?1, ?2, ?3)",
+                    params![id, json, format!("{what}（未应用）")],
+                );
+            }
+            return Err(format!(
+                "这份演示在 AI 处理期间被改动过，{what}是基于改动前的版本做的，已放弃写入以免覆盖你的改动。AI 的结果已存进版本历史，可以在「撤销」旁边的版本列表里取回。"
+            ));
+        }
+    }
+    persist_deck(db, deck)
+}
+
 /// Snapshot the deck's CURRENT stored model before an AI mutation overwrites it,
 /// so any AI edit is undoable. Keeps the newest 20 versions per deck.
 /// Best-effort: a snapshot failure must never block the edit itself.
@@ -627,15 +685,9 @@ pub async fn edit_slide_ai(
     if instruction.trim().is_empty() {
         return Err("请先输入修改指令".to_string());
     }
-    let current = {
-        let conn = db.get_connection().map_err(|e| e.to_string())?;
-        conn.query_row(
-            "SELECT model_json FROM decks WHERE id = ?1",
-            params![id],
-            |r| r.get::<_, String>(0),
-        )
-        .map_err(|_| "演示不存在".to_string())?
-    };
+    // S0：记下读的那一刻的指纹，写回前比对（见 persist_unless_changed）
+    let (current, fingerprint) = read_deck_fingerprinted(&db, &id)?;
+    let deck_id_for_guard = id.clone();
     let mut deck: Deck = serde_json::from_str(&current).map_err(|e| e.to_string())?;
     let slide = deck
         .slides
@@ -662,7 +714,7 @@ pub async fn edit_slide_ai(
     new_slide.fill_default_params();
     deck.slides[slide_index] = new_slide;
     deck.id = id;
-    persist_deck(&db, deck)
+    persist_unless_changed(&db, &deck_id_for_guard, deck, &fingerprint, "AI 的单页修改")
 }
 
 // ── 每页多候选：先给不要钱的，AI 只出一个 ───────────────────────────────────
@@ -850,15 +902,9 @@ pub async fn generate_slide_image(
         .result_path
         .ok_or_else(|| task.error.unwrap_or_else(|| "生图未返回结果".to_string()))?;
 
-    let current = {
-        let conn = db.get_connection().map_err(|e| e.to_string())?;
-        conn.query_row(
-            "SELECT model_json FROM decks WHERE id = ?1",
-            params![id],
-            |r| r.get::<_, String>(0),
-        )
-        .map_err(|_| "演示不存在".to_string())?
-    };
+    // S0：记下读的那一刻的指纹，写回前比对（见 persist_unless_changed）
+    let (current, fingerprint) = read_deck_fingerprinted(&db, &id)?;
+    let deck_id_for_guard = id.clone();
     let mut deck: Deck = serde_json::from_str(&current).map_err(|e| e.to_string())?;
     snapshot(&db, &id, &format!("配图第 {} 页前", slide_index + 1));
     let slide = deck
@@ -871,7 +917,7 @@ pub async fn generate_slide_image(
         slide.layout = "image-left".to_string();
     }
     deck.id = id;
-    persist_deck(&db, deck)
+    persist_unless_changed(&db, &deck_id_for_guard, deck, &fingerprint, "生成的配图")
 }
 
 // ── D：母版 / 品牌 ──────────────────────────────────────────────────────────
@@ -951,21 +997,15 @@ pub async fn edit_deck_ai(
     if instruction.trim().is_empty() {
         return Err("请先输入修改指令".to_string());
     }
-    let current = {
-        let conn = db.get_connection().map_err(|e| e.to_string())?;
-        conn.query_row(
-            "SELECT model_json FROM decks WHERE id = ?1",
-            params![id],
-            |r| r.get::<_, String>(0),
-        )
-        .map_err(|_| "演示不存在".to_string())?
-    };
+    // S0：记下读的那一刻的指纹，写回前比对（见 persist_unless_changed）
+    let (current, fingerprint) = read_deck_fingerprinted(&db, &id)?;
+    let deck_id_for_guard = id.clone();
     let prompt = slides::build_edit_prompt(&current, instruction.trim());
     let reply = knowledge::chat_once(&db, &chat_model, &prompt).await?;
     let mut deck = slides::parse_deck(&reply)?;
     snapshot(&db, &id, "AI 改整份前");
     deck.id = id;
-    persist_deck(&db, deck)
+    persist_unless_changed(&db, &deck_id_for_guard, deck, &fingerprint, "AI 的整份修改")
 }
 
 #[cfg(test)]
@@ -1080,5 +1120,100 @@ mod candidate_tests {
             assert_eq!(s.bullets, cur.bullets, "候选「{label}」改了要点");
             assert_eq!(s.body, cur.body, "候选「{label}」改了正文");
         }
+    }
+}
+
+#[cfg(test)]
+mod concurrent_edit_tests {
+    use super::*;
+
+    fn db(tag: &str) -> Arc<DbManager> {
+        let p = std::env::temp_dir().join(format!("omnix_ce_{}_{tag}.db", std::process::id()));
+        let _ = std::fs::remove_file(&p);
+        Arc::new(DbManager::new_with_path(p))
+    }
+
+    fn seed(db: &DbManager, id: &str, title: &str) -> String {
+        let deck = Deck {
+            id: id.into(),
+            title: title.into(),
+            theme: "midnight".into(),
+            brand: None,
+            slides: vec![slides::Slide { title: title.into(), ..Default::default() }],
+        };
+        persist_deck(db, deck).unwrap().model_json
+    }
+
+    /// 没人动过就正常写回——护栏不能把正常路径也挡了。
+    #[test]
+    fn untouched_deck_persists_normally() {
+        let d = db("ok");
+        seed(&d, "k1", "原始");
+        let (json, fp) = read_deck_fingerprinted(&d, "k1").unwrap();
+        let mut deck: Deck = serde_json::from_str(&json).unwrap();
+        deck.title = "AI 改过的".into();
+        let rec = persist_unless_changed(&d, "k1", deck, &fp, "AI 的修改").unwrap();
+        assert!(rec.model_json.contains("AI 改过的"));
+    }
+
+    /// 核心承诺：AI 思考期间用户改了字，那些字不能被盖掉。
+    #[test]
+    fn user_edits_during_the_ai_call_are_not_clobbered() {
+        let d = db("clobber");
+        seed(&d, "k2", "原始");
+        // AI 读走底稿
+        let (json, fp) = read_deck_fingerprinted(&d, "k2").unwrap();
+        let mut ai_result: Deck = serde_json::from_str(&json).unwrap();
+        ai_result.title = "AI 写的标题".into();
+
+        // 模型还在跑的时候，用户打了字（前端自动保存）
+        seed(&d, "k2", "用户打的字");
+
+        let err = persist_unless_changed(&d, "k2", ai_result, &fp, "AI 的修改").unwrap_err();
+        assert!(err.contains("放弃写入"), "{err}");
+
+        // 库里必须还是用户的版本
+        let (after, _) = read_deck_fingerprinted(&d, "k2").unwrap();
+        assert!(after.contains("用户打的字"), "用户的改动被盖掉了：{after}");
+        assert!(!after.contains("AI 写的标题"));
+    }
+
+    /// 拒绝写入不能等于丢掉 AI 的活——那只是把「丢用户的字」换成「丢模型的活」。
+    #[test]
+    fn the_rejected_ai_result_is_kept_in_version_history() {
+        let d = db("keep");
+        seed(&d, "k3", "原始");
+        let (json, fp) = read_deck_fingerprinted(&d, "k3").unwrap();
+        let mut ai_result: Deck = serde_json::from_str(&json).unwrap();
+        ai_result.title = "AI 写的标题".into();
+        seed(&d, "k3", "用户打的字");
+
+        let _ = persist_unless_changed(&d, "k3", ai_result, &fp, "AI 的修改");
+
+        let conn = d.get_connection().unwrap();
+        let (label, json): (String, String) = conn
+            .query_row(
+                "SELECT label, model_json FROM deck_versions WHERE deck_id='k3' ORDER BY id DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("AI 结果必须留在版本历史里");
+        assert!(label.contains("未应用"), "标签要说清它没被应用: {label}");
+        assert!(json.contains("AI 写的标题"), "存的必须是 AI 的结果");
+    }
+
+    /// 指纹要认得出内容变化，而不是只看时间戳之类的东西。
+    #[test]
+    fn fingerprint_tracks_content_not_timestamps() {
+        let d = db("fp");
+        seed(&d, "k4", "内容");
+        let (_, fp1) = read_deck_fingerprinted(&d, "k4").unwrap();
+        // 原样再存一次：内容没变，指纹必须一样
+        seed(&d, "k4", "内容");
+        let (_, fp2) = read_deck_fingerprinted(&d, "k4").unwrap();
+        assert_eq!(fp1, fp2, "内容没变，指纹不该变");
+        seed(&d, "k4", "别的内容");
+        let (_, fp3) = read_deck_fingerprinted(&d, "k4").unwrap();
+        assert_ne!(fp1, fp3);
     }
 }
