@@ -24,6 +24,12 @@ use crate::usage_meter::UsageTally;
 // split stays a pure move — it reuses this file's private items/imports).
 #[path = "proxy_remote.rs"]
 mod remote_panel;
+
+// T0：请求级回归测试。子模块而非独立文件，是为了够得着 handle_messages_impl
+// 这些私有项——测的就是「请求穿过网关之后上游收到什么」。
+#[cfg(test)]
+#[path = "proxy_wire_tests.rs"]
+mod wire_tests;
 use remote_panel::*;
 
 // Define sharing state
