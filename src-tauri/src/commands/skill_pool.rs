@@ -759,8 +759,28 @@ pub fn set_skill_pool(
                  存证补上之前，这个技能不会通过 /mcp 提供给其它 agent。"
             ));
         }
+        // T3：顺手镜像到跨 harness 公共目录，让这批技能对用户装的所有 agent
+        // 都生效（pi / Claude Code / Codex 都读 ~/.agents/skills/）。
+        // 失败不回滚晋升——镜像是**分发**，分发不了不代表技能没通过审核。
+        // 但也不能咽掉：冲突要留在日志里，用户手动导出时能看到完整报告。
+        match crate::skill_export::export_official_skills(&db) {
+            Ok(report) if !report.skipped_foreign.is_empty() => {
+                log::warn!("公共技能目录镜像：{}", report.headline());
+            }
+            Err(e) => log::warn!("公共技能目录镜像失败：{e}"),
+            _ => {}
+        }
     }
     Ok(())
+}
+
+/// T3：手动把正式池镜像到 `~/.agents/skills/`，返回给用户看的一句话。
+///
+/// 晋升时会自动跑一次，但用户可能在别处改过公共目录、或想在装了新 harness
+/// 之后重新同步一遍——所以留一个显式入口，且**如实报告冲突**。
+#[tauri::command]
+pub fn export_skills_to_agents_dir(db: State<'_, Arc<DbManager>>) -> Result<String, String> {
+    Ok(crate::skill_export::export_official_skills(&db)?.headline())
 }
 
 /// Read a skill's full content for the pool preview pane.

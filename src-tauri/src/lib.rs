@@ -29,6 +29,7 @@ mod runtime_acp;
 mod runtime_manager;
 mod selection;
 mod skill_dag;
+mod skill_export;
 mod skill_frontmatter;
 mod mcp_server;
 mod skill_library;
@@ -812,6 +813,7 @@ pub fn run() {
             commands::review_skill_ai,
             commands::set_skill_pool,
             commands::get_skill_pool_content,
+            commands::export_skills_to_agents_dir,
             commands::summarize_skill_ai,
             commands::reform_skill_ai,
             commands::apply_skill_reform,

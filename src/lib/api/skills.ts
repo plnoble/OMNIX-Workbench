@@ -68,6 +68,8 @@ export const skillPoolApi = {
   setPool: (name: string, pool: "pending" | "official") =>
     invoke<void>("set_skill_pool", { name, pool }),
   content: (name: string) => invoke<string>("get_skill_pool_content", { name }),
+  /** T3：把正式池镜像到跨 harness 公共目录 ~/.agents/skills/，返回结果摘要。 */
+  exportToAgentsDir: () => invoke<string>("export_skills_to_agents_dir"),
   summarize: (name: string, chatModel: string) =>
     invoke<string>("summarize_skill_ai", { name, chatModel }),
   reform: (name: string, chatModel: string, instruction?: string) =>

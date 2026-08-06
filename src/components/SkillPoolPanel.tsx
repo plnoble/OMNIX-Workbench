@@ -16,6 +16,7 @@ import {
   Loader2,
   RefreshCw,
   Search,
+  Share2,
   ShieldCheck,
   Sparkles,
   Trash2,
@@ -193,6 +194,27 @@ export function SkillPoolPanel() {
       toast.error(`收集失败：${e}`);
     } finally {
       setCollecting(false);
+    }
+  };
+
+  const [exporting, setExporting] = useState(false);
+
+  /**
+   * T3：把正式池镜像到 ~/.agents/skills/——pi / Claude Code / Codex 都读这个
+   * 目录，同一批技能就能对用户装的所有 harness 生效。
+   * 那是共享目录，所以后端绝不覆盖别人改过的文件；冲突要原样报给用户，
+   * 静默跳过会让人以为技能已经共享出去了。
+   */
+  const handleExportToAgentsDir = async () => {
+    setExporting(true);
+    try {
+      const summary = await skillPoolApi.exportToAgentsDir();
+      if (summary.includes("被跳过")) toast.warning(summary);
+      else toast.success(summary);
+    } catch (e) {
+      toast.error(`导出到公共技能目录失败：${e}`);
+    } finally {
+      setExporting(false);
     }
   };
 
@@ -414,6 +436,15 @@ export function SkillPoolPanel() {
         >
           {collecting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
           一键收集
+        </button>
+        <button
+          onClick={() => void handleExportToAgentsDir()}
+          disabled={exporting}
+          title="把正式池技能镜像到 ~/.agents/skills/，让 Claude Code、Codex、pi 等其它 agent 也能用。不会覆盖你在那里手改过的文件。"
+          className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-3 text-sm hover:bg-muted/40 disabled:opacity-50"
+        >
+          {exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Share2 className="h-4 w-4" />}
+          共享给其它 agent
         </button>
         <button
           onClick={() => void handleCleanup()}
