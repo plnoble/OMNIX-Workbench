@@ -54,52 +54,10 @@ impl AnthropicMessageContent {
         }
     }
 
-    /// OpenAI chat-completions content: a plain string for text-only messages
-    /// (identical to the old behavior), or a parts array when image blocks are
-    /// present — base64 sources become `image_url` data URLs so vision inputs
-    /// are no longer dropped by the gateway translation.
-    pub fn to_openai_content(&self) -> serde_json::Value {
-        let AnthropicMessageContent::Blocks(blocks) = self else {
-            return serde_json::Value::String(self.to_string_content());
-        };
-        let has_images = blocks.iter().any(|block| block.block_type == "image");
-        if !has_images {
-            return serde_json::Value::String(self.to_string_content());
-        }
-        let mut parts = Vec::new();
-        for block in blocks {
-            match block.block_type.as_str() {
-                "text" => {
-                    if let Some(text) = &block.text {
-                        parts.push(serde_json::json!({ "type": "text", "text": text }));
-                    }
-                }
-                "image" => {
-                    if let Some(source) = &block.source {
-                        let media_type = source
-                            .get("media_type")
-                            .and_then(|value| value.as_str())
-                            .unwrap_or("image/png");
-                        if let Some(data) = source.get("data").and_then(|value| value.as_str()) {
-                            parts.push(serde_json::json!({
-                                "type": "image_url",
-                                "image_url": { "url": format!("data:{media_type};base64,{data}") },
-                            }));
-                        } else if let Some(url) =
-                            source.get("url").and_then(|value| value.as_str())
-                        {
-                            parts.push(serde_json::json!({
-                                "type": "image_url",
-                                "image_url": { "url": url },
-                            }));
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        serde_json::Value::Array(parts)
-    }
+    // 曾经这里还有个 `to_openai_content`：把块数组压成 OpenAI 的 content。
+    // R1 之后整条 Anthropic→OpenAI 的消息翻译（含 tool_use / tool_result 要
+    // 拆成独立消息）都归 `crate::tool_translate::messages_to_openai`，
+    // 一条消息翻成一条的假设本身就不成立了，所以这里不再留半套。
 }
 
 // Anthropic Request format
@@ -147,8 +105,8 @@ pub(crate) struct OpenAIRequestMessage {
 #[derive(Debug, Serialize)]
 pub(crate) struct OpenAIRequest {
     pub(crate) model: String,
-    /// Plain-string content for text messages; a parts array when images ride
-    /// along (see `AnthropicMessageContent::to_openai_content`).
+    /// 由 `crate::tool_translate::messages_to_openai` 产出：文本是字符串、
+    /// 带图是 parts 数组、tool_result 是独立的 `role:"tool"` 消息。
     pub(crate) messages: Vec<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) max_tokens: Option<u32>,
@@ -156,23 +114,16 @@ pub(crate) struct OpenAIRequest {
     pub(crate) temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) stream: Option<bool>,
+    /// R1：从 Anthropic 的 `tools` 翻过来（`crate::tool_translate`）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) tools: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) tool_choice: Option<serde_json::Value>,
 }
 
-// Structs for parsing OpenAI responses
-#[derive(Debug, Deserialize)]
-pub(crate) struct OpenAIChoiceDelta {
-    pub(crate) content: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct OpenAIChoice {
-    pub(crate) delta: OpenAIChoiceDelta,
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct OpenAIStreamChunk {
-    pub(crate) choices: Vec<OpenAIChoice>,
-}
+// OpenAI 流式 chunk 原本在这里有一组结构体（只认得 `delta.content`）。
+// R1 之后由 `crate::tool_translate::StreamTranslator` 按 Value 处理——
+// 固定结构体接不住 `delta.tool_calls[]`，正是工具链断掉的原因之一。
 
 #[cfg(test)]
 mod wire_fidelity_tests {

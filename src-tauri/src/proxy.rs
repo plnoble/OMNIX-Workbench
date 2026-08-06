@@ -649,42 +649,44 @@ async fn handle_messages_impl(
                 })
         }
     } else {
-        // Translate to OpenAI format (For OpenAI or Ollama). Content becomes a
-        // parts array only when image blocks are present, so text-only flows
-        // keep their old plain-string shape.
-        let mut messages = Vec::new();
-        if let Some(sys_prompt) = payload.system {
-            messages.push(serde_json::json!({
-                "role": "system",
-                "content": sys_prompt.to_string_content(),
-            }));
-        }
-        for msg in payload.messages {
-            messages.push(serde_json::json!({
-                "role": msg.role,
-                "content": msg.content.to_openai_content(),
-            }));
-        }
+        // Translate to OpenAI format (For OpenAI or Ollama).
+        //
+        // R1：工具链在这里一并翻译（`crate::tool_translate`）。协议细节全在那个
+        // 模块里做成纯函数——本机没有 OpenAI 兼容上游可打，端到端验不了，
+        // 所以逻辑不能留在 handler 里。这里只负责接线。
+        let system = payload
+            .system
+            .as_ref()
+            .map(|s| serde_json::Value::String(s.to_string_content()));
+        let anthropic_messages: Vec<(String, serde_json::Value)> = payload
+            .messages
+            .iter()
+            .map(|m| {
+                let content = serde_json::to_value(&m.content)
+                    .unwrap_or_else(|_| serde_json::Value::String(String::new()));
+                (m.role.clone(), content)
+            })
+            .collect();
+        let messages =
+            crate::tool_translate::messages_to_openai(system.as_ref(), &anthropic_messages);
 
-        // 已知缺口：这条 Anthropic→OpenAI 翻译路径还不搬运工具。
-        //
-        // 不做「只翻译请求不翻译响应」的半吊子版本——那样模型会返回 tool_calls，
-        // 而我们没有反向翻译，agent 收到的是一堆看不懂的东西，比它压根不知道有
-        // 工具更糟。要做就得连响应（含流式 SSE）一起做。
-        //
-        // 在此之前至少让它可诊断：静默丢能力最难查。
-        if payload.extra.contains_key("tools") {
-            log::warn!(
-                "网关：请求声明了工具，但上游是 {api_type} 类型，当前的 Anthropic→OpenAI \
-                 翻译尚未搬运工具定义，本次请求的工具会失效。改用 anthropic 类型的上游可避免。"
-            );
-        }
+        let tools = payload
+            .extra
+            .get("tools")
+            .and_then(crate::tool_translate::tools_to_openai);
+        let tool_choice = payload
+            .extra
+            .get("tool_choice")
+            .and_then(crate::tool_translate::tool_choice_to_openai);
+
         let openai_req = OpenAIRequest {
             model: actual_model_name,
             messages,
             max_tokens: payload.max_tokens,
             temperature: payload.temperature,
             stream: payload.stream,
+            tools,
+            tool_choice,
         };
 
         let upstream_url = if api_type == "ollama" {
@@ -725,9 +727,8 @@ async fn handle_messages_impl(
 
         if is_stream {
             let stream = upstream_res.bytes_stream();
-            let mut buffer_bytes = Vec::new();
-            // 这条路径要把 OpenAI SSE 改写成 Anthropic SSE，所以扫的是**上游原始
-            // 字节**（改写后的事件里没有 usage，扫下游只会永远得零）。
+            // 这条路径要把 OpenAI SSE 改写成 Anthropic SSE，所以用量扫的是**上游
+            // 原始字节**（改写后的事件里没有 usage，扫下游只会永远得零）。
             let mut recorder = StreamUsageRecorder::new(
                 (*state.db).clone(),
                 resolved_model.clone(),
@@ -735,50 +736,14 @@ async fn handle_messages_impl(
                 start_time,
                 200,
             );
+            // R1：跨 chunk 的工具调用状态机在 tool_translate 里，这里只喂字节。
+            let mut translator = crate::tool_translate::StreamTranslator::new(request_model.clone());
 
             let anthropic_stream = stream.map(move |result| match result {
                 Ok(bytes) => {
                     recorder.observe(&bytes);
-                    buffer_bytes.extend_from_slice(&bytes);
-                    let mut output_bytes = Vec::new();
-
-                    while let Some(pos) = buffer_bytes.iter().position(|&b| b == b'\n') {
-                        let line_bytes = &buffer_bytes[..pos];
-                        let line = String::from_utf8_lossy(line_bytes).trim().to_string();
-                        buffer_bytes.drain(..pos + 1);
-
-                        if line.starts_with("data: ") {
-                            let data_content = &line[6..];
-                            if data_content == "[DONE]" {
-                                output_bytes.extend_from_slice(
-                                    b"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
-                                );
-                                break;
-                            }
-                            if let Ok(chunk_json) =
-                                serde_json::from_str::<OpenAIStreamChunk>(data_content)
-                            {
-                                if let Some(choice) = chunk_json.choices.first() {
-                                    if let Some(delta_text) = &choice.delta.content {
-                                        let anthropic_event = serde_json::json!({
-                                            "type": "content_block_delta",
-                                            "index": 0,
-                                            "delta": {
-                                                "type": "text_delta",
-                                                "text": delta_text
-                                            }
-                                        });
-                                        let formatted_line = format!(
-                                            "event: content_block_delta\ndata: {}\n\n",
-                                            anthropic_event.to_string()
-                                        );
-                                        output_bytes.extend_from_slice(formatted_line.as_bytes());
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Ok::<_, axum::Error>(axum::body::Bytes::from(output_bytes))
+                    let out = translator.push_bytes(&bytes);
+                    Ok::<_, axum::Error>(axum::body::Bytes::from(out.into_bytes()))
                 }
                 Err(e) => Err(axum::Error::new(e)),
             });
@@ -796,15 +761,6 @@ async fn handle_messages_impl(
                         .unwrap()
                 })
         } else {
-            #[derive(Debug, Deserialize)]
-            struct OpenAIChoiceNonStream {
-                message: OpenAIRequestMessage,
-            }
-            #[derive(Debug, Deserialize)]
-            struct OpenAIResponse {
-                choices: Vec<OpenAIChoiceNonStream>,
-            }
-
             let res_bytes = match upstream_res.bytes().await {
                 Ok(b) => b,
                 Err(e) => {
@@ -827,40 +783,51 @@ async fn handle_messages_impl(
                 "proxy",
             );
 
-            if let Ok(openai_res) = serde_json::from_slice::<OpenAIResponse>(&res_bytes) {
-                if let Some(choice) = openai_res.choices.first() {
-                    let text_content = &choice.message.content;
-                    // 上游报了多少就往回传多少。这里原本也是硬编码的零——
-                    // 客户端（Claude Code 等）读的是这个字段，写零等于告诉它这次没花钱。
-                    let reported = usage.unwrap_or_default();
-                    let anthropic_res = serde_json::json!({
-                        "id": "msg_local_proxy",
-                        "type": "message",
-                        "role": "assistant",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": text_content
-                            }
-                        ],
-                        "model": request_model,
-                        "stop_reason": "end_turn",
-                        "stop_sequence": null,
-                        "usage": {
-                            "input_tokens": reported.input,
-                            "output_tokens": reported.output,
-                            "cache_read_input_tokens": reported.cache_read,
-                            "cache_creation_input_tokens": reported.cache_creation
-                        }
-                    });
-                    return Json(anthropic_res).into_response();
+            // 整个响应按 Value 解析：`message` 里除了 content 还有 tool_calls，
+            // 用固定结构体接会把它挡在门外——那正是工具链断掉的原因之一。
+            let parsed: serde_json::Value = match serde_json::from_slice(&res_bytes) {
+                Ok(v) => v,
+                Err(_) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Failed to parse OpenAI response.",
+                    )
+                        .into_response()
                 }
-            }
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to parse OpenAI response.",
-            )
-                .into_response()
+            };
+            let Some(choice) = parsed.get("choices").and_then(|c| c.as_array()).and_then(|c| c.first())
+            else {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to parse OpenAI response.",
+                )
+                    .into_response();
+            };
+            let empty = serde_json::json!({});
+            let message = choice.get("message").unwrap_or(&empty);
+            // 上游报了多少就往回传多少。这里原本也是硬编码的零——
+            // 客户端（Claude Code 等）读的是这个字段，写零等于告诉它这次没花钱。
+            let reported = usage.unwrap_or_default();
+            let anthropic_res = serde_json::json!({
+                "id": "msg_local_proxy",
+                "type": "message",
+                "role": "assistant",
+                "content": crate::tool_translate::content_blocks_from_openai_message(message),
+                "model": request_model,
+                // 工具调用必须报 tool_use，否则客户端当这一轮已经说完了，
+                // 不会去执行工具，工具链在最后一步断掉。
+                "stop_reason": crate::tool_translate::stop_reason_to_anthropic(
+                    choice.get("finish_reason").and_then(|r| r.as_str())
+                ),
+                "stop_sequence": null,
+                "usage": {
+                    "input_tokens": reported.input,
+                    "output_tokens": reported.output,
+                    "cache_read_input_tokens": reported.cache_read,
+                    "cache_creation_input_tokens": reported.cache_creation
+                }
+            });
+            Json(anthropic_res).into_response()
         }
     }
 }
