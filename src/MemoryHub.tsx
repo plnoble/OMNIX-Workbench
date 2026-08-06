@@ -48,6 +48,20 @@ interface MemoryRecord {
 
 type InboxFilter = "pending" | "approved" | "rejected" | "all";
 
+/**
+ * 与后端 `memory_recall::veracity` 同一个公式：confidence / (confidence + 失效次数)。
+ * 低于 0.25（失效次数超过 confidence 三倍）这条记忆就不再进自动召回了。
+ * 这里算一遍只为把「为什么它不再被注入」显示出来——徽章上写了「失效 ×N」却
+ * 不说明后果，用户没法判断该不该改写它。
+ */
+const VERACITY_FLOOR = 0.25;
+function retiredFromRecall(memory: MemoryRecord): boolean {
+  const repeats = memory.repeated_count ?? 0;
+  if (repeats <= 0) return false;
+  const confidence = Math.max(memory.confidence ?? 1, 0.01);
+  return confidence / (confidence + repeats) < VERACITY_FLOOR;
+}
+
 const candidateLabels: Record<DistillationCandidate["candidate_type"], string> = {
   memory: "防错记忆",
   skill: "技能草案",
@@ -358,6 +372,11 @@ export function MemoryHub() {
                     {(memory.repeated_count ?? 0) > 0 && (
                       <span className="rounded-full bg-destructive/15 px-2 py-0.5 font-medium text-destructive" title="该经验注入后又发生了同类错误，可能需要改写或加强">
                         失效 ×{memory.repeated_count}
+                      </span>
+                    )}
+                    {retiredFromRecall(memory) && (
+                      <span className="rounded-full border border-destructive/40 px-2 py-0.5 font-medium text-destructive" title="反复没拦住同类错误，已不再进入自动召回。改写这条经验、或它再次被合并加权后会自动恢复——记忆本身仍在库里。">
+                        已退出自动召回
                       </span>
                     )}
                   </div>
