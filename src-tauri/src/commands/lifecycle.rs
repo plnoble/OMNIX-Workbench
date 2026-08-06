@@ -131,8 +131,23 @@ pub struct PlatformUsage {
     pub cost_usd: f64,
 }
 
+/// 成本口径的「等价普通输入 token」。
+///
+/// `prompt_tokens` 存的是**真实 token 数**（含缓存命中与写入），但缓存不按原价
+/// 计费：Anthropic 的口径是命中读取 0.1×、写入 1.25×。直接拿 prompt_tokens 去乘
+/// 输入单价，会把 Claude Code 这类高缓存命中的用量高报好几倍——那种「看起来
+/// 很合理但是错的」数字比原来的零更难被发现。
+///
+/// 折算成等价普通输入后即可直接套 [`crate::circuit_breaker::estimate_cost`]，
+/// 于是定价表仍然只有一份。`total_tokens` 不折算：它是 token 计数，不是钱。
+const BILLED_INPUT: &str = "CAST(ROUND(
+        (prompt_tokens - cache_read_tokens - cache_creation_tokens)
+        + cache_read_tokens * 0.1
+        + cache_creation_tokens * 1.25
+    ) AS INTEGER)";
+
 /// Sum estimated cost across every model in a query that yields
-/// `(model, SUM(prompt_tokens), SUM(completion_tokens))` rows.
+/// `(model, SUM(<billed input>), SUM(completion_tokens))` rows.
 fn sum_cost(conn: &rusqlite::Connection, sql: &str) -> f64 {
     let mut stmt = match conn.prepare(sql) {
         Ok(stmt) => stmt,
@@ -216,11 +231,11 @@ pub fn get_usage_stats(db: State<'_, Arc<DbManager>>) -> Result<UsageStats, Stri
 
     // Estimated cost (priced via the model pricing table; unknown models use a
     // default rate). Summed per-model so each model uses its own rate.
-    let total_cost_usd = sum_cost(&conn, "SELECT model, SUM(prompt_tokens), SUM(completion_tokens) FROM request_logs GROUP BY model");
-    let cost_today_usd = sum_cost(&conn, "SELECT model, SUM(prompt_tokens), SUM(completion_tokens) FROM request_logs WHERE date(timestamp) = date('now') GROUP BY model");
+    let total_cost_usd = sum_cost(&conn, &format!("SELECT model, SUM({BILLED_INPUT}), SUM(completion_tokens) FROM request_logs GROUP BY model"));
+    let cost_today_usd = sum_cost(&conn, &format!("SELECT model, SUM({BILLED_INPUT}), SUM(completion_tokens) FROM request_logs WHERE date(timestamp) = date('now') GROUP BY model"));
 
     // Top models (with per-model estimated cost)
-    let mut stmt = conn.prepare("SELECT model, COUNT(*) as cnt, SUM(total_tokens) as tokens, SUM(prompt_tokens), SUM(completion_tokens) FROM request_logs GROUP BY model ORDER BY cnt DESC LIMIT 10").map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(&format!("SELECT model, COUNT(*) as cnt, SUM(total_tokens) as tokens, SUM({BILLED_INPUT}), SUM(completion_tokens) FROM request_logs GROUP BY model ORDER BY cnt DESC LIMIT 10")).map_err(|e| e.to_string())?;
     let top_models: Vec<ModelUsage> = stmt.query_map([], |row| {
         let model: String = row.get(0)?;
         let prompt: i64 = row.get::<_, Option<i64>>(3)?.unwrap_or(0);
@@ -263,11 +278,11 @@ pub fn get_usage_stats(db: State<'_, Arc<DbManager>>) -> Result<UsageStats, Stri
 pub fn get_platform_usage(db: State<'_, Arc<DbManager>>) -> Result<Vec<PlatformUsage>, String> {
     let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
     let mut stmt = conn
-        .prepare(
-            "SELECT platform, model, COUNT(*), SUM(total_tokens), SUM(prompt_tokens),
+        .prepare(&format!(
+            "SELECT platform, model, COUNT(*), SUM(total_tokens), SUM({BILLED_INPUT}),
                     SUM(completion_tokens), SUM(is_error)
              FROM request_logs GROUP BY platform, model",
-        )
+        ))
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |row| {
@@ -317,13 +332,13 @@ pub fn get_usage_timeseries(
     let days = days.unwrap_or(14).clamp(1, 90);
     let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
     let mut stmt = conn
-        .prepare(
-            "SELECT date(timestamp) AS d, model, COUNT(*), SUM(total_tokens), SUM(prompt_tokens), SUM(completion_tokens)
+        .prepare(&format!(
+            "SELECT date(timestamp) AS d, model, COUNT(*), SUM(total_tokens), SUM({BILLED_INPUT}), SUM(completion_tokens)
              FROM request_logs
              WHERE timestamp >= datetime('now', ?1)
              GROUP BY d, model
              ORDER BY d ASC",
-        )
+        ))
         .map_err(|e| e.to_string())?;
     let offset = format!("-{} days", days);
 
@@ -991,4 +1006,69 @@ pub fn get_top_skills_by_usage(
     let mut result = Vec::new();
     for r in rows.flatten() { result.push(r); }
     Ok(result)
+}
+
+/// R2：成本口径。
+///
+/// `prompt_tokens` 现在记的是含缓存的真实 token 数，若直接按输入单价计费，
+/// Claude Code 这类九成输入来自缓存命中的用量会被高报数倍。这里测的就是
+/// [`BILLED_INPUT`] 那段折算确实生效了。
+#[cfg(test)]
+mod cost_weighting_tests {
+    use super::*;
+
+    fn conn_with(rows: &[(i64, i64, i64)]) -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().expect("内存库");
+        conn.execute_batch(
+            "CREATE TABLE request_logs (
+                model TEXT NOT NULL,
+                prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                completion_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_creation_tokens INTEGER NOT NULL DEFAULT 0
+            );",
+        )
+        .expect("建表");
+        for (prompt, cache_read, cache_creation) in rows {
+            conn.execute(
+                "INSERT INTO request_logs (model, prompt_tokens, completion_tokens, cache_read_tokens, cache_creation_tokens)
+                 VALUES ('mystery-model', ?1, 0, ?2, ?3)",
+                params![prompt, cache_read, cache_creation],
+            )
+            .expect("插入");
+        }
+        conn
+    }
+
+    fn cost(conn: &rusqlite::Connection) -> f64 {
+        sum_cost(conn, &format!("SELECT model, SUM({BILLED_INPUT}), SUM(completion_tokens) FROM request_logs GROUP BY model"))
+    }
+
+    #[test]
+    fn cache_hits_are_billed_at_a_tenth_not_full_price() {
+        // 两行 token 计数完全相同（都是 1,000,000 输入），只是一行全新、
+        // 一行全是缓存命中。按真实计费，后者应当只值前者的十分之一。
+        let all_fresh = cost(&conn_with(&[(1_000_000, 0, 0)]));
+        let all_cached = cost(&conn_with(&[(1_000_000, 1_000_000, 0)]));
+        // 未知模型的默认输入单价 1.0 / 1M。
+        assert!((all_fresh - 1.0).abs() < 1e-6, "全新输入按原价：{all_fresh}");
+        assert!((all_cached - 0.1).abs() < 1e-6, "缓存命中按 0.1×：{all_cached}");
+    }
+
+    #[test]
+    fn cache_writes_are_billed_at_a_premium() {
+        let all_written = cost(&conn_with(&[(1_000_000, 0, 1_000_000)]));
+        assert!((all_written - 1.25).abs() < 1e-6, "缓存写入按 1.25×：{all_written}");
+    }
+
+    #[test]
+    fn a_realistic_claude_code_request_is_not_overbilled() {
+        // 典型形状：真实输入 46,212 个 token，其中 45,000 是缓存命中。
+        // 不折算的话会按 46,212 全价算——高报约 8 倍。
+        let weighted = cost(&conn_with(&[(46_212, 45_000, 1_200)]));
+        let naive = 46_212.0 / 1_000_000.0;
+        assert!(weighted < naive / 5.0, "折算后应显著低于全价：{weighted} vs {naive}");
+        // 12 + 4500 + 1500 = 6012 等价 token。
+        assert!((weighted - 0.006012).abs() < 1e-6, "{weighted}");
+    }
 }

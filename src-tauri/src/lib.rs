@@ -41,6 +41,7 @@ mod storage;
 mod sync_engine;
 mod token_economy;
 mod tool_adapters;
+mod usage_meter;
 
 #[cfg(test)]
 mod tests;

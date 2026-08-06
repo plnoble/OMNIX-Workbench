@@ -18,6 +18,7 @@ use tokio::sync::oneshot;
 use tower_http::cors::CorsLayer;
 
 use crate::db::DbManager;
+use crate::usage_meter::UsageTally;
 
 // Remote phone-panel handlers live in proxy_remote.rs (child module so the
 // split stays a pure move — it reuses this file's private items/imports).
@@ -583,36 +584,27 @@ async fn handle_messages_impl(
             return (status, err_body).into_response();
         }
 
-        // Log request (non-blocking, uses spawn_blocking for sync DB I/O)
-        let log_db = state.db.clone();
-        let log_model = resolved_model.clone();
-        let log_latency = start_time.elapsed().as_millis() as i64;
-        let log_status = status.as_u16() as i32;
-        let log_is_err = !status.is_success();
+        // 事件总线只关心「发生过一次请求」，跟 token 无关，可以立刻发。
+        // 日志则必须等到读得到 usage 之后才写——见下面两个分支。
         let evt_db = state.db.clone();
         tokio::task::spawn_blocking(move || {
-            log_request(
-                &log_db,
-                &log_model,
-                Some("anthropic"),
-                0,
-                0,
-                log_latency,
-                log_status,
-                is_stream,
-                log_is_err,
-                None,
-                None,
-                "proxy",
-            );
-            // Emit message_sent event for event bus
             crate::event_bus::emit_event(&evt_db, crate::event_bus::EventType::MessageSent);
         });
+        let log_db = (*state.db).clone();
+        let log_model = resolved_model.clone();
+        let log_status = status.as_u16() as i32;
 
         if is_stream {
-            let stream = upstream_res
-                .bytes_stream()
-                .map(|r| r.map_err(|e| axum::Error::new(e)));
+            // usage 要到 message_start / message_delta 才出现，所以边转发边扫，
+            // 流结束（或客户端断开）时由 recorder 的 Drop 记账。
+            let mut recorder =
+                StreamUsageRecorder::new(log_db, log_model, "anthropic", start_time, log_status);
+            let stream = upstream_res.bytes_stream().map(move |r| {
+                if let Ok(bytes) = &r {
+                    recorder.observe(bytes);
+                }
+                r.map_err(|e| axum::Error::new(e))
+            });
             Response::builder()
                 .status(StatusCode::OK)
                 .header("Content-Type", "text/event-stream")
@@ -632,6 +624,19 @@ async fn handle_messages_impl(
                     return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
                 }
             };
+            log_request(
+                &log_db,
+                &log_model,
+                Some("anthropic"),
+                crate::usage_meter::from_response_body(&bytes),
+                start_time.elapsed().as_millis() as i64,
+                log_status,
+                false,
+                false,
+                None,
+                None,
+                "proxy",
+            );
             Response::builder()
                 .status(StatusCode::OK)
                 .header("Content-Type", "application/json")
@@ -721,9 +726,19 @@ async fn handle_messages_impl(
         if is_stream {
             let stream = upstream_res.bytes_stream();
             let mut buffer_bytes = Vec::new();
+            // 这条路径要把 OpenAI SSE 改写成 Anthropic SSE，所以扫的是**上游原始
+            // 字节**（改写后的事件里没有 usage，扫下游只会永远得零）。
+            let mut recorder = StreamUsageRecorder::new(
+                (*state.db).clone(),
+                resolved_model.clone(),
+                "openai",
+                start_time,
+                200,
+            );
 
             let anthropic_stream = stream.map(move |result| match result {
                 Ok(bytes) => {
+                    recorder.observe(&bytes);
                     buffer_bytes.extend_from_slice(&bytes);
                     let mut output_bytes = Vec::new();
 
@@ -797,30 +812,27 @@ async fn handle_messages_impl(
                 }
             };
 
-            // Log request (non-blocking, uses spawn_blocking for sync DB I/O)
-            let log_db = state.db.clone();
-            let log_model = resolved_model.clone();
-            let log_latency = start_time.elapsed().as_millis() as i64;
-            tokio::task::spawn_blocking(move || {
-                log_request(
-                    &log_db,
-                    &log_model,
-                    Some("openai"),
-                    0,
-                    0,
-                    log_latency,
-                    200,
-                    false,
-                    false,
-                    None,
-                    None,
-                    "proxy",
-                );
-            });
+            let usage = crate::usage_meter::from_response_body(&res_bytes);
+            log_request(
+                &(*state.db).clone(),
+                &resolved_model,
+                Some("openai"),
+                usage,
+                start_time.elapsed().as_millis() as i64,
+                200,
+                false,
+                false,
+                None,
+                None,
+                "proxy",
+            );
 
             if let Ok(openai_res) = serde_json::from_slice::<OpenAIResponse>(&res_bytes) {
                 if let Some(choice) = openai_res.choices.first() {
                     let text_content = &choice.message.content;
+                    // 上游报了多少就往回传多少。这里原本也是硬编码的零——
+                    // 客户端（Claude Code 等）读的是这个字段，写零等于告诉它这次没花钱。
+                    let reported = usage.unwrap_or_default();
                     let anthropic_res = serde_json::json!({
                         "id": "msg_local_proxy",
                         "type": "message",
@@ -835,8 +847,10 @@ async fn handle_messages_impl(
                         "stop_reason": "end_turn",
                         "stop_sequence": null,
                         "usage": {
-                            "input_tokens": 0,
-                            "output_tokens": 0
+                            "input_tokens": reported.input,
+                            "output_tokens": reported.output,
+                            "cache_read_input_tokens": reported.cache_read,
+                            "cache_creation_input_tokens": reported.cache_creation
                         }
                     });
                     return Json(anthropic_res).into_response();
@@ -1501,33 +1515,19 @@ async fn handle_openai_forward_impl(
             return (status, err_body).into_response();
         }
 
-        // Log request (non-blocking, uses spawn_blocking for sync DB I/O)
-        let log_db = state.db.clone();
+        let log_db = (*state.db).clone();
         let log_model = resolved_model.clone();
-        let log_latency = start_time.elapsed().as_millis() as i64;
         let log_status = status.as_u16() as i32;
-        let log_is_err = !status.is_success();
-        tokio::task::spawn_blocking(move || {
-            log_request(
-                &log_db,
-                &log_model,
-                Some("openai"),
-                0,
-                0,
-                log_latency,
-                log_status,
-                is_stream,
-                log_is_err,
-                None,
-                None,
-                "proxy",
-            );
-        });
 
         if is_stream {
-            let stream = upstream_res
-                .bytes_stream()
-                .map(|r| r.map_err(|e| axum::Error::new(e)));
+            let mut recorder =
+                StreamUsageRecorder::new(log_db, log_model, "openai", start_time, log_status);
+            let stream = upstream_res.bytes_stream().map(move |r| {
+                if let Ok(bytes) = &r {
+                    recorder.observe(bytes);
+                }
+                r.map_err(|e| axum::Error::new(e))
+            });
             Response::builder()
                 .status(StatusCode::OK)
                 .header("Content-Type", "text/event-stream")
@@ -1548,6 +1548,19 @@ async fn handle_openai_forward_impl(
                     return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
                 }
             };
+            log_request(
+                &log_db,
+                &log_model,
+                Some("openai"),
+                crate::usage_meter::from_response_body(&bytes),
+                start_time.elapsed().as_millis() as i64,
+                log_status,
+                false,
+                false,
+                None,
+                None,
+                "proxy",
+            );
             Response::builder()
                 .status(StatusCode::OK)
                 .header("Content-Type", "application/json")
@@ -2496,12 +2509,14 @@ pub fn mark_platform_unhealthy(db: &DbManager, platform_id: &str, error: &str) {
 /// Write a request log entry to the database. The INSERT (WAL write + fsync)
 /// runs on the blocking pool so the per-request write never stalls a tokio
 /// worker on the hot async path — callers fire-and-forget.
+/// `usage` 为 `None` 表示**上游没报或没读到**，此时 token 列全零。
+/// 这跟「真的用了零个 token」在库里长得一样，只能靠这里如实传 `None`
+/// 而不是随手凑个零来保证——所以调用方必须真去读上游响应，见 [`usage_meter`]。
 pub fn log_request(
     db: &DbManager,
     model: &str,
     platform: Option<&str>,
-    prompt_tokens: i64,
-    completion_tokens: i64,
+    usage: Option<UsageTally>,
     latency_ms: i64,
     status_code: i32,
     is_stream: bool,
@@ -2516,6 +2531,11 @@ pub fn log_request(
     let error_message = error_message.unwrap_or("").to_string();
     let request_id = request_id.unwrap_or("").to_string();
     let source = source.to_string();
+    let usage = usage.unwrap_or_default();
+    // prompt_tokens 存计费口径的输入总量（含缓存命中/写入），缓存明细另存两列。
+    // 这样 total_tokens、estimate_cost 这些既有读取端不用改就是对的。
+    let prompt_tokens = usage.billable_input();
+    let completion_tokens = usage.output;
     let total_tokens = prompt_tokens + completion_tokens;
     tokio::task::spawn_blocking(move || {
         let conn = match db.get_connection() {
@@ -2523,14 +2543,16 @@ pub fn log_request(
             Err(_) => return,
         };
         let _ = conn.execute(
-            "INSERT INTO request_logs (model, platform, prompt_tokens, completion_tokens, total_tokens, latency_ms, status_code, is_stream, is_error, error_message, request_id, source)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            "INSERT INTO request_logs (model, platform, prompt_tokens, completion_tokens, total_tokens, cache_read_tokens, cache_creation_tokens, latency_ms, status_code, is_stream, is_error, error_message, request_id, source)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 model,
                 platform,
                 prompt_tokens,
                 completion_tokens,
                 total_tokens,
+                usage.cache_read,
+                usage.cache_creation,
                 latency_ms,
                 status_code,
                 is_stream as i32,
@@ -2541,6 +2563,54 @@ pub fn log_request(
             ],
         );
     });
+}
+
+/// 流式响应的记账收尾器：`Drop` 时才写日志。
+///
+/// 流式没有「函数返回」那个时刻——字节边流边走，用量要到 `message_delta`
+/// 才齐。而且**客户端中途断开时上游 token 照样已经花掉了**，那种请求最该被
+/// 记上。`Drop` 是这两种结局唯一共同的汇合点，所以记账挂在这里。
+pub struct StreamUsageRecorder {
+    db: DbManager,
+    model: String,
+    platform: &'static str,
+    started: std::time::Instant,
+    status: i32,
+    scanner: crate::usage_meter::SseUsageScanner,
+}
+
+impl StreamUsageRecorder {
+    pub fn new(db: DbManager, model: String, platform: &'static str, started: std::time::Instant, status: i32) -> Self {
+        Self { db, model, platform, started, status, scanner: crate::usage_meter::SseUsageScanner::new() }
+    }
+
+    /// 旁路观察一段下行字节。**不改动**内容——下游拿到的仍是上游原样的字节。
+    pub fn observe(&mut self, chunk: &[u8]) {
+        self.scanner.feed(chunk);
+    }
+}
+
+impl Drop for StreamUsageRecorder {
+    fn drop(&mut self) {
+        // log_request 内部要 spawn_blocking，脱离 tokio 运行时会 panic。
+        // 正常路径下 hyper 在 worker 线程上 drop 流，这里只是兜底。
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+        log_request(
+            &self.db,
+            &self.model,
+            Some(self.platform),
+            self.scanner.tally(),
+            self.started.elapsed().as_millis() as i64,
+            self.status,
+            true,
+            false,
+            None,
+            None,
+            "proxy",
+        );
+    }
 }
 
 // ── Embeddings Handler ─────────────────────────────────
@@ -2757,6 +2827,179 @@ mod tests {
 
         drop(db);
         let _ = std::fs::remove_file(db_path);
+    }
+}
+
+/// R2：网关用量落库。
+///
+/// [`crate::usage_meter`] 的单测证明「能从响应里读出 token」，这里证明
+/// 「读出来的确实写进了 `request_logs`」——原来的 bug 正好卡在这两者之间：
+/// 表在、解析能力在、调用方全传零。
+#[cfg(test)]
+mod usage_logging_tests {
+    use super::*;
+    use crate::db::DbManager;
+
+    fn temp_path(tag: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "omnix_usage_{tag}_{}_{}.sqlite",
+            std::process::id(),
+            chrono::Utc::now().timestamp_micros()
+        ));
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    /// 走**真实**的建表路径（`new_with_path` 内部就会跑 `init_schema`），
+    /// 而不是测试里手搓一张表——否则 schema 写错了测试反而看不出来
+    /// （`log_request` 的 INSERT 是 `let _ =`，失败不出声）。
+    fn temp_db(tag: &str) -> (DbManager, std::path::PathBuf) {
+        let path = temp_path(tag);
+        (DbManager::new_with_path(path.clone()), path)
+    }
+
+    /// spawn_blocking 是异步落库，读取端要等它一下。
+    async fn wait_for_row(db: &DbManager) -> Option<(i64, i64, i64, i64, i64)> {
+        for _ in 0..100 {
+            if let Ok(conn) = db.get_connection() {
+                let row = conn.query_row(
+                    "SELECT prompt_tokens, completion_tokens, total_tokens, cache_read_tokens, cache_creation_tokens
+                     FROM request_logs ORDER BY id DESC LIMIT 1",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                );
+                if let Ok(v) = row {
+                    return Some(v);
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        None
+    }
+
+    #[tokio::test]
+    async fn real_tokens_reach_the_table_including_cache_breakdown() {
+        let (db, path) = temp_db("write");
+        log_request(
+            &db,
+            "claude-opus-4",
+            Some("anthropic"),
+            Some(UsageTally { input: 12, output: 340, cache_read: 45000, cache_creation: 1200 }),
+            1234,
+            200,
+            false,
+            false,
+            None,
+            None,
+            "proxy",
+        );
+
+        let (prompt, completion, total, cache_read, cache_creation) =
+            wait_for_row(&db).await.expect("日志行应当落库");
+        // prompt_tokens 是计费口径的输入总量——既有的 estimate_cost / 仪表盘
+        // 读的就是这一列，缓存部分必须算进去，否则成本会低报一个数量级。
+        assert_eq!(prompt, 46212, "输入总量 = 12 + 45000 + 1200");
+        assert_eq!(completion, 340);
+        assert_eq!(total, 46552);
+        assert_eq!(cache_read, 45000, "明细列保留拆分，便于回答缓存命中率");
+        assert_eq!(cache_creation, 1200);
+
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn upstream_silence_records_zero_rather_than_a_made_up_number() {
+        let (db, path) = temp_db("none");
+        log_request(&db, "m", Some("openai"), None, 5, 200, true, false, None, None, "proxy");
+        let (prompt, completion, ..) = wait_for_row(&db).await.expect("日志行应当落库");
+        assert_eq!((prompt, completion), (0, 0));
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// 流式记账挂在 `Drop` 上，这条测的就是「流没有正常结束也要记上」——
+    /// 客户端中途断开时上游 token 已经花掉了，那种请求最不能漏。
+    #[tokio::test]
+    async fn stream_recorder_logs_when_dropped_mid_flight() {
+        let (db, path) = temp_db("stream");
+        {
+            let mut rec = StreamUsageRecorder::new(
+                db.clone(),
+                "claude-sonnet-4".into(),
+                "anthropic",
+                std::time::Instant::now(),
+                200,
+            );
+            rec.observe(b"event: message_start\ndata: {\"message\":{\"usage\":{\"input_tokens\":30,\"cache_read_input_tokens\":9000}}}\n\n");
+            rec.observe(b"event: message_delta\ndata: {\"usage\":{\"output_tokens\":77}}\n\n");
+            // 这里没有 message_stop、也没有 [DONE]：模拟客户端提前断开。
+        }
+
+        let (prompt, completion, total, cache_read, _) =
+            wait_for_row(&db).await.expect("断流也要留下日志行");
+        assert_eq!(prompt, 9030);
+        assert_eq!(completion, 77);
+        assert_eq!(total, 9107);
+        assert_eq!(cache_read, 9000);
+
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// 老库升级路径。已装 v0.24.0 的用户库里 `request_logs` 没有那两列，
+    /// 迁移若没生效，INSERT 会因列不存在而失败——而 `log_request` 里的
+    /// `let _ = conn.execute` 会把失败吞掉，日志从「全是零」变成「一行没有」，
+    /// 比原来的 bug 更糟且更难发现。所以这条必须测。
+    #[tokio::test]
+    async fn old_databases_get_the_new_columns_by_migration() {
+        let path = temp_path("migrate");
+        // 先用裸连接造一个「旧版本装完的库」，再交给 DbManager 走真实升级流程。
+        rusqlite::Connection::open(&path)
+            .expect("裸连接")
+            .execute_batch(
+                // v0.24.0 时的表形状：没有 cache_read_tokens / cache_creation_tokens。
+                "CREATE TABLE request_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    model TEXT NOT NULL,
+                    platform TEXT NULL,
+                    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                    completion_tokens INTEGER NOT NULL DEFAULT 0,
+                    total_tokens INTEGER NOT NULL DEFAULT 0,
+                    latency_ms INTEGER NOT NULL DEFAULT 0,
+                    status_code INTEGER NOT NULL DEFAULT 200,
+                    is_stream INTEGER NOT NULL DEFAULT 0,
+                    is_error INTEGER NOT NULL DEFAULT 0,
+                    error_message TEXT NULL,
+                    request_id TEXT NULL,
+                    source TEXT NOT NULL DEFAULT 'proxy'
+                );",
+            )
+            .expect("旧表");
+
+        let db = DbManager::new_with_path(path.clone());
+
+        log_request(
+            &db,
+            "m",
+            Some("anthropic"),
+            Some(UsageTally { input: 1, output: 2, cache_read: 3, cache_creation: 4 }),
+            0,
+            200,
+            false,
+            false,
+            None,
+            None,
+            "proxy",
+        );
+        let (prompt, completion, _, cache_read, cache_creation) =
+            wait_for_row(&db).await.expect("升级后写入应当成功");
+        assert_eq!((prompt, completion), (8, 2));
+        assert_eq!((cache_read, cache_creation), (3, 4));
+
+        drop(db);
+        let _ = std::fs::remove_file(path);
     }
 }
 

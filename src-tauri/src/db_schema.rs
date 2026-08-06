@@ -319,6 +319,12 @@ impl DbManager {
             "ALTER TABLE cron_runs ADD COLUMN action_summary TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE skills ADD COLUMN approved_hash TEXT NULL",
             "ALTER TABLE skills ADD COLUMN approved_at TEXT NULL",
+            // R2 用量计量：缓存 token 的明细。
+            // `prompt_tokens` 记的是**计费口径的输入总量**（含这两列），这样
+            // total_tokens / estimate_cost 等既有读取端不用改就是对的；这两列
+            // 是明细，用来回答「这次到底命中了多少缓存」。
+            "ALTER TABLE request_logs ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE request_logs ADD COLUMN cache_creation_tokens INTEGER NOT NULL DEFAULT 0",
         ];
         for sql in &migrations {
             // ALTER TABLE ADD COLUMN silently fails if column already exists in SQLite,
@@ -350,6 +356,8 @@ impl DbManager {
                 prompt_tokens INTEGER NOT NULL DEFAULT 0,
                 completion_tokens INTEGER NOT NULL DEFAULT 0,
                 total_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
                 latency_ms INTEGER NOT NULL DEFAULT 0,
                 status_code INTEGER NOT NULL DEFAULT 200,
                 is_stream INTEGER NOT NULL DEFAULT 0,
