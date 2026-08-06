@@ -82,6 +82,58 @@ async fn start_fake_upstream(reply: Value) -> FakeUpstream {
     FakeUpstream { base_url: format!("http://{addr}"), seen }
 }
 
+/// 会返回 SSE 的假上游。
+///
+/// 流式是 T0 第一版唯一没覆盖的分支，而它恰好是最难写对的：跨 chunk 的
+/// 状态机、用量要到末尾事件才齐、`Drop` 才记账。用假上游把整条流跑一遍，
+/// 就能在**没有真实上游**的情况下验到接线——剩下的才是真模型行为。
+async fn start_streaming_upstream(sse_body: &'static str) -> FakeUpstream {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&seen);
+    let handler = move |Json(body): Json<Value>| {
+        let captured = Arc::clone(&captured);
+        async move {
+            {
+                // 坑点2：lock → push → 出作用域，中间无 await。
+                captured.lock().expect("recorder lock").push(body);
+            }
+            axum::response::Response::builder()
+                .header("Content-Type", "text/event-stream")
+                .body(axum::body::Body::from(sse_body))
+                .expect("SSE 响应")
+        }
+    };
+    let app = Router::new()
+        .route("/v1/messages", post(handler.clone()))
+        .route("/chat/completions", post(handler.clone()))
+        .route("/v1/chat/completions", post(handler));
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("绑定临时端口");
+    let addr = listener.local_addr().expect("本地地址");
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    FakeUpstream { base_url: format!("http://{addr}"), seen }
+}
+
+/// 把响应体读成文本（流式响应也是一段一段拼起来的字节）。
+async fn body_text(response: axum::response::Response) -> String {
+    let bytes = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
+        .await
+        .expect("读响应体");
+    String::from_utf8_lossy(&bytes).to_string()
+}
+
+fn streaming_request() -> AnthropicRequest {
+    serde_json::from_value(json!({
+        "model": "claude-x", "max_tokens": 256, "stream": true,
+        "tools": [{"name": "Read", "description": "读文件",
+                   "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}}}],
+        "messages": [{"role": "user", "content": "看一下 a.txt"}]
+    }))
+    .expect("夹具请求可解析")
+}
+
 // ── 网关夹具 ──────────────────────────────────
 
 fn temp_db(tag: &str) -> (Arc<DbManager>, std::path::PathBuf) {
@@ -460,4 +512,125 @@ async fn recalled_memory_reaches_the_upstream_system_prompt() {
 
     drop(db);
     let _ = std::fs::remove_file(path);
+}
+
+// ── 流式 ──────────────────────────────────────
+
+/// Anthropic 直通 + 流式：字节要原样穿过去，用量要从流里被抠出来落库。
+///
+/// 用量那部分只有跑完整条流才验得到——`StreamUsageRecorder` 的记账挂在
+/// `Drop` 上，单测那个扫描器证明不了它真的被接上了。
+#[tokio::test]
+async fn streaming_anthropic_passes_through_and_still_records_usage() {
+    const SSE: &str = "event: message_start
+data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":7,\"cache_read_input_tokens\":9000}}}
+
+event: content_block_delta
+data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"好\"}}
+
+event: message_delta
+data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":128}}
+
+event: message_stop
+data: {\"type\":\"message_stop\"}
+
+";
+
+    let upstream = start_streaming_upstream(SSE).await;
+    let (db, path) = temp_db("stream_anth");
+    reset_routing(&db);
+    install_model(&db, "anth", "anthropic", &upstream.base_url, "claude-x", 1);
+    set_target(&db, "anth:claude-x");
+
+    let response = drive(proxy_state(Arc::clone(&db)), streaming_request()).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    // 上游声明的工具照样要到位（流式走的是另一条分支）。
+    assert!(upstream.first_request().get("tools").is_some());
+
+    let out = body_text(response).await;
+    assert!(out.contains("message_start"), "直通分支必须原样转发：{out}");
+    assert!(out.contains("\"text\":\"好\""));
+
+    let (prompt, completion) = wait_for_tokens(&db).await.expect("流跑完要留下用量");
+    assert_eq!(prompt, 9007, "输入总量 = 7 + 9000（缓存命中算进计费口径）");
+    assert_eq!(completion, 128, "输出 token 在末尾的 message_delta 里");
+
+    drop(db);
+    let _ = std::fs::remove_file(path);
+}
+
+/// OpenAI 上游 + 流式 + 工具调用：R1 最难的一段。
+///
+/// OpenAI 把 arguments 逐字符分片发，Anthropic 侧要 content_block_start +
+/// 一串 input_json_delta + content_block_stop。tool_translate 的单测证明了
+/// 状态机本身对，这条证明它**真的被接在网关上**。
+#[tokio::test]
+async fn streaming_openai_tool_calls_arrive_as_anthropic_events() {
+    const SSE: &str = "data: {\"choices\":[{\"delta\":{\"content\":\"我来读\"}}]}
+
+data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"Read\",\"arguments\":\"\"}}]}}]}
+
+data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"pa\"}}]}}]}
+
+data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"th\\\":\\\"a.txt\\\"}\"}}]}}]}
+
+data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}
+
+data: [DONE]
+
+";
+
+    let upstream = start_streaming_upstream(SSE).await;
+    let (db, path) = temp_db("stream_oai");
+    reset_routing(&db);
+    install_model(&db, "oai", "openai", &upstream.base_url, "gpt-x", 1);
+    set_target(&db, "oai:gpt-x");
+
+    let response = drive(proxy_state(Arc::clone(&db)), streaming_request()).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    // 请求侧：工具定义翻成了 OpenAI 形状。
+    assert_eq!(upstream.first_request()["tools"][0]["function"]["name"], "Read");
+
+    let out = body_text(response).await;
+    // 响应侧：一条合规的 Anthropic 流，不是原来那种只有 delta 的半成品。
+    for expected in ["message_start", "content_block_start", "content_block_stop", "message_delta", "message_stop"] {
+        assert!(out.contains(expected), "缺少 {expected}：{out}");
+    }
+    assert!(out.contains("\"type\":\"tool_use\""), "工具块没翻出来：{out}");
+    assert!(out.contains("call_1") && out.contains("input_json_delta"));
+    // stop_reason 必须是 tool_use，否则客户端当这轮说完了，不会去执行工具。
+    assert!(out.contains("\"stop_reason\":\"tool_use\""), "stop_reason 不对：{out}");
+
+    // 分片拼起来必须是合法 JSON——整条链路的关键不变量。
+    let joined: String = out
+        .lines()
+        .filter_map(|l| l.strip_prefix("data: "))
+        .filter_map(|d| serde_json::from_str::<Value>(d).ok())
+        .filter(|v| v["delta"]["type"] == "input_json_delta")
+        .filter_map(|v| v["delta"]["partial_json"].as_str().map(str::to_string))
+        .collect();
+    assert_eq!(
+        serde_json::from_str::<Value>(&joined).expect("拼起来要是合法 JSON")["path"],
+        "a.txt"
+    );
+
+    drop(db);
+    let _ = std::fs::remove_file(path);
+}
+
+/// 落库是 spawn_blocking，读取端要等一下。
+async fn wait_for_tokens(db: &DbManager) -> Option<(i64, i64)> {
+    for _ in 0..100 {
+        if let Ok(conn) = db.get_connection() {
+            if let Ok(v) = conn.query_row(
+                "SELECT prompt_tokens, completion_tokens FROM request_logs ORDER BY id DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            ) {
+                return Some(v);
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    None
 }
