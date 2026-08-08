@@ -1,15 +1,20 @@
 /**
  * usePreview — Live preview pane for workspace files
+ *
+ * 文件读取统一走 `workspaceApi.readFile`（read_workspace_file）：带目录穿越
+ * 校验、认得 image/pdf/binary、有大小上限。曾经这里挂的是另外两个命令，参数
+ * 名和后端对不上，读取一律失败，错误又被吞进 console，于是选中任何文件都只
+ * 是一片空白。
  */
 
 import { useState, useCallback } from "react";
-import { previewApi } from "@/lib/tauri-api";
+import { previewApi, workspaceApi, type PreviewFileEntry } from "@/lib/tauri-api";
 import type { PreviewType } from "@/types";
 import { DEFAULT_PROXY_PORT } from "@/lib/constants";
 
 export interface UsePreviewReturn {
   showPreviewPane: boolean;
-  previewFiles: string[];
+  previewFiles: PreviewFileEntry[];
   selectedPreviewFile: string;
   previewType: PreviewType;
   previewHtmlUrl: string;
@@ -18,13 +23,14 @@ export interface UsePreviewReturn {
 
   setShowPreviewPane: (v: boolean) => void;
   loadPreviewFiles: () => Promise<void>;
+  /** 传工作区内的相对路径（`previewFiles[].relative`）。 */
   selectPreviewFile: (file: string) => Promise<void>;
   loadGitDiff: () => Promise<void>;
 }
 
 export function usePreview(chatWorkspace: string): UsePreviewReturn {
   const [showPreviewPane, setShowPreviewPane] = useState(false);
-  const [previewFiles, setPreviewFiles] = useState<string[]>([]);
+  const [previewFiles, setPreviewFiles] = useState<PreviewFileEntry[]>([]);
   const [selectedPreviewFile, setSelectedPreviewFile] = useState("");
   const [previewType, setPreviewType] = useState<PreviewType>("markdown");
   const [previewHtmlUrl, setPreviewHtmlUrl] = useState("");
@@ -34,8 +40,7 @@ export function usePreview(chatWorkspace: string): UsePreviewReturn {
   const loadPreviewFiles = useCallback(async () => {
     if (!chatWorkspace || chatWorkspace === "direct") return;
     try {
-      const files = await previewApi.listFiles(chatWorkspace);
-      setPreviewFiles(files);
+      setPreviewFiles(await previewApi.listFiles(chatWorkspace));
     } catch (e) {
       console.error("[usePreview] Failed to load files:", e);
     }
@@ -52,24 +57,30 @@ export function usePreview(chatWorkspace: string): UsePreviewReturn {
 
     if (ext === "html") {
       setPreviewType("html");
-      const url = `http://localhost:${DEFAULT_PROXY_PORT}/preview/${encodeURIComponent(chatWorkspace)}/${encodeURIComponent(file)}`;
-      setPreviewHtmlUrl(url);
-    } else if (ext && ["png", "jpg", "jpeg", "gif", "svg"].includes(ext)) {
-      setPreviewType("image");
-      try {
-        const base64 = await previewApi.readFileAsBase64({ workspacePath: chatWorkspace, fileName: file });
-        setPreviewImageBase64(base64);
-      } catch (e) {
-        console.error("[usePreview] Failed to read image:", e);
+      setPreviewHtmlUrl(
+        `http://localhost:${DEFAULT_PROXY_PORT}/preview/${encodeURIComponent(chatWorkspace)}/${encodeURIComponent(file)}`
+      );
+      return;
+    }
+
+    try {
+      const preview = await workspaceApi.readFile(chatWorkspace, file);
+      if (preview.kind === "image") {
+        setPreviewType("image");
+        // 后端给的是完整 data: URL，直接喂 <img src>。
+        setPreviewImageBase64(preview.content);
+      } else if (preview.kind === "binary") {
+        setPreviewType("markdown");
+        setPreviewTextContent(`（二进制文件，不做预览：${file}）`);
+      } else {
+        setPreviewType("markdown");
+        setPreviewTextContent(preview.truncated ? `${preview.content}\n\n…（内容过长，已截断）` : preview.content);
       }
-    } else {
+    } catch (e) {
+      // 读不出来要说出来——以前只 console.error，面板留白，看上去像没反应。
+      console.error("[usePreview] Failed to read file:", e);
       setPreviewType("markdown");
-      try {
-        const text = await previewApi.readFileContent({ workspacePath: chatWorkspace, fileName: file });
-        setPreviewTextContent(text);
-      } catch (e) {
-        console.error("[usePreview] Failed to read file:", e);
-      }
+      setPreviewTextContent(`读取失败：${String(e)}`);
     }
   }, [chatWorkspace]);
 
@@ -82,6 +93,7 @@ export function usePreview(chatWorkspace: string): UsePreviewReturn {
       setPreviewTextContent(diffText);
     } catch (e) {
       console.error("[usePreview] Failed to get git diff:", e);
+      setPreviewTextContent(`读取失败：${String(e)}`);
     }
   }, [chatWorkspace]);
 

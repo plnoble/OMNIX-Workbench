@@ -90,7 +90,7 @@ export function WriteTab() {
           settingsApi.get("target_model"),
         ]);
         let model = qaModel || targetModel || "";
-        if (!model) model = (await modelApi.getAvailableNames())[0] || "";
+        if (!model) model = (await modelApi.getAvailable())[0]?.id || "";
         setChatModel(model);
       } catch {
         /* assistant just stays disabled until a model exists */

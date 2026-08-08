@@ -268,6 +268,13 @@ export const agentTemplateApi = {
   getAll: () =>
     invoke<AgentTemplate[]>("get_agent_templates"),
 
+  /** 在本机隐藏 / 恢复一个内置助手（不随版本走，更新不会带回来）。 */
+  setHidden: (slug: string, hidden: boolean) =>
+    invoke<void>("set_builtin_assistant_hidden", { slug, hidden }),
+
+  /** 本机隐藏了哪些内置助手。 */
+  listHidden: () => invoke<AgentTemplate[]>("list_hidden_builtin_assistants"),
+
   /** Get a specific template by slug */
   getBySlug: (slug: string) =>
     invoke<AgentTemplate | null>("get_agent_template", { slug }),
@@ -283,6 +290,27 @@ export const customAssistantApi = {
   save: (a: { slug?: string; name: string; description: string; category?: string; instructions: string }) =>
     invoke<CustomAssistant>("save_custom_assistant", a),
   remove: (slug: string) => invoke<void>("delete_custom_assistant", { slug }),
+};
+
+/** 技能风险审阅的一条发现。带行号和原文，误报你能一眼认出来。 */
+export interface SkillFinding {
+  kind: "secrecy" | "credential_access" | "network_exfil" | "persistence" | "destructive" | "privilege_escalation" | "remote_code";
+  level: "medium" | "high" | "critical";
+  why: string;
+  line: number;
+  excerpt: string;
+}
+
+export interface SkillRisk {
+  name: string;
+  pool: string;
+  level: "medium" | "high" | "critical";
+  findings: SkillFinding[];
+}
+
+export const skillSafetyApi = {
+  /** 把所有技能过一遍风险审阅，只返回有发现的，按严重度降序。 */
+  scanAll: () => invoke<SkillRisk[]>("scan_all_skills"),
 };
 
 // ── Skills Lock File ──────────────

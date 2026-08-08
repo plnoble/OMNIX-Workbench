@@ -1,7 +1,7 @@
 /**
  * DashboardTab — 开发环境诊断控制面板
  *
- * Shows: tip carousel, status overview cards, top models, env diagnostics, remote access
+ * Shows: status overview cards, env diagnostics, software update, remote access
  */
 
 import { useEffect, useState } from "react";
@@ -9,10 +9,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
-import { Lightbulb, Wifi, Cpu, Bot, Wrench, RefreshCw, Copy, Smartphone, Rocket } from "lucide-react";
+import { Wifi, Cpu, Bot, Wrench, RefreshCw, Copy, Smartphone, Rocket } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
-import { OMNIX_TIPS, DEFAULT_PROXY_PORT } from "@/lib/constants";
-import { TokenActivityPanel } from "@/components/TokenActivityPanel";
+import { DEFAULT_PROXY_PORT } from "@/lib/constants";
 import QRCode from "qrcode";
 import { remoteApi, settingsApi, type RemoteClientInfo } from "@/lib/tauri-api";
 import { toast } from "@/components/ui/sonner";
@@ -21,7 +20,6 @@ import type { DetectedAgent, RemoteAccessInfo } from "@/types";
 interface DashboardTabProps {
   activeSessionsCount: number;
   detectedAgents: DetectedAgent[];
-  tipIndex: number;
   envDiagnostics: Record<string, string>;
   repairLogs: string;
   repairingTool: string;
@@ -34,7 +32,6 @@ interface DashboardTabProps {
 export function DashboardTab({
   activeSessionsCount,
   detectedAgents,
-  tipIndex,
   envDiagnostics,
   repairLogs,
   repairingTool,
@@ -43,8 +40,6 @@ export function DashboardTab({
   onRepairTool,
   onLoadRemoteAccess,
 }: DashboardTabProps) {
-  const tip = OMNIX_TIPS[tipIndex];
-
   // Remote phone access: toggle LAN binding + restart proxy.
   const [remoteEnabled, setRemoteEnabled] = useState(false);
   const [remoteBusy, setRemoteBusy] = useState(false);
@@ -100,24 +95,6 @@ export function DashboardTab({
 
   return (
     <div className="p-6 overflow-y-auto w-full flex flex-col gap-5">
-      {/* Tip Card */}
-      <Card className="bg-gradient-to-br from-purple-500/[0.08] to-blue-500/[0.08] border-purple-500/20">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-purple-400">
-            <Lightbulb className="h-4 w-4" />
-            智能开发贴士
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <span className="text-sm font-semibold text-foreground block mb-1">
-            {tip?.title}
-          </span>
-          <p className="text-xs text-muted-foreground leading-relaxed m-0">
-            {tip?.desc}
-          </p>
-        </CardContent>
-      </Card>
-
       {/* Status Overview Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         <Card>
@@ -148,8 +125,8 @@ export function DashboardTab({
         </Card>
       </div>
 
-      {/* Token activity & cost (R4) — surfaces request_logs usage with cost + daily chart */}
-      <TokenActivityPanel />
+      {/* token / 成本活动不在这里——它的唯一去处是「监控 → 用量」。诊断页只管
+          环境是否装好、能不能连上，不重复看板。 */}
 
       {/* Software update — check for a newer signed release from GitHub */}
       <Card>
@@ -172,16 +149,17 @@ export function DashboardTab({
       <Card>
         <CardHeader className="flex-row justify-between items-center mb-4">
           <CardTitle className="flex items-center gap-2 text-sm">
-            <Wrench className="h-4 w-4" /> 开发环境一键诊断
+            <Wrench className="h-4 w-4" /> 运行依赖检查
           </CardTitle>
           <Button size="sm" onClick={onRunDiagnostics}>
-            <RefreshCw className="h-3 w-3" /> 运行诊断
+            <RefreshCw className="h-3 w-3" /> 检查
           </Button>
         </CardHeader>
         <CardContent>
           {Object.keys(envDiagnostics).length === 0 ? (
             <p className="text-xs text-muted-foreground m-0">
-              点击诊断按钮以获取本机的 Node.js、Git、Ripgrep 以及各个 CLI 智能体的安装信息。
+              检查 OMNIX 自己要用的三个外部命令行工具：<code className="text-foreground">rg</code>（全文搜索 / 知识库切片）、<code className="text-foreground">git</code>（worktree / 工作区检查点 / diff）、<code className="text-foreground">node</code>（npm 系智能体的安装）。
+              CLI 智能体的检测、版本、更新与安装全在「智能体」页，这里不重复。
             </p>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -190,11 +168,15 @@ export function DashboardTab({
                 return (
                   <div
                     key={tool}
-                    className="flex justify-between items-center p-3 rounded-lg bg-muted/5 border border-border"
+                    className="flex min-w-0 justify-between items-center gap-2 p-3 rounded-lg bg-muted/5 border border-border"
                   >
-                    <div>
+                    <div className="min-w-0">
                       <span className="text-sm font-semibold block">{tool}</span>
-                      <Badge variant={isInstalled ? "success" : "destructive"}>
+                      <Badge
+                        variant={isInstalled ? "success" : "destructive"}
+                        className="max-w-full truncate"
+                        title={isInstalled ? version : "未检测到安装"}
+                      >
                         {isInstalled ? version : "未检测到安装"}
                       </Badge>
                     </div>

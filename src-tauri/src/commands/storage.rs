@@ -65,6 +65,7 @@ fn validate_dir(path: &str) -> Result<PathBuf, String> {
 /// store use `migrate_skills_store` instead — it must move data too.
 #[tauri::command]
 pub fn set_storage_dir(
+    app: tauri::AppHandle,
     key: String,
     path: String,
     db: State<'_, Arc<DbManager>>,
@@ -81,9 +82,42 @@ pub fn set_storage_dir(
     } else {
         validate_dir(&path)?.to_string_lossy().to_string()
     };
+
+    // 创作产物是**正本**（图片/视频，数据库里只有路径），不像笔记那样能从
+    // SQLite 重新生成。所以先把文件搬过去，再改设置——顺序反了会让画廊里所有
+    // 作品指向旧路径而界面已经在看新目录。
+    if key == "storage_media_dir" {
+        let old_root = storage::media_dir();
+        let new_root = if value.is_empty() {
+            storage::default_dir(&key)
+        } else {
+            std::path::PathBuf::from(&value)
+        };
+        if old_root != new_root && old_root.exists() {
+            storage::copy_dir_recursive(&old_root, &new_root)?;
+        }
+    }
+
     db.set_setting(&key, &value).map_err(|e| e.to_string())?;
     if key != "sandbox_dir" {
         storage::set_override(&key, &value);
+    }
+    // 笔记的正本在 SQLite、磁盘上是镜像，所以换了目录就把镜像重写一遍，
+    // 新目录立刻是完整的，不用等下次编辑才慢慢补齐。
+    if key == "storage_notes_dir" {
+        if let Err(error) = super::notes::remirror_all(&db) {
+            log::warn!("笔记目录已改，但重新镜像失败：{error}");
+        }
+    }
+    // 新目录要立刻放行，否则画廊里的图要等重启才显示得出来。
+    if key == "storage_media_dir" {
+        use tauri::Manager;
+        if let Err(error) = app
+            .asset_protocol_scope()
+            .allow_directory(storage::media_dir(), true)
+        {
+            log::warn!("放行新的创作产物目录失败：{error}");
+        }
     }
     Ok(())
 }

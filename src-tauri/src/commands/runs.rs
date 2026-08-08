@@ -93,16 +93,6 @@ pub struct TeamPlan {
     pub approved_at: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LabFeature {
-    pub id: String,
-    pub title: String,
-    pub layer: String,
-    pub status: String,
-    pub risk: String,
-    pub description: String,
-    pub is_visible: bool,
-}
 
 fn next_id(prefix: &str) -> String {
     format!("{}_{}", prefix, Utc::now().timestamp_micros())
@@ -410,64 +400,10 @@ pub fn list_agent_runs_core(db: &Arc<DbManager>, run_id: &str) -> Result<Vec<Age
         .map_err(|e| e.to_string())
 }
 
-pub fn list_lab_features_core() -> Vec<LabFeature> {
-    vec![
-        LabFeature {
-            id: "compare".into(),
-            title: "AI 专家比对".into(),
-            layer: "labs".into(),
-            status: "experimental".into(),
-            risk: "medium".into(),
-            description: "多模型并排评审和专家意见对照，保留但不作为主工作流入口。".into(),
-            is_visible: true,
-        },
-        LabFeature {
-            id: "cron".into(),
-            title: "定时任务".into(),
-            layer: "labs".into(),
-            status: "experimental".into(),
-            risk: "medium".into(),
-            description: "后台定时执行 Agent 任务，等待与统一 run 模型进一步整合。".into(),
-            is_visible: true,
-        },
-        LabFeature {
-            id: "autopilot".into(),
-            title: "自动驾驶".into(),
-            layer: "labs".into(),
-            status: "incomplete".into(),
-            risk: "high".into(),
-            description: "无人值守开发能力需要更多权限、确认队列和验证护栏。".into(),
-            is_visible: true,
-        },
-        LabFeature {
-            id: "skill-evolution".into(),
-            title: "技能进化".into(),
-            layer: "labs".into(),
-            status: "experimental".into(),
-            risk: "medium".into(),
-            description: "技能融合、审计、自动修复和经验蒸馏先从正式包管理中拆出。".into(),
-            is_visible: true,
-        },
-        LabFeature {
-            id: "cookbook".into(),
-            title: "模型推荐 Cookbook".into(),
-            layer: "labs".into(),
-            status: "experimental".into(),
-            risk: "low".into(),
-            description: "硬件画像、模型谱系和推荐能力先作为实验辅助工具。".into(),
-            is_visible: true,
-        },
-        LabFeature {
-            id: "code-analysis".into(),
-            title: "代码库分析".into(),
-            layer: "labs".into(),
-            status: "experimental".into(),
-            risk: "medium".into(),
-            description: "架构图谱和代码深度分析后续接入 run 验证链路。".into(),
-            is_visible: true,
-        },
-    ]
-}
+// 「实验室」页已整个删除。它列的四项里：对比已经跑通、定时任务是正常发货功能、
+// 自动驾驶因为 LAB_NAV 漏了 tab 字段而永远显示「待接入」、模型推荐 Cookbook 根本
+// 没有实现——一页专门把能用的功能标成实验、再列一个不存在的东西。
+// 真正的「还没稳定」信息留在 `appRegistry.tsx` 的 `is_experimental` 标记上。
 
 #[tauri::command]
 pub fn create_workspace_run(
@@ -547,10 +483,6 @@ pub fn list_agent_runs(
     list_agent_runs_core(&db, &run_id)
 }
 
-#[tauri::command]
-pub fn list_lab_features() -> Vec<LabFeature> {
-    list_lab_features_core()
-}
 
 #[cfg(test)]
 mod tests {
@@ -559,7 +491,7 @@ mod tests {
     use crate::db::DbManager;
 
     use super::{
-        approve_team_plan_core, create_workspace_run_core, list_lab_features_core,
+        approve_team_plan_core, create_workspace_run_core,
         list_workspace_runs_core, propose_team_plan_core, start_agent_run_core,
     };
 
@@ -622,15 +554,4 @@ mod tests {
         assert!(approved.approved_at.is_some());
     }
 
-    #[test]
-    fn labs_registry_marks_experimental_features_visible() {
-        let features = list_lab_features_core();
-
-        assert!(features.iter().any(|feature| {
-            feature.id == "compare" && feature.layer == "labs" && feature.is_visible
-        }));
-        assert!(features.iter().any(|feature| {
-            feature.id == "skill-evolution" && feature.status == "experimental"
-        }));
-    }
 }

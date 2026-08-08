@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { toast } from "sonner";
 import {
@@ -25,6 +26,7 @@ import {
   Users,
   RefreshCw,
   StickyNote,
+  Waypoints,
   X,
 } from "lucide-react";
 import { WorkspaceCheckpoints } from "@/components/WorkspaceCheckpoints";
@@ -39,7 +41,7 @@ import { RequirementModal } from "@/components/modals/RequirementModal";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { knowledgeApi, runtimeApi, searchApi, workspaceApi, notesApi, sddApi, upstreamAccountApi, conversationApi, type UpstreamAccountOption, type ConversationGoal, type ConversationGoalStatus } from "@/lib/tauri-api";
+import { knowledgeApi, promptGuardApi, runtimeApi, searchApi, shellApi, workspaceApi, notesApi, sddApi, upstreamAccountApi, conversationApi, type UpstreamAccountOption, type ConversationGoal, type ConversationGoalStatus } from "@/lib/tauri-api";
 import type { ConversationInfo } from "@/types";
 import { getRuntimeAgentId, isAcpAgent } from "@/lib/agentRegistry";
 import type {
@@ -106,6 +108,9 @@ const WORK_MODE_OPTIONS: Array<{ id: WorkMode; label: string; desc: string }> = 
 ];
 
 
+/** 用户为某个 Agent 选的模型，按 Agent 分开记——各 Agent 的可选模型并不一样。 */
+const modelMemoryKey = (agentId: string) => `omnix_model_choice_${agentId}`;
+
 export function ChatTab({
   surface,
   activeAgent,
@@ -166,6 +171,9 @@ export function ChatTab({
   const [advOpen, setAdvOpen] = useState(false);
   // Image attachments for the next message (vision input).
   const [attachments, setAttachments] = useState<ChatImageAttachment[]>([]);
+  // 拖着文件悬在窗口上——给个明确的落点，否则「拖了没反应」和「拖进去了但
+  // 我没注意」在用户眼里长得一模一样。
+  const [dropActive, setDropActive] = useState(false);
   const [runtimeModels, setRuntimeModels] = useState<RuntimeModelOption[]>([]);
   const [selectedModelId, setSelectedModelId] = useState("agent_default");
   const [fullAccessConfirmed, setFullAccessConfirmed] = useState(false);
@@ -246,12 +254,19 @@ export function ChatTab({
     }
     runtimeApi.getModelOptions(runtimeAgentId).then((models) => {
       setRuntimeModels(models);
-      // On every Agent switch, pre-select that Agent's configured default
-      // (binding / global default). Don't carry over the previous Agent's
-      // selection — the shared "agent_default" option is valid for every Agent
-      // and would otherwise mask the new Agent's default.
+      // 先认用户上次为这个 Agent 选的模型。
+      //
+      // ChatTab 在切走页签时会整个卸载（App 里是 `activeTab === "chat" && <ChatTab/>`），
+      // state 随之清零。以前这里无条件回落到 `is_default`，于是「去模型页看一眼
+      // 再回来」就把你选的模型换成了 Agent 官方默认，而且不吭一声。
+      // 记住的模型如果已经没了或变成不可选（供应商停用/熔断），才退回默认。
+      const remembered = localStorage.getItem(modelMemoryKey(runtimeAgentId));
+      const rememberedOption = remembered
+        ? models.find((model) => model.id === remembered && model.compatibility.selectable)
+        : undefined;
       const preferred =
-        models.find((model) => model.is_default && model.compatibility.selectable)
+        rememberedOption
+        ?? models.find((model) => model.is_default && model.compatibility.selectable)
         ?? models.find((model) => model.compatibility.selectable);
       setSelectedModelId(preferred?.id || "");
     }).catch((error) => {
@@ -266,6 +281,11 @@ export function ChatTab({
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, Math.floor(window.innerHeight * 0.5))}px`;
   }, [chatInput]);
+
+  // 拖放监听只想挂一次，但回调要读到最新的输入框内容——用 ref 取当前值，
+  // 否则把 chatInput 塞进依赖会让监听器每敲一个字就重挂一遍。
+  const chatInputRef = useRef(chatInput);
+  useEffect(() => { chatInputRef.current = chatInput; }, [chatInput]);
 
   useEffect(() => {
     knowledgeApi.listBases().then(setKnowledgeBases).catch(() => setKnowledgeBases([]));
@@ -361,7 +381,13 @@ export function ChatTab({
       }
     }
 
-    return blocks.join("\n\n---\n\n");
+    if (blocks.length === 0) return "";
+    // 这里才是该包安全信封的地方：联网搜索结果、知识库片段、别的会话的转写，
+    // 全都是**从别处抓来的**内容，里面可能藏着「忽略以上指令」之类的东西。
+    //
+    // 网关那边曾经反着做——把用户自己打的字包成「不可信」，而这些真正的外部
+    // 内容一点包装都没有。用户的话是最可信的输入，外来的才需要围栏。
+    return promptGuardApi.wrap(blocks.join("\n\n---\n\n"), "联网搜索 / 知识库 / 引用对话");
   };
 
   // Connect agent output → notebook: save a plan / suggestion / deferred item
@@ -535,6 +561,47 @@ export function ChatTab({
       if (file) addAttachmentFile(file);
     }
   };
+
+  /**
+   * 把本机文件交给 Agent = 把**路径**写进输入框。
+   *
+   * 不做 base64 上传：这一页驱动的全是 CLI agent，它们自己有 Read/文件工具，
+   * 拿到路径就能读原文（还不受 5MB 限制、不烧 token）。base64 那条路留给
+   * 剪贴板截图——那种情况根本没有路径。
+   */
+  const appendFilePaths = useCallback((paths: string[]) => {
+    const usable = paths.filter((path) => path.trim());
+    if (usable.length === 0) return;
+    const block = usable.join("\n");
+    setChatInput(chatInputRef.current ? `${chatInputRef.current.trimEnd()}\n${block}\n` : `${block}\n`);
+    toast.success(usable.length === 1 ? "已把文件路径填入输入框" : `已填入 ${usable.length} 个文件路径`);
+  }, [setChatInput]);
+
+  const pickFilesForChat = async () => {
+    try {
+      appendFilePaths(await shellApi.pickFiles());
+    } catch (error) {
+      toast.error("打开文件选择器失败", { description: String(error) });
+    }
+  };
+
+  // 拖放：Tauri 的 `dragDropEnabled` 默认开着，它会截获 OS 拖放并发自己的
+  // 事件，webview 里的 HTML5 `drop` **根本不触发**（Tauri 源码原话：在 Windows
+  // 上要用 HTML5 拖放必须先禁用它）。以前没人监听这个事件，所以往窗口里拖
+  // 文件是掉进黑洞。这里接上，拿到的正是真实绝对路径。
+  useEffect(() => {
+    const unlisten = getCurrentWebview().onDragDropEvent((event) => {
+      if (event.payload.type === "enter" || event.payload.type === "over") {
+        setDropActive(true);
+      } else if (event.payload.type === "drop") {
+        setDropActive(false);
+        appendFilePaths(event.payload.paths);
+      } else {
+        setDropActive(false);
+      }
+    });
+    return () => { void unlisten.then((off) => off()); };
+  }, [appendFilePaths]);
 
   const openWorkspace = async () => {
     if (!isWorkspaceMode) {
@@ -805,21 +872,31 @@ export function ChatTab({
                 ))}
               </div>
             )}
-            <Textarea
-              ref={textareaRef}
-              value={chatInput}
-              onChange={(event) => setChatInput(event.target.value)}
-              onPaste={handlePaste}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey) {
-                  event.preventDefault();
-                  event.currentTarget.form?.requestSubmit();
-                }
-              }}
-              placeholder={`${activeAgent}，输入你要做的事情...（/goal 设目标 · /btw 开旁支 · Ctrl+V 贴图）`}
-              className="min-h-28 resize-none border-0 bg-transparent text-base leading-7 focus-visible:ring-0 focus-visible:ring-offset-0"
-              style={{ maxHeight: "50vh" }}
-            />
+            <div className="relative">
+              <Textarea
+                ref={textareaRef}
+                value={chatInput}
+                onChange={(event) => setChatInput(event.target.value)}
+                onPaste={handlePaste}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    event.currentTarget.form?.requestSubmit();
+                  }
+                }}
+                placeholder={`${activeAgent}，输入你要做的事情...（/goal 设目标 · /btw 开旁支 · 拖文件进来 · Ctrl+V 贴图）`}
+                className="min-h-28 resize-none border-0 bg-transparent text-base leading-7 focus-visible:ring-0 focus-visible:ring-offset-0"
+                style={{ maxHeight: "50vh" }}
+              />
+              {/* 拖文件悬停时的落点。纯覆盖层 + pointer-events-none：不拦
+                  Tauri 的拖放事件，只是让"能放"这件事看得见。 */}
+              {dropActive && (
+                <div className="pointer-events-none absolute inset-0 flex items-center justify-center gap-2 rounded-md border-2 border-dashed border-primary bg-primary/10 text-sm font-medium text-primary">
+                  <Paperclip className="h-4 w-4" />
+                  松手即可把文件路径交给 {activeAgent}
+                </div>
+              )}
+            </div>
 
             {/* F-A: active cross-agent references (removable chips). */}
             {references.length > 0 && (
@@ -851,7 +928,12 @@ export function ChatTab({
               {!isAcpAgent(activeAgent) ? (
                 <select
                   value={selectedModel?.id || ""}
-                  onChange={(event) => setSelectedModelId(event.target.value)}
+                  onChange={(event) => {
+                    setSelectedModelId(event.target.value);
+                    if (runtimeAgentId) {
+                      localStorage.setItem(modelMemoryKey(runtimeAgentId), event.target.value);
+                    }
+                  }}
                   className="h-8 max-w-56 rounded-md border border-border bg-background px-2 text-sm"
                   disabled={!runtimeAgentId || runtimeModels.length === 0}
                   title={selectedModel?.compatibility.reason}
@@ -926,29 +1008,23 @@ export function ChatTab({
                 {PERMISSION_OPTIONS.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
               </select>
 
-              <label
+              {/* 文件走系统对话框拿真实路径交给 Agent；截图走 Ctrl+V 变
+                  base64 附件。两条路互不重叠，都从这一个按钮进。 */}
+              <button
+                type="button"
+                onClick={() => void pickFilesForChat()}
                 className={cn(
-                  "flex h-8 cursor-pointer items-center gap-1.5 rounded-md border px-2 text-sm",
+                  "flex h-8 items-center gap-1.5 rounded-md border px-2 text-sm",
                   attachments.length > 0 ? "border-primary/40 bg-primary/10 text-primary" : "border-border text-muted-foreground hover:text-foreground"
                 )}
-                title="附带图片（也可直接 Ctrl+V 粘贴截图）"
+                title="选择本机文件，路径会填进输入框交给 Agent 自己读。也可以直接把文件拖进窗口；截图用 Ctrl+V 粘贴。"
               >
                 <Paperclip className="h-3.5 w-3.5" />
-                {attachments.length > 0 ? `图片×${attachments.length}` : "图片"}
-                <input
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  className="hidden"
-                  onChange={(event) => {
-                    for (const file of Array.from(event.target.files ?? [])) addAttachmentFile(file);
-                    event.target.value = "";
-                  }}
-                />
-              </label>
+                {attachments.length > 0 ? `图片×${attachments.length}` : "文件"}
+              </button>
 
               {/* 高级：执行模式/交接/知识库/联网搜索/引用收进弹层，主行保持
-                  Agent·账号·权限·图片·发送。激活项数显示在按钮上。 */}
+                  Agent·账号·权限·文件·发送。激活项数显示在按钮上。 */}
               <div className="relative">
                 {(() => {
                   const advActive =
@@ -1084,10 +1160,23 @@ export function ChatTab({
                     onCompacted={onReloadMessages}
                   />
                 )}
-                {selectedModel && selectedModel.compatibility.level !== "native" && (
+                {/* `gateway` 是成功路径，不是故障：模型经 OMNIX 网关翻译后可以
+                    正常用（selectable 为 true）。这里以前把它和 unsupported /
+                    unhealthy 一起画成橙色警告三角，看上去就像"网关报错"。
+                    现在只有真正不可用的两级才是警告。 */}
+                {selectedModel?.compatibility.level === "gateway" && (
+                  <span
+                    className="flex items-center gap-1 text-xs text-muted-foreground"
+                    title={selectedModel.compatibility.reason}
+                  >
+                    <Waypoints className="h-3.5 w-3.5" />
+                    经 OMNIX 网关
+                  </span>
+                )}
+                {selectedModel && (selectedModel.compatibility.level === "unsupported" || selectedModel.compatibility.level === "unhealthy") && (
                   <span className="flex items-center gap-1 text-xs text-warning">
                     <AlertTriangle className="h-3.5 w-3.5" />
-                    {selectedModel.compatibility.level === "gateway" ? "OMNIX 网关" : selectedModel.compatibility.reason}
+                    {selectedModel.compatibility.reason}
                   </span>
                 )}
                 {isRunning && (

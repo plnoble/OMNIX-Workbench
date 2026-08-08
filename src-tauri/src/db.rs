@@ -931,14 +931,9 @@ impl DbManager {
         if count > 0 {
             return Ok(());
         }
+        // SearXNG 已移除（要自己跑 Docker）。剩下两个都免安装：Brave 需要一个
+        // 免费 Key，DuckDuckGo 免 Key 但只有「即时答案」、不是网页搜索。
         let defaults = [
-            (
-                "sp_searxng",
-                "SearXNG (自建)",
-                "searxng",
-                "",
-                "http://localhost:8080",
-            ),
             ("sp_brave", "Brave Search", "brave", "", ""),
             ("sp_duckduckgo", "DuckDuckGo", "duckduckgo", "", ""),
         ];

@@ -77,8 +77,15 @@ export default defineConfig(async () => ({
       : undefined,
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**", "**/scratch/**"],
+      ignored: ["**/src-tauri/**", "**/scratch/**", "**/.claude/worktrees/**"],
     },
+  },
+
+  // 后台任务会在 `.claude/worktrees/` 下开工作副本——那里有一整份仓库拷贝。
+  // 不排掉的话 vitest 会把副本里的测试也跑一遍：数量翻倍，而且一个过期的
+  // 副本可能为早就改掉的代码报「通过」。
+  test: {
+    exclude: ["**/node_modules/**", "**/dist/**", "**/.claude/worktrees/**"],
   },
 
   // 4. Split large dependencies into separate chunks for better caching & lazy loading

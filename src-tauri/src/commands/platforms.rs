@@ -303,8 +303,14 @@ pub struct PlatformModel {
 #[tauri::command]
 pub fn get_model_platforms(db: State<'_, Arc<DbManager>>) -> Result<Vec<ModelPlatform>, String> {
     let conn = db.get_connection().map_err(|e| e.to_string())?;
+    // 按 priority 降序返回：列表顺序**就是**路由的优先级顺序，用户拖一下就能改。
+    // 以前这里不排序，而 priority 在界面上根本无从设置——同名模型挂在多个平台
+    // 上时，究竟走哪个既看不见也改不了。
     let mut stmt = conn
-        .prepare("SELECT id, name, api_type, api_key, api_address, is_enabled FROM model_platforms")
+        .prepare(
+            "SELECT id, name, api_type, api_key, api_address, is_enabled
+             FROM model_platforms ORDER BY priority DESC, name",
+        )
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |row| {
@@ -501,28 +507,74 @@ pub fn get_active_models(db: State<'_, Arc<DbManager>>) -> Result<Vec<PlatformMo
     Ok(result)
 }
 
-/// Get distinct model names from all enabled platforms.
-/// Used by frontend Select dropdowns for default model selection.
+/// 一个可选的模型。`id` 是 `platform_id:model_name` —— **带平台的唯一标识**。
+///
+/// 以前这里返回 `SELECT DISTINCT model_name`，也就是去重后的裸名字。裸名字不是
+/// 唯一标识：同一个模型名可以注册在多个平台上（比如火山方舟同时配了 OpenAI 兼容
+/// 和 Anthropic 两个入口）。用户在「内置功能默认模型」里选中的裸名字存进
+/// `target_model` 后，网关只能在多个候选平台之间按哈希**静默二选一**，挑中不支持
+/// 该模型的那个就是 `Model does not exist`——而用户在界面上根本没有办法表达他
+/// 指的是哪一个。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AvailableModel {
+    /// `platform_id:model_name`，网关路由本来就认这个格式。
+    pub id: String,
+    pub model_name: String,
+    pub platform_id: String,
+    pub platform_name: String,
+    /// 同名模型在多个已启用平台上出现时为 true —— 界面据此提醒必须选清楚。
+    pub ambiguous: bool,
+}
+
+/// Every model the user can point a built-in feature at, qualified by platform.
 #[tauri::command]
-pub fn get_available_models(db: State<'_, Arc<DbManager>>) -> Result<Vec<String>, String> {
+pub fn get_available_models(db: State<'_, Arc<DbManager>>) -> Result<Vec<AvailableModel>, String> {
+    available_models_core(&db)
+}
+
+fn available_models_core(db: &DbManager) -> Result<Vec<AvailableModel>, String> {
     let conn = db.get_connection().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(
-            "SELECT DISTINCT pm.model_name \
+            "SELECT pm.model_name, pm.platform_id, mp.name \
          FROM platform_models pm \
          JOIN model_platforms mp ON pm.platform_id = mp.id \
          WHERE pm.is_enabled = 1 AND mp.is_enabled = 1 \
-         ORDER BY pm.model_name",
+         ORDER BY pm.model_name, mp.name",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map([], |row| row.get::<_, String>(0))
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
         .map_err(|e| e.to_string())?;
-    let mut result = Vec::new();
-    for r in rows {
-        if let Ok(name) = r {
-            result.push(name);
-        }
+
+    let mut result: Vec<AvailableModel> = rows
+        .flatten()
+        .map(|(model_name, platform_id, platform_name)| AvailableModel {
+            id: format!("{platform_id}:{model_name}"),
+            model_name,
+            platform_id,
+            platform_name,
+            ambiguous: false,
+        })
+        .collect();
+
+    let mut seen: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for model in &result {
+        *seen.entry(model.model_name.as_str()).or_default() += 1;
+    }
+    let duplicated: std::collections::HashSet<String> = seen
+        .into_iter()
+        .filter(|(_, count)| *count > 1)
+        .map(|(name, _)| name.to_string())
+        .collect();
+    for model in &mut result {
+        model.ambiguous = duplicated.contains(&model.model_name);
     }
     Ok(result)
 }
@@ -1469,11 +1521,11 @@ pub async fn check_model_status(
     db: State<'_, Arc<DbManager>>,
     model_id: String,
 ) -> Result<HealthCheckDetail, String> {
-    let (_platform_id, model_name, api_type, api_key, api_address) = {
+    let (platform_id, model_name, api_type, api_address) = {
         let conn = db.get_connection().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
-                "SELECT pm.platform_id, pm.model_name, mp.api_type, mp.api_key, mp.api_address
+                "SELECT pm.platform_id, pm.model_name, mp.api_type, mp.api_address
              FROM platform_models pm
              JOIN model_platforms mp ON pm.platform_id = mp.id
              WHERE pm.id = ?1",
@@ -1485,12 +1537,17 @@ pub async fn check_model_status(
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
             ))
         })
         .map_err(|e| e.to_string())?
     };
-    let api_key = crate::crypto::decrypt(&api_key);
+    // 和网关跑真实请求时用的是同一套解析（活跃 Key 在前）。以前这里只读
+    // `model_platforms.api_key` 旧列，测的 Key 和实际跑的可以不是同一个。
+    let api_key = platform_keys(&db, &platform_id)
+        .0
+        .into_iter()
+        .next()
+        .unwrap_or_default();
 
     // No API Key → skip request, return no_api_key immediately
     if api_type != "ollama" && api_key.trim().is_empty() {
@@ -2064,4 +2121,228 @@ pub fn reveal_platform_api_key(
         )
         .map_err(|e| e.to_string())?;
     Ok(crate::crypto::decrypt(&encrypted))
+}
+
+#[cfg(test)]
+mod available_model_tests {
+    use crate::db::DbManager;
+    use std::sync::Arc;
+
+    fn temp_db(tag: &str) -> (Arc<DbManager>, std::path::PathBuf) {
+        let path = std::env::temp_dir().join(format!(
+            "omnix_avail_{tag}_{}_{}.sqlite",
+            std::process::id(),
+            chrono::Utc::now().timestamp_micros()
+        ));
+        let _ = std::fs::remove_file(&path);
+        (Arc::new(DbManager::new_with_path(path.clone())), path)
+    }
+
+    fn install(db: &DbManager, platform: &str, label: &str, model: &str) {
+        let conn = db.get_connection().expect("db");
+        let _ = conn.execute(
+            "INSERT OR IGNORE INTO model_platforms (id, name, api_type, api_key, api_address, is_enabled)
+             VALUES (?1, ?2, 'openai', 'k', 'http://x', 1)",
+            rusqlite::params![platform, label],
+        );
+        conn.execute(
+            "INSERT INTO platform_models (id, platform_id, model_name, is_enabled)
+             VALUES (?1, ?2, ?3, 1)",
+            rusqlite::params![format!("{platform}:{model}"), platform, model],
+        )
+        .expect("插入模型");
+    }
+
+    /// 同一个模型名注册在两个平台上时，两条都要出现，且都标成 ambiguous。
+    ///
+    /// 原 bug：这里返回 `SELECT DISTINCT model_name`，两个平台合并成一行裸名字。
+    /// 用户选中它存进 `target_model`，网关只能按哈希在两个平台里静默二选一——
+    /// 挑中不支持该模型的那个就是 `Model does not exist`，而用户在界面上根本
+    /// 没有办法表达他指的是哪一个。
+    #[test]
+    fn a_model_name_on_two_platforms_stays_distinguishable() {
+        let (db, path) = temp_db("dup");
+        {
+            let conn = db.get_connection().expect("db");
+            let _ = conn.execute("DELETE FROM platform_models", []);
+            let _ = conn.execute("DELETE FROM model_platforms", []);
+        }
+        install(&db, "ark_openai", "火山方舟(OpenAI 兼容)", "deepseek-v4-pro");
+        install(&db, "ark_anthropic", "火山", "deepseek-v4-pro");
+        install(&db, "ark_openai", "火山方舟(OpenAI 兼容)", "只此一家");
+
+        let models = super::available_models_core(&db).expect("列表");
+
+        let dup: Vec<_> = models.iter().filter(|m| m.model_name == "deepseek-v4-pro").collect();
+        assert_eq!(dup.len(), 2, "两个平台各自一行，不能去重合并：{models:?}");
+        assert!(dup.iter().all(|m| m.ambiguous), "同名的都要标出来：{dup:?}");
+
+        let ids: Vec<&str> = dup.iter().map(|m| m.id.as_str()).collect();
+        assert!(ids.contains(&"ark_openai:deepseek-v4-pro"), "{ids:?}");
+        assert!(ids.contains(&"ark_anthropic:deepseek-v4-pro"), "{ids:?}");
+
+        let unique = models.iter().find(|m| m.model_name == "只此一家").expect("独苗");
+        assert!(!unique.ambiguous, "只在一个平台上的不该被标成有歧义");
+
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// 一个平台可用的 API Key，按使用顺序：活跃的在前。
+///
+/// **这是唯一一处解析 Key 的地方。** 以前有三份各不相同的实现：会话网关读
+/// `platform_api_keys` 新表（回落旧列按逗号切分），legacy 路由只读 `model_platforms.api_key`
+/// 旧列，健康检测也只读旧列。同一个平台两处存的 Key 可以不一样——于是「⚡测试」
+/// 测的 Key 根本不是实际跑的那个，绿灯是假的；页头宣传的「主 Key + 故障切换」
+/// 也只在会话网关那一条路上成立。
+pub fn platform_keys(db: &DbManager, platform_id: &str) -> (Vec<String>, Vec<Option<String>>) {
+    let mut keys = Vec::new();
+    let mut key_ids = Vec::new();
+    let Ok(conn) = db.get_connection() else {
+        return (keys, key_ids);
+    };
+
+    if let Ok(mut statement) = conn.prepare(
+        "SELECT id, encrypted_key FROM platform_api_keys
+         WHERE platform_id = ?1 ORDER BY is_active DESC, created_at ASC",
+    ) {
+        if let Ok(rows) = statement.query_map(params![platform_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        }) {
+            for (id, encrypted) in rows.flatten() {
+                let key = crate::crypto::decrypt(&encrypted);
+                if !key.trim().is_empty() && !keys.contains(&key) {
+                    keys.push(key);
+                    key_ids.push(Some(id));
+                }
+            }
+        }
+    }
+
+    // 旧列作为回落：老配置还没迁到 platform_api_keys，逗号分隔的多 Key 也在这。
+    if keys.is_empty() {
+        if let Ok(legacy) = conn.query_row(
+            "SELECT api_key FROM model_platforms WHERE id = ?1",
+            params![platform_id],
+            |row| row.get::<_, String>(0),
+        ) {
+            for encrypted in legacy.split(',').map(str::trim).filter(|k| !k.is_empty()) {
+                let key = crate::crypto::decrypt(encrypted);
+                if !key.trim().is_empty() && !keys.contains(&key) {
+                    keys.push(key);
+                    key_ids.push(None);
+                }
+            }
+        }
+    }
+    (keys, key_ids)
+}
+
+/// 一行模型在**路由**眼里长什么样。模型中心据此把「会走哪个平台、为什么」
+/// 摆到明面上——以前这些只活在 `proxy.rs` 里，界面一个字都不说。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ModelRouting {
+    /// `platform_models.id`
+    pub model_id: String,
+    pub model_name: String,
+    /// 其它也提供这个模型名的**已启用**平台显示名（不含自己）。
+    pub rival_platforms: Vec<String>,
+    /// 只写裸模型名时，路由当前会选中的平台 id。等于本行所属平台即「当前赢家」。
+    pub winner_platform_id: Option<String>,
+    /// `request_logs` 里这个模型最近一次失败的上游原话。
+    pub last_error: Option<String>,
+    pub last_error_at: Option<String>,
+}
+
+#[tauri::command]
+pub fn get_model_routing(
+    db: State<'_, Arc<DbManager>>,
+    platform_id: String,
+) -> Result<Vec<ModelRouting>, String> {
+    let conn = db.get_connection().map_err(|e| e.to_string())?;
+
+    let mut stmt = conn
+        .prepare("SELECT id, model_name FROM platform_models WHERE platform_id = ?1")
+        .map_err(|e| e.to_string())?;
+    let rows: Vec<(String, String)> = stmt
+        .query_map(params![platform_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|e| e.to_string())?
+        .flatten()
+        .collect();
+
+    let mut result = Vec::new();
+    for (model_id, model_name) in rows {
+        let mut rival_stmt = conn
+            .prepare(
+                "SELECT mp.name FROM platform_models pm
+                 JOIN model_platforms mp ON pm.platform_id = mp.id
+                 WHERE pm.model_name = ?1 AND pm.platform_id != ?2
+                   AND pm.is_enabled = 1 AND mp.is_enabled = 1",
+            )
+            .map_err(|e| e.to_string())?;
+        let rival_platforms: Vec<String> = rival_stmt
+            .query_map(params![model_name, platform_id], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .flatten()
+            .collect();
+
+        // 只有真的存在同名竞争者时才去算赢家——否则这一栏是噪音。
+        let winner_platform_id = if rival_platforms.is_empty() {
+            None
+        } else {
+            crate::proxy::winning_platform_for_model(&db, &model_name)
+        };
+
+        // 最近一次真实失败。这些记录网关早就在写了（`log_failure`），
+        // 只是模型中心一直没读——错误原因就摆在库里，界面却只有一个绿点。
+        let (last_error, last_error_at) = conn
+            .query_row(
+                "SELECT error_message, timestamp FROM request_logs
+                 WHERE is_error = 1 AND (model = ?1 OR model = ?2)
+                 ORDER BY id DESC LIMIT 1",
+                params![model_name, format!("{platform_id}:{model_name}")],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .ok()
+            .map(|(message, at)| (Some(message), Some(at)))
+            .unwrap_or((None, None));
+
+        result.push(ModelRouting {
+            model_id,
+            model_name,
+            rival_platforms,
+            winner_platform_id,
+            last_error,
+            last_error_at,
+        });
+    }
+    Ok(result)
+}
+
+/// 按前端给的顺序重写各平台的 `priority`（第一个最高）。
+///
+/// 路由用 `ORDER BY priority DESC, weight DESC` 在同名模型的多个平台之间决胜负，
+/// 但这个字段以前在界面上完全不可编辑——全都停在默认 0，于是胜负实际由模型名的
+/// 哈希决定：任意、不可见、不可控。列表顺序即优先级，拖一下就定了。
+#[tauri::command]
+pub fn reorder_platforms(
+    db: State<'_, Arc<DbManager>>,
+    ordered_ids: Vec<String>,
+) -> Result<(), String> {
+    let mut conn = db.get_connection().map_err(|e| e.to_string())?;
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let total = ordered_ids.len() as i32;
+    for (index, id) in ordered_ids.iter().enumerate() {
+        tx.execute(
+            "UPDATE model_platforms SET priority = ?1 WHERE id = ?2",
+            params![total - index as i32, id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())
 }

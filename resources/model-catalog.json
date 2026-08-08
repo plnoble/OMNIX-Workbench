@@ -1,0 +1,465 @@
+[
+  {
+    "name": "gemma3:1b",
+    "display_name": "Gemma 3 1B",
+    "size_gb": 0.8,
+    "min_vram_gb": 2.0,
+    "categories": [
+      "通用"
+    ],
+    "quality": 4,
+    "description": "最小的可用模型，核显和老笔记本也能跑",
+    "ollama_cmd": "ollama pull gemma3:1b",
+    "speed_rating": "fast",
+    "family": "Gemma",
+    "generation": 3,
+    "evidence_tier": "BaseModel",
+    "confidence": 0.6,
+    "is_moe": false,
+    "active_params_gb": null
+  },
+  {
+    "name": "qwen3:1.7b",
+    "display_name": "Qwen3 1.7B",
+    "size_gb": 1.4,
+    "min_vram_gb": 3.0,
+    "categories": [
+      "通用",
+      "中文"
+    ],
+    "quality": 5,
+    "description": "千问最小档，中文尚可，适合做本地小工具",
+    "ollama_cmd": "ollama pull qwen3:1.7b",
+    "speed_rating": "fast",
+    "family": "Qwen",
+    "generation": 3,
+    "evidence_tier": "BaseModel",
+    "confidence": 0.6,
+    "is_moe": false,
+    "active_params_gb": null
+  },
+  {
+    "name": "llama3.2:3b",
+    "display_name": "Llama 3.2 3B",
+    "size_gb": 2.0,
+    "min_vram_gb": 4.0,
+    "categories": [
+      "通用",
+      "英文"
+    ],
+    "quality": 5,
+    "description": "Meta 小模型，英文对话流畅",
+    "ollama_cmd": "ollama pull llama3.2:3b",
+    "speed_rating": "fast",
+    "family": "Llama",
+    "generation": 3,
+    "evidence_tier": "BaseModel",
+    "confidence": 0.6,
+    "is_moe": false,
+    "active_params_gb": null
+  },
+  {
+    "name": "qwen3:4b",
+    "display_name": "Qwen3 4B",
+    "size_gb": 2.5,
+    "min_vram_gb": 4.0,
+    "categories": [
+      "通用",
+      "中文",
+      "推理"
+    ],
+    "quality": 7,
+    "description": "小体积里最均衡的一档，带思考模式",
+    "ollama_cmd": "ollama pull qwen3:4b",
+    "speed_rating": "fast",
+    "family": "Qwen",
+    "generation": 3,
+    "evidence_tier": "BaseModel",
+    "confidence": 0.6,
+    "is_moe": false,
+    "active_params_gb": null
+  },
+  {
+    "name": "phi4-mini",
+    "display_name": "Phi-4 Mini",
+    "size_gb": 2.5,
+    "min_vram_gb": 4.0,
+    "categories": [
+      "推理",
+      "代码"
+    ],
+    "quality": 6,
+    "description": "微软小钢炮，数学和推理超出体积预期",
+    "ollama_cmd": "ollama pull phi4-mini",
+    "speed_rating": "fast",
+    "family": "Phi",
+    "generation": 4,
+    "evidence_tier": "BaseModel",
+    "confidence": 0.6,
+    "is_moe": false,
+    "active_params_gb": null
+  },
+  {
+    "name": "gemma3:4b",
+    "display_name": "Gemma 3 4B",
+    "size_gb": 3.3,
+    "min_vram_gb": 5.0,
+    "categories": [
+      "通用",
+      "多模态"
+    ],
+    "quality": 7,
+    "description": "Google Gemma 3，能看图，支持 140+ 语言",
+    "ollama_cmd": "ollama pull gemma3:4b",
+    "speed_rating": "fast",
+    "family": "Gemma",
+    "generation": 3,
+    "evidence_tier": "BaseModel",
+    "confidence": 0.6,
+    "is_moe": false,
+    "active_params_gb": null
+  },
+  {
+    "name": "qwen2.5-coder:7b",
+    "display_name": "Qwen2.5 Coder 7B",
+    "size_gb": 4.7,
+    "min_vram_gb": 6.0,
+    "categories": [
+      "代码"
+    ],
+    "quality": 7,
+    "description": "小显存里最好用的代码补全模型",
+    "ollama_cmd": "ollama pull qwen2.5-coder:7b",
+    "speed_rating": "medium",
+    "family": "Qwen",
+    "generation": 2,
+    "evidence_tier": "Variant",
+    "confidence": 0.7,
+    "is_moe": false,
+    "active_params_gb": null
+  },
+  {
+    "name": "llama3.1:8b",
+    "display_name": "Llama 3.1 8B",
+    "size_gb": 4.7,
+    "min_vram_gb": 6.0,
+    "categories": [
+      "通用",
+      "英文"
+    ],
+    "quality": 7,
+    "description": "Meta Llama 3.1，英文通用老牌选择",
+    "ollama_cmd": "ollama pull llama3.1:8b",
+    "speed_rating": "medium",
+    "family": "Llama",
+    "generation": 3,
+    "evidence_tier": "BaseModel",
+    "confidence": 0.6,
+    "is_moe": false,
+    "active_params_gb": null
+  },
+  {
+    "name": "qwen3:8b",
+    "display_name": "Qwen3 8B",
+    "size_gb": 5.2,
+    "min_vram_gb": 7.0,
+    "categories": [
+      "通用",
+      "中文",
+      "推理"
+    ],
+    "quality": 8,
+    "description": "8GB 显卡上的默认答案，中英都强",
+    "ollama_cmd": "ollama pull qwen3:8b",
+    "speed_rating": "medium",
+    "family": "Qwen",
+    "generation": 3,
+    "evidence_tier": "BaseModel",
+    "confidence": 0.6,
+    "is_moe": false,
+    "active_params_gb": null
+  },
+  {
+    "name": "deepseek-r1:8b",
+    "display_name": "DeepSeek R1 8B",
+    "size_gb": 5.2,
+    "min_vram_gb": 7.0,
+    "categories": [
+      "推理",
+      "代码"
+    ],
+    "quality": 8,
+    "description": "DeepSeek R1 蒸馏版，会写出思维链",
+    "ollama_cmd": "ollama pull deepseek-r1:8b",
+    "speed_rating": "medium",
+    "family": "DeepSeek",
+    "generation": 3,
+    "evidence_tier": "Variant",
+    "confidence": 0.7,
+    "is_moe": false,
+    "active_params_gb": null
+  },
+  {
+    "name": "gemma3:12b",
+    "display_name": "Gemma 3 12B",
+    "size_gb": 8.1,
+    "min_vram_gb": 10.0,
+    "categories": [
+      "通用",
+      "多模态"
+    ],
+    "quality": 8,
+    "description": "能看图的中量级，12GB 显卡刚好",
+    "ollama_cmd": "ollama pull gemma3:12b",
+    "speed_rating": "medium",
+    "family": "Gemma",
+    "generation": 3,
+    "evidence_tier": "BaseModel",
+    "confidence": 0.6,
+    "is_moe": false,
+    "active_params_gb": null
+  },
+  {
+    "name": "deepseek-r1:14b",
+    "display_name": "DeepSeek R1 14B",
+    "size_gb": 9.0,
+    "min_vram_gb": 11.0,
+    "categories": [
+      "推理",
+      "代码"
+    ],
+    "quality": 8,
+    "description": "R1 蒸馏 14B，推理质量明显高过 8B",
+    "ollama_cmd": "ollama pull deepseek-r1:14b",
+    "speed_rating": "slow",
+    "family": "DeepSeek",
+    "generation": 3,
+    "evidence_tier": "Variant",
+    "confidence": 0.7,
+    "is_moe": false,
+    "active_params_gb": null
+  },
+  {
+    "name": "qwen3:14b",
+    "display_name": "Qwen3 14B",
+    "size_gb": 9.3,
+    "min_vram_gb": 12.0,
+    "categories": [
+      "通用",
+      "中文",
+      "代码"
+    ],
+    "quality": 9,
+    "description": "12GB 卡的上限，综合能力接近云端中端模型",
+    "ollama_cmd": "ollama pull qwen3:14b",
+    "speed_rating": "slow",
+    "family": "Qwen",
+    "generation": 3,
+    "evidence_tier": "BaseModel",
+    "confidence": 0.6,
+    "is_moe": false,
+    "active_params_gb": null
+  },
+  {
+    "name": "gpt-oss:20b",
+    "display_name": "GPT-OSS 20B",
+    "size_gb": 13.8,
+    "min_vram_gb": 16.0,
+    "categories": [
+      "通用",
+      "推理",
+      "代码"
+    ],
+    "quality": 9,
+    "description": "OpenAI 开放权重，MoE 每次只激活 3.6B，16GB 内存就能跑得动",
+    "ollama_cmd": "ollama pull gpt-oss:20b",
+    "speed_rating": "medium",
+    "family": "GPT-OSS",
+    "generation": 1,
+    "evidence_tier": "BaseModel",
+    "confidence": 0.6,
+    "is_moe": true,
+    "active_params_gb": 3.6
+  },
+  {
+    "name": "devstral:24b",
+    "display_name": "Devstral 24B",
+    "size_gb": 14.3,
+    "min_vram_gb": 17.0,
+    "categories": [
+      "代码",
+      "智能体"
+    ],
+    "quality": 9,
+    "description": "专为 agent 工作流训练的编码模型，SWE-Bench 成绩是本地模型里最硬的",
+    "ollama_cmd": "ollama pull devstral:24b",
+    "speed_rating": "slow",
+    "family": "Mistral",
+    "generation": 1,
+    "evidence_tier": "Variant",
+    "confidence": 0.7,
+    "is_moe": false,
+    "active_params_gb": null
+  },
+  {
+    "name": "mistral-small3.2:24b",
+    "display_name": "Mistral Small 3.2 24B",
+    "size_gb": 15.2,
+    "min_vram_gb": 18.0,
+    "categories": [
+      "通用",
+      "多模态"
+    ],
+    "quality": 8,
+    "description": "Mistral 中量级，支持图片和函数调用",
+    "ollama_cmd": "ollama pull mistral-small3.2:24b",
+    "speed_rating": "slow",
+    "family": "Mistral",
+    "generation": 3,
+    "evidence_tier": "BaseModel",
+    "confidence": 0.6,
+    "is_moe": false,
+    "active_params_gb": null
+  },
+  {
+    "name": "gemma3:27b",
+    "display_name": "Gemma 3 27B",
+    "size_gb": 17.4,
+    "min_vram_gb": 20.0,
+    "categories": [
+      "通用",
+      "多模态"
+    ],
+    "quality": 9,
+    "description": "Gemma 3 顶配，24GB 卡可用，多模态",
+    "ollama_cmd": "ollama pull gemma3:27b",
+    "speed_rating": "slow",
+    "family": "Gemma",
+    "generation": 3,
+    "evidence_tier": "BaseModel",
+    "confidence": 0.6,
+    "is_moe": false,
+    "active_params_gb": null
+  },
+  {
+    "name": "qwen3-coder:30b",
+    "display_name": "Qwen3 Coder 30B",
+    "size_gb": 18.6,
+    "min_vram_gb": 22.0,
+    "categories": [
+      "代码",
+      "智能体"
+    ],
+    "quality": 9,
+    "description": "MoE 只激活 3.3B，24GB 显卡上性价比最高的代码模型，256K 上下文",
+    "ollama_cmd": "ollama pull qwen3-coder:30b",
+    "speed_rating": "medium",
+    "family": "Qwen",
+    "generation": 3,
+    "evidence_tier": "Variant",
+    "confidence": 0.7,
+    "is_moe": true,
+    "active_params_gb": 3.3
+  },
+  {
+    "name": "deepseek-r1:32b",
+    "display_name": "DeepSeek R1 32B",
+    "size_gb": 19.9,
+    "min_vram_gb": 24.0,
+    "categories": [
+      "推理",
+      "代码"
+    ],
+    "quality": 9,
+    "description": "R1 蒸馏最大档，复杂推理接近原版",
+    "ollama_cmd": "ollama pull deepseek-r1:32b",
+    "speed_rating": "slow",
+    "family": "DeepSeek",
+    "generation": 3,
+    "evidence_tier": "Variant",
+    "confidence": 0.7,
+    "is_moe": false,
+    "active_params_gb": null
+  },
+  {
+    "name": "qwen2.5-coder:32b",
+    "display_name": "Qwen2.5 Coder 32B",
+    "size_gb": 19.9,
+    "min_vram_gb": 24.0,
+    "categories": [
+      "代码"
+    ],
+    "quality": 9,
+    "description": "稠密代码模型的天花板，补全质量极稳",
+    "ollama_cmd": "ollama pull qwen2.5-coder:32b",
+    "speed_rating": "slow",
+    "family": "Qwen",
+    "generation": 2,
+    "evidence_tier": "Variant",
+    "confidence": 0.7,
+    "is_moe": false,
+    "active_params_gb": null
+  },
+  {
+    "name": "qwen3:32b",
+    "display_name": "Qwen3 32B",
+    "size_gb": 20.2,
+    "min_vram_gb": 24.0,
+    "categories": [
+      "通用",
+      "中文",
+      "代码"
+    ],
+    "quality": 9,
+    "description": "千问 32B，24GB 高端消费卡的通用首选",
+    "ollama_cmd": "ollama pull qwen3:32b",
+    "speed_rating": "slow",
+    "family": "Qwen",
+    "generation": 3,
+    "evidence_tier": "BaseModel",
+    "confidence": 0.6,
+    "is_moe": false,
+    "active_params_gb": null
+  },
+  {
+    "name": "llama3.3:70b",
+    "display_name": "Llama 3.3 70B",
+    "size_gb": 42.5,
+    "min_vram_gb": 48.0,
+    "categories": [
+      "通用",
+      "英文"
+    ],
+    "quality": 9,
+    "description": "要双卡或统一内存的大机器，英文能力顶级",
+    "ollama_cmd": "ollama pull llama3.3:70b",
+    "speed_rating": "slow",
+    "family": "Llama",
+    "generation": 3,
+    "evidence_tier": "BaseModel",
+    "confidence": 0.6,
+    "is_moe": false,
+    "active_params_gb": null
+  },
+  {
+    "name": "gpt-oss:120b",
+    "display_name": "GPT-OSS 120B",
+    "size_gb": 65.4,
+    "min_vram_gb": 72.0,
+    "categories": [
+      "通用",
+      "推理",
+      "代码"
+    ],
+    "quality": 10,
+    "description": "OpenAI 开放权重旗舰，MoE 激活 5.1B；需要 80GB 级显存或大统一内存",
+    "ollama_cmd": "ollama pull gpt-oss:120b",
+    "speed_rating": "slow",
+    "family": "GPT-OSS",
+    "generation": 1,
+    "evidence_tier": "BaseModel",
+    "confidence": 0.6,
+    "is_moe": true,
+    "active_params_gb": 5.1
+  }
+]

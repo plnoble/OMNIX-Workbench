@@ -35,8 +35,23 @@ pub struct TemplateSkill {
     pub description: String,
 }
 
-/// Get all built-in agent templates
+/// 内置助手清单。
+///
+/// **只把 `name` / `description` 换成中文，`instructions` 一律保持英文**——模型吃
+/// 英文系统提示更稳，把已经调好的提示词翻成中文等于拿效果冒险；而人挑助手时
+/// 需要看得懂。两者分开，不必二选一。英文原名仍可通过 `slug` 搜到。
 pub fn get_all_templates() -> Vec<AgentTemplate> {
+    let mut all = all_templates_raw();
+    for template in &mut all {
+        if let Some((name_zh, description_zh)) = zh_labels(&template.slug) {
+            template.name = name_zh.to_string();
+            template.description = description_zh.to_string();
+        }
+    }
+    all
+}
+
+fn all_templates_raw() -> Vec<AgentTemplate> {
     vec![
         // ═══ Engineering ═══
         bug_fixer(),
@@ -1831,5 +1846,111 @@ fn weekly_report() -> AgentTemplate {
 
 不要：写成逐条流水账；只报喜不报忧；用模糊措辞（"基本完成""大概"）。"#.into(),
         skills: vec![],
+    }
+}
+
+/// 内置助手的中文显示名与说明，按 slug 索引。
+///
+/// `instructions` **一律保持英文**——模型吃英文系统提示更稳，改成中文等于拿
+/// 已经调好的提示词冒险。而人挑助手时需要看得懂，所以只把 `name`/`description`
+/// 这两个纯展示字段翻过来。集中一张表，不去动那 55 个模板函数。
+///
+/// 本身就是中文的模板（PPT 创作、周报、Git 工作流…）不在表里。
+fn zh_labels(slug: &str) -> Option<(&'static str, &'static str)> {
+    Some(match slug {
+        "bug-fixer" => ("缺陷定位与修复", "顺着报错回溯到根因，再给出最小的修复，而不是掩盖症状。"),
+        "code-reviewer" => ("代码评审", "从正确性、性能、类型安全三方面审代码，给出可直接采用的补丁。"),
+        "frontend-builder" => ("前端实现", "按项目既有约定写 React / TypeScript 组件。"),
+        "frontend-designer" => ("前端设计", "动手写代码前，先把界面布局和组件结构定下来。"),
+        "commit-message" => ("提交信息撰写", "从 diff 生成符合 Conventional Commits 规范的提交信息。"),
+        "pr-description" => ("PR 描述撰写", "从分支 diff 生成完整的 Pull Request 描述。"),
+        "release-notes" => ("发版说明生成", "从两个 ref 之间的 git 历史生成变更日志。"),
+        "adr-writer" => ("架构决策记录", "按 MADR 格式写架构决策记录（ADR）。"),
+        "rca-writer" => ("故障复盘报告", "为线上事故写根因分析（RCA）报告。"),
+        "code-explainer" => ("代码讲解", "用大白话把复杂代码讲清楚，配例子。"),
+        "webapp-tester" => ("端到端测试", "用 Playwright 一类工具写并跑 E2E 测试。"),
+        "prd-drafter" => ("需求文档起草", "把一句话的想法展开成完整的产品需求文档。"),
+        "prd-critic" => ("需求文档评审", "审 PRD 的完整性、歧义和漏掉的边界情况。"),
+        "okr-drafter" => ("OKR 起草", "把团队讨论整理成目标与关键结果。"),
+        "one-pager" => ("一页纸方案", "把项目提案压缩成一页纸。"),
+        "user-story-writer" => ("用户故事撰写", "写结构完整、带验收标准的用户故事。"),
+        "brainstormer" => ("头脑风暴主持", "主持结构化的发散讨论与创意生成。"),
+        "summarizer" => ("长文摘要", "从长文档里提炼关键信息，压成简明摘要。"),
+        "email-reply" => ("邮件回复起草", "按上下文和你要的语气起草专业邮件回复。"),
+        "writing-critic" => ("文稿评审", "从清晰度、简洁度和冲击力三方面审文稿。"),
+        "jd-writer" => ("职位描述撰写", "写清楚、无偏见的职位描述。"),
+        "ux-copywriter" => ("界面文案", "写按钮、标签、提示这类界面文案，简洁准确。"),
+        "html-slides" => ("HTML 幻灯片", "用 HTML/CSS（reveal.js 风格）做演示幻灯。"),
+        "tutor" => ("苏格拉底式讲师", "用追问和引导式例子教概念，不直接给答案。"),
+        "docker-expert" => ("Docker 专家", "写并优化 Dockerfile、docker-compose 和容器编排配置。"),
+        "cicd-builder" => ("CI/CD 流水线", "为 GitHub Actions / GitLab CI / Jenkins 设计并编写流水线。"),
+        "infra-auditor" => ("基础设施审计", "审 Terraform / K8s / Docker 配置的安全与成本问题。"),
+        "log-analyzer" => ("日志分析", "从应用日志里找错误、规律和异常。"),
+        "sql-expert" => ("SQL 专家", "跨 PostgreSQL / MySQL / SQLite 写、优化和讲解 SQL。"),
+        "data-analyst" => ("数据分析", "分析数据集，找出规律并给出可落地的结论。"),
+        "etl-designer" => ("数据管道设计", "设计数据抽取、转换、加载（ETL）管道。"),
+        "api-tester" => ("接口测试", "写覆盖正常路径、边界和异常场景的接口测试。"),
+        "security-auditor" => ("安全审计", "按 OWASP Top 10 审代码的注入、XSS、鉴权等漏洞。"),
+        "dependency-scanner" => ("依赖扫描", "查项目依赖里的已知漏洞和过期包。"),
+        "concept-explainer" => ("概念讲解", "用类比和逐层递进把复杂技术概念讲明白。"),
+        "study-planner" => ("学习计划", "为技术主题制定带里程碑和资料的学习计划。"),
+        "quiz-generator" => ("测验生成", "生成技术测验和记忆卡片，用于检验掌握程度。"),
+        "travel-planner" => ("行程规划", "规划行程，含预算、交通和本地推荐。"),
+        "recipe-creator" => ("菜谱生成", "按现有食材、饮食限制和厨艺水平出菜谱。"),
+        "fitness-coach" => ("健身教练", "按目标和体能水平定训练计划并指导动作。"),
+        "prompt-optimizer" => ("提示词优化", "把 AI 提示词改得更清晰、更具体，输出质量更稳。"),
+        "architecture-advisor" => ("架构顾问", "给系统架构建议、权衡分析和设计推荐。"),
+        "tech-writer" => ("技术文档撰写", "写技术文档、API 文档和开发者指南。"),
+        "git-expert" => ("Git 专家", "处理复杂 Git 操作：变基、拣选、二分查找、改写历史。"),
+        "regex-builder" => ("正则构造", "按需求构造正则表达式并逐段讲清楚。"),
+        _ => return None,
+    })
+}
+
+/// 用户在本机隐藏掉的内置助手（slug 列表）。
+///
+/// 内置助手是编译进二进制的，**每次更新都会原样回来**。用户删掉一个却在下次
+/// 更新后又看见它，是个很烦的事。隐藏名单存在本机 `settings` 里，不随版本走，
+/// 也不会被更新覆盖。
+pub const HIDDEN_TEMPLATES_KEY: &str = "hidden_builtin_assistants";
+
+#[cfg(test)]
+mod zh_label_tests {
+    use super::*;
+
+    /// 内置助手的展示名必须是中文——用户挑助手时得看得懂选的是什么。
+    #[test]
+    fn builtin_assistants_are_labelled_in_chinese() {
+        let english_only: Vec<String> = get_all_templates()
+            .into_iter()
+            .filter(|t| !t.name.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)))
+            .map(|t| format!("{} ({})", t.slug, t.name))
+            .collect();
+        assert!(
+            english_only.is_empty(),
+            "这些内置助手还是纯英文名，用户看不懂：{english_only:?}",
+        );
+    }
+
+    /// 反面：`instructions` 必须**保持英文**。模型吃英文系统提示更稳，
+    /// 把已经调好的提示词翻成中文等于拿效果冒险。
+    #[test]
+    fn instructions_stay_in_english() {
+        for template in get_all_templates() {
+            // 本来就是中文的那批模板（PPT 创作、周报…）不在此列。
+            if zh_labels(&template.slug).is_none() {
+                continue;
+            }
+            let chinese_chars = template
+                .instructions
+                .chars()
+                .filter(|c| ('\u{4e00}'..='\u{9fff}').contains(c))
+                .count();
+            assert!(
+                chinese_chars < 20,
+                "{} 的 instructions 被翻成中文了（{chinese_chars} 个汉字）——只该翻展示名",
+                template.slug,
+            );
+        }
     }
 }

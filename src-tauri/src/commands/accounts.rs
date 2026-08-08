@@ -171,6 +171,26 @@ pub fn list_agent_upstream_accounts(
         }
     }
 
+    // Grok 的凭据归它自己的 CLI（`~/.grok/auth.json`，xAI 官方流程、自动续期），
+    // 既不在 `oauth_accounts` 也不在 `agent_accounts`。以前这两张表都查不到它，
+    // 于是「认证中心明明显示已登录」而「智能体页说没有可用上游」——同一件事
+    // 两个页面给出相反的答案。这里如实把它列出来：它是 CLI 自管的，不参与切换。
+    if agent_name.eq_ignore_ascii_case("Grok Build") || agent_name.eq_ignore_ascii_case("grok") {
+        let auth_file = crate::commands::grok_auth_file();
+        let signed_in = std::fs::metadata(&auth_file).is_ok_and(|meta| meta.len() > 0);
+        if signed_in {
+            out.push(UpstreamAccountOption {
+                account_ref: "cli:grok".into(),
+                kind: "cli".into(),
+                label: "Grok 账号（CLI 自管）".into(),
+                provider: Some("xAI".into()),
+                expired: false,
+                // CLI 自己持有令牌，OMNIX 换不了也不需要换——它始终是生效的那个。
+                is_active: true,
+            });
+        }
+    }
+
     // This agent's api-key accounts.
     if let Ok(mut stmt) = conn.prepare(
         "SELECT id, account_name FROM agent_accounts WHERE agent_name = ?1 ORDER BY updated_at DESC",

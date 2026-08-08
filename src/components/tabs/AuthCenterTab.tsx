@@ -242,112 +242,126 @@ export function AuthCenterTab() {
           </span>
         </div>
 
-        {/* Login buttons */}
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          {PROVIDERS.map((provider) => (
-            <div key={provider.id} className="rounded-lg border border-border glass-surface p-4">
-              <div className="text-sm font-semibold">{provider.name}</div>
-              <p className="mt-1 mb-3 text-xs leading-5 text-muted-foreground">{provider.hint}</p>
-              <Button
-                size="sm"
-                variant="outline"
-                className="w-full"
-                disabled={busy === provider.id}
-                onClick={() => void beginLogin(provider.id)}
-              >
-                <ExternalLink className="h-4 w-4" /> 登录并授权
-              </Button>
-            </div>
-          ))}
-        </div>
-
-        {/* Grok — the CLI owns its own credentials, so this drives xAI's device-code
-            flow rather than storing a token in OMNIX. */}
-        <div className="rounded-lg border border-border glass-surface p-4">
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-semibold">Grok 账号</span>
-              {grok && (
-                <span
-                  className={cn(
-                    "rounded border px-1.5 py-0.5 text-[11px]",
-                    grok.signed_in
-                      ? "border-success/40 bg-success/10 text-success"
-                      : "border-border bg-muted/20 text-muted-foreground",
-                  )}
-                >
-                  {grok.signed_in ? "已登录" : "未登录"}
-                </span>
-              )}
-            </div>
-            <div className="flex gap-2">
-              {grok?.signed_in && (
-                <Button size="sm" variant="ghost" disabled={grokBusy} onClick={() => void grokLogout()}>
-                  <LogOut className="h-4 w-4" /> 退出登录
-                </Button>
-              )}
-              {grokBusy ? (
-                // Available for the whole flow, not just after the code lands —
-                // fetching the device code can itself hang or rate-limit.
-                <Button size="sm" variant="outline" onClick={() => void grokCancel()}>
-                  取消
-                </Button>
-              ) : (
+        {/* 登录卡片。四家统一成同一形状：名字 + 状态徽章 + 定高说明 + 底部对齐的
+            按钮。以前三家 OAuth 挤在一个 grid 里、说明长短不一导致高矮不齐，
+            Grok 又是下面另起的整块，四张卡长得都不一样。 */}
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          {PROVIDERS.map((provider) => {
+            const connected = accounts.filter((a) => a.provider === provider.id);
+            return (
+              <div key={provider.id} className="flex flex-col rounded-lg border border-border glass-surface p-4">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="text-sm font-semibold">{provider.name}</div>
+                  <span
+                    className={cn(
+                      "shrink-0 rounded border px-1.5 py-0.5 text-[11px]",
+                      connected.length > 0
+                        ? "border-success/40 bg-success/10 text-success"
+                        : "border-border bg-muted/20 text-muted-foreground",
+                    )}
+                  >
+                    {connected.length > 0 ? `已连接 ${connected.length}` : "未连接"}
+                  </span>
+                </div>
+                {/* 定高：说明长短不一时卡片不会一高一矮。 */}
+                <p className="mt-1 mb-3 line-clamp-2 h-10 text-xs leading-5 text-muted-foreground" title={provider.hint}>
+                  {provider.hint}
+                </p>
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={!grok?.cli_installed}
-                  onClick={() => void grokLogin()}
+                  className="mt-auto w-full"
+                  disabled={busy === provider.id}
+                  onClick={() => void beginLogin(provider.id)}
                 >
                   <ExternalLink className="h-4 w-4" />
-                  {grok?.signed_in ? "重新登录" : "登录 grok.com 账号"}
+                  {connected.length > 0 ? "再连一个账号" : "登录并授权"}
                 </Button>
+              </div>
+            );
+          })}
+
+          {/* Grok 用同一张卡的形状，但走的是 xAI 自己的设备码流程：令牌归它的 CLI
+              所有（`~/.grok/auth.json`，自动续期），OMNIX 不保存也不接触。 */}
+          <div className="flex flex-col rounded-lg border border-border glass-surface p-4">
+            <div className="flex items-start justify-between gap-2">
+              <div className="text-sm font-semibold">Grok</div>
+              <span
+                className={cn(
+                  "shrink-0 rounded border px-1.5 py-0.5 text-[11px]",
+                  grok?.signed_in
+                    ? "border-success/40 bg-success/10 text-success"
+                    : "border-border bg-muted/20 text-muted-foreground",
+                )}
+              >
+                {grok?.signed_in ? "已登录" : "未登录"}
+              </span>
+            </div>
+            <p className="mt-1 mb-3 line-clamp-2 h-10 text-xs leading-5 text-muted-foreground"
+               title={grok && !grok.cli_installed
+                 ? "还没装 Grok Build CLI，先到「智能体」页安装。"
+                 : "由 Grok CLI 自己完成登录，令牌存在它的 auth.json 里并自动续期——OMNIX 不保存，所以不出现在下方账号列表。"}>
+              {grok && !grok.cli_installed
+                ? "还没装 Grok Build CLI，先到「智能体」页安装。"
+                : "登录由 Grok CLI 自己完成，令牌它自己保管并续期，OMNIX 不接触。"}
+            </p>
+            <div className="mt-auto flex gap-2">
+              {grokBusy ? (
+                <Button size="sm" variant="outline" className="w-full" onClick={() => void grokCancel()}>
+                  取消
+                </Button>
+              ) : (
+                <>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="flex-1"
+                    disabled={!grok?.cli_installed}
+                    onClick={() => void grokLogin()}
+                  >
+                    <ExternalLink className="h-4 w-4" />
+                    {grok?.signed_in ? "重新登录" : "登录"}
+                  </Button>
+                  {grok?.signed_in && (
+                    <Button size="sm" variant="ghost" disabled={grokBusy} onClick={() => void grokLogout()} title="退出登录">
+                      <LogOut className="h-4 w-4" />
+                    </Button>
+                  )}
+                </>
               )}
             </div>
           </div>
-
-          <p className="mt-1 text-xs leading-5 text-muted-foreground">
-            {grok && !grok.cli_installed
-              ? "还没装 Grok Build CLI，先到「智能体」页安装。"
-              : "登录由 Grok CLI 自己完成（xAI 官方流程），令牌存在它自己的 auth.json 里并自动续期——OMNIX 不接触你的密码，也不保存 Grok 令牌，所以这里不像上面那样列出账号。"}
-          </p>
-
-          {grok && !grok.signed_in && (grok.api_key_in_omnix || grok.api_key_env) && (
-            <p className="mt-2 text-xs leading-5 text-muted-foreground">
-              也可以不登录：检测到{grok.api_key_in_omnix ? "「模型中心」里已配置 xAI API Key" : " XAI_API_KEY 环境变量"}，
-              Grok 会在没有会话令牌时用它兜底。登录后会话令牌优先。
-            </p>
-          )}
-
-          {grokPrompt && (
-            <div className="mt-3 rounded-lg border border-primary/40 bg-primary/5 p-3">
-              <p className="text-xs leading-5 text-muted-foreground">
-                浏览器已打开 xAI 确认页（链接里已带确认码）。核对页面上的码与下面一致后确认登录。
-                只确认你自己发起的登录，不要把这个码给别人。
-              </p>
-              <div className="mt-2 flex flex-wrap items-center gap-3">
-                <span className="rounded border border-border bg-background px-3 py-1 font-mono text-base tracking-widest">
-                  {grokPrompt.code || "（见下方输出）"}
-                </span>
-                <button className="text-xs text-primary underline" onClick={() => void openUrl(grokPrompt.url)}>
-                  没自动打开？点这里
-                </button>
-                <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-                  <Loader2 className="h-3 w-3 animate-spin" /> 等待你在浏览器里确认…
-                </span>
-              </div>
-            </div>
-          )}
-
-          {grokLog && (
-            <pre
-              ref={grokLogRef}
-              className="mt-3 max-h-32 overflow-y-auto whitespace-pre-wrap rounded-lg border border-border bg-background p-2 font-mono text-[11px] leading-5 text-muted-foreground"
-            >
-              {grokLog}
-            </pre>
-          )}
         </div>
+
+        {/* Grok 登录进行中的提示码与输出 */}
+        {grokPrompt && (
+        <div className="mt-3 rounded-lg border border-primary/40 bg-primary/5 p-3">
+        <p className="text-xs leading-5 text-muted-foreground">
+        浏览器已打开 xAI 确认页（链接里已带确认码）。核对页面上的码与下面一致后确认登录。
+        只确认你自己发起的登录，不要把这个码给别人。
+        </p>
+        <div className="mt-2 flex flex-wrap items-center gap-3">
+        <span className="rounded border border-border bg-background px-3 py-1 font-mono text-base tracking-widest">
+        {grokPrompt.code || "（见下方输出）"}
+        </span>
+        <button className="text-xs text-primary underline" onClick={() => void openUrl(grokPrompt.url)}>
+        没自动打开？点这里
+        </button>
+        <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+        <Loader2 className="h-3 w-3 animate-spin" /> 等待你在浏览器里确认…
+        </span>
+        </div>
+        </div>
+        )}
+
+        {grokLog && (
+        <pre
+        ref={grokLogRef}
+        className="mt-3 max-h-32 overflow-y-auto whitespace-pre-wrap rounded-lg border border-border bg-background p-2 font-mono text-[11px] leading-5 text-muted-foreground"
+        >
+        {grokLog}
+        </pre>
+        )}
 
         {/* Paste-code step */}
         {pending && (
@@ -388,11 +402,31 @@ export function AuthCenterTab() {
         {/* Account cards */}
         <div>
           <div className="mb-2 text-sm font-semibold">已连接账号</div>
-          {accounts.length === 0 ? (
-            <div className="rounded-lg border border-dashed border-border py-8 text-center text-sm text-muted-foreground">
-              还没有连接任何订阅账号。
+
+          {/* Grok 的令牌归它自己的 CLI，不在 `oauth_accounts` 里——以前这里就
+              什么都不显示，于是「上面说已登录、下面说没有账号」自相矛盾。 */}
+          {grok?.signed_in && (
+            <div className="mb-2 flex items-center gap-3 rounded-lg border border-border p-3">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-cyan-500/15">
+                <Terminal className="h-4 w-4 text-cyan-500" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-medium">Grok 账号</div>
+                <div className="truncate text-xs text-muted-foreground">
+                  xAI · 令牌由 Grok CLI 自己保管并续期（{grok.auth_file}）
+                </div>
+              </div>
+              <span className="shrink-0 rounded border border-cyan-500/40 bg-cyan-500/10 px-1.5 py-0.5 text-[11px] text-cyan-500">
+                CLI 自管
+              </span>
             </div>
-          ) : (
+          )}
+
+          {accounts.length === 0 && !grok?.signed_in ? (
+            <div className="rounded-lg border border-dashed border-border py-8 text-center text-sm text-muted-foreground">
+              还没有连接任何账号。
+            </div>
+          ) : accounts.length === 0 ? null : (
             <div className="space-y-2">
               {accounts.map((account) => (
                 <div key={account.id} className="flex items-center gap-3 rounded-lg border border-border p-3">

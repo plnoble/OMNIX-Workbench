@@ -1,8 +1,9 @@
 /**
  * StorageLocationsCard — 存储位置中心 (R1)。
  *
- * 备份/导出/技能中央库/Agent 安装目录都可以指到任意盘（比如 D:），
- * 不再默认塞满 C 盘的 ~/.omnix。技能中央库走「迁移」（搬文件+改索引）。
+ * 备份/导出/技能中央库/笔记/Agent 安装目录都可以指到任意盘（比如 D:），
+ * 不再默认塞满 C 盘的 ~/.omnix。技能中央库走「迁移」（搬文件+改索引）；
+ * 笔记的正本在 SQLite、磁盘上只是镜像，换目录后后端会把镜像重写一遍。
  */
 import { useCallback, useEffect, useState } from "react";
 import { FolderOpen, HardDrive, Loader2, RotateCcw } from "lucide-react";
@@ -45,6 +46,9 @@ export function StorageLocationsCard() {
         toast.success(`${loc.label} 已改为 ${dir}`);
         if (loc.key === "sandbox_dir") {
           toast.info("新装的 Agent 会装到新目录；已装的不受影响，可在「智能体→安装管理」里统一重装");
+        }
+        if (loc.key === "storage_notes_dir") {
+          toast.info("已把全部笔记重新镜像到新目录。旧目录里的 .md 文件保留在原地，可自行删除。");
         }
       }
       void load();

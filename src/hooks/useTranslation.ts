@@ -39,7 +39,7 @@ export interface UseTranslationReturn {
   translationHistory: TranslateHistoryEntry[];
 
   // Actions
-  translate: (text: string, targetLang?: string) => Promise<string | null>;
+  translate: (text: string, targetLang?: string, explicitSource?: string) => Promise<string | null>;
   detectLanguage: (text: string) => Promise<string>;
   loadTranslationSettings: () => Promise<void>;
   saveTranslationSettings: (updates: Partial<{
@@ -76,6 +76,8 @@ export function useTranslation(): UseTranslationReturn {
   const translate = useCallback(async (
     text: string,
     explicitTarget?: string,
+    /** 用户在界面上直接指定了源语言（翻译页的选择器）。给了就不再检测。 */
+    explicitSource?: string,
   ): Promise<string | null> => {
     if (!text.trim()) return null;
     setIsTranslating(true);
@@ -83,9 +85,12 @@ export function useTranslation(): UseTranslationReturn {
     setTranslatedText("");
 
     try {
-      // 1. Detect source language if auto-detect is on
+      // 1. 源语言：用户明确指定就用它；否则按设置决定要不要检测。
       let sourceLang = "unknown";
-      if (autoDetect) {
+      if (explicitSource && explicitSource !== "auto") {
+        sourceLang = explicitSource;
+        setDetectedLang(sourceLang);
+      } else if (autoDetect) {
         sourceLang = await detectLanguageInternal(text);
         setDetectedLang(sourceLang);
       }

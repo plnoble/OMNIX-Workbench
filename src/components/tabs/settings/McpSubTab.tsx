@@ -6,14 +6,19 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
-import { Edit, ExternalLink, Key, Plug, Plus, Save, Store, Trash2 } from "lucide-react";
+import { Edit, ExternalLink, Globe, Key, Plug, Plus, Save, Store, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/sonner";
-import { mcpSyncApi } from "@/lib/tauri-api";
+import { mcpApi, mcpSyncApi } from "@/lib/tauri-api";
 import type { AgentMcpState } from "@/lib/tauri-api";
+import { DEFAULT_PROXY_PORT } from "@/lib/constants";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { McpServer } from "@/types";
 import type { SettingsTabProps } from "./types";
+
+/** OMNIX 自己的 MCP 端点。名字写死，撤销和「已挂上」的判断都靠它对齐。 */
+const SELF_MCP_NAME = "omnix";
+const SELF_MCP_URL = `http://127.0.0.1:${DEFAULT_PROXY_PORT}/mcp`;
 
 export function McpSubTab({
   mcpServers,
@@ -30,6 +35,7 @@ export function McpSubTab({
   const [agentStates, setAgentStates] = useState<AgentMcpState[]>([]);
   const [syncBusy, setSyncBusy] = useState("");
   const [importBusy, setImportBusy] = useState("");
+  const [selfBusy, setSelfBusy] = useState(false);
   const loadAgentStates = () => mcpSyncApi.getAgentStates().then(setAgentStates).catch(() => {});
   useEffect(() => { loadAgentStates(); }, []);
 
@@ -70,6 +76,58 @@ export function McpSubTab({
     }
   };
 
+  // OMNIX 把自己挂到各 Agent 上。
+  //
+  // 网关早就在 /mcp 上暴露了技能库、出片、团队板和联网搜索/抓取，但要用上得先
+  // 手动新增一条 HTTP MCP、把地址抄对、再点同步——三步里错一步就没反应。这里
+  // 一键做完：建行（按名字幂等）→ 同步 → 刷新状态。
+  const selfServer = mcpServers.find((s) => s.name === SELF_MCP_NAME);
+  const selfSyncedTo = SYNC_TARGETS.filter((agent) => isSynced(SELF_MCP_NAME, agent));
+
+  const attachSelf = async () => {
+    setSelfBusy(true);
+    try {
+      const id = selfServer?.id ?? `mcp_omnix_self`;
+      await mcpApi.save({
+        id,
+        name: SELF_MCP_NAME,
+        command: "",
+        args: "[]",
+        env: "{}",
+        url: SELF_MCP_URL,
+        server_type: "http",
+        is_enabled: true,
+      });
+      const reports = await mcpSyncApi.syncToAgents(SYNC_TARGETS, [id]);
+      await Promise.all([loadAgentStates(), onReloadMcpServers?.()]);
+      const skipped = reports.flatMap((r) => r.skipped);
+      toast.success("OMNIX 已挂到各 Agent", {
+        description: skipped.length
+          ? `跳过：${skipped.join("；")}`
+          : "重启对应 CLI 后即可使用 web_search / fetch_url 等工具",
+      });
+    } catch (error) {
+      toast.error(`挂载失败：${error}`);
+    } finally {
+      setSelfBusy(false);
+    }
+  };
+
+  const detachSelf = async () => {
+    setSelfBusy(true);
+    try {
+      for (const agent of selfSyncedTo) {
+        await mcpSyncApi.removeFromAgent(agent, SELF_MCP_NAME);
+      }
+      await loadAgentStates();
+      toast.success("已从各 Agent 撤下 OMNIX");
+    } catch (error) {
+      toast.error(`撤销失败：${error}`);
+    } finally {
+      setSelfBusy(false);
+    }
+  };
+
   const unsyncServer = async (server: McpServer, agent: string) => {
     setSyncBusy(server.id);
     try {
@@ -85,6 +143,52 @@ export function McpSubTab({
 
   return (
     <div className="flex flex-col gap-4 max-w-4xl mx-auto">
+      {/* ── 把 OMNIX 自己挂给 Agent ─────────────────────── */}
+      <Card>
+        <CardHeader className="flex-row items-center justify-between">
+          <div className="min-w-0">
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <Globe className="h-4 w-4 text-primary" /> 给 Agent 装上 OMNIX 的联网与技能
+            </CardTitle>
+            <p className="mt-1 text-xs leading-5 text-muted-foreground">
+              挂上之后，Claude Code / Codex 等在<strong>任何地方</strong>都能调 OMNIX 的工具：
+              <code className="mx-1">web_search</code> 联网搜、
+              <code className="mx-1">fetch_url</code> 读网页正文，外加技能库、出片、团队看板。
+              联网走的是「搜索」页那份供应商配置——那里测通了这里就能用。
+            </p>
+          </div>
+          <Button
+            size="sm"
+            variant={selfSyncedTo.length > 0 ? "outline" : "default"}
+            disabled={selfBusy}
+            onClick={() => (selfSyncedTo.length > 0 ? detachSelf() : attachSelf())}
+          >
+            <Plug className="h-3 w-3" />
+            {selfBusy ? "处理中…" : selfSyncedTo.length > 0 ? "撤下" : "一键挂上"}
+          </Button>
+        </CardHeader>
+        <CardContent className="flex flex-wrap items-center gap-2">
+          <code className="rounded bg-muted/40 px-2 py-0.5 text-[11px] text-muted-foreground">{SELF_MCP_URL}</code>
+          {SYNC_TARGETS.map((agent) => {
+            const on = selfSyncedTo.includes(agent);
+            return (
+              <span
+                key={agent}
+                className={cn(
+                  "rounded border px-1.5 py-0.5 text-[10px]",
+                  on ? "border-success/40 text-success" : "border-border text-muted-foreground opacity-60"
+                )}
+              >
+                {agentLabel(agent)} {on ? "✓" : "—"}
+              </span>
+            );
+          })}
+          <span className="text-[11px] text-muted-foreground">
+            Codex 的 config.toml 目前只吃 stdio 的 MCP，这条 HTTP 会被跳过。挂完要重启对应 CLI 才生效。
+          </span>
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader className="flex-row justify-between items-center mb-4">
           <div>

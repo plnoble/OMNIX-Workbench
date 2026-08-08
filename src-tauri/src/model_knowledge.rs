@@ -240,57 +240,136 @@ fn detect_ram_mb() -> u32 {
 // Model Database with Evidence Grading
 // ══════════════════════════════════════════════════
 
+/// 远程目录的默认地址。放 GitHub raw，改模型不用发版。
+const REMOTE_CATALOG_URL: &str =
+    "https://raw.githubusercontent.com/plnoble/OMNIX-Workbench/master/resources/model-catalog.json";
+
+/// 缓存下来的远程目录（进程内）。`None` = 还没拉过或拉失败。
+static REMOTE_CATALOG: std::sync::OnceLock<std::sync::RwLock<Option<Vec<ModelEntry>>>> =
+    std::sync::OnceLock::new();
+
+fn remote_catalog() -> &'static std::sync::RwLock<Option<Vec<ModelEntry>>> {
+    REMOTE_CATALOG.get_or_init(|| std::sync::RwLock::new(None))
+}
+
+/// 拉一次远程目录。失败**不报错**——内置副本永远兜底，离线照样能用。
+///
+/// 目录以前是硬编码的，加一个模型要发一次版。搬到可远程更新的 JSON 之后，
+/// 维护那个文件就够了；而内置那份仍然完整保留，网络不通时表现和以前一模一样。
+pub async fn refresh_remote_catalog(url: Option<&str>) -> Result<usize, String> {
+    let url = url.unwrap_or(REMOTE_CATALOG_URL);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let response = client.get(url).send().await.map_err(|e| {
+        format!("拉取模型目录失败：{}", crate::proxy::describe_request_error(&e))
+    })?;
+    if !response.status().is_success() {
+        return Err(format!("模型目录返回 {}", response.status()));
+    }
+    let entries: Vec<ModelEntry> = response
+        .json()
+        .await
+        .map_err(|e| format!("模型目录格式不对：{e}"))?;
+    if entries.is_empty() {
+        return Err("远程目录是空的，保留内置副本".into());
+    }
+    let count = entries.len();
+    if let Ok(mut slot) = remote_catalog().write() {
+        *slot = Some(entries);
+    }
+    Ok(count)
+}
+
+/// 当前生效的模型目录：远程拉到了就用远程的，否则用内置副本。
 pub fn get_model_database() -> Vec<ModelEntry> {
+    if let Ok(slot) = remote_catalog().read() {
+        if let Some(entries) = slot.as_ref() {
+            return entries.clone();
+        }
+    }
+    builtin_model_database()
+}
+
+/// 内置副本。远程拉不到时的兜底，也是远程 JSON 的格式样板。
+///
+/// 每一条的 tag 和体积都是**对着 Ollama registry 核过的**（
+/// `registry.ollama.ai/v2/library/<名>/manifests/<档>`，体积取 model 层的字节数），
+/// 不是照着印象写的。上一版里的 `phi-4:4b` 就不存在——registry 返回 404，点下载
+/// 只会失败。
+fn builtin_model_database() -> Vec<ModelEntry> {
     vec![
-        // ── Small models (2-5GB) ──
+        // ── 极小：核显 / 老笔记本 ──
         ModelEntry {
-            name: "qwen2.5:3b".into(), display_name: "Qwen 2.5 3B".into(),
-            size_gb: 2.0, min_vram_gb: 4.0,
-            categories: vec!["通用".into(), "中文".into()],
-            quality: 6, description: "通义千问轻量版，中文对话能力不错".into(),
-            ollama_cmd: "ollama pull qwen2.5:3b".into(), speed_rating: "fast".into(),
-            family: "Qwen".into(), generation: 2,
+            name: "gemma3:1b".into(), display_name: "Gemma 3 1B".into(),
+            size_gb: 0.8, min_vram_gb: 2.0,
+            categories: vec!["通用".into()],
+            quality: 4, description: "最小的可用模型，核显和老笔记本也能跑".into(),
+            ollama_cmd: "ollama pull gemma3:1b".into(), speed_rating: "fast".into(),
+            family: "Gemma".into(), generation: 3,
             evidence_tier: EvidenceTier::BaseModel, confidence: 0.6,
             is_moe: false, active_params_gb: None,
         },
         ModelEntry {
-            name: "phi-4:4b".into(), display_name: "Phi-4 4B".into(),
+            name: "qwen3:1.7b".into(), display_name: "Qwen3 1.7B".into(),
+            size_gb: 1.4, min_vram_gb: 3.0,
+            categories: vec!["通用".into(), "中文".into()],
+            quality: 5, description: "千问最小档，中文尚可，适合做本地小工具".into(),
+            ollama_cmd: "ollama pull qwen3:1.7b".into(), speed_rating: "fast".into(),
+            family: "Qwen".into(), generation: 3,
+            evidence_tier: EvidenceTier::BaseModel, confidence: 0.6,
+            is_moe: false, active_params_gb: None,
+        },
+        // ── 小：4GB 显存 ──
+        ModelEntry {
+            name: "llama3.2:3b".into(), display_name: "Llama 3.2 3B".into(),
+            size_gb: 2.0, min_vram_gb: 4.0,
+            categories: vec!["通用".into(), "英文".into()],
+            quality: 5, description: "Meta 小模型，英文对话流畅".into(),
+            ollama_cmd: "ollama pull llama3.2:3b".into(), speed_rating: "fast".into(),
+            family: "Llama".into(), generation: 3,
+            evidence_tier: EvidenceTier::BaseModel, confidence: 0.6,
+            is_moe: false, active_params_gb: None,
+        },
+        ModelEntry {
+            name: "qwen3:4b".into(), display_name: "Qwen3 4B".into(),
+            size_gb: 2.5, min_vram_gb: 4.0,
+            categories: vec!["通用".into(), "中文".into(), "推理".into()],
+            quality: 7, description: "小体积里最均衡的一档，带思考模式".into(),
+            ollama_cmd: "ollama pull qwen3:4b".into(), speed_rating: "fast".into(),
+            family: "Qwen".into(), generation: 3,
+            evidence_tier: EvidenceTier::BaseModel, confidence: 0.6,
+            is_moe: false, active_params_gb: None,
+        },
+        ModelEntry {
+            name: "phi4-mini".into(), display_name: "Phi-4 Mini".into(),
             size_gb: 2.5, min_vram_gb: 4.0,
             categories: vec!["推理".into(), "代码".into()],
-            quality: 7, description: "微软 Phi-4，推理能力强".into(),
-            ollama_cmd: "ollama pull phi-4:4b".into(), speed_rating: "fast".into(),
+            quality: 6, description: "微软小钢炮，数学和推理超出体积预期".into(),
+            ollama_cmd: "ollama pull phi4-mini".into(), speed_rating: "fast".into(),
             family: "Phi".into(), generation: 4,
             evidence_tier: EvidenceTier::BaseModel, confidence: 0.6,
             is_moe: false, active_params_gb: None,
         },
         ModelEntry {
             name: "gemma3:4b".into(), display_name: "Gemma 3 4B".into(),
-            size_gb: 3.0, min_vram_gb: 5.0,
+            size_gb: 3.3, min_vram_gb: 5.0,
             categories: vec!["通用".into(), "多模态".into()],
-            quality: 7, description: "Google Gemma 3，支持图片理解".into(),
+            quality: 7, description: "Google Gemma 3，能看图，支持 140+ 语言".into(),
             ollama_cmd: "ollama pull gemma3:4b".into(), speed_rating: "fast".into(),
             family: "Gemma".into(), generation: 3,
             evidence_tier: EvidenceTier::BaseModel, confidence: 0.6,
             is_moe: false, active_params_gb: None,
         },
-        // ── Medium models (5-10GB) ──
+        // ── 中：6-8GB 显存 ──
         ModelEntry {
-            name: "qwen2.5:7b".into(), display_name: "Qwen 2.5 7B".into(),
+            name: "qwen2.5-coder:7b".into(), display_name: "Qwen2.5 Coder 7B".into(),
             size_gb: 4.7, min_vram_gb: 6.0,
-            categories: vec!["通用".into(), "中文".into(), "代码".into()],
-            quality: 8, description: "通义千问 7B，性价比最高".into(),
-            ollama_cmd: "ollama pull qwen2.5:7b".into(), speed_rating: "medium".into(),
+            categories: vec!["代码".into()],
+            quality: 7, description: "小显存里最好用的代码补全模型".into(),
+            ollama_cmd: "ollama pull qwen2.5-coder:7b".into(), speed_rating: "medium".into(),
             family: "Qwen".into(), generation: 2,
-            evidence_tier: EvidenceTier::BaseModel, confidence: 0.6,
-            is_moe: false, active_params_gb: None,
-        },
-        ModelEntry {
-            name: "deepseek-r1:8b".into(), display_name: "DeepSeek R1 8B".into(),
-            size_gb: 4.9, min_vram_gb: 6.0,
-            categories: vec!["推理".into(), "代码".into()],
-            quality: 8, description: "DeepSeek R1 蒸馏版，思维链推理".into(),
-            ollama_cmd: "ollama pull deepseek-r1:8b".into(), speed_rating: "medium".into(),
-            family: "DeepSeek".into(), generation: 3,
             evidence_tier: EvidenceTier::Variant, confidence: 0.7,
             is_moe: false, active_params_gb: None,
         },
@@ -298,43 +377,164 @@ pub fn get_model_database() -> Vec<ModelEntry> {
             name: "llama3.1:8b".into(), display_name: "Llama 3.1 8B".into(),
             size_gb: 4.7, min_vram_gb: 6.0,
             categories: vec!["通用".into(), "英文".into()],
-            quality: 7, description: "Meta Llama 3.1 8B，英文通用".into(),
+            quality: 7, description: "Meta Llama 3.1，英文通用老牌选择".into(),
             ollama_cmd: "ollama pull llama3.1:8b".into(), speed_rating: "medium".into(),
             family: "Llama".into(), generation: 3,
             evidence_tier: EvidenceTier::BaseModel, confidence: 0.6,
             is_moe: false, active_params_gb: None,
         },
-        // ── Large models (10-20GB) ──
         ModelEntry {
-            name: "qwen2.5:14b".into(), display_name: "Qwen 2.5 14B".into(),
-            size_gb: 8.9, min_vram_gb: 12.0,
-            categories: vec!["通用".into(), "中文".into(), "代码".into()],
-            quality: 9, description: "通义千问 14B，接近 GPT-4 水平".into(),
-            ollama_cmd: "ollama pull qwen2.5:14b".into(), speed_rating: "slow".into(),
-            family: "Qwen".into(), generation: 2,
+            name: "qwen3:8b".into(), display_name: "Qwen3 8B".into(),
+            size_gb: 5.2, min_vram_gb: 7.0,
+            categories: vec!["通用".into(), "中文".into(), "推理".into()],
+            quality: 8, description: "8GB 显卡上的默认答案，中英都强".into(),
+            ollama_cmd: "ollama pull qwen3:8b".into(), speed_rating: "medium".into(),
+            family: "Qwen".into(), generation: 3,
             evidence_tier: EvidenceTier::BaseModel, confidence: 0.6,
             is_moe: false, active_params_gb: None,
         },
         ModelEntry {
-            name: "deepseek-coder-v2:16b".into(), display_name: "DeepSeek Coder V2 16B".into(),
-            size_gb: 9.0, min_vram_gb: 12.0,
-            categories: vec!["代码".into()],
-            quality: 9, description: "DeepSeek 代码专精模型".into(),
-            ollama_cmd: "ollama pull deepseek-coder-v2:16b".into(), speed_rating: "slow".into(),
-            family: "DeepSeek".into(), generation: 2,
+            name: "deepseek-r1:8b".into(), display_name: "DeepSeek R1 8B".into(),
+            size_gb: 5.2, min_vram_gb: 7.0,
+            categories: vec!["推理".into(), "代码".into()],
+            quality: 8, description: "DeepSeek R1 蒸馏版，会写出思维链".into(),
+            ollama_cmd: "ollama pull deepseek-r1:8b".into(), speed_rating: "medium".into(),
+            family: "DeepSeek".into(), generation: 3,
             evidence_tier: EvidenceTier::Variant, confidence: 0.7,
-            is_moe: true, active_params_gb: Some(2.4),
+            is_moe: false, active_params_gb: None,
         },
-        // ── Very large models (20GB+) ──
+        // ── 中大：10-12GB 显存 ──
         ModelEntry {
-            name: "qwen2.5:32b".into(), display_name: "Qwen 2.5 32B".into(),
-            size_gb: 20.0, min_vram_gb: 24.0,
-            categories: vec!["通用".into(), "中文".into(), "代码".into()],
-            quality: 9, description: "通义千问 32B，高端消费级显卡可用".into(),
-            ollama_cmd: "ollama pull qwen2.5:32b".into(), speed_rating: "slow".into(),
-            family: "Qwen".into(), generation: 2,
+            name: "gemma3:12b".into(), display_name: "Gemma 3 12B".into(),
+            size_gb: 8.1, min_vram_gb: 10.0,
+            categories: vec!["通用".into(), "多模态".into()],
+            quality: 8, description: "能看图的中量级，12GB 显卡刚好".into(),
+            ollama_cmd: "ollama pull gemma3:12b".into(), speed_rating: "medium".into(),
+            family: "Gemma".into(), generation: 3,
             evidence_tier: EvidenceTier::BaseModel, confidence: 0.6,
             is_moe: false, active_params_gb: None,
+        },
+        ModelEntry {
+            name: "deepseek-r1:14b".into(), display_name: "DeepSeek R1 14B".into(),
+            size_gb: 9.0, min_vram_gb: 11.0,
+            categories: vec!["推理".into(), "代码".into()],
+            quality: 8, description: "R1 蒸馏 14B，推理质量明显高过 8B".into(),
+            ollama_cmd: "ollama pull deepseek-r1:14b".into(), speed_rating: "slow".into(),
+            family: "DeepSeek".into(), generation: 3,
+            evidence_tier: EvidenceTier::Variant, confidence: 0.7,
+            is_moe: false, active_params_gb: None,
+        },
+        ModelEntry {
+            name: "qwen3:14b".into(), display_name: "Qwen3 14B".into(),
+            size_gb: 9.3, min_vram_gb: 12.0,
+            categories: vec!["通用".into(), "中文".into(), "代码".into()],
+            quality: 9, description: "12GB 卡的上限，综合能力接近云端中端模型".into(),
+            ollama_cmd: "ollama pull qwen3:14b".into(), speed_rating: "slow".into(),
+            family: "Qwen".into(), generation: 3,
+            evidence_tier: EvidenceTier::BaseModel, confidence: 0.6,
+            is_moe: false, active_params_gb: None,
+        },
+        // ── 大：16-24GB 显存 ──
+        ModelEntry {
+            name: "gpt-oss:20b".into(), display_name: "GPT-OSS 20B".into(),
+            size_gb: 13.8, min_vram_gb: 16.0,
+            categories: vec!["通用".into(), "推理".into(), "代码".into()],
+            quality: 9, description: "OpenAI 开放权重，MoE 每次只激活 3.6B，16GB 内存就能跑得动".into(),
+            ollama_cmd: "ollama pull gpt-oss:20b".into(), speed_rating: "medium".into(),
+            family: "GPT-OSS".into(), generation: 1,
+            evidence_tier: EvidenceTier::BaseModel, confidence: 0.6,
+            is_moe: true, active_params_gb: Some(3.6),
+        },
+        ModelEntry {
+            name: "devstral:24b".into(), display_name: "Devstral 24B".into(),
+            size_gb: 14.3, min_vram_gb: 17.0,
+            categories: vec!["代码".into(), "智能体".into()],
+            quality: 9, description: "专为 agent 工作流训练的编码模型，SWE-Bench 成绩是本地模型里最硬的".into(),
+            ollama_cmd: "ollama pull devstral:24b".into(), speed_rating: "slow".into(),
+            family: "Mistral".into(), generation: 1,
+            evidence_tier: EvidenceTier::Variant, confidence: 0.7,
+            is_moe: false, active_params_gb: None,
+        },
+        ModelEntry {
+            name: "mistral-small3.2:24b".into(), display_name: "Mistral Small 3.2 24B".into(),
+            size_gb: 15.2, min_vram_gb: 18.0,
+            categories: vec!["通用".into(), "多模态".into()],
+            quality: 8, description: "Mistral 中量级，支持图片和函数调用".into(),
+            ollama_cmd: "ollama pull mistral-small3.2:24b".into(), speed_rating: "slow".into(),
+            family: "Mistral".into(), generation: 3,
+            evidence_tier: EvidenceTier::BaseModel, confidence: 0.6,
+            is_moe: false, active_params_gb: None,
+        },
+        ModelEntry {
+            name: "gemma3:27b".into(), display_name: "Gemma 3 27B".into(),
+            size_gb: 17.4, min_vram_gb: 20.0,
+            categories: vec!["通用".into(), "多模态".into()],
+            quality: 9, description: "Gemma 3 顶配，24GB 卡可用，多模态".into(),
+            ollama_cmd: "ollama pull gemma3:27b".into(), speed_rating: "slow".into(),
+            family: "Gemma".into(), generation: 3,
+            evidence_tier: EvidenceTier::BaseModel, confidence: 0.6,
+            is_moe: false, active_params_gb: None,
+        },
+        ModelEntry {
+            name: "qwen3-coder:30b".into(), display_name: "Qwen3 Coder 30B".into(),
+            size_gb: 18.6, min_vram_gb: 22.0,
+            categories: vec!["代码".into(), "智能体".into()],
+            quality: 9, description: "MoE 只激活 3.3B，24GB 显卡上性价比最高的代码模型，256K 上下文".into(),
+            ollama_cmd: "ollama pull qwen3-coder:30b".into(), speed_rating: "medium".into(),
+            family: "Qwen".into(), generation: 3,
+            evidence_tier: EvidenceTier::Variant, confidence: 0.7,
+            is_moe: true, active_params_gb: Some(3.3),
+        },
+        ModelEntry {
+            name: "deepseek-r1:32b".into(), display_name: "DeepSeek R1 32B".into(),
+            size_gb: 19.9, min_vram_gb: 24.0,
+            categories: vec!["推理".into(), "代码".into()],
+            quality: 9, description: "R1 蒸馏最大档，复杂推理接近原版".into(),
+            ollama_cmd: "ollama pull deepseek-r1:32b".into(), speed_rating: "slow".into(),
+            family: "DeepSeek".into(), generation: 3,
+            evidence_tier: EvidenceTier::Variant, confidence: 0.7,
+            is_moe: false, active_params_gb: None,
+        },
+        ModelEntry {
+            name: "qwen2.5-coder:32b".into(), display_name: "Qwen2.5 Coder 32B".into(),
+            size_gb: 19.9, min_vram_gb: 24.0,
+            categories: vec!["代码".into()],
+            quality: 9, description: "稠密代码模型的天花板，补全质量极稳".into(),
+            ollama_cmd: "ollama pull qwen2.5-coder:32b".into(), speed_rating: "slow".into(),
+            family: "Qwen".into(), generation: 2,
+            evidence_tier: EvidenceTier::Variant, confidence: 0.7,
+            is_moe: false, active_params_gb: None,
+        },
+        ModelEntry {
+            name: "qwen3:32b".into(), display_name: "Qwen3 32B".into(),
+            size_gb: 20.2, min_vram_gb: 24.0,
+            categories: vec!["通用".into(), "中文".into(), "代码".into()],
+            quality: 9, description: "千问 32B，24GB 高端消费卡的通用首选".into(),
+            ollama_cmd: "ollama pull qwen3:32b".into(), speed_rating: "slow".into(),
+            family: "Qwen".into(), generation: 3,
+            evidence_tier: EvidenceTier::BaseModel, confidence: 0.6,
+            is_moe: false, active_params_gb: None,
+        },
+        // ── 超大：需要专业卡或大统一内存 ──
+        ModelEntry {
+            name: "llama3.3:70b".into(), display_name: "Llama 3.3 70B".into(),
+            size_gb: 42.5, min_vram_gb: 48.0,
+            categories: vec!["通用".into(), "英文".into()],
+            quality: 9, description: "要双卡或统一内存的大机器，英文能力顶级".into(),
+            ollama_cmd: "ollama pull llama3.3:70b".into(), speed_rating: "slow".into(),
+            family: "Llama".into(), generation: 3,
+            evidence_tier: EvidenceTier::BaseModel, confidence: 0.6,
+            is_moe: false, active_params_gb: None,
+        },
+        ModelEntry {
+            name: "gpt-oss:120b".into(), display_name: "GPT-OSS 120B".into(),
+            size_gb: 65.4, min_vram_gb: 72.0,
+            categories: vec!["通用".into(), "推理".into(), "代码".into()],
+            quality: 10, description: "OpenAI 开放权重旗舰，MoE 激活 5.1B；需要 80GB 级显存或大统一内存".into(),
+            ollama_cmd: "ollama pull gpt-oss:120b".into(), speed_rating: "slow".into(),
+            family: "GPT-OSS".into(), generation: 1,
+            evidence_tier: EvidenceTier::BaseModel, confidence: 0.6,
+            is_moe: true, active_params_gb: Some(5.1),
         },
     ]
 }
@@ -352,6 +552,40 @@ pub struct ModelRecommendation {
     pub install_cmd: String,
     pub effective_quality: f32,
     pub confidence_label: String,
+}
+
+/// 为「本机已装、但目录里没有」的模型造一条记录。
+///
+/// 用户自己 `ollama pull` 过的东西不该在这一页凭空消失。体积和显存需求未知，
+/// 标成「已安装」并给最高证据等级——它就在这台机器上跑着，这是最硬的证据。
+pub fn entry_for_installed(name: &str, _hw: &HardwareInfo) -> ModelRecommendation {
+    let model = ModelEntry {
+        name: name.to_string(),
+        display_name: name.to_string(),
+        size_gb: 0.0,
+        min_vram_gb: 0.0,
+        categories: vec!["本机已装".into()],
+        quality: 0,
+        description: "本机已经装了这个模型（不在推荐目录里）。".into(),
+        ollama_cmd: format!("ollama pull {name}"),
+        speed_rating: "unknown".into(),
+        family: "local".into(),
+        generation: 0,
+        evidence_tier: EvidenceTier::Direct,
+        confidence: 1.0,
+        is_moe: false,
+        active_params_gb: None,
+    };
+    ModelRecommendation {
+        install_cmd: model.ollama_cmd.clone(),
+        confidence_label: format!("{} {}", model.evidence_tier.icon(), model.evidence_tier.label()),
+        model,
+        // 已经跑在这台机器上了，不必再判断跑不跑得动。
+        fits_vram: true,
+        fits_ram: true,
+        overall_fit: "perfect".to_string(),
+        effective_quality: 0.0,
+    }
 }
 
 pub fn recommend_models(hw: &HardwareInfo) -> Vec<ModelRecommendation> {
@@ -403,4 +637,164 @@ pub fn recommend_for_gpu(gpu_name: &str) -> Result<Vec<ModelRecommendation>, Str
         os: "Simulation".into(),
     };
     Ok(recommend_models(&hw))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 目录里每一条都要能装。「本地模型选型」的下载按钮就是从 `ollama_cmd`
+    /// 里抠出模型标签的——缺一条就是一个点不动的按钮。
+    #[test]
+    fn every_model_carries_a_usable_install_command() {
+        for model in get_model_database() {
+            assert!(
+                model.ollama_cmd.starts_with("ollama pull "),
+                "{} 没有可用的安装命令：{:?}",
+                model.name,
+                model.ollama_cmd
+            );
+            let tag = model.ollama_cmd.trim_start_matches("ollama pull ").trim();
+            assert!(!tag.is_empty(), "{} 的安装命令没带模型标签", model.name);
+            assert!(
+                !tag.contains(' '),
+                "{} 的标签含空格，前端抠出来会是半截：{tag}",
+                model.name
+            );
+        }
+    }
+
+    /// 显存要求不能是 0——那会让「跑不动」的判断永远为假，推荐一台机器根本
+    /// 带不动的模型。
+    #[test]
+    fn every_model_declares_a_memory_requirement() {
+        for model in get_model_database() {
+            assert!(model.min_vram_gb > 0.0, "{} 没写显存需求", model.name);
+            assert!(model.size_gb > 0.0, "{} 没写体积", model.name);
+            // 权重之外还要放 KV cache 和上下文。显存需求不高于体积，就等于
+            // 把「刚好装不下」判成「能跑」。
+            assert!(
+                model.min_vram_gb > model.size_gb,
+                "{} 的显存需求（{}）不比体积（{}）大，留不出上下文的余量",
+                model.name,
+                model.min_vram_gb,
+                model.size_gb
+            );
+        }
+    }
+
+    /// 安装命令里的标签必须和 `name` 一模一样。
+    ///
+    /// 两处分别写就会分叉：界面上显示的是 `name`，实际下载的是 `ollama_cmd` 里
+    /// 那个标签，对不上时用户装到的和他挑的不是同一个模型。
+    #[test]
+    fn the_install_tag_is_the_model_name_itself() {
+        for model in get_model_database() {
+            let tag = model.ollama_cmd.trim_start_matches("ollama pull ").trim();
+            assert_eq!(tag, model.name, "{} 的安装标签和名字对不上", model.display_name);
+        }
+    }
+
+    /// 目录里的每个标签在 Ollama registry 上真的存在吗？
+    ///
+    /// 这个必须联网，所以默认不跑（`cargo test --lib -- --ignored`）。加它的原因
+    /// 是上一版目录里躺着 `phi-4:4b`——registry 返回 404，那一条从写下来起就只能
+    /// 下载失败，而任何离线检查都发现不了。
+    #[tokio::test]
+    #[ignore = "要联网：核对每个 tag 在 Ollama registry 上确实存在"]
+    async fn every_tag_exists_on_the_ollama_registry() {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(20))
+            .build()
+            .expect("client");
+        let mut missing = Vec::new();
+        for model in builtin_model_database() {
+            let (name, tag) = model.name.split_once(':').unwrap_or((&model.name, "latest"));
+            let url = format!("https://registry.ollama.ai/v2/library/{name}/manifests/{tag}");
+            match client.get(&url).send().await {
+                Ok(response) if response.status().is_success() => {}
+                Ok(response) => missing.push(format!("{} → {}", model.name, response.status())),
+                Err(error) => missing.push(format!("{} → 请求失败 {error}", model.name)),
+            }
+        }
+        assert!(missing.is_empty(), "这些标签在 Ollama 上不存在：{missing:#?}");
+    }
+
+    /// 显卡数据库拿来做「换张卡能跑什么」的模拟，显存为 0 的条目会让模拟结果
+    /// 全是「跑不动」。
+    #[test]
+    fn the_gpu_database_is_usable_for_simulation() {
+        let gpus = get_gpu_database();
+        assert!(!gpus.is_empty(), "显卡库是空的，模拟功能没有可选项");
+        for gpu in &gpus {
+            assert!(gpu.vram_mb > 0, "{} 显存为 0", gpu.name);
+        }
+        // 随便挑一张卡，模拟必须能出结果。
+        let sample = &gpus[0];
+        let recs = recommend_for_gpu(&sample.name).expect("已知显卡应当能模拟");
+        assert!(!recs.is_empty(), "{} 模拟不出任何推荐", sample.name);
+    }
+}
+
+#[cfg(test)]
+mod catalog_tests {
+    use super::*;
+
+    /// 远程目录必须能被内置副本原样表达——否则「远程 JSON」这条路是假的：
+    /// 格式对不上，拉回来也解析不了。这条同时把 `resources/model-catalog.json`
+    /// 的内容钉死为内置副本的序列化结果。
+    #[test]
+    fn the_builtin_catalog_round_trips_through_the_remote_json_shape() {
+        let builtin = builtin_model_database();
+        let json = serde_json::to_string(&builtin).expect("内置目录应当可序列化");
+        let parsed: Vec<ModelEntry> =
+            serde_json::from_str(&json).expect("远程目录用的就是这个形状");
+        assert_eq!(parsed.len(), builtin.len());
+        assert_eq!(parsed[0].name, builtin[0].name);
+        assert_eq!(parsed[0].ollama_cmd, builtin[0].ollama_cmd);
+    }
+
+    /// 仓库里那份 JSON 样板要和内置副本一致，否则第一次远程更新就会让用户
+    /// 看到一份和内置不同的目录，而没人知道差在哪。
+    #[test]
+    fn the_shipped_json_matches_the_builtin_catalog() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("项目根")
+            .join("resources/model-catalog.json");
+        let raw = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("读不到 {}：{e}", path.display()));
+        let shipped: Vec<ModelEntry> =
+            serde_json::from_str(&raw).expect("样板 JSON 应当能解析成 ModelEntry");
+        let builtin = builtin_model_database();
+        assert_eq!(
+            shipped.len(),
+            builtin.len(),
+            "样板 JSON 和内置目录条数对不上，远程更新会悄悄换掉用户看到的列表"
+        );
+        for (a, b) in shipped.iter().zip(builtin.iter()) {
+            assert_eq!(a.name, b.name);
+            assert_eq!(a.ollama_cmd, b.ollama_cmd);
+        }
+    }
+}
+
+#[cfg(test)]
+mod catalog_export {
+    use super::*;
+
+    /// 从内置副本导出 `resources/model-catalog.json`。
+    /// 改了内置目录之后跑一次：`cargo test --lib export_catalog -- --ignored`
+    #[test]
+    #[ignore = "手动跑：改完内置目录后重新导出样板 JSON"]
+    fn export_catalog() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("项目根")
+            .join("resources/model-catalog.json");
+        std::fs::create_dir_all(path.parent().expect("resources 目录")).expect("建目录");
+        let json = serde_json::to_string_pretty(&builtin_model_database()).expect("序列化");
+        std::fs::write(&path, format!("{json}\n")).expect("写入");
+        println!("已导出 {}", path.display());
+    }
 }

@@ -1,4 +1,6 @@
 use tauri::{AppHandle, Emitter, State};
+use tokio::io::AsyncBufReadExt;
+use crate::proc::NoWindow;
 use std::sync::Arc;
 use std::path::PathBuf;
 use std::fs;
@@ -328,11 +330,30 @@ pub async fn send_ntfy_notification(
 // Cookbook Model Recommendation
 // ══════════════════════════════════════════════════
 
-/// Detect hardware and recommend models that fit
+/// 检测硬件并给出推荐。
+///
+/// 先尝试刷新远程目录（失败静默，内置副本兜底），再把**本机已装但不在目录里**
+/// 的 Ollama 模型并进来——用户自己 pull 过的东西不该在这一页凭空消失。
 #[tauri::command]
-pub fn get_model_recommendations() -> serde_json::Value {
+pub async fn get_model_recommendations() -> serde_json::Value {
+    // 拉不到就用内置副本，不打断这次请求。
+    if let Err(error) = crate::model_knowledge::refresh_remote_catalog(None).await {
+        log::debug!("模型目录用内置副本：{error}");
+    }
+
     let hw = crate::model_knowledge::detect_hardware();
-    let recommendations = crate::model_knowledge::recommend_models(&hw);
+    let mut recommendations = crate::model_knowledge::recommend_models(&hw);
+
+    let known: std::collections::HashSet<String> = recommendations
+        .iter()
+        .map(|r| r.model.name.clone())
+        .collect();
+    for installed in list_installed_ollama_models().await.unwrap_or_default() {
+        if !known.contains(&installed) {
+            recommendations.push(crate::model_knowledge::entry_for_installed(&installed, &hw));
+        }
+    }
+
     serde_json::json!({
         "hardware": hw,
         "recommendations": recommendations,
@@ -551,27 +572,160 @@ pub fn apply_api_preset(
 // Architecture Knowledge Graph
 // ══════════════════════════════════════════════════
 
-/// Build architecture graph for a project directory
-#[tauri::command]
-pub fn build_architecture_graph(project_path: String) -> Result<crate::code_graph::ArchitectureGraph, String> {
-    crate::code_graph::build_graph(&project_path)
+
+
+
+// ══════════════════════════════════════════════════
+// 本地模型下载（ollama pull）
+// ══════════════════════════════════════════════════
+
+/// 正在跑的 `ollama pull`，按模型名索引，用来取消。
+static PULLING: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<()>>>,
+> = std::sync::OnceLock::new();
+
+fn pulling() -> &'static std::sync::Mutex<
+    std::collections::HashMap<String, tokio::sync::oneshot::Sender<()>>,
+> {
+    PULLING.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
-/// Save architecture graph to disk
+/// 下载一个本地模型。
+///
+/// 「本地模型选型」以前只会给建议——看得到、装不了，用户还得自己开终端敲
+/// `ollama pull`。这里把最后一步补上：跑真正的拉取，进度按行推给前端，可中途取消。
+///
+/// 进度事件：`local-model-pull`，payload `{ model, line, done, ok }`。
 #[tauri::command]
-pub fn save_architecture_graph(graph: crate::code_graph::ArchitectureGraph) -> Result<String, String> {
-    crate::code_graph::save_graph(&graph)
+pub async fn pull_local_model(app: tauri::AppHandle, model: String) -> Result<(), String> {
+    crate::input_validation::validate_path_component(&model.replace(':', "_"), "模型名")
+        .map_err(|_| format!("模型名不合法：{model}"))?;
+
+    {
+        let guard = pulling().lock().map_err(|_| "内部状态锁失败".to_string())?;
+        if guard.contains_key(&model) {
+            return Err(format!("{model} 正在下载中"));
+        }
+    }
+
+    let mut child = tokio::process::Command::new("ollama")
+        .arg("pull")
+        .arg(&model)
+        .no_window()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            format!("启动 ollama 失败（本机可能没装 Ollama）：{error}")
+        })?;
+
+    let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
+    {
+        let mut guard = pulling().lock().map_err(|_| "内部状态锁失败".to_string())?;
+        guard.insert(model.clone(), cancel_tx);
+    }
+
+    // ollama 把进度写在 stderr（回车刷新的进度条），stdout 只有零星几行。
+    //
+    // `lines()` 只按 `\n` 切，而进度条整段刷新都靠 `\r`——所以一「行」里可能塞着
+    // 几十个历史状态，直接发给前端会显示成一条几百字的乱码。只取最后一段：
+    // 那就是**当前**进度。
+    let emit = |app: &tauri::AppHandle, model: &str, line: String| {
+        let current = line.rsplit('\r').find(|s| !s.trim().is_empty()).unwrap_or("").trim();
+        if current.is_empty() {
+            return;
+        }
+        let _ = app.emit(
+            "local-model-pull",
+            serde_json::json!({ "model": model, "line": current, "done": false, "ok": false }),
+        );
+    };
+    for pipe in [child.stdout.take().map(Either::Out), child.stderr.take().map(Either::Err)]
+        .into_iter()
+        .flatten()
+    {
+        let app = app.clone();
+        let model = model.clone();
+        tokio::spawn(async move {
+            match pipe {
+                Either::Out(out) => {
+                    let mut lines = tokio::io::BufReader::new(out).lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        emit(&app, &model, line);
+                    }
+                }
+                Either::Err(err) => {
+                    let mut lines = tokio::io::BufReader::new(err).lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        emit(&app, &model, line);
+                    }
+                }
+            }
+        });
+    }
+
+    let status = tokio::select! {
+        result = child.wait() => result.map_err(|e| e.to_string())?,
+        _ = &mut cancel_rx => {
+            let _ = child.kill().await;
+            pulling().lock().ok().map(|mut g| g.remove(&model));
+            let _ = app.emit(
+                "local-model-pull",
+                serde_json::json!({ "model": model, "line": "已取消", "done": true, "ok": false }),
+            );
+            return Err("已取消".into());
+        }
+    };
+
+    pulling().lock().ok().map(|mut g| g.remove(&model));
+    let ok = status.success();
+    let _ = app.emit(
+        "local-model-pull",
+        serde_json::json!({
+            "model": model,
+            "line": if ok { "下载完成" } else { "下载失败" },
+            "done": true,
+            "ok": ok,
+        }),
+    );
+    if ok { Ok(()) } else { Err(format!("ollama pull {model} 失败")) }
 }
 
-/// Load a saved architecture graph
-#[tauri::command]
-pub fn load_architecture_graph(project_name: String) -> Result<crate::code_graph::ArchitectureGraph, String> {
-    crate::code_graph::load_graph(&project_name)
+enum Either {
+    Out(tokio::process::ChildStdout),
+    Err(tokio::process::ChildStderr),
 }
 
-/// Get .omnixignore patterns for a project
+/// 取消一个正在跑的下载。
 #[tauri::command]
-pub fn get_ignore_patterns(project_path: String) -> Vec<String> {
-    let path = PathBuf::from(&project_path);
-    crate::code_graph::load_omnixignore(&path)
+pub fn cancel_local_model_pull(model: String) -> Result<(), String> {
+    let mut guard = pulling().lock().map_err(|_| "内部状态锁失败".to_string())?;
+    match guard.remove(&model) {
+        Some(tx) => {
+            let _ = tx.send(());
+            Ok(())
+        }
+        None => Err(format!("{model} 没有在下载")),
+    }
+}
+
+/// 本机 Ollama 已经装了哪些模型——推荐列表据此标出「已安装」。
+#[tauri::command]
+pub async fn list_installed_ollama_models() -> Result<Vec<String>, String> {
+    let output = tokio::process::Command::new("ollama")
+        .arg("list")
+        .no_window()
+        .output()
+        .await
+        .map_err(|error| format!("ollama 不可用：{error}"))?;
+    if !output.status.success() {
+        return Err("ollama list 执行失败".into());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .skip(1) // 表头
+        .filter_map(|line| line.split_whitespace().next())
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .collect())
 }

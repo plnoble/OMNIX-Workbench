@@ -44,7 +44,7 @@ pub struct GrokAuthStatus {
     pub api_key_in_omnix: bool,
 }
 
-fn grok_auth_file() -> PathBuf {
+pub(crate) fn grok_auth_file() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_default()
         .join(".grok")

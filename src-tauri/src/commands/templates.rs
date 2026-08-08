@@ -11,10 +11,56 @@ use super::*;
 // Agent Template Commands
 // ══════════════════════════════════════════════════
 
-/// Get all built-in agent templates
+/// 读取本机隐藏的内置助手 slug 列表。
+fn hidden_slugs(db: &DbManager) -> Vec<String> {
+    db.get_setting(crate::agent_templates::HIDDEN_TEMPLATES_KEY)
+        .ok()
+        .flatten()
+        .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
+        .unwrap_or_default()
+}
+
+/// 内置助手清单，已剔除用户在本机隐藏的那些。
 #[tauri::command]
-pub fn get_agent_templates() -> Vec<AgentTemplate> {
+pub fn get_agent_templates(db: State<'_, Arc<DbManager>>) -> Vec<AgentTemplate> {
+    let hidden = hidden_slugs(&db);
     get_all_templates()
+        .into_iter()
+        .filter(|t| !hidden.contains(&t.slug))
+        .collect()
+}
+
+/// 在本机隐藏 / 恢复一个内置助手。
+///
+/// 内置助手是编译进二进制的，删不掉——用户删了一个，下次更新它又原样回来。
+/// 隐藏名单存在本机 `settings` 表里，**不随版本走，也不会被更新覆盖**。
+#[tauri::command]
+pub fn set_builtin_assistant_hidden(
+    db: State<'_, Arc<DbManager>>,
+    slug: String,
+    hidden: bool,
+) -> Result<(), String> {
+    let mut list = hidden_slugs(&db);
+    if hidden {
+        if !list.contains(&slug) {
+            list.push(slug);
+        }
+    } else {
+        list.retain(|s| s != &slug);
+    }
+    let encoded = serde_json::to_string(&list).map_err(|e| e.to_string())?;
+    db.set_setting(crate::agent_templates::HIDDEN_TEMPLATES_KEY, &encoded)
+        .map_err(|e| e.to_string())
+}
+
+/// 本机隐藏了哪些内置助手（供「恢复」入口显示）。
+#[tauri::command]
+pub fn list_hidden_builtin_assistants(db: State<'_, Arc<DbManager>>) -> Vec<AgentTemplate> {
+    let hidden = hidden_slugs(&db);
+    get_all_templates()
+        .into_iter()
+        .filter(|t| hidden.contains(&t.slug))
+        .collect()
 }
 
 /// Get a specific template by slug

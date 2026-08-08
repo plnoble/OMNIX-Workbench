@@ -3,7 +3,6 @@ mod agent;
 mod agent_templates;
 mod backup;
 mod circuit_breaker;
-mod code_graph;
 mod commands;
 mod crypto;
 mod db;
@@ -12,7 +11,6 @@ mod event_bus;
 mod hash;
 mod input_validation;
 mod knowledge;
-mod local_models;
 mod media;
 mod memory_recall;
 mod model_knowledge;
@@ -29,6 +27,7 @@ mod runtime_acp;
 mod runtime_manager;
 mod selection;
 mod skill_dag;
+mod skill_audit;
 mod skill_export;
 mod skill_frontmatter;
 mod mcp_server;
@@ -180,6 +179,17 @@ pub fn run() {
             app.manage(Arc::clone(&runtime_manager));
             app.manage(proxy_state);
 
+            // 创作产物可以挪出 C 盘（「设置 → 存储位置」）。tauri.conf.json 里的
+            // assetProtocol scope 只静态放行了 `$HOME/.omnix/media/**`，用户挪到
+            // 别处后 `asset://` 就取不到图——这里按当前配置追加放行。
+            // 默认目录已经在静态白名单里，重复放行无害。
+            {
+                let media = storage::media_dir();
+                if let Err(error) = app.asset_protocol_scope().allow_directory(&media, true) {
+                    log::warn!("放行创作产物目录失败，图片可能显示不出来：{error}");
+                }
+            }
+
             let mut runtime_events = runtime_manager.subscribe();
             let runtime_app = app.handle().clone();
             let hooks_db = Arc::clone(&db);
@@ -317,7 +327,6 @@ pub fn run() {
             commands::team_stop_run,
             commands::team_retry_worker,
             commands::team_respond_worker_approval,
-            commands::list_lab_features,
             commands::protocol_get_status,
             commands::protocol_preview_init,
             commands::protocol_init_workspace,
@@ -380,8 +389,6 @@ pub fn run() {
             commands::cli_takeover_apply,
             commands::cli_takeover_revert,
             commands::cli_takeover_status,
-            commands::detect_hardware,
-            commands::recommend_local_models,
             commands::media_generate_image,
             commands::media_create_video_task,
             commands::media_list_tasks,
@@ -435,12 +442,9 @@ pub fn run() {
             commands::clear_cron_runs,
             commands::get_active_sessions,
             commands::trigger_cron_task,
-            commands::set_compare_windows_layout,
-            commands::hide_compare_windows,
-            commands::close_compare_windows,
-            commands::eval_compare_window,
             commands::focus_main_window,
             commands::pick_directory,
+            commands::pick_files,
             commands::pick_file,
             commands::toggle_status_dock,
             commands::set_status_dock_enabled,
@@ -453,6 +457,8 @@ pub fn run() {
             commands::delete_platform_model,
             commands::get_active_models,
             commands::get_available_models,
+            commands::get_model_routing,
+            commands::reorder_platforms,
             commands::fetch_remote_models,
             commands::check_model_status,
             commands::batch_check_models,
@@ -593,6 +599,8 @@ pub fn run() {
             commands::cleanup_skill_cache,
             // Agent Template commands
             commands::get_agent_templates,
+            commands::set_builtin_assistant_hidden,
+            commands::list_hidden_builtin_assistants,
             commands::get_agent_template,
             // Skills Lock File commands
             commands::get_skill_lock,
@@ -659,6 +667,9 @@ pub fn run() {
             commands::get_model_database,
             commands::recommend_for_gpu,
             commands::get_gpu_database,
+            commands::pull_local_model,
+            commands::cancel_local_model_pull,
+            commands::list_installed_ollama_models,
             commands::analyze_codebase,
             // Config Backup
             commands::backup_config_file,
@@ -719,10 +730,6 @@ pub fn run() {
             commands::get_output_styles,
             commands::get_output_style_prompt,
             // Architecture Graph
-            commands::build_architecture_graph,
-            commands::save_architecture_graph,
-            commands::load_architecture_graph,
-            commands::get_ignore_patterns,
             // Skill Library Features
             commands::match_skills_for_injection,
             commands::test_skill_sandbox,
@@ -813,6 +820,7 @@ pub fn run() {
             commands::cleanup_scattered_skills,
             commands::review_skill_ai,
             commands::set_skill_pool,
+            commands::scan_all_skills,
             commands::get_skill_pool_content,
             commands::export_skills_to_agents_dir,
             commands::summarize_skill_ai,

@@ -152,6 +152,9 @@ export function useConversations(
   // Refs for cross-render access
   const terminalLogsRef = useRef<Record<string, string>>({});
   const currentConvIdRef = useRef(currentConvId);
+  // enterSurface 的去重依据。用 ref 不用 state：它要在同一轮事件里立刻反映
+  // 最新值，而 setCurrentSurface 要等下一次渲染。
+  const currentSurfaceRef = useRef<"chat" | "work">("chat");
   const loggedMistakesRef = useRef<Set<string>>(new Set()); // dedup per raw_line
   const runtimeSessionByConversationRef = useRef<Record<string, string>>({});
   const conversationByRuntimeSessionRef = useRef<Record<string, string>>({});
@@ -494,6 +497,12 @@ export function useConversations(
     if (current && current.active_agent === agent && conversationIsWork(current) === wantWork) {
       return; // current conversation already fits this surface
     }
+    // 打开着一个会话、但它不在 `conversations` 里 —— 这只说明列表还没刷新
+    // （刚发出第一条消息就切走页签，新会话尚未回填），**不说明会话不存在**。
+    // 以前这里会一路走到下面的 setMessages([])，于是「切个页签回来历史就没了」。
+    if (!current && currentConvIdRef.current) {
+      return;
+    }
     // 对话: resume the Agent's latest plain conversation. 工作: always start from a
     // clean workspace choice rather than silently reopening a previous workspace.
     if (!wantWork) {
@@ -524,6 +533,11 @@ export function useConversations(
   // Entering the 对话 / 工作 surface shows that surface's conversation (and pins
   // plain conversations to no workspace).
   const enterSurface = useCallback((surface: "chat" | "work") => {
+    // App 在每次切到 chat/work 时都调这里，包括从「模型」「设置」切回来——
+    // 那种情况表面根本没变，重新定位会话只会把用户正看着的对话换掉。
+    // 只有真正在 对话 ⇄ 工作 之间切换时才需要重新选会话。
+    if (currentSurfaceRef.current === surface) return;
+    currentSurfaceRef.current = surface;
     setCurrentSurface(surface);
     if (surface === "chat") setChatWorkspace("direct");
     showLatestConversation(activeAgent, surface);

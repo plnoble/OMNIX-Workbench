@@ -18,7 +18,6 @@ mod knowledge;
 mod lifecycle;
 mod checkpoints;
 mod cli_takeover;
-mod local_models;
 mod mcp_sync;
 mod media;
 mod memories;
@@ -161,16 +160,6 @@ pub struct CronRun {
     pub finished_at: Option<String>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct WindowLayout {
-    pub label: String,
-    pub url: String,
-    pub x: f64,
-    pub y: f64,
-    pub width: f64,
-    pub height: f64,
-}
-
 // ── Re-export all command functions from submodules ──
 
 pub use accounts::*;
@@ -188,7 +177,6 @@ pub use evolution::*;
 pub use knowledge::*;
 pub use checkpoints::*;
 pub use cli_takeover::*;
-pub use local_models::*;
 pub use custom_assistants::*;
 pub use hooks::*;
 pub use kb_transfer::*;

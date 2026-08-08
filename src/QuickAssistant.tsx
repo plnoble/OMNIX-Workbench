@@ -27,7 +27,7 @@ import {
   Languages, ArrowRightLeft, Lightbulb, FileText,
   Square, Globe, ClipboardCopy, Sparkles, StickyNote,
 } from "lucide-react";
-import type { SearchResult } from "@/types";
+import type { AvailableModel, SearchResult } from "@/types";
 
 // ── Action Definitions ─────────────────────────────────
 
@@ -43,12 +43,17 @@ interface ActionDef {
 
 const ACTIONS: ActionDef[] = [
   { id: "translate", label: "翻译",   icon: <Languages className="h-3.5 w-3.5" />,  color: "text-violet-500" },
+  // 提示词一律**明确要求用中文作答**。以前是英文提示、且没指定输出语言，模型
+  // 就跟着原文的语种走——选中一段英文点「解释」，得到一整段英文解释，而你按这个
+  // 按钮恰恰是因为不想读英文。
+  //
+  // 「精炼」是例外：它是润色原文，必须**保持原文语种**，否则就变成翻译了。
   { id: "explain",   label: "解释",   icon: <Lightbulb className="h-3.5 w-3.5" />,  color: "text-amber-500",
-    promptPrefix: "Please explain the following text in a clear and detailed way. Use simple language and provide examples where helpful:\n\n" },
+    promptPrefix: "请用中文清晰、详细地解释下面这段内容，用通俗的语言，必要时举例。无论原文是什么语言，都用中文回答：\n\n" },
   { id: "summarize", label: "总结",   icon: <FileText className="h-3.5 w-3.5" />,   color: "text-emerald-500",
-    promptPrefix: "Please provide a concise summary of the following text. Capture the key points and main ideas:\n\n" },
+    promptPrefix: "请用中文简明扼要地总结下面这段内容，抓住要点和主要观点。无论原文是什么语言，都用中文回答：\n\n" },
   { id: "refine",    label: "精炼",   icon: <Sparkles className="h-3.5 w-3.5" />,   color: "text-pink-500",
-    promptPrefix: "Please refine and polish the following text. Improve clarity, grammar, and style while preserving the original meaning:\n\n" },
+    promptPrefix: "请润色下面这段文字：改善表达、语法与风格，保留原意。**保持原文的语种**（中文润色成中文，英文润色成英文），只输出润色后的正文，不要说明你做了什么：\n\n" },
   { id: "search",    label: "搜索",   icon: <Globe className="h-3.5 w-3.5" />,       color: "text-blue-500" },
   { id: "copy",      label: "复制",   icon: <ClipboardCopy className="h-3.5 w-3.5" />, color: "text-gray-500" },
 ];
@@ -82,7 +87,7 @@ export function QuickAssistant() {
   const [isLoading, setIsLoading] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
   const [chatModel, setChatModel] = useState("");
-  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [availableModels, setAvailableModels] = useState<AvailableModel[]>([]);
 
   // Action mode
   const [action, setAction] = useState<QAction | null>(null);
@@ -139,11 +144,11 @@ export function QuickAssistant() {
         setChatModel(initialModel);
 
         // Load available models from platform
-        const names = await modelApi.getAvailableNames();
-        setAvailableModels(names);
+        const options = await modelApi.getAvailable();
+        setAvailableModels(options);
         // If no model set yet, pick the first available
-        if (!initialModel && names.length > 0) {
-          setChatModel(names[0]);
+        if (!initialModel && options.length > 0) {
+          setChatModel(options[0].id);
         }
 
         await translation.loadTranslationSettings();
@@ -683,7 +688,9 @@ export function QuickAssistant() {
             <option value="">请先配置模型</option>
           )}
           {availableModels.map(m => (
-            <option key={m} value={m}>{m}</option>
+            <option key={m.id} value={m.id}>
+              {m.ambiguous ? `${m.model_name} · ${m.platform_name}` : m.model_name}
+            </option>
           ))}
         </select>
         {resultText && (

@@ -330,10 +330,7 @@ memory payload 必须包含 incident_desc、code_pattern、remediation、keyword
         .ok()
         .flatten()
         .unwrap_or_else(|| "1421".into());
-    let response = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(90))
-        .build()
-        .map_err(|error| error.to_string())?
+    let response = crate::storage::loopback_client(std::time::Duration::from_secs(90))
         .post(format!("http://127.0.0.1:{proxy_port}/v1/chat/completions"))
         .json(&serde_json::json!({
             "model": model_id,

@@ -1,96 +1,12 @@
-use super::*;
 use crate::proc::NoWindow;
 use std::process::Command;
 use tauri::{AppHandle, Emitter};
 
-#[tauri::command]
-pub async fn set_compare_windows_layout(
-    app: AppHandle,
-    layout: Vec<WindowLayout>,
-) -> Result<(), String> {
-    use tauri::Manager;
-
-    let main_win = app
-        .get_webview_window("main")
-        .ok_or_else(|| "Main window not found".to_string())?;
-
-    let main_logical_pos = main_win
-        .outer_position()
-        .map(|p| p.to_logical::<f64>(main_win.scale_factor().unwrap_or(1.0)))
-        .map_err(|e| e.to_string())?;
-
-    for item in layout {
-        let target_x = main_logical_pos.x + item.x;
-        let target_y = main_logical_pos.y + item.y;
-
-        if let Some(win) = app.get_webview_window(&item.label) {
-            win.set_size(tauri::Size::Logical(tauri::LogicalSize::new(
-                item.width,
-                item.height,
-            )))
-            .ok();
-            win.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
-                target_x, target_y,
-            )))
-            .ok();
-            win.show().ok();
-        } else {
-            let url_parsed = item
-                .url
-                .parse()
-                .map_err(|e| format!("Invalid URL: {}", e))?;
-
-            let mut builder = tauri::WebviewWindowBuilder::new(
-                &app,
-                &item.label,
-                tauri::WebviewUrl::External(url_parsed),
-            )
-            .decorations(false)
-            .skip_taskbar(true)
-            .inner_size(item.width, item.height)
-            .position(target_x, target_y);
-
-            builder = builder.owner(&main_win).map_err(|e| e.to_string())?;
-
-            let _win = builder
-                .build()
-                .map_err(|e| format!("Failed to create compare webview: {}", e))?;
-        }
-    }
-
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn hide_compare_windows(app: AppHandle) -> Result<(), String> {
-    use tauri::Manager;
-    for (label, win) in app.webview_windows() {
-        if label.starts_with("expert-") {
-            win.hide().ok();
-        }
-    }
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn close_compare_windows(app: AppHandle) -> Result<(), String> {
-    use tauri::Manager;
-    for (label, win) in app.webview_windows() {
-        if label.starts_with("expert-") {
-            win.close().ok();
-        }
-    }
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn eval_compare_window(app: AppHandle, label: String, js: String) -> Result<(), String> {
-    use tauri::Manager;
-    if let Some(win) = app.get_webview_window(&label) {
-        win.eval(&js).map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
+// 「AI 专家比对」的 Web 网页模式已删除，随之删掉四个只服务于它的命令：
+// set_compare_windows_layout / hide_compare_windows / close_compare_windows /
+// eval_compare_window。它们的活儿是把 expert-* 子 webview 覆盖到 DOM 占位框
+// 上、并往别人的网页里 eval 硬编码选择器脚本——没有调用方之后留着只是一条
+// 能往任意站点注入 JS 的口子。
 
 #[tauri::command]
 pub fn focus_main_window(app_handle: AppHandle) -> Result<(), String> {
@@ -159,21 +75,33 @@ if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
     }
 }
 
-#[tauri::command]
-pub fn pick_file() -> Result<Option<String>, String> {
+/// 系统「打开文件」对话框，一处实现。`title` / `filter` 直接落进 PowerShell
+/// 脚本，所以两者都不接受外部输入——只由本文件里的调用方写死字面量。
+///
+/// 走系统对话框而不是 `<input type="file">`，是因为浏览器的 File 对象拿不到
+/// 真实路径，而 CLI agent 需要的恰恰是路径（它自己有 Read 工具）。
+fn open_file_dialog(title: &str, filter: Option<&str>, multiselect: bool) -> Result<Vec<String>, String> {
     if !cfg!(target_os = "windows") {
         return Err("File picker is currently implemented for Windows only.".to_string());
     }
-    let script = r#"
+
+    let filter_line = filter
+        .map(|value| format!("$dialog.Filter = '{value}'\n"))
+        .unwrap_or_default();
+    let script = format!(
+        r#"
 Add-Type -AssemblyName System.Windows.Forms
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $dialog = New-Object System.Windows.Forms.OpenFileDialog
-$dialog.Title = '选择要导入 OMNIX 知识库的文件'
-$dialog.Filter = '支持的文档|*.md;*.txt;*.pdf;*.docx;*.pptx;*.xlsx;*.rs;*.py;*.js;*.ts;*.tsx;*.jsx;*.json|所有文件|*.*'
-if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-  Write-Output $dialog.FileName
-}
-"#;
+$dialog.Title = '{title}'
+$dialog.Multiselect = ${multiselect}
+$dialog.CheckFileExists = $true
+{filter_line}if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{
+  $dialog.FileNames | ForEach-Object {{ Write-Output $_ }}
+}}
+"#
+    );
+
     let output = Command::new("powershell.exe")
         .no_window()
         .args([
@@ -182,15 +110,42 @@ if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
             "-ExecutionPolicy",
             "Bypass",
             "-Command",
-            script,
+            &script,
         ])
         .output()
         .map_err(|error| format!("Failed to open file picker: {error}"))?;
+
     if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            "File picker failed without an error message.".to_string()
+        } else {
+            stderr
+        });
     }
-    let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    Ok((!selected.is_empty()).then_some(selected))
+
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
+/// 「对话」页的附件选择器：任意类型、可多选，返回绝对路径列表。
+#[tauri::command]
+pub fn pick_files() -> Result<Vec<String>, String> {
+    open_file_dialog("选择要交给 Agent 的文件", None, true)
+}
+
+#[tauri::command]
+pub fn pick_file() -> Result<Option<String>, String> {
+    let picked = open_file_dialog(
+        "选择要导入 OMNIX 知识库的文件",
+        Some("支持的文档|*.md;*.txt;*.pdf;*.docx;*.pptx;*.xlsx;*.rs;*.py;*.js;*.ts;*.tsx;*.jsx;*.json|所有文件|*.*"),
+        false,
+    )?;
+    Ok(picked.into_iter().next())
 }
 
 /// 悬浮状态坞是否随应用启动。默认关（"0"/未设）——用户显式开启才创建。

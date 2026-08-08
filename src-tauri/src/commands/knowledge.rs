@@ -16,6 +16,9 @@ fn validate_file_path(path: &std::path::Path) -> Result<(), String> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PreviewFile {
     pub path: String,
+    /// 相对工作区根的路径（正斜杠分隔）。`read_workspace_file` 要的就是它——
+    /// 只给绝对 `path` 的话前端还得自己算前缀，算错就是穿越校验直接拒绝。
+    pub relative: String,
     pub name: String,
     pub ext: String,
     pub modified: u64,
@@ -33,7 +36,7 @@ pub fn get_previewable_files(workspace_path: String) -> Result<Vec<PreviewFile>,
 
     let mut files = Vec::new();
 
-    fn scan_dir(dir: &Path, depth: usize, files: &mut Vec<PreviewFile>) {
+    fn scan_dir(root: &Path, dir: &Path, depth: usize, files: &mut Vec<PreviewFile>) {
         if depth > 4 {
             return;
         }
@@ -56,7 +59,7 @@ pub fn get_previewable_files(workspace_path: String) -> Result<Vec<PreviewFile>,
                 }
 
                 if path.is_dir() {
-                    scan_dir(&path, depth + 1, files);
+                    scan_dir(root, &path, depth + 1, files);
                 } else if path.is_file() {
                     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                         let ext_lower = ext.to_lowercase();
@@ -79,8 +82,13 @@ pub fn get_previewable_files(workspace_path: String) -> Result<Vec<PreviewFile>,
                                 .map(|d| d.as_secs())
                                 .unwrap_or(0);
 
+                            let relative = path
+                                .strip_prefix(root)
+                                .map(|rel| rel.to_string_lossy().replace('\\', "/"))
+                                .unwrap_or_else(|_| name.clone());
                             files.push(PreviewFile {
                                 path: path.to_string_lossy().to_string(),
+                                relative,
                                 name,
                                 ext: ext_lower,
                                 modified,
@@ -92,7 +100,7 @@ pub fn get_previewable_files(workspace_path: String) -> Result<Vec<PreviewFile>,
         }
     }
 
-    scan_dir(workspace, 0, &mut files);
+    scan_dir(workspace, workspace, 0, &mut files);
     files.sort_by(|a, b| b.modified.cmp(&a.modified));
     if files.len() > 50 {
         files.truncate(50);
@@ -198,88 +206,102 @@ pub fn get_workspace_git_diff(workspace_path: String) -> Result<String, String> 
     Ok(stdout)
 }
 
-/// Run environment diagnostics — returns a flat string map so the
-/// frontend `Record<string, string>` type matches exactly (no boolean
-/// values that would cause `version.toLowerCase is not a function`).
-#[tauri::command]
-pub fn run_env_diagnostics() -> Result<std::collections::HashMap<String, String>, String> {
-    let mut map = std::collections::HashMap::new();
+/// OMNIX 自己要用的外部命令行工具：显示名 → (可执行文件, 取版本的参数)。
+///
+/// - `rg` 给全文搜索和知识库切片
+/// - `git` 给 worktree / 工作区检查点 / diff
+/// - `node` 给 npm 系 agent 的安装
+///
+/// 唯一一份清单：`run_env_diagnostics` 按它建表，`repair_plan` 按它分派，
+/// 测试断言两者一一对上。名字对不上是编译器看不见的错。
+pub(crate) const DEPENDENCY_ROWS: &[&str] = &["Node.js", "Git", "Ripgrep"];
 
-    // Node.js
-    match std::process::Command::new("node").arg("-v").no_window().output() {
-        Ok(out) => {
-            let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            map.insert("Node.js".into(), v);
-        }
-        Err(_) => {
-            map.insert("Node.js".into(), "not found".into());
-        }
-    }
-
-    // Git
-    match std::process::Command::new("git").arg("--version").no_window().output() {
-        Ok(out) => {
-            let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            map.insert("Git".into(), v);
-        }
-        Err(_) => {
-            map.insert("Git".into(), "not found".into());
-        }
-    }
-
-    // Ripgrep
-    match std::process::Command::new("rg").arg("--version").no_window().output() {
-        Ok(out) => {
-            let full_out = String::from_utf8_lossy(&out.stdout);
-            let first_line = full_out.lines().next().unwrap_or("rg").to_string();
-            map.insert("Ripgrep".into(), first_line);
-        }
-        Err(_) => {
-            map.insert("Ripgrep".into(), "not found".into());
-        }
-    }
-
-    // CLI agents — just check existence
-    for (name, cmds) in [
-        ("Claude Code", &["claude", "claude.cmd"] as &[&str]),
-        ("OpenCode", &["opencode", "opencode.cmd"]),
-        ("Codex", &["codex", "codex.cmd"]),
-        ("Gemini CLI", &["gemini-cli", "gemini-cli.cmd"]),
-    ] {
-        let found = cmds.iter().any(|c| which::which(c).is_ok());
-        map.insert(
-            name.into(),
-            if found {
-                "✓ installed".into()
-            } else {
-                "not found".into()
-            },
-        );
-    }
-
-    Ok(map)
+fn probe(display_name: &str) -> (String, String) {
+    let (bin, arg) = match display_name {
+        "Node.js" => ("node", "-v"),
+        "Git" => ("git", "--version"),
+        "Ripgrep" => ("rg", "--version"),
+        other => return (other.to_string(), "not found".into()),
+    };
+    let value = std::process::Command::new(bin)
+        .arg(arg)
+        .no_window()
+        .output()
+        .ok()
+        .map(|out| {
+            let text = String::from_utf8_lossy(&out.stdout);
+            // rg --version 是多行的，只要第一行。
+            text.lines().next().unwrap_or("").trim().to_string()
+        })
+        .filter(|version| !version.is_empty())
+        .unwrap_or_else(|| "not found".into());
+    (display_name.to_string(), value)
 }
 
+/// 运行依赖检查：**OMNIX 自己要用的外部命令行工具**。返回扁平的字符串 map，
+/// 和前端的 `Record<string, string>` 对齐。
+///
+/// 这里**不查 CLI agent**。agent 的检测、版本、更新、卸载、账号、模型绑定全在
+/// 「智能体」页，那里做得严格得多；两边各列一份的结果是：这里只做 `which()`
+/// 查 PATH，智能体页还会翻 OMNIX 托管目录，同一台机器给出相反的答案。
 #[tauri::command]
-pub async fn repair_env_tool(app: tauri::AppHandle, tool_name: String) -> Result<(), String> {
-    let (cmd, args) = match tool_name.as_str() {
-        "claude" => ("npm", vec!["install", "-g", "@anthropic-ai/claude-code"]),
-        "gemini" => ("npm", vec!["install", "-g", "@google/gemini-cli"]),
-        "opencode" => ("npm", vec!["install", "-g", "opencode-cli"]),
-        "ripgrep" => {
+pub fn run_env_diagnostics() -> Result<std::collections::HashMap<String, String>, String> {
+    Ok(DEPENDENCY_ROWS.iter().map(|name| probe(name)).collect())
+}
+
+/// 「一键修复」对某个依赖项的处理方式。抽成纯函数是为了能被测试盯住：
+/// 依赖表里的每一个键，这里都必须给出 `Unknown` 以外的答案。
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RepairPlan {
+    /// 跑一条包管理器命令。
+    Command(&'static str, Vec<&'static str>),
+    /// 系统级依赖，只给地址让用户自己装。
+    Manual(&'static str),
+    Unknown,
+}
+
+/// `tool_name` 是依赖表里的**显示名**（"Ripgrep" / "Node.js"），不是二进制名。
+/// 这里曾经 match `"claude"` / `"gemini"` / `"opencode"`，而前端传的一直是显示
+/// 名，于是每次点「一键修复」都直接 `Unsupported repair tool: ...`，日志框只
+/// 留下一行「开始修复…」再无下文。
+///
+/// 这里**不处理 CLI agent**——它们的安装归「智能体」页的 `install_agent`。
+pub(crate) fn repair_plan(tool_name: &str) -> RepairPlan {
+    match tool_name {
+        "Ripgrep" => {
             #[cfg(target_os = "windows")]
             {
-                (
+                RepairPlan::Command(
                     "powershell",
                     vec!["-Command", "winget install BurntSushi.ripgrep --silent"],
                 )
             }
             #[cfg(not(target_os = "windows"))]
             {
-                ("brew", vec!["install", "ripgrep"])
+                RepairPlan::Command("brew", vec!["install", "ripgrep"])
             }
         }
-        _ => return Err(format!("Unsupported repair tool: {}", tool_name)),
+        // Node.js / Git 不自动装：它们是系统级依赖，静默 winget/brew 装上去
+        // 会改到用户自己维护的工具链。给出官网地址，让用户自己决定。
+        "Node.js" => {
+            RepairPlan::Manual("Node.js 需要你自己安装：https://nodejs.org/ （装完点「运行诊断」）")
+        }
+        "Git" => RepairPlan::Manual(
+            "Git 需要你自己安装：https://git-scm.com/downloads （装完点「运行诊断」）",
+        ),
+        _ => RepairPlan::Unknown,
+    }
+}
+
+#[tauri::command]
+pub async fn repair_env_tool(app: tauri::AppHandle, tool_name: String) -> Result<(), String> {
+    let (cmd, args) = match repair_plan(&tool_name) {
+        RepairPlan::Command(cmd, args) => (cmd, args),
+        RepairPlan::Manual(message) => {
+            let _ = app.emit("omnix-repair-log", format!("[INFO] {message}\n"));
+            return Err(message.to_string());
+        }
+        RepairPlan::Unknown => return Err(format!("没有为「{tool_name}」配置修复方式")),
     };
 
     let mut child = tokio::process::Command::new(cmd)
@@ -1068,4 +1090,88 @@ fn content_hash_hex(input: &str) -> String {
     let mut result = String::with_capacity(16);
     write!(result, "{:016x}", hash).expect("writing to String should never fail");
     result
+}
+
+#[cfg(test)]
+mod diagnostics_tests {
+    use super::*;
+
+    /// 依赖检查表里列出来的每一项，「一键修复」都得认得。
+    ///
+    /// 这两处曾经各写各的：检查按显示名建表（"Ripgrep"），修复按二进制名分派
+    /// （"ripgrep"），于是每个按钮都通向 `Unsupported repair tool`。名字对不上
+    /// 是编译器看不见的一类错，只能靠这条断言把两张表钉在一起。
+    #[test]
+    fn every_dependency_row_has_a_repair_path() {
+        for row in DEPENDENCY_ROWS {
+            assert_ne!(
+                repair_plan(row),
+                RepairPlan::Unknown,
+                "依赖表里的「{row}」点了一键修复会没反应",
+            );
+        }
+    }
+
+    /// 反向控制：修复分派认的是显示名，不是二进制名。
+    #[test]
+    fn binary_names_are_not_accepted_as_repair_targets() {
+        for name in ["ripgrep", "rg", "node", "git"] {
+            assert_eq!(
+                repair_plan(name),
+                RepairPlan::Unknown,
+                "「{name}」是二进制名，前端从来不会传它——认它只会掩盖真正的名字错配",
+            );
+        }
+    }
+
+    /// CLI agent 不归这里管：它们的安装在「智能体」页。两边各留一份安装逻辑
+    /// 正是当初包名写歪（opencode-cli vs opencode-ai）的来源。
+    #[test]
+    fn cli_agents_are_not_repairable_from_the_dependency_page() {
+        for (display_name, _) in crate::agent::CLI_AGENTS {
+            assert_eq!(
+                repair_plan(display_name),
+                RepairPlan::Unknown,
+                "{display_name} 的安装应当只在「智能体」页，不该在依赖检查里再来一份",
+            );
+        }
+    }
+
+    /// 预览列表必须给出相对路径：`read_workspace_file` 只认相对路径，给绝对
+    /// 路径会被穿越校验直接拒绝。
+    #[test]
+    fn previewable_files_carry_a_workspace_relative_path() {
+        let root = std::env::temp_dir().join(format!(
+            "omnix_preview_rel_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let nested = root.join("docs").join("deep");
+        std::fs::create_dir_all(&nested).expect("temp dirs");
+        std::fs::write(root.join("top.md"), "# top").expect("write top");
+        std::fs::write(nested.join("inner.md"), "# inner").expect("write inner");
+
+        let files = get_previewable_files(root.to_string_lossy().to_string()).expect("scan");
+        let mut relatives: Vec<String> = files.iter().map(|f| f.relative.clone()).collect();
+        relatives.sort();
+        assert_eq!(relatives, vec!["docs/deep/inner.md", "top.md"]);
+
+        // 绝对路径仍然保留（用于展示/打开），但和相对路径是两个字段。
+        for file in &files {
+            assert!(
+                std::path::Path::new(&file.path).is_absolute(),
+                "path 应当是绝对路径：{}",
+                file.path
+            );
+            assert!(
+                !std::path::Path::new(&file.relative).is_absolute(),
+                "relative 不能是绝对路径：{}",
+                file.relative
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

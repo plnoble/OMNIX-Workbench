@@ -6,9 +6,13 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { X, RefreshCw, Search } from "lucide-react";
 import type { PreviewType } from "@/types";
+import type { PreviewFileEntry } from "@/lib/tauri-api";
 
 interface PreviewPaneProps {
-  previewFiles: string[];
+  // 后端返回的是对象数组，不是字符串数组。以前这里标成 `string[]`，于是
+  // `<SelectItem value={f}>{f}</SelectItem>` 把整个对象当成 React 子节点渲染
+  // ——一打开预览就炸。
+  previewFiles: PreviewFileEntry[];
   selectedPreviewFile: string;
   previewType: PreviewType;
   previewHtmlUrl: string;
@@ -52,7 +56,7 @@ export function PreviewPane({
             </SelectTrigger>
             <SelectContent>
               {previewFiles.map((f) => (
-                <SelectItem key={f} value={f}>{f}</SelectItem>
+                <SelectItem key={f.path} value={f.relative}>{f.relative}</SelectItem>
               ))}
             </SelectContent>
           </Select>
@@ -102,7 +106,9 @@ function PreviewContent({
   if (previewType === "image" && previewImageBase64) {
     return (
       <div className="text-center">
-        <img src={`data:image/png;base64,${previewImageBase64}`} className="max-w-full max-h-full" alt="preview" />
+        {/* 后端已经给出带正确 mime 的完整 data: URL，不要再拼一次 png 前缀
+            ——jpg / gif / svg 会被当成 png 而显示不出来。 */}
+        <img src={previewImageBase64} className="max-w-full max-h-full" alt="preview" />
       </div>
     );
   }

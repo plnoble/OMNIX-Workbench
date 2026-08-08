@@ -15,7 +15,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { AGENT_NAMES } from "@/lib/constants";
-import { agentApi, agentBindingApi, runtimeApi, grokAuthApi, type GrokModel } from "@/lib/tauri-api";
+import { agentApi, agentBindingApi, runtimeApi, grokAuthApi, upstreamAccountApi, type GrokModel, type UpstreamAccountOption } from "@/lib/tauri-api";
 import { getRuntimeAgentId, isAcpAgent } from "@/lib/agentRegistry";
 import { cn } from "@/lib/utils";
 import { AgentInstallManager } from "@/components/AgentInstallManager";
@@ -32,7 +32,8 @@ interface AgentHubTabProps {
   onAddAccount: () => void;
   onEditAccount: (acc: AgentAccount) => void;
   onDeleteAccount: (id: string) => void;
-  onSwitchAccount: (id: string) => void;
+  // 「启用哪个账号」已经由统一上游视图接管（订阅 + API Key 一起选），
+  // 不再需要单独的 api-key 切换回调。
   onStartWork?: (name: string) => void;
   /** Refreshes the App-level detection list — the ONE source of truth that the
    * workspace also reads. Every install/update/refresh here must go through
@@ -80,7 +81,6 @@ export function AgentHubTab({
   onAddAccount,
   onEditAccount,
   onDeleteAccount,
-  onSwitchAccount,
   onStartWork,
   onRefreshAgents,
 }: AgentHubTabProps) {
@@ -150,6 +150,41 @@ export function AgentHubTab({
   }, [accounts, bindings, detectedAgents, runtimeCatalog]);
 
   const selected = agents.find((agent) => agent.name === selectedAgent) ?? agents[0];
+
+  // 统一上游账号视图：订阅（认证中心）+ API Key 账号合在一起，标出当前生效的
+  // 那个。后端 `list_agent_upstream_accounts` 早就把两者并好了，只是一直没有
+  // 界面读它——「这个 Agent 到底在用谁的额度」以前得在两个页面之间对着猜。
+  const [upstreams, setUpstreams] = useState<UpstreamAccountOption[]>([]);
+  const [upstreamBusy, setUpstreamBusy] = useState(false);
+
+  const loadUpstreams = useCallback(async () => {
+    if (!selected?.name) { setUpstreams([]); return; }
+    setUpstreamBusy(true);
+    try {
+      setUpstreams(await upstreamAccountApi.list(selected.name));
+    } catch (error) {
+      toast.error("读取上游账号失败", { description: String(error) });
+      setUpstreams([]);
+    } finally {
+      setUpstreamBusy(false);
+    }
+  }, [selected?.name]);
+
+  useEffect(() => { void loadUpstreams(); }, [loadUpstreams]);
+
+  const switchUpstream = async (accountRef: string) => {
+    if (!selected?.name) return;
+    setUpstreamBusy(true);
+    try {
+      await upstreamAccountApi.setActive(selected.name, accountRef);
+      await loadUpstreams();
+      toast.success("已切换上游账号", { description: "下一轮对话开始生效，当前上下文保留。" });
+    } catch (error) {
+      toast.error("切换失败", { description: String(error) });
+    } finally {
+      setUpstreamBusy(false);
+    }
+  };
   const selectedIsAcp = selected ? isAcpAgent(selected.name) : false;
 
   // Load the current custom model for the selected agent (ACP: preference key;
@@ -555,25 +590,75 @@ export function AgentHubTab({
                 )}
               </div>
 
+              {/* 上游账号：订阅（认证中心登录的）和 API Key 账号在这里合成一张表。
+                  以前它们分在两个页面各说一半，而「这个 Agent 到底在用谁的额度」
+                  只有后端 `list_agent_upstream_accounts` 知道——那个统一视图早就
+                  写好了，只是没有任何界面读它。 */}
               <div className="rounded-md border border-border bg-background/50 p-4">
-                <div className="mb-3 text-sm font-semibold">账号凭据</div>
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <div className="text-sm font-semibold">上游账号</div>
+                  <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={() => void loadUpstreams()}>
+                    <RefreshCw className={cn("h-3 w-3", upstreamBusy && "animate-spin")} />
+                  </Button>
+                </div>
+                <p className="mb-3 text-xs text-muted-foreground">
+                  {selected.name} 这次会话用哪一份额度。订阅在「认证中心」登录，API Key 在这里新增。
+                </p>
+
                 <div className="space-y-2">
-                  {selected.accounts.length === 0 ? (
-                    <div className="text-sm text-muted-foreground">还没有为该 Agent 配置账号。</div>
-                  ) : selected.accounts.map((account) => (
-                    <div key={account.id} className="flex items-center justify-between gap-2 rounded-md border border-border px-3 py-2">
+                  {upstreams.length === 0 ? (
+                    <div className="text-sm text-muted-foreground">
+                      还没有可用的上游。到「认证中心」登录订阅，或在下方新增一个 API Key 账号。
+                    </div>
+                  ) : upstreams.map((option) => (
+                    <div
+                      key={option.account_ref}
+                      className={cn(
+                        "flex items-center justify-between gap-2 rounded-md border px-3 py-2",
+                        option.is_active ? "border-primary/40 bg-primary/5" : "border-border",
+                      )}
+                    >
                       <div className="min-w-0">
-                        <div className="truncate text-sm font-medium">{account.account_name}</div>
-                        <div className="truncate text-xs text-muted-foreground">{account.target_model}</div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="truncate text-sm font-medium">{option.label}</span>
+                          <span className={cn(
+                            "shrink-0 rounded px-1.5 py-0.5 text-[10px]",
+                            option.kind === "oauth" ? "bg-violet-500/12 text-violet-500"
+                              : option.kind === "cli" ? "bg-cyan-500/12 text-cyan-500"
+                              : "bg-muted text-muted-foreground",
+                          )}>
+                            {option.kind === "oauth" ? "订阅" : option.kind === "cli" ? "CLI 自管" : "API Key"}
+                          </span>
+                          {option.expired && (
+                            <span className="shrink-0 rounded bg-destructive/12 px-1.5 py-0.5 text-[10px] text-destructive">
+                              已过期
+                            </span>
+                          )}
+                        </div>
+                        {option.provider && (
+                          <div className="truncate text-xs text-muted-foreground">{option.provider}</div>
+                        )}
                       </div>
-                      <Button size="sm" variant="ghost" onClick={() => onSwitchAccount(account.id)}>
-                        {account.is_active ? "当前" : "启用"}
-                      </Button>
+                      {/* CLI 自管的凭据（Grok）由它自己的 CLI 持有并续期，
+                          OMNIX 换不了也不需要换——不给切换按钮，免得点了没反应。 */}
+                      {option.kind === "cli" ? (
+                        <span className="shrink-0 text-xs text-muted-foreground">CLI 持有</span>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant={option.is_active ? "ghost" : "outline"}
+                          disabled={option.is_active || upstreamBusy}
+                          onClick={() => void switchUpstream(option.account_ref)}
+                        >
+                          {option.is_active ? "当前" : "启用"}
+                        </Button>
+                      )}
                     </div>
                   ))}
                 </div>
-                <div className="mt-3 flex gap-2">
-                  <Button size="sm" variant="outline" onClick={onAddAccount}>新增账号</Button>
+
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button size="sm" variant="outline" onClick={onAddAccount}>新增 API Key 账号</Button>
                   {selected.accounts[0] && <Button size="sm" variant="ghost" onClick={() => onEditAccount(selected.accounts[0])}>编辑</Button>}
                   {selected.accounts[0] && <Button size="sm" variant="ghost" className="text-destructive" onClick={() => onDeleteAccount(selected.accounts[0].id)}>删除</Button>}
                 </div>

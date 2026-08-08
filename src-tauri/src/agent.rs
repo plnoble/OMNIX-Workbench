@@ -45,6 +45,22 @@ fn resolve_sandbox_path(path_str: &str) -> PathBuf {
     }
 }
 
+/// 唯一一份 CLI agent 清单：显示名 → 可执行文件名。
+///
+/// 曾经存过三份。「设置 → 诊断」那份查的是 `gemini-cli`，而真实二进制叫
+/// `gemini`，于是同一台机器上诊断页说「未检测到安装」、智能体页说「已安装」。
+/// 检测、诊断、路径解析现在都读这一个常量。
+pub(crate) const CLI_AGENTS: &[(&str, &str)] = &[
+    ("Claude Code", "claude"),
+    ("Gemini CLI", "gemini"),
+    ("Codex", "codex"),
+    ("Qwen Code", "qwen"),
+    ("GitHub Copilot CLI", "copilot"),
+    ("Google Antigravity", "agy"),
+    ("OpenCode", "opencode"),
+    ("Grok Build", "grok"),
+];
+
 pub(crate) fn agent_slug(agent_name: &str) -> &'static str {
     match agent_name {
         "Claude Code" => "claude-code",
@@ -428,16 +444,6 @@ impl AgentManager {
     // --- 1. Agent Detection logic ---
     pub fn detect_agents(&self) -> Vec<DetectedAgent> {
         let mut list = Vec::new();
-        let agent_names = vec![
-            ("Claude Code", "claude"),
-            ("Gemini CLI", "gemini"),
-            ("Codex", "codex"),
-            ("Qwen Code", "qwen"),
-            ("GitHub Copilot CLI", "copilot"),
-            ("Google Antigravity", "agy"),
-            ("OpenCode", "opencode"),
-            ("Grok Build", "grok"),
-        ];
 
         let sandbox_dir_str = self
             .db
@@ -451,7 +457,7 @@ impl AgentManager {
         local_bin_dir.push("node_modules");
         local_bin_dir.push(".bin");
 
-        for (display_name, _) in agent_names {
+        for (display_name, _) in CLI_AGENTS {
             let found_path = self.find_agent_path(display_name);
 
             if let Some(path) = found_path {
@@ -1563,18 +1569,7 @@ impl AgentManager {
     }
 
     pub fn find_agent_path_static(display_name: &str, db: Option<&DbManager>) -> Option<String> {
-        let agent_names = vec![
-            ("Claude Code", "claude"),
-            ("Gemini CLI", "gemini"),
-            ("Codex", "codex"),
-            ("Qwen Code", "qwen"),
-            ("GitHub Copilot CLI", "copilot"),
-            ("Google Antigravity", "agy"),
-            ("OpenCode", "opencode"),
-            ("Grok Build", "grok"),
-        ];
-
-        let bin_name = agent_names.iter().find(|(dn, _)| dn == &display_name)?.1;
+        let bin_name = CLI_AGENTS.iter().find(|(dn, _)| *dn == display_name)?.1;
 
         if bin_name == "agy" {
             // Check AppData/Local/agy/bin/agy.exe or ~/.local/share/agy/bin/agy

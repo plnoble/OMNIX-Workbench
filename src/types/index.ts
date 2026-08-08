@@ -176,16 +176,6 @@ export interface TeamRunDetail {
   workers: AgentRun[];
 }
 
-/** Visible experimental surface tracked outside the core workflow */
-export interface LabFeature {
-  id: string;
-  title: string;
-  layer: string;
-  status: string;
-  risk: string;
-  description: string;
-  is_visible: boolean;
-}
 
 /** Canonical skill package metadata for package/sync workflows */
 export interface SkillPackage {
@@ -457,6 +447,34 @@ export interface PlatformModel {
   status: string;
 }
 
+/**
+ * 一个可以指给内置功能用的模型。
+ *
+ * `id` 是 `platform_id:model_name`——**带平台的唯一标识**。只存裸模型名不行：
+ * 同一个名字可以注册在多个平台上，网关那时只能按哈希静默二选一。
+ */
+export interface AvailableModel {
+  id: string;
+  model_name: string;
+  platform_id: string;
+  platform_name: string;
+  /** 同名模型在多个已启用平台上出现——必须选清楚是哪个平台。 */
+  ambiguous: boolean;
+}
+
+/** 一行模型在路由眼里的样子——同名竞争者、当前赢家、最近一次真实失败。 */
+export interface ModelRouting {
+  model_id: string;
+  model_name: string;
+  /** 其它也提供这个模型名的已启用平台显示名。非空 = 只写裸名字会有歧义。 */
+  rival_platforms: string[];
+  /** 只写裸模型名时路由当前会选中的平台 id。 */
+  winner_platform_id: string | null;
+  /** request_logs 里最近一次失败的上游原话。 */
+  last_error: string | null;
+  last_error_at: string | null;
+}
+
 /** A cron scheduled task */
 export interface CronTask {
   id: string;
@@ -713,7 +731,9 @@ export interface McpServer {
   args: string;
   env: string;
   url: string;
-  server_type: "stdio" | "sse";
+  // 后端（mcp_sync.rs::is_remote）一直认 "http"，只有这个类型没写上，
+  // 于是没人能从界面配一个 HTTP MCP——包括 OMNIX 自己的 /mcp 端点。
+  server_type: "stdio" | "sse" | "http";
   is_enabled: boolean;
 }
 

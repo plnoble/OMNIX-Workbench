@@ -68,7 +68,6 @@ const TeamTab = lazy(() => import("@/components/tabs/TeamTab").then(m => ({ defa
 const MemoryTab = lazy(() => import("@/components/tabs/MemoryTab").then(m => ({ default: m.MemoryTab })));
 const SkillTab = lazy(() => import("@/components/tabs/SkillTab").then(m => ({ default: m.SkillTab })));
 const KnowledgeTab = lazy(() => import("@/components/tabs/KnowledgeTab").then(m => ({ default: m.KnowledgeTab })));
-const LabsTab = lazy(() => import("@/components/tabs/LabsTab").then(m => ({ default: m.LabsTab })));
 const CronTab = lazy(() => import("@/components/tabs/CronTab").then(m => ({ default: m.CronTab })));
 const ModelsTab = lazy(() => import("@/components/tabs/ModelsTab").then(m => ({ default: m.ModelsTab })));
 const McpTab = lazy(() => import("@/components/tabs/McpTab").then(m => ({ default: m.McpTab })));
@@ -81,7 +80,6 @@ const OfficeTab = lazy(() => import("@/components/tabs/OfficeTab").then(m => ({ 
 const MonitorTab = lazy(() => import("@/components/tabs/MonitorTab").then(m => ({ default: m.MonitorTab })));
 const AuthCenterTab = lazy(() => import("@/components/tabs/AuthCenterTab").then(m => ({ default: m.AuthCenterTab })));
 const LocalModelPickerTab = lazy(() => import("@/components/tabs/LocalModelPickerTab").then(m => ({ default: m.LocalModelPickerTab })));
-const CodeMapTab = lazy(() => import("@/components/tabs/CodeMapTab").then(m => ({ default: m.CodeMapTab })));
 const SearchResourceTab = lazy(() => import("@/components/tabs/SearchResourceTab").then(m => ({ default: m.SearchResourceTab })));
 const QuickAssistantTab = lazy(() => import("@/components/tabs/QuickAssistantTab").then(m => ({ default: m.QuickAssistantTab })));
 const AssistantsTab = lazy(() => import("@/components/tabs/AssistantsTab").then(m => ({ default: m.AssistantsTab })));
@@ -111,7 +109,6 @@ const SIMPLE_TABS: Record<string, ComponentType> = {
   profile: MonitorTab,
   "auth-center": AuthCenterTab,
   "local-models": LocalModelPickerTab,
-  "code-map": CodeMapTab,
   "remote-dev": RemoteDevTab,
   memories: MemoryTab,
   skills: SkillTab,
@@ -188,7 +185,6 @@ function MainApp() {
 
   // ── Top-level UI state ────────────────────────────
   const [activeTab, setActiveTab] = useState("chat");
-  const [tipIndex, setTipIndex] = useState(0);
   const [showTour, setShowTour] = useState(false);
   const [settingsSubTab, setSettingsSubTab] = useState<SettingsSubTab>("system");
   const [showCommandPalette, setShowCommandPalette] = useState(false);
@@ -208,9 +204,10 @@ function MainApp() {
     accounts.loadAccounts();
     platforms.loadActiveModels();
     selection.loadSelectionSettings();
+    // 不加这一句，设置里的翻译项永远显示默认值——存进去的翻译模型读不回来。
+    void translation.loadTranslationSettings();
     navigation.loadLayout();
     checkOnboarding();
-    setTipIndex(Math.floor(Math.random() * 5));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps -- mount-only init: all load functions are stable ref-less fetchers
 
   // Warm only the handful of chunks the user is most likely to open next, so
@@ -355,15 +352,6 @@ function MainApp() {
       toast.success("账户凭证保存成功！");
     } catch (e) {
       toast.error("保存失败：" + e);
-    }
-  };
-
-  const handleSwitchAccount = async (id: string) => {
-    try {
-      await accounts.switchAccount(id);
-      toast.success("账号切换成功！中转代理网关已即时切换上游通道。");
-    } catch (e) {
-      toast.error("切换失败：" + e);
     }
   };
 
@@ -523,7 +511,6 @@ function MainApp() {
                 onAddAccount={() => accounts.openAccountModal()}
                 onEditAccount={(acc) => accounts.openAccountModal(acc)}
                 onDeleteAccount={accounts.deleteAccount}
-                onSwitchAccount={handleSwitchAccount}
                 onStartWork={(name) => {
                   convs.selectAgent(name);
                   handleTabChange("work");
@@ -533,9 +520,6 @@ function MainApp() {
             )}
 
             {SimpleTabComponent && <SimpleTabComponent />}
-            {(activeTab === "labs" || activeTab === "code-analysis") && (
-              <LabsTab onNavigate={handleTabChange} />
-            )}
             {activeTab === "models" && (
               <ModelsTab
                 platforms={platforms.platforms}
@@ -562,14 +546,24 @@ function MainApp() {
                 providers={search.providers}
                 selectedProviderId={search.selectedProviderId}
                 results={search.results}
+                history={search.history}
                 query={search.searchQuery}
                 isSearching={search.isSearching}
                 onSetQuery={search.setSearchQuery}
                 onSetSelectedProviderId={search.setSelectedProviderId}
                 onSearch={search.search}
+                onLoadHistory={search.loadHistory}
+                onDeleteHistoryItem={search.deleteHistoryItem}
+                onClearHistory={search.clearHistory}
                 onAddProvider={() => search.openSearchProviderModal()}
                 onEditProvider={(provider) => search.openSearchProviderModal(provider)}
                 onDeleteProvider={search.deleteProvider}
+                showProviderModal={search.showSearchProviderModal}
+                editingProvider={search.editingSearchProvider}
+                providerForm={search.searchProviderForm}
+                onCloseProviderModal={search.closeSearchProviderModal}
+                onUpdateProviderForm={search.updateSearchProviderForm}
+                onSaveProvider={() => search.saveProvider(search.searchProviderForm)}
               />
             )}
             {activeTab === "quick-assistant" && (
@@ -634,11 +628,6 @@ function MainApp() {
                 onDeleteModel={platforms.deleteModel}
                 batchTesting={platforms.batchTesting}
                 onBatchTestModels={platforms.batchTestModels}
-                accounts={accounts.accounts}
-                onAddAccount={() => accounts.openAccountModal()}
-                onEditAccount={(acc) => accounts.openAccountModal(acc)}
-                onDeleteAccount={accounts.deleteAccount}
-                onSwitchAccount={handleSwitchAccount}
                 targetModel={settings.targetModel}
                 gpuAcceleration={settings.gpuAcceleration}
                 idleTimeout={settings.idleTimeout}
@@ -688,33 +677,6 @@ function MainApp() {
                 }}
                 themeMode={settings.themeMode}
                 onSetThemeMode={settings.setThemeMode}
-                searchProviders={search.providers}
-                searchSelectedProviderId={search.selectedProviderId}
-                searchResults={search.results}
-                searchQuery={search.searchQuery}
-                isSearching={search.isSearching}
-                onSetSearchQuery={search.setSearchQuery}
-                onSetSearchSelectedProviderId={search.setSelectedProviderId}
-                onSearch={search.search}
-                onAddSearchProvider={() => search.openSearchProviderModal()}
-                onEditSearchProvider={(provider) => search.openSearchProviderModal(provider)}
-                onDeleteSearchProvider={search.deleteProvider}
-                showSearchProviderModal={search.showSearchProviderModal}
-                editingSearchProvider={search.editingSearchProvider}
-                searchProviderForm={search.searchProviderForm}
-                onCloseSearchProviderModal={search.closeSearchProviderModal}
-                onUpdateSearchProviderForm={search.updateSearchProviderForm}
-                onSaveSearchProvider={async () => {
-                  await search.saveProvider({
-                    id: search.searchProviderForm.id,
-                    name: search.searchProviderForm.name,
-                    api_type: search.searchProviderForm.api_type,
-                    api_key: search.searchProviderForm.api_key,
-                    api_address: search.searchProviderForm.api_address,
-                    is_enabled: search.searchProviderForm.is_enabled,
-                  });
-                  search.closeSearchProviderModal();
-                }}
                 mcpServers={mcpServers.mcpServers}
                 showMcpModal={mcpServers.showMcpModal}
                 editingMcpServer={mcpServers.editingMcpServer}
@@ -770,7 +732,6 @@ function MainApp() {
                   <DashboardTab
                     activeSessionsCount={convs.activeSessions.length}
                     detectedAgents={convs.detectedAgents}
-                    tipIndex={tipIndex}
                     envDiagnostics={diagnostics.envDiagnostics}
                     repairLogs={diagnostics.repairLogs}
                     repairingTool={diagnostics.repairingTool}
@@ -797,11 +758,6 @@ function MainApp() {
                 onDeleteModel={platforms.deleteModel}
                 batchTesting={platforms.batchTesting}
                 onBatchTestModels={platforms.batchTestModels}
-                accounts={accounts.accounts}
-                onAddAccount={() => accounts.openAccountModal()}
-                onEditAccount={(acc) => accounts.openAccountModal(acc)}
-                onDeleteAccount={accounts.deleteAccount}
-                onSwitchAccount={handleSwitchAccount}
                 targetModel={settings.targetModel}
                 gpuAcceleration={settings.gpuAcceleration}
                 idleTimeout={settings.idleTimeout}
@@ -851,33 +807,6 @@ function MainApp() {
                 }}
                 themeMode={settings.themeMode}
                 onSetThemeMode={settings.setThemeMode}
-                searchProviders={search.providers}
-                searchSelectedProviderId={search.selectedProviderId}
-                searchResults={search.results}
-                searchQuery={search.searchQuery}
-                isSearching={search.isSearching}
-                onSetSearchQuery={search.setSearchQuery}
-                onSetSearchSelectedProviderId={search.setSelectedProviderId}
-                onSearch={search.search}
-                onAddSearchProvider={() => search.openSearchProviderModal()}
-                onEditSearchProvider={(provider) => search.openSearchProviderModal(provider)}
-                onDeleteSearchProvider={search.deleteProvider}
-                showSearchProviderModal={search.showSearchProviderModal}
-                editingSearchProvider={search.editingSearchProvider}
-                searchProviderForm={search.searchProviderForm}
-                onCloseSearchProviderModal={search.closeSearchProviderModal}
-                onUpdateSearchProviderForm={search.updateSearchProviderForm}
-                onSaveSearchProvider={async () => {
-                  await search.saveProvider({
-                    id: search.searchProviderForm.id,
-                    name: search.searchProviderForm.name,
-                    api_type: search.searchProviderForm.api_type,
-                    api_key: search.searchProviderForm.api_key,
-                    api_address: search.searchProviderForm.api_address,
-                    is_enabled: search.searchProviderForm.is_enabled,
-                  });
-                  search.closeSearchProviderModal();
-                }}
                 mcpServers={mcpServers.mcpServers}
                 showMcpModal={mcpServers.showMcpModal}
                 editingMcpServer={mcpServers.editingMcpServer}

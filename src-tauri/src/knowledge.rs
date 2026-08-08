@@ -529,6 +529,17 @@ pub struct SearchResult {
 
 /// BM25 full-text search using FTS5.
 ///
+/// ⚠️ 中文内容上这一半**基本不出结果**。`kb_chunks_fts` 用的是
+/// `tokenize='porter unicode61'`，实测（bundled SQLite）会把一整段中文当成
+/// **一个** token：「量子计算」匹配不到「量子计算的进展」，两字词同样落空。
+/// 也就是说对中文知识库，`hybrid_search` 实际退化成了纯向量检索——RRF 融合里
+/// BM25 那一路长期返回空集。
+///
+/// 内置分词器里没有能用的：`trigram` 三字以上可以，但两字词（中文里最常见）
+/// 一律落空。要修得换 ICU 分词器（需要带 ICU 的 SQLite 构建）或自己做中文分词，
+/// 都不是改一行的事，所以先把现状写在这里，别让人以为混合检索在中文上是两条腿
+/// 走路。
+///
 /// Returns (chunk_id, bm25_score) pairs. FTS5's rank is negative (more negative = better),
 /// so we negate it for consistency.
 pub fn bm25_search(
@@ -942,119 +953,104 @@ pub fn resolve_chat_platform(
     if let Some(colon_pos) = model_name.find(':') {
         let pid = &model_name[..colon_pos];
         let mname = &model_name[colon_pos + 1..];
-        let (api_key, api_address, api_type) = conn
-            .prepare("SELECT api_key, api_address, api_type FROM model_platforms WHERE id = ?1 AND is_enabled = 1")
+        let (api_address, api_type) = conn
+            .prepare("SELECT api_address, api_type FROM model_platforms WHERE id = ?1 AND is_enabled = 1")
             .map_err(|e| e.to_string())?
             .query_row(params![pid], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })
             .map_err(|e| format!("Platform '{}' not found: {}", pid, e))?;
-        return Ok((
-            crate::crypto::decrypt(&api_key),
-            api_address,
-            api_type,
-            mname.to_string(),
-        ));
+        // 和网关、健康检测同一套 Key 解析（新表优先、活跃在前）。
+        let key = crate::commands::platform_keys(db, pid)
+            .0
+            .into_iter()
+            .next()
+            .unwrap_or_default();
+        return Ok((key, api_address, api_type, mname.to_string()));
     }
 
-    // Search by model name
-    let result = conn
-        .prepare(
-            "SELECT COALESCE(
-                    (SELECT encrypted_key FROM platform_api_keys
-                     WHERE platform_id = mp.id AND is_active = 1 AND is_enabled = 1
-                     ORDER BY priority DESC, created_at ASC LIMIT 1),
-                    mp.api_key
-                 ), mp.api_address, mp.api_type, pm.model_name
-             FROM platform_models pm
-             JOIN model_platforms mp ON pm.platform_id = mp.id
-             WHERE pm.model_name = ?1 AND pm.is_enabled = 1 AND mp.is_enabled = 1
-             LIMIT 1",
-        )
+    // 裸模型名：交给和路由**同一个**挑选函数。
+    //
+    // 以前这里是 `... WHERE pm.model_name = ?1 ... LIMIT 1`，**没有 ORDER BY**——
+    // 同名模型挂在多个平台上时，SQLite 返回谁就是谁，和网关路由挑的那个可以
+    // 是两回事。于是「网关能跑通、技能融合却失败」这种事就说得通了。
+    let platform_id = crate::proxy::winning_platform_for_model(db, model_name).ok_or_else(|| {
+        format!("没有已启用的平台提供模型 '{model_name}'。请到「模型」页启用一个。")
+    })?;
+    let (api_address, api_type) = conn
+        .prepare("SELECT api_address, api_type FROM model_platforms WHERE id = ?1")
         .map_err(|e| e.to_string())?
-        .query_row(params![model_name], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-            ))
+        .query_row(params![platform_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })
-        .map_err(|e| {
-            format!(
-                "No enabled platform found for chat model '{}': {}",
-                model_name, e
-            )
-        })?;
-
-    Ok((
-        crate::crypto::decrypt(&result.0),
-        result.1,
-        result.2,
-        result.3,
-    ))
+        .map_err(|e| format!("平台 '{platform_id}' 读取失败: {e}"))?;
+    let key = crate::commands::platform_keys(db, &platform_id)
+        .0
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    Ok((key, api_address, api_type, model_name.to_string()))
 }
 
 /// One-shot, non-streaming chat call against a gateway model
 /// (`platform_id:model_name` or bare model name). Shared by features that need
-/// a single structured reply (PPT generation/editing, skill review, …).
+/// a single structured reply (PPT generation/editing, skill review, 技能融合…).
+///
+/// **走 OMNIX 自己的网关**，不再直连平台。以前这里是第五套并行实现：自己拼
+/// Anthropic / OpenAI 两种协议、自己解析 Key（只读 `model_platforms.api_key` 旧列）、
+/// 裸模型名用 `LIMIT 1` 且**没有 ORDER BY**——同名模型挂在多个平台上时，
+/// 它挑的那个和路由挑的那个可以是两回事。技能融合就是这么失败的。
+///
+/// 走网关之后自动获得：统一的 Key 解析、失败落 `request_logs`、错误信封、
+/// 熔断计数、用量计费。
 pub async fn chat_once(
     db: &DbManager,
     chat_model: &str,
     prompt: &str,
 ) -> Result<String, String> {
-    let (api_key, api_address, api_type, actual_model) = resolve_chat_platform(db, chat_model)?;
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(180))
-        .build()
-        .map_err(|e| e.to_string())?;
+    let port = db
+        .get_setting("proxy_port")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "1421".to_string());
 
-    let answer = if api_type == "anthropic" {
-        let url = format!("{}/v1/messages", api_address.trim_end_matches('/'));
-        let body = serde_json::json!({
-            "model": actual_model,
-            "max_tokens": 8192,
+    let response = crate::storage::loopback_client(std::time::Duration::from_secs(180))
+        .post(format!("http://127.0.0.1:{port}/v1/chat/completions"))
+        // 这条路由不看 body 里的 `model`（它给外部 CLI 用），内部调用靠这个头指名。
+        .header("x-omnix-model", chat_model)
+        .json(&serde_json::json!({
+            "model": chat_model,
             "messages": [{"role": "user", "content": prompt}],
-        });
-        let resp = client
-            .post(&url)
-            .header("x-api-key", api_key.trim())
-            .header("anthropic-version", "2023-06-01")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| format!("模型请求失败: {e}"))?;
-        if !resp.status().is_success() {
-            return Err(format!("模型 API 错误: {}", resp.status()));
-        }
-        let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-        json["content"][0]["text"]
-            .as_str()
-            .unwrap_or_default()
-            .to_string()
-    } else {
-        let url = format!("{}/chat/completions", api_address.trim_end_matches('/'));
-        let body = serde_json::json!({
-            "model": actual_model,
-            "messages": [{"role": "user", "content": prompt}],
-        });
-        let mut req = client.post(&url).json(&body);
-        if !api_key.trim().is_empty() {
-            req = req.header("Authorization", format!("Bearer {}", api_key.trim()));
-        }
-        let resp = req.send().await.map_err(|e| format!("模型请求失败: {e}"))?;
-        if !resp.status().is_success() {
-            return Err(format!("模型 API 错误: {}", resp.status()));
-        }
-        let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-        json["choices"][0]["message"]["content"]
-            .as_str()
-            .unwrap_or_default()
-            .to_string()
-    };
+            "stream": false,
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("模型请求失败: {e}"))?;
+
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    let snippet = |text: &str| text.chars().take(300).collect::<String>();
+    if !status.is_success() {
+        return Err(format!(
+            "模型 API 错误 {status}（模型 {chat_model}）: {}",
+            snippet(&body)
+        ));
+    }
+
+    let json: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|e| format!("解析模型响应失败: {e} — 原始响应: {}", snippet(&body)))?;
+    let answer = json["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
 
     if answer.trim().is_empty() {
-        return Err("模型没有返回内容".to_string());
+        // 以前这里只说「模型没有返回内容」，真正的原因（响应形状不对、上游把
+        // 错误塞在 200 里、模型拒答）一个字都看不到。
+        return Err(format!(
+            "模型 '{chat_model}' 没有返回内容。原始响应: {}",
+            snippet(&body)
+        ));
     }
     Ok(answer)
 }

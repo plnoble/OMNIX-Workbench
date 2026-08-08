@@ -19,11 +19,13 @@ use crate::media::{
     suggested_models, ImageOutput, MediaProviderKind, MediaTaskStatus, VideoRequest,
 };
 
-/// `~/.omnix/media/` — generated artifacts live here, only paths go in the DB.
+/// 生成的图片/视频落在这里，数据库里只存路径。
+///
+/// 目录走「设置 → 存储位置」，默认 `~/.omnix/media/`。这是最会撑爆磁盘的目录，
+/// 以前却是唯一写死在 home 下的——启动时用 `asset_protocol_scope().allow_directory`
+/// 放行用户选的位置即可，见 `lib.rs`。
 pub(crate) fn media_dir() -> Result<PathBuf, String> {
-    let mut dir = dirs::home_dir().ok_or_else(|| "无法确定用户目录".to_string())?;
-    dir.push(".omnix");
-    dir.push("media");
+    let dir = crate::storage::media_dir();
     std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
     Ok(dir)
 }

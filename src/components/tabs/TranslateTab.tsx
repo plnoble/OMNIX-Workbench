@@ -3,10 +3,10 @@
  * style) backed by the app's configured AI models. Two panes (source ↔ target),
  * language pickers with swap, model selector, copy, and recent history.
  */
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Languages, ArrowLeftRight, Copy, Loader2, Trash2, Star } from "lucide-react";
 
-import { translationApi, modelApi, settingsApi } from "@/lib/tauri-api";
+import { useTranslation } from "@/hooks/useTranslation";
 import { BUILTIN_LANGUAGES, getLanguageByCode } from "@/lib/translate-constants";
 import { Button } from "@/components/ui/button";
 import { TranslationHistoryPanel } from "@/components/TranslationHistoryPanel";
@@ -15,46 +15,38 @@ import { toast } from "@/components/ui/sonner";
 const AUTO = "auto";
 
 export function TranslateTab() {
+  // 这一页曾经自己重写了一遍翻译逻辑，而且写漏了三处：不调用语言检测（"检测：X"
+  // 其实是把你选的值原样回显）、无视「翻译模型」设置（只读 target_model）、
+  // 源语言压根没进提示词。`useTranslation` 早就把这些做对了——用它，别再写第二套。
+  const translation = useTranslation();
+
   const [source, setSource] = useState("");
-  const [result, setResult] = useState("");
   const [sourceLang, setSourceLang] = useState(AUTO);
   const [targetLang, setTargetLang] = useState("en-us");
-  const [detected, setDetected] = useState("");
-  const [busy, setBusy] = useState(false);
   const [historyKey, setHistoryKey] = useState(0);
+
+  useEffect(() => {
+    void translation.loadTranslationSettings();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- mount-only
+
+  const result = translation.translatedText;
+  const busy = translation.isTranslating;
+  // 自动检测时才显示检测结果；用户自己选了源语言就没什么可"检测"的。
+  const detected = sourceLang === AUTO ? translation.detectedLang : "";
 
   const translate = useCallback(async () => {
     if (!source.trim()) return;
-    setBusy(true);
-    setResult("");
-    setDetected("");
-    try {
-      // Resolve a real model silently (no picker): the unified default
-      // (内置功能默认模型 / target_model), else the first available model — same
-      // resolution the Quick Assistant uses. This avoids a blank result when
-      // target_model is unset (the backend would otherwise fall back to an
-      // unconfigured "deepseek-chat").
-      const target = await settingsApi.get("target_model");
-      let model = (target || "").trim();
-      if (!model) {
-        const names = await modelApi.getAvailableNames().catch(() => [] as string[]);
-        model = names[0] || "";
-      }
-      const res = await translationApi.translate({
-        text: source.trim(),
-        targetLang,
-        sourceLang: sourceLang === AUTO ? undefined : sourceLang,
-        chatModel: model || undefined,
-      });
-      setResult(res.translatedText);
-      setDetected(res.detectedLang);
-      setHistoryKey((k) => k + 1);
-    } catch (e) {
-      toast.error("翻译失败", { description: String(e) });
-    } finally {
-      setBusy(false);
+    const text = await translation.translate(
+      source.trim(),
+      targetLang,
+      sourceLang === AUTO ? undefined : sourceLang,
+    );
+    if (text === null) {
+      toast.error("翻译失败", { description: translation.translateError ?? "未知错误" });
+      return;
     }
-  }, [source, targetLang, sourceLang]);
+    setHistoryKey((k) => k + 1);
+  }, [source, targetLang, sourceLang, translation]);
 
   const swap = () => {
     // Swap languages; if source was auto, use the detected language.
@@ -62,11 +54,7 @@ export function TranslateTab() {
     setSourceLang(targetLang);
     setTargetLang(newSource);
     // Move the result up into the source box for round-tripping.
-    if (result) {
-      setSource(result);
-      setResult("");
-      setDetected("");
-    }
+    if (result) setSource(result);
   };
 
   const copy = () => {
@@ -135,7 +123,7 @@ export function TranslateTab() {
                 {detected && detected !== "unknown" ? `检测：${getLanguageByCode(detected)?.value ?? detected} → ${getLanguageByCode(targetLang)?.value ?? targetLang}` : ""}
               </span>
               <div className="flex gap-1">
-                <button onClick={() => { setSource(""); setResult(""); setDetected(""); }} title="清空" className="rounded p-1.5 text-muted-foreground hover:bg-muted/30 hover:text-foreground">
+                <button onClick={() => setSource("")} title="清空" className="rounded p-1.5 text-muted-foreground hover:bg-muted/30 hover:text-foreground">
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
                 <button onClick={copy} disabled={!result} title="复制译文" className="rounded p-1.5 text-muted-foreground hover:bg-muted/30 hover:text-foreground disabled:opacity-40">

@@ -887,3 +887,64 @@ pub fn skill_lock_audit(
 pub fn relock_skill(name: String, db: State<'_, Arc<DbManager>>) -> Result<String, String> {
     crate::skill_lock::lock(&db, &name)
 }
+
+/// 一个技能的风险审阅结果。
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillRisk {
+    pub name: String,
+    pub pool: String,
+    /// 该技能里最高的一档（critical / high / medium）。
+    pub level: String,
+    pub findings: Vec<crate::skill_audit::SkillFinding>,
+}
+
+/// 把**所有**技能过一遍风险审阅，只返回有发现的。
+///
+/// 查的是**可疑指令**不是可执行病毒：技能是注入 prompt 的 Markdown 指令，
+/// 真正的风险是「让 agent 做你没让它做的事」——读工作区外的凭证、往外部地址
+/// 发数据、留持久化、破坏性命令、提权，以及要求瞒着你做事。
+///
+/// 这是初筛，不替代你自己看一眼：每条发现都带**行号和原文**，误报你能一眼认出来。
+#[tauri::command]
+pub fn scan_all_skills(db: State<'_, Arc<DbManager>>) -> Result<Vec<SkillRisk>, String> {
+    let rows: Vec<(String, String)> = {
+        let conn = db.get_connection().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT name, COALESCE(pool, 'pending') FROM skills ORDER BY name")
+            .map_err(|e| e.to_string())?;
+        let mapped = stmt
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .map_err(|e| e.to_string())?;
+        mapped.flatten().collect()
+    };
+
+    let mut risks = Vec::new();
+    for (name, pool) in rows {
+        let Ok(content) = read_skill_content(&db, &name) else { continue };
+        let findings = crate::skill_audit::audit_skill(&content);
+        let Some(top) = findings.first() else { continue };
+        risks.push(SkillRisk {
+            name,
+            pool,
+            level: match top.level {
+                crate::skill_audit::RiskLevel::Critical => "critical",
+                crate::skill_audit::RiskLevel::High => "high",
+                crate::skill_audit::RiskLevel::Medium => "medium",
+            }
+            .to_string(),
+            findings,
+        });
+    }
+    // critical 在前，同级按发现条数多的在前。
+    let rank = |level: &str| match level {
+        "critical" => 3,
+        "high" => 2,
+        _ => 1,
+    };
+    risks.sort_by(|a, b| {
+        rank(&b.level)
+            .cmp(&rank(&a.level))
+            .then(b.findings.len().cmp(&a.findings.len()))
+    });
+    Ok(risks)
+}

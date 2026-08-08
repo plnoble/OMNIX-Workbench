@@ -1,6 +1,8 @@
 /** Auto-split from tauri-api.ts — domain: platform. Import via "@/lib/tauri-api". */
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  ModelRouting,
+  AvailableModel,
   AgentAccount,
   ModelPlatform,
   PlatformModel,
@@ -19,6 +21,8 @@ export const settingsApi = {
 export const shellApi = {
   pickDirectory: () => invoke<string | null>("pick_directory"),
   pickFile: () => invoke<string | null>("pick_file"),
+  /** 任意类型、可多选；返回绝对路径。用户取消 = 空数组。 */
+  pickFiles: () => invoke<string[]>("pick_files"),
 };
 
 // ── Model Platforms ───────────────────────────────────
@@ -28,6 +32,8 @@ export const platformApi = {
   save: (platform: ModelPlatform) => invoke("save_model_platform", { platform }),
   delete: (id: string) => invoke("delete_model_platform", { id }),
   fetchRemoteModels: (platformId: string) => invoke<PlatformModel[]>("fetch_remote_models", { platformId }),
+  /** 列表顺序即路由优先级（第一个最高）。 */
+  reorder: (orderedIds: string[]) => invoke("reorder_platforms", { orderedIds }),
 };
 
 // ── Platform Models ───────────────────────────────────
@@ -37,7 +43,10 @@ export const modelApi = {
   save: (model: PlatformModel) => invoke("save_platform_model", { model }),
   delete: (id: string) => invoke("delete_platform_model", { id }),
   getActive: () => invoke<PlatformModel[]>("get_active_models"),
-  getAvailableNames: () => invoke<string[]>("get_available_models"),
+  /** 可选模型，`id` 是 `platform_id:model_name`——同名模型可能在多个平台上。 */
+  getAvailable: () => invoke<AvailableModel[]>("get_available_models"),
+  /** 每行模型在路由眼里的样子：同名竞争者、当前赢家、最近一次真实失败。 */
+  routing: (platformId: string) => invoke<ModelRouting[]>("get_model_routing", { platformId }),
   checkStatus: (modelId: string) => invoke<HealthCheckDetail>("check_model_status", { modelId }),
   batchCheck: (platformId: string) => invoke<PlatformModel[]>("batch_check_models", { platformId }),
   reinferCapabilities: (opts: { modelId?: string; platformId?: string }) => invoke<number>("reinfer_model_capabilities", opts),
@@ -106,7 +115,7 @@ export const accountApi = {
 
 // F1: unified per-agent upstream account switcher (OAuth + api-key)
 export interface UpstreamAccountOption {
-  account_ref: string; kind: "oauth" | "apikey"; label: string;
+  account_ref: string; kind: "oauth" | "apikey" | "cli"; label: string;
   provider: string | null; expired: boolean; is_active: boolean;
 }
 export const upstreamAccountApi = {
@@ -118,17 +127,6 @@ export const upstreamAccountApi = {
     invoke<string>("get_active_upstream_account", { agentName }),
 };
 
-// F-C: local model fit ranking
-export interface HardwareInfo { cpu_cores: number; cpu_brand: string; ram_gb: number; }
-export interface ModelRecommendation {
-  name: string; family: string; params_b: number; best_quant: string;
-  needed_gb: number; fit: "fits" | "tight" | "wont_run";
-}
-export const localModelApi = {
-  detectHardware: () => invoke<HardwareInfo>("detect_hardware"),
-  recommend: (budgetGb: number) =>
-    invoke<ModelRecommendation[]>("recommend_local_models", { budgetGb }),
-};
 
 // ── Remote Dev (Labs) ──
 
@@ -208,6 +206,11 @@ export const cookbookApi = {
   recommendForGpu: (gpuName: string) => invoke<{ gpu: GpuSpec | null; recommendations: ModelRecommendation[] }>("recommend_for_gpu", { gpuName }),
   /** Get full GPU database */
   getGpuDatabase: () => invoke<GpuSpec[]>("get_gpu_database"),
+  /** 本机 Ollama 已装的模型名列表 */
+  installedOllamaModels: () => invoke<string[]>("list_installed_ollama_models"),
+  /** 真正跑 `ollama pull`；进度走 `local-model-pull` 事件 */
+  pull: (model: string) => invoke<void>("pull_local_model", { model }),
+  cancelPull: (model: string) => invoke<void>("cancel_local_model_pull", { model }),
 };
 
 // Code Deep Analysis

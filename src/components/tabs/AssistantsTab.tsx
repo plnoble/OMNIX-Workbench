@@ -82,6 +82,7 @@ export function AssistantsTab({ onUseTemplate }: AssistantsTabProps) {
 
   useEffect(() => {
     void loadAll();
+    agentTemplateApi.listHidden().then(setHidden).catch(() => {});
   }, [loadAll]);
 
   const categories = useMemo(
@@ -175,6 +176,32 @@ export function AssistantsTab({ onUseTemplate }: AssistantsTabProps) {
     }
   };
 
+  // 内置助手是编译进二进制的，删不掉——但可以在本机隐藏。隐藏名单存在
+  // settings 里，**不随版本走**，所以升级不会把你移除过的助手又带回来。
+  const hideBuiltin = async (slug: string) => {
+    if (!window.confirm("从列表中移除这个内置助手？\n\n只影响本机，升级不会把它带回来。之后可在右上角「已移除」里恢复。")) return;
+    try {
+      await agentTemplateApi.setHidden(slug, true);
+      setSelectedSlug(null);
+      await loadAll();
+      toast.success("已移除", { description: "可在右上角「已移除」里恢复。" });
+    } catch (error) {
+      toast.error("移除失败", { description: String(error) });
+    }
+  };
+
+  const [hidden, setHidden] = useState<AgentTemplate[]>([]);
+  const restoreBuiltin = async (slug: string) => {
+    try {
+      await agentTemplateApi.setHidden(slug, false);
+      await loadAll();
+      setHidden(await agentTemplateApi.listHidden());
+      toast.success("已恢复");
+    } catch (error) {
+      toast.error("恢复失败", { description: String(error) });
+    }
+  };
+
   const deleteAssistant = async (slug: string) => {
     if (!window.confirm("删除该自定义助手？")) return;
     try {
@@ -203,6 +230,29 @@ export function AssistantsTab({ onUseTemplate }: AssistantsTabProps) {
             </button>
           </div>
         </div>
+
+        {/* 本机移除掉的内置助手。放在这里而不是藏进设置：移除是本地动作，
+            恢复也该在同一屏里够得着。 */}
+        {hidden.length > 0 && (
+          <details className="mt-2 rounded-md border border-border bg-muted/10 px-2 py-1.5">
+            <summary className="cursor-pointer text-xs text-muted-foreground">
+              已移除 {hidden.length} 个内置助手（仅本机，升级不会带回）
+            </summary>
+            <div className="mt-1.5 flex flex-col gap-1">
+              {hidden.map((template) => (
+                <div key={template.slug} className="flex items-center justify-between gap-2 text-xs">
+                  <span className="truncate" title={template.slug}>{template.name}</span>
+                  <button
+                    onClick={() => void restoreBuiltin(template.slug)}
+                    className="shrink-0 rounded px-1.5 py-0.5 text-primary hover:bg-primary/10"
+                  >
+                    恢复
+                  </button>
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
         <input
           ref={fileInputRef}
           type="file"
@@ -313,10 +363,15 @@ export function AssistantsTab({ onUseTemplate }: AssistantsTabProps) {
                   <Download className="h-4 w-4" />
                   分享
                 </Button>
-                {customSlugs.has(selected.slug) && (
+                {customSlugs.has(selected.slug) ? (
                   <Button variant="outline" onClick={() => void deleteAssistant(selected.slug)} className="text-destructive hover:text-destructive">
                     <Trash2 className="h-4 w-4" />
                     删除
+                  </Button>
+                ) : (
+                  <Button variant="outline" onClick={() => void hideBuiltin(selected.slug)} className="text-destructive hover:text-destructive" title="从列表里移除（只影响本机，升级不会带回来）">
+                    <Trash2 className="h-4 w-4" />
+                    移除
                   </Button>
                 )}
                 <Button onClick={() => onUseTemplate?.(selected)}>

@@ -41,8 +41,11 @@ export function useDiagnostics(): UseDiagnosticsReturn {
       await diagnosticsApi.repair(toolName);
       await runDiagnostics();
     } catch (e) {
+      // 失败原因要落在用户正盯着的那个黑框里。以前这里 rethrow，而调用处是
+      // 裸 onClick，于是变成一条无人接手的 promise rejection：日志框永远停在
+      // 「开始修复 X 环境...」那一行。
       console.error("[useDiagnostics] Repair failed:", e);
-      throw e;
+      setRepairLogs((prev) => `${prev}[ERROR] ${String(e)}\n`);
     } finally {
       (await unlistenLog)();
       setRepairingTool("");

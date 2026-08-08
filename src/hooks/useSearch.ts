@@ -39,7 +39,7 @@ export interface UseSearchReturn {
 const EMPTY_PROVIDER_FORM = {
   id: "",
   name: "",
-  api_type: "searxng",
+  api_type: "brave",
   api_key: "",
   api_address: "",
   is_enabled: true,
@@ -122,9 +122,12 @@ export function useSearch(): UseSearchReturn {
       setResults(res);
       return res;
     } catch (e) {
+      // 必须往上抛。以前这里吞掉异常返回 []，调用方的 catch 永远不触发，
+      // 于是「没配供应商」「API Key 错」「网络不通」全都表现成同一件事：
+      // 点了搜索，什么都没有发生。
       console.error("[useSearch] Search failed:", e);
       setResults([]);
-      return [];
+      throw e;
     } finally {
       setIsSearching(false);
     }

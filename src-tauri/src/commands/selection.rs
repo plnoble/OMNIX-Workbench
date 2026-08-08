@@ -109,6 +109,55 @@ fn first_enabled_chat_model(db: &DbManager) -> Option<String> {
     .ok()
 }
 
+/// 语言代码 → 提示词里用的英文显示名。翻译和语言检测共用一份，不再各写各的。
+fn language_display_name(code: &str) -> &str {
+    match code {
+        "zh-cn" => "Chinese (Simplified)",
+        "zh-tw" => "Chinese (Traditional)",
+        "en-us" => "English",
+        "ja-jp" => "Japanese",
+        "ko-kr" => "Korean",
+        "fr-fr" => "French",
+        "de-de" => "German",
+        "es-es" => "Spanish",
+        "ru-ru" => "Russian",
+        other => other,
+    }
+}
+
+/// 拼出最终提示词。
+///
+/// 源语言以前是**收下就扔**：`source_lang` 只被当作历史记录的标签，从不进提示词。
+/// 于是「中文 → 英文」和「自动检测 → 英文」发给模型的 prompt 一模一样，界面上
+/// 那个源语言选择器等于装饰。
+fn build_translate_prompt(
+    template: &str,
+    text: &str,
+    target_lang: &str,
+    source_lang: Option<&str>,
+) -> String {
+    let source_lang_name = source_lang
+        .filter(|value| !value.trim().is_empty() && *value != "auto" && *value != "unknown")
+        .map(language_display_name);
+
+    let filled = template
+        .replace("{{target_language}}", language_display_name(target_lang))
+        .replace(
+            "{{source_language}}",
+            source_lang_name.unwrap_or("the input language"),
+        )
+        .replace("{{text}}", text);
+
+    // 自定义模板不一定带 `{{source_language}}` 占位符（老模板都没有）。这时补
+    // 一行说明，而不是让用户的选择静默消失。
+    match source_lang_name {
+        Some(name) if !template.contains("{{source_language}}") => {
+            format!("The source text is written in {name}.\n\n{filled}")
+        }
+        _ => filled,
+    }
+}
+
 /// Translate text using LLM via the proxy gateway.
 #[tauri::command]
 pub async fn translate_text(
@@ -166,22 +215,12 @@ pub async fn translate_text(
     let default_prompt = std::include_str!("../../translate_prompt_default.txt").to_string();
     let prompt_template = prompt.unwrap_or(default_prompt);
 
-    let target_lang_name = match target_lang.as_str() {
-        "zh-cn" => "Chinese (Simplified)",
-        "zh-tw" => "Chinese (Traditional)",
-        "en-us" => "English",
-        "ja-jp" => "Japanese",
-        "ko-kr" => "Korean",
-        "fr-fr" => "French",
-        "de-de" => "German",
-        "es-es" => "Spanish",
-        "ru-ru" => "Russian",
-        other => other,
-    };
-
-    let final_prompt = prompt_template
-        .replace("{{target_language}}", target_lang_name)
-        .replace("{{text}}", &text);
+    let final_prompt = build_translate_prompt(
+        &prompt_template,
+        &text,
+        &target_lang,
+        source_lang.as_deref(),
+    );
 
     // Resolve proxy port
     let port = db
@@ -190,10 +229,7 @@ pub async fn translate_text(
         .flatten()
         .unwrap_or_else(|| "1421".to_string());
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new());
+    let client = crate::storage::loopback_client(std::time::Duration::from_secs(30));
     let url = format!("http://127.0.0.1:{}/v1/chat/completions", port);
 
     let request = ChatRequest {
@@ -207,6 +243,9 @@ pub async fn translate_text(
 
     let response = client
         .post(&url)
+        // 这条路由不看 body 里的 `model`（它给外部 CLI 用，要按用户配置改写）。
+        // 内部调用要指定模型，只能靠这个头，否则翻译永远打在全局 target_model 上。
+        .header("x-omnix-model", &model_label)
         .json(&request)
         .timeout(std::time::Duration::from_secs(60))
         .send()
@@ -304,10 +343,7 @@ pub async fn detect_language(
         .flatten()
         .unwrap_or_else(|| "1421".to_string());
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new());
+    let client = crate::storage::loopback_client(std::time::Duration::from_secs(30));
     let url = format!("http://127.0.0.1:{}/v1/chat/completions", port);
 
     let request = ChatRequest {
@@ -420,5 +456,55 @@ pub async fn toggle_selection_auto_capture(
             let _ = qa.hide();
         }
         Ok(false)
+    }
+}
+
+#[cfg(test)]
+mod translate_prompt_tests {
+    use super::*;
+
+    const DEFAULT: &str = include_str!("../../translate_prompt_default.txt");
+
+    /// 选了源语言，它就必须出现在发给模型的提示词里。
+    #[test]
+    fn the_chosen_source_language_reaches_the_prompt() {
+        let prompt = build_translate_prompt(DEFAULT, "你好", "en-us", Some("zh-cn"));
+        assert!(
+            prompt.contains("Chinese (Simplified)"),
+            "源语言没进提示词，选择器等于装饰：{prompt}"
+        );
+        assert!(prompt.contains("English"));
+        assert!(prompt.contains("你好"));
+    }
+
+    /// 「自动检测」不该硬塞一个语言进去——那会把猜测变成断言。
+    #[test]
+    fn auto_detect_leaves_the_source_language_open() {
+        for value in [None, Some("auto"), Some("unknown"), Some("  ")] {
+            let prompt = build_translate_prompt(DEFAULT, "hi", "zh-cn", value);
+            assert!(
+                prompt.contains("the input language"),
+                "{value:?} 应当保持不指定源语言：{prompt}"
+            );
+        }
+    }
+
+    /// 老的自定义模板没有 `{{source_language}}` 占位符，选择也不能因此丢掉。
+    #[test]
+    fn a_template_without_the_placeholder_still_gets_the_source_language() {
+        let legacy = "Translate to {{target_language}}:\n{{text}}";
+        let prompt = build_translate_prompt(legacy, "hello", "zh-cn", Some("en-us"));
+        assert!(
+            prompt.contains("written in English"),
+            "老模板下用户选的源语言被丢了：{prompt}"
+        );
+        assert!(prompt.contains("hello"), "补的说明顶掉了正文：{prompt}");
+    }
+
+    /// 默认模板必须带占位符，否则上面那条补丁分支会对所有人生效（多余一行）。
+    #[test]
+    fn the_default_template_declares_both_languages() {
+        assert!(DEFAULT.contains("{{source_language}}"));
+        assert!(DEFAULT.contains("{{target_language}}"));
     }
 }

@@ -15,7 +15,6 @@ import type {
   TeamAssignmentInput,
   TeamPlan,
   TeamRunDetail,
-  LabFeature,
   AgentSessionRecord,
   RuntimeAgentCatalogEntry,
   RuntimeAgentId,
@@ -187,9 +186,7 @@ export const teamRunApi = {
     invoke<TeamRunDetail>("team_respond_worker_approval", { workerId, requestId, approved, requestedPermissions }),
 };
 
-export const labsApi = {
-  listFeatures: () => invoke<LabFeature[]>("list_lab_features"),
-};
+
 
 // ── Cron Tasks ────────────────────────────────────────
 
@@ -206,13 +203,28 @@ export const cronApi = {
 
 // ── File Preview ──────────────────────────────────────
 
+/** 后端 `get_previewable_files` 返回的条目。 */
+export interface PreviewFileEntry {
+  /** 绝对路径。 */
+  path: string;
+  /** 相对工作区根，正斜杠分隔——`workspaceApi.readFile` 要的就是这个。 */
+  relative: string;
+  name: string;
+  ext: string;
+  modified: number;
+}
+
 export const previewApi = {
   listFiles: (workspacePath: string) =>
-    invoke<string[]>("get_previewable_files", { workspacePath }),
-  readFileAsBase64: (params: { workspacePath: string; fileName: string }) =>
-    invoke<string>("read_file_as_base64", params),
-  readFileContent: (params: { workspacePath: string; fileName: string }) =>
-    invoke<string>("read_file_content_utf8", params),
+    invoke<PreviewFileEntry[]>("get_previewable_files", { workspacePath }),
+  // 文件内容一律走 `workspaceApi.readFile`（read_workspace_file）：它带
+  // 目录穿越校验、认得 image/pdf/binary、有大小上限。
+  //
+  // 这里以前挂着 read_file_as_base64 / read_file_content_utf8 两个绑定，
+  // 传的是 { workspacePath, fileName }，而后端签名是 `file_path`——参数名
+  // 就对不上，每次读取都被驳回；错误被 usePreview 吞进 console，面板一片
+  // 空白。而且那两个命令用 `validate_relative_path` 拒绝绝对路径，偏偏
+  // listFiles 给的就是绝对路径，参数名修对了照样读不出来。
   getGitDiff: (workspacePath: string) =>
     invoke<string>("get_workspace_git_diff", { workspacePath }),
 };

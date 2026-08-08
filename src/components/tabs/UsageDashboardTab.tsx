@@ -1,15 +1,15 @@
 /**
  * UsageDashboardTab — 用量成本看板.
  *
- * A first-class destination for gateway operations: circuit health, the
- * existing token/cost activity panel, a per-platform cost breakdown, and a
- * recent-request stream. All read-only over the already-collected
- * `request_logs` + circuit state — no new telemetry.
+ * 只回答一个问题：花了多少。token/成本活动、按平台开销、最近请求，全部读
+ * 已采集的 `request_logs`，不新增遥测。
+ *
+ * 网关健康（各平台熔断状态）不在这里——它的唯一去处是「模型」页，那里它就
+ * 贴在平台列表上方，看到谁熔断了往下一格就能改 key / 停用。
  */
 import { useCallback, useEffect, useState } from "react";
 import { BarChart3, RefreshCw, Server } from "lucide-react";
 
-import { GatewayHealthCard } from "@/components/GatewayHealthCard";
 import { TokenActivityPanel } from "@/components/TokenActivityPanel";
 import { cn } from "@/lib/utils";
 import { requestLogApi, type PlatformUsage, type RequestLogEntry } from "@/lib/tauri-api";
@@ -69,7 +69,7 @@ export function UsageDashboardTab() {
             <BarChart3 className="h-5 w-5 text-primary" /> 用量成本看板
           </div>
           <p className="mt-1 text-sm text-muted-foreground">
-            网关健康、token 与成本活动、按平台开销、最近请求 —— 全部基于已采集的 request_logs（费用为按模型定价的估算）。
+            token 与成本活动、按平台开销、最近请求 —— 全部基于已采集的 request_logs（费用为按模型定价的估算）。网关健康在「模型」页。
           </p>
         </div>
         <button
@@ -81,8 +81,6 @@ export function UsageDashboardTab() {
       </div>
 
       <div className="flex flex-col gap-5 overflow-y-auto p-6">
-        <GatewayHealthCard />
-
         <TokenActivityPanel />
 
         {/* Per-platform cost breakdown */}

@@ -33,27 +33,5 @@ export type NodeType = "file" | "directory" | "module" | "function" | "class" | 
 export type EdgeType = "contains" | "imports" | "exports" | "calls" | "extends" | "implements" | "depends_on" | "belongs_to" | "configures" | "tests" | "styles";
 export type ArchLayer = "api" | "service" | "data" | "ui" | "utility" | "config" | "test" | "infrastructure" | "unknown";
 
-export interface GraphNode {
-  id: string; name: string; node_type: NodeType; path: string; layer: ArchLayer;
-  language: string | null; summary: string | null; line_count: number;
-  fingerprint: string; complexity: string | null; tags: string[];
-}
-export interface GraphEdge { source: string; target: string; edge_type: EdgeType; weight: number; }
-export interface GraphStats {
-  total_files: number; total_lines: number;
-  languages: Record<string, number>; layers: Record<string, number>;
-  node_count: number; edge_count: number;
-}
-export interface ArchitectureGraph {
-  version: number; project_path: string; project_name: string; generated_at: string;
-  nodes: GraphNode[]; edges: GraphEdge[];
-  layers: Record<string, string[]>; stats: GraphStats;
-}
-export const architectureApi = {
-  build: (projectPath: string) => invoke<ArchitectureGraph>("build_architecture_graph", { projectPath }),
-  save: (graph: ArchitectureGraph) => invoke<string>("save_architecture_graph", { graph }),
-  load: (projectName: string) => invoke<ArchitectureGraph>("load_architecture_graph", { projectName }),
-  getIgnorePatterns: (projectPath: string) => invoke<string[]>("get_ignore_patterns", { projectPath }),
-};
 
 // Skill Library Features

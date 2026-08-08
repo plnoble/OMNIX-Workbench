@@ -1,20 +1,25 @@
+/**
+ * CompareHub — AI 专家比对与最佳结论熔炼炉
+ *
+ * 一次提问并排发给多个**网关模型**，每个模型各自保留上下文可持续追问，最后把
+ * 各家的最新回答熔炼成一份结论。
+ *
+ * 这里曾经还有两条路，都已删除：
+ *
+ * - **Web 网页原生比对**：往 DeepSeek / ChatGPT / 豆包 / Gemini / 元宝 的网页里
+ *   嵌 webview 并注入硬编码 CSS 选择器自动填词、点发送。对方改一次 UI 就断，
+ *   而且必须先在各家登录（区域墙一挡就全空），并排的 webview 又被压成一条窄带，
+ *   什么都看不清。维护成本远大于价值。
+ * - **按账号比对**：拿 `agent_accounts` 当比对源。那张表是「外部 CLI 挂到 OMNIX
+ *   网关时用哪个上游」的覆盖配置，不是模型清单；一个账号还只对应一个
+ *   `target_model`。要比的本来就是模型，按模型选就是对的轴。
+ */
 import React, { useState, useEffect, useRef } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/sonner";
 import { DEFAULT_PROXY_PORT } from "@/lib/constants";
 import { modelApi } from "@/lib/tauri-api";
 import type { PlatformModel } from "@/types";
-
-interface AgentAccount {
-  id: string;
-  account_name: string;
-  api_key: string;
-  api_host: string;
-  target_model: string;
-  is_active: boolean;
-}
 
 /** One message in a per-model conversation thread (多模型同对话). */
 interface TurnMsg {
@@ -27,160 +32,118 @@ interface TurnMsg {
   tokenCount?: number;
 }
 
-interface WebExpert {
-  id: string;
-  name: string;
-  url: string;
-  selector: string; // Used for generic target inputs
+const GATEWAY_URL = `http://localhost:${DEFAULT_PROXY_PORT}/v1/chat/completions`;
+
+/** 读一条 OpenAI 兼容的 SSE 流，每收到一段增量就回调一次。 */
+async function streamChat(
+  model: string,
+  body: unknown,
+  signal: AbortSignal,
+  onDelta: (accumulated: string) => void,
+): Promise<string> {
+  const response = await fetch(GATEWAY_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: "Bearer local-proxy",
+      // 这条路由不看 body 里的 `model`（它给外部 CLI 用，要按用户配置改写）。
+      // 不带这个头，每一列都会打到同一个全局 target_model 上——「按模型比对」
+      // 就成了同一个模型自己和自己比。
+      "x-omnix-model": model,
+    },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!response.ok) {
+    // 网关现在回 OpenAI 形状的错误信封，把 message 拎出来；拎不到再退回原文。
+    const raw = await response.text();
+    let detail = raw;
+    try {
+      const parsed = JSON.parse(raw);
+      if (typeof parsed?.error?.message === "string") detail = parsed.error.message;
+    } catch { /* 非 JSON，原样显示 */ }
+    throw new Error(`HTTP ${response.status}: ${detail}`);
+  }
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("上游没有返回响应体");
+
+  const decoder = new TextDecoder();
+  let accumulated = "";
+  let done = false;
+  while (!done) {
+    const { value, done: doneReading } = await reader.read();
+    done = doneReading;
+    if (!value) continue;
+    for (const line of decoder.decode(value, { stream: true }).split("\n")) {
+      if (!line.trim()) continue;
+      if (line.startsWith("data: [DONE]")) { done = true; break; }
+      if (!line.startsWith("data: ")) continue;
+      try {
+        const delta = JSON.parse(line.slice(6))?.choices?.[0]?.delta?.content || "";
+        accumulated += delta;
+        onDelta(accumulated);
+      } catch {
+        // 流式切分会把一行劈成两半，半行解析失败是正常的，等下一块拼上。
+      }
+    }
+  }
+  return accumulated;
 }
 
-const WEB_EXPERTS: WebExpert[] = [
-  {
-    id: "deepseek",
-    name: "DeepSeek (网页版)",
-    url: "https://chat.deepseek.com",
-    selector: "#chat-input"
-  },
-  {
-    id: "chatgpt",
-    name: "ChatGPT (网页版)",
-    url: "https://chatgpt.com",
-    selector: "#prompt-textarea"
-  },
-  {
-    id: "doubao",
-    name: "豆包 (网页版)",
-    url: "https://www.doubao.com",
-    selector: ".chat-input-editor"
-  },
-  {
-    id: "gemini",
-    name: "Gemini (网页版)",
-    url: "https://gemini.google.com",
-    selector: ".textarea"
-  },
-  {
-    id: "yuanbao",
-    name: "腾讯元宝 (网页版)",
-    url: "https://yuanbao.tencent.com",
-    selector: ".input-area"
-  }
-];
-
 export const CompareHub: React.FC = () => {
-  const [mode, setMode] = useState<"api" | "web">("api");
   const [prompt, setPrompt] = useState("");
-  const [accounts, setAccounts] = useState<AgentAccount[]>([]);
-
-  // API Mode States — multi-turn conversation per target (多模型同对话).
-  // A target is either a configured account or an enabled gateway model.
-  const [apiSource, setApiSource] = useState<"account" | "model">("account");
-  const [selectedApiAccs, setSelectedApiAccs] = useState<string[]>([]);
   const [models, setModels] = useState<PlatformModel[]>([]);
   const [selectedModelRefs, setSelectedModelRefs] = useState<string[]>([]);
-  const [threads, setThreads] = useState<{ [targetId: string]: TurnMsg[] }>({});
+  const [threads, setThreads] = useState<{ [modelRef: string]: TurnMsg[] }>({});
 
-  // Unified compare targets for the active source.
-  const activeTargetIds = apiSource === "model" ? selectedModelRefs : selectedApiAccs;
-  const targetInfo = (id: string): { name: string; sub: string; kind: "account" | "model" } => {
-    if (apiSource === "model") {
-      const [pid, ...rest] = id.split(":");
-      return { name: rest.join(":") || id, sub: pid, kind: "model" };
-    }
-    const acc = accounts.find((a) => a.id === id);
-    return { name: acc?.account_name || id, sub: acc?.target_model || "", kind: "account" };
+  const [fusionContent, setFusionContent] = useState("");
+  const [fusionLoading, setFusionLoading] = useState(false);
+
+  // 出结果之后把「选模型 + 提问框 + 模板」整块收起来。这三块常驻要占掉三百多
+  // 像素，而看比对结果时它们一个都用不上——纵向立刻多出接近一屏。
+  const [composerOpen, setComposerOpen] = useState(true);
+  // 聚焦某一个模型：它撑满整宽，其余收成上方的一排标签。三列并排时每列只有
+  // 四百来像素，中文一行二十几个字，读长回答基本靠猜。
+  const [focusedModel, setFocusedModel] = useState<string | null>(null);
+  // 熔炼用哪个模型。空 = 跟随 Auto 路由。
+  //
+  // 熔炼是「交叉评审 + 取长补短」，一次只跑一趟，值得选准；而 Auto 是关键词
+  // 启发式，平局时还由平台优先级决定——不该让它替你决定谁来当评审。
+  const [fusionModel, setFusionModel] = useState("");
+
+  const abortControllersRef = useRef<AbortController[]>([]);
+  const fusionAbortControllerRef = useRef<AbortController | null>(null);
+
+  const modelInfo = (ref: string): { name: string; platform: string } => {
+    const [platform, ...rest] = ref.split(":");
+    return { name: rest.join(":") || ref, platform };
   };
   const anyStreaming = Object.values(threads).some(
     (msgs) => msgs.length > 0 && msgs[msgs.length - 1].loading,
   );
 
-  // Web Mode States
-  const [selectedWebExps, setSelectedWebExps] = useState<string[]>(["deepseek", "chatgpt"]);
-  const [webActive, setWebActive] = useState(false);
-  const [extractedTexts, setExtractedTexts] = useState<{ [expId: string]: string }>({});
-  const [selectorError, setSelectorError] = useState<string | null>(null);
-
-  // Fusion Summary States
-  const [fusionContent, setFusionContent] = useState("");
-  const [fusionLoading, setFusionLoading] = useState(false);
-
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const resizeRef = useRef<number | null>(null);
-  const abortControllersRef = useRef<AbortController[]>([]);
-  const fusionAbortControllerRef = useRef<AbortController | null>(null);
-
-  // Load agent accounts on mount
   useEffect(() => {
-    loadAccounts();
+    modelApi
+      .getActive()
+      .then((active) => {
+        // 嵌入 / 重排模型不会聊天，列出来只会让人选错。
+        const chatModels = active.filter(
+          (m) =>
+            !m.model_name.toLowerCase().includes("embedding") &&
+            !m.model_name.toLowerCase().includes("rerank"),
+        );
+        setModels(chatModels);
+        setSelectedModelRefs(chatModels.slice(0, 3).map((m) => `${m.platform_id}:${m.model_name}`));
+      })
+      .catch((e) => toast.error("读取已启用模型失败", { description: String(e) }));
+
     return () => {
-      // Hide Native Webview windows when leaving CompareHub tab (pooling)
-      invoke("hide_compare_windows").catch(err => console.error(err));
-      // Abort all active fetch requests
-      abortControllersRef.current.forEach(controller => controller.abort());
-      if (fusionAbortControllerRef.current) {
-        fusionAbortControllerRef.current.abort();
-      }
+      abortControllersRef.current.forEach((controller) => controller.abort());
+      fusionAbortControllerRef.current?.abort();
     };
   }, []);
 
-  // Listen to extracted text and failures from sub Webviews
-  useEffect(() => {
-    let unlistenPromise = listen<{ label: string; text: string }>("expert-text-extracted", (event) => {
-      const expId = event.payload.label.replace("expert-", "");
-      setExtractedTexts(prev => ({
-        ...prev,
-        [expId]: event.payload.text
-      }));
-    });
-
-    let unlistenFailPromise = listen<{ expert: string }>("expert-selector-failed", (event) => {
-      setSelectorError(`无法在 [${event.payload.expert}] 页面中自动定位输入框。已自动将 Prompt 复制至剪贴板，您可以在页面中手动粘贴 (Ctrl+V) 并发送。`);
-    });
-
-    return () => {
-      unlistenPromise.then(unlisten => unlisten());
-      unlistenFailPromise.then(unlisten => unlisten());
-    };
-  }, []);
-
-  // Handle window resizing to keep sub Webviews aligned with DOM placeholders
-  useEffect(() => {
-    if (!webActive || mode !== "web") return;
-
-    const handleResize = () => {
-      if (resizeRef.current) cancelAnimationFrame(resizeRef.current);
-      resizeRef.current = requestAnimationFrame(updateWebviewLayout);
-    };
-
-    window.addEventListener("resize", handleResize);
-    return () => {
-      window.removeEventListener("resize", handleResize);
-      if (resizeRef.current) cancelAnimationFrame(resizeRef.current);
-    };
-  }, [webActive, mode, selectedWebExps]);
-
-  const loadAccounts = async () => {
-    try {
-      const list = await invoke<AgentAccount[]>("get_agent_accounts");
-      setAccounts(list);
-      // Select first three connected accounts as default
-      const activeIds = list.filter(acc => acc.api_key.trim().length > 0).map(acc => acc.id);
-      setSelectedApiAccs(activeIds.slice(0, 3));
-    } catch (e) {
-      console.error("Failed to load accounts for compare hub:", e);
-    }
-    try {
-      const enabled = (await modelApi.getActive()).filter(
-        (m) => !m.model_name.toLowerCase().includes("embedding") && !m.model_name.toLowerCase().includes("rerank"),
-      );
-      setModels(enabled);
-      setSelectedModelRefs(enabled.slice(0, 3).map((m) => `${m.platform_id}:${m.model_name}`));
-    } catch (e) {
-      console.error("Failed to load models for compare hub:", e);
-    }
-  };
-
-  // Abort all in-flight comparison streams.
+  /** Abort all in-flight comparison streams. */
   const stopAll = () => {
     abortControllersRef.current.forEach((c) => c.abort());
     abortControllersRef.current = [];
@@ -198,813 +161,445 @@ export const CompareHub: React.FC = () => {
     });
   };
 
-  // Update the trailing (in-flight) assistant message of one model's thread.
-  const patchLastAssistant = (accId: string, patch: Partial<TurnMsg>) => {
-    setThreads(prev => {
-      const arr = [...(prev[accId] || [])];
+  /** Update the trailing (in-flight) assistant message of one model's thread. */
+  const patchLastAssistant = (modelRef: string, patch: Partial<TurnMsg>) => {
+    setThreads((prev) => {
+      const arr = [...(prev[modelRef] || [])];
       const idx = arr.length - 1;
-      if (idx >= 0 && arr[idx].role === "assistant") {
-        arr[idx] = { ...arr[idx], ...patch };
-      }
-      return { ...prev, [accId]: arr };
+      if (idx >= 0 && arr[idx].role === "assistant") arr[idx] = { ...arr[idx], ...patch };
+      return { ...prev, [modelRef]: arr };
     });
   };
 
-  // API Concurrent Dispatcher — multi-turn: each submit fans the FULL per-model
-  // history out to every selected model and streams a new reply into its column.
-  const handleApiCompareSubmit = async (e: React.FormEvent) => {
+  // 多轮：每次提交都把**该模型自己的完整历史**再发一遍，所以追问对每个模型
+  // 都是接着上一轮说的，而不是各自独立的一次性提问。
+  const handleCompareSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const targetIds = activeTargetIds;
-    if (!prompt.trim() || targetIds.length === 0) return;
+    const targets = selectedModelRefs;
+    if (!prompt.trim() || targets.length === 0) return;
 
-    // Abort existing requests
-    abortControllersRef.current.forEach(controller => controller.abort());
+    abortControllersRef.current.forEach((controller) => controller.abort());
     abortControllersRef.current = [];
 
     const submitted = prompt.trim();
-    // Capture the source now so a mid-run source toggle can't mis-route replies.
-    const source = apiSource;
-
-    // Build the message history to send per target from the CURRENT threads,
-    // appending this turn's user message (exclude any in-flight placeholders).
-    const historyByAcc: Record<string, { role: string; content: string }[]> = {};
-    targetIds.forEach(id => {
-      const prior = (threads[id] || [])
-        .filter(m => !m.loading && !m.error)
-        .map(m => ({ role: m.role, content: m.content }));
-      historyByAcc[id] = [...prior, { role: "user", content: submitted }];
+    const historyByModel: Record<string, { role: string; content: string }[]> = {};
+    targets.forEach((ref) => {
+      const prior = (threads[ref] || [])
+        .filter((m) => !m.loading && !m.error)
+        .map((m) => ({ role: m.role, content: m.content }));
+      historyByModel[ref] = [...prior, { role: "user", content: submitted }];
     });
 
-    // Append the user turn + an in-flight assistant placeholder to each thread.
-    setThreads(prev => {
+    setThreads((prev) => {
       const next = { ...prev };
-      targetIds.forEach(id => {
-        const arr = next[id] ? [...next[id]] : [];
+      targets.forEach((ref) => {
+        const arr = next[ref] ? [...next[ref]] : [];
         arr.push({ role: "user", content: submitted });
         arr.push({ role: "assistant", content: "", loading: true, startTime: Date.now() });
-        next[id] = arr;
+        next[ref] = arr;
       });
       return next;
     });
     setPrompt("");
     setFusionContent("");
+    setComposerOpen(false);
 
-    const apiPromises = targetIds.map(async (accId) => {
-      const controller = new AbortController();
-      abortControllersRef.current.push(controller);
-      const startTime = Date.now();
-      try {
-        // Account targets route via the Auto router + account header; model
-        // targets pin a specific gateway model (platform_id:model_name).
-        const headers: Record<string, string> = {
-          "Content-Type": "application/json",
-          "Authorization": "Bearer local-proxy",
-        };
-        if (source === "account") headers["x-omnix-account-id"] = accId;
-        const response = await fetch(`http://localhost:${DEFAULT_PROXY_PORT}/v1/chat/completions`, {
-          method: "POST",
-          headers,
-          body: JSON.stringify({
-            model: source === "model" ? accId : "Auto",
-            messages: historyByAcc[accId],
-            stream: true
-          }),
-          signal: controller.signal
-        });
-
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+    await Promise.allSettled(
+      targets.map(async (ref) => {
+        const controller = new AbortController();
+        abortControllersRef.current.push(controller);
+        const startedAt = Date.now();
+        try {
+          const text = await streamChat(
+            ref,
+            { model: ref, messages: historyByModel[ref], stream: true },
+            controller.signal,
+            (accumulated) => patchLastAssistant(ref, { content: accumulated, loading: true }),
+          );
+          patchLastAssistant(ref, {
+            content: text,
+            loading: false,
+            latencyMs: Date.now() - startedAt,
+            tokenCount: text.length,
+          });
+        } catch (err: unknown) {
+          const error = err instanceof Error ? err : new Error(String(err));
+          if (error.name === "AbortError") return;
+          patchLastAssistant(ref, { loading: false, error: error.message || "请求失败" });
+        } finally {
+          abortControllersRef.current = abortControllersRef.current.filter((c) => c !== controller);
         }
-
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        if (!reader) throw new Error("Null reader response");
-
-        let done = false;
-        let accumText = "";
-
-        while (!done) {
-          const { value, done: doneReading } = await reader.read();
-          done = doneReading;
-          if (value) {
-            const chunk = decoder.decode(value, { stream: true });
-            const lines = chunk.split("\n").filter(l => l.trim() !== "");
-
-            for (const line of lines) {
-              if (line.startsWith("data: [DONE]")) {
-                done = true;
-                break;
-              }
-              if (line.startsWith("data: ")) {
-                try {
-                  const dataObj = JSON.parse(line.substring(6));
-                  const delta = dataObj.choices?.[0]?.delta?.content || "";
-                  accumText += delta;
-                  patchLastAssistant(accId, { content: accumText, loading: !done });
-                } catch (err) {
-                  // Partial SSE lines are expected during streaming; skip silently
-                }
-              }
-            }
-          }
-        }
-
-        const endTime = Date.now();
-        patchLastAssistant(accId, {
-          loading: false,
-          latencyMs: endTime - startTime,
-          tokenCount: accumText.length,
-        });
-
-      } catch (err: unknown) {
-        const error = err instanceof Error ? err : new Error(String(err));
-        if (error.name === 'AbortError') return;
-        console.error("API dispatch error for account:", accId, error);
-        patchLastAssistant(accId, { loading: false, error: error.message || "请求失败" });
-      } finally {
-        abortControllersRef.current = abortControllersRef.current.filter(c => c !== controller);
-      }
-    });
-    Promise.allSettled(apiPromises);
+      }),
+    );
   };
 
-  // Start a fresh multi-model conversation.
-  const handleNewCompareConversation = () => {
-    abortControllersRef.current.forEach(controller => controller.abort());
+  const handleNewConversation = () => {
+    abortControllersRef.current.forEach((controller) => controller.abort());
     abortControllersRef.current = [];
     setThreads({});
     setFusionContent("");
+    setComposerOpen(true);
+    setFocusedModel(null);
   };
 
   /** Latest assistant answer per model (for the fusion furnace). */
-  const latestAnswers = (): { [accId: string]: string } => {
-    const out: { [accId: string]: string } = {};
-    Object.entries(threads).forEach(([accId, msgs]) => {
-      const lastAssistant = [...msgs].reverse().find(m => m.role === "assistant" && m.content.trim());
-      if (lastAssistant) out[accId] = lastAssistant.content;
+  const latestAnswers = (): { [name: string]: string } => {
+    const out: { [name: string]: string } = {};
+    Object.entries(threads).forEach(([ref, msgs]) => {
+      const last = [...msgs].reverse().find((m) => m.role === "assistant" && m.content.trim());
+      if (last) out[modelInfo(ref).name] = last.content;
     });
     return out;
   };
 
-  // Sync Layout calculation and positioning of sub-Webview windows over HTML placeholders
-  const updateWebviewLayout = () => {
-    if (!containerRef.current || selectedWebExps.length === 0) return;
-
-    const cards = containerRef.current.querySelectorAll(".web-placeholder-card");
-    const layouts = [];
-
-    for (let i = 0; i < cards.length; i++) {
-      const card = cards[i];
-      const expId = card.getAttribute("data-exp-id");
-      const exp = WEB_EXPERTS.find(e => e.id === expId);
-      if (exp) {
-        const rect = card.getBoundingClientRect();
-        layouts.push({
-          label: `expert-${exp.id}`,
-          url: exp.url,
-          // Calculate positions relative to Tauri main window outer position
-          x: rect.left,
-          y: rect.top,
-          width: rect.width,
-          height: rect.height
-        });
-      }
-    }
-
-    if (layouts.length > 0) {
-      invoke("set_compare_windows_layout", { layout: layouts })
-        .catch(err => console.error("Failed to set webviews layout:", err));
-    }
-  };
-
-  const handleLaunchWebCompare = () => {
-    if (selectedWebExps.length === 0) {
-      toast.warning("请至少选择一个网页版 AI 进行比对！");
-      return;
-    }
-    setWebActive(true);
-    setFusionContent("");
-    setExtractedTexts({});
-    // Delay slightly to allow React placeholders to mount before positioning Webviews
-    setTimeout(updateWebviewLayout, 250);
-  };
-
-  const handleCloseWebCompare = () => {
-    setWebActive(false);
-    invoke("close_compare_windows").catch(err => console.error(err));
-  };
-
-  // Sync prompt text to all Native Webview windows and trigger send clicks
-  const handleWebSyncPrompt = async () => {
-    if (!prompt.trim()) return;
-
-    // Write to clipboard as a safety copy
-    navigator.clipboard.writeText(prompt).catch(() => { /* non-critical */ });
-
-    selectedWebExps.forEach((expId) => {
-      const exp = WEB_EXPERTS.find(e => e.id === expId);
-      if (!exp) return;
-
-      // Select specific DOM interaction scripts depending on the host
-      let jsScript = "";
-
-      if (expId === "chatgpt") {
-        jsScript = `
-          (function() {
-            try {
-              var ta = document.querySelector('textarea#prompt-textarea') || document.querySelector('textarea');
-              if (ta) {
-                ta.value = ${JSON.stringify(prompt)};
-                ta.dispatchEvent(new Event('input', { bubbles: true }));
-                setTimeout(function() {
-                  var btn = document.querySelector('button[data-testid="send-button"]') || document.querySelector('button[aria-label="Send prompt"]');
-                  if (btn) btn.click();
-                }, 200);
-              } else {
-                window.__TAURI__.event.emit('expert-selector-failed', { expert: 'ChatGPT' });
-              }
-            } catch (e) {
-              window.__TAURI__.event.emit('expert-selector-failed', { expert: 'ChatGPT' });
-            }
-          })();
-        `;
-      } else if (expId === "deepseek") {
-        jsScript = `
-          (function() {
-            try {
-              var ta = document.getElementById('chat-input') || document.querySelector('textarea');
-              if (ta) {
-                ta.value = ${JSON.stringify(prompt)};
-                ta.dispatchEvent(new Event('input', { bubbles: true }));
-                setTimeout(function() {
-                  var btn = document.querySelector('div[role="button"]') || document.querySelector('button');
-                  if (btn) btn.click();
-                }, 200);
-              } else {
-                window.__TAURI__.event.emit('expert-selector-failed', { expert: 'DeepSeek' });
-              }
-            } catch (e) {
-              window.__TAURI__.event.emit('expert-selector-failed', { expert: 'DeepSeek' });
-            }
-          })();
-        `;
-      } else if (expId === "doubao") {
-        jsScript = `
-          (function() {
-            try {
-              var ta = document.querySelector('.chat-input-editor') || document.querySelector('textarea') || document.querySelector('input');
-              if (ta) {
-                if (ta.tagName === 'TEXTAREA' || ta.tagName === 'INPUT') {
-                  ta.value = ${JSON.stringify(prompt)};
-                } else {
-                  ta.innerText = ${JSON.stringify(prompt)};
-                }
-                ta.dispatchEvent(new Event('input', { bubbles: true }));
-                setTimeout(function() {
-                  var btn = document.querySelector('.send-btn') || document.querySelector('.chat-input-send-button') || document.querySelector('button');
-                  if (btn) btn.click();
-                }, 200);
-              } else {
-                window.__TAURI__.event.emit('expert-selector-failed', { expert: '豆包' });
-              }
-            } catch (e) {
-              window.__TAURI__.event.emit('expert-selector-failed', { expert: '豆包' });
-            }
-          })();
-        `;
-      } else if (expId === "gemini") {
-        jsScript = `
-          (function() {
-            try {
-              var ta = document.querySelector('.textarea') || document.querySelector('textarea') || document.querySelector('[role="textbox"]');
-              if (ta) {
-                if (ta.tagName === 'TEXTAREA' || ta.tagName === 'INPUT') {
-                  ta.value = ${JSON.stringify(prompt)};
-                } else {
-                  ta.innerText = ${JSON.stringify(prompt)};
-                }
-                ta.dispatchEvent(new Event('input', { bubbles: true }));
-                setTimeout(function() {
-                  var btn = document.querySelector('.send-button') || document.querySelector('button[aria-label="Send message"]');
-                  if (btn) btn.click();
-                }, 200);
-              } else {
-                window.__TAURI__.event.emit('expert-selector-failed', { expert: 'Gemini' });
-              }
-            } catch (e) {
-              window.__TAURI__.event.emit('expert-selector-failed', { expert: 'Gemini' });
-            }
-          })();
-        `;
-      } else if (expId === "yuanbao") {
-        jsScript = `
-          (function() {
-            try {
-              var ta = document.querySelector('.input-area') || document.querySelector('textarea') || document.querySelector('[contenteditable="true"]');
-              if (ta) {
-                if (ta.tagName === 'TEXTAREA' || ta.tagName === 'INPUT') {
-                  ta.value = ${JSON.stringify(prompt)};
-                } else {
-                  ta.innerText = ${JSON.stringify(prompt)};
-                }
-                ta.dispatchEvent(new Event('input', { bubbles: true }));
-                setTimeout(function() {
-                  var btn = document.querySelector('.send-button') || document.querySelector('button');
-                  if (btn) btn.click();
-                }, 200);
-              } else {
-                window.__TAURI__.event.emit('expert-selector-failed', { expert: '腾讯元宝' });
-              }
-            } catch (e) {
-              window.__TAURI__.event.emit('expert-selector-failed', { expert: '腾讯元宝' });
-            }
-          })();
-        `;
-      }
-
-      if (jsScript) {
-        invoke("eval_compare_window", { label: `expert-${expId}`, js: jsScript })
-          .catch(err => console.error("Failed to eval webview:", expId, err));
-      }
-    });
-  };
-
-  // Run document.body.innerText extraction across all active sub-Webviews
-  const triggerWebtextExtraction = () => {
-    selectedWebExps.forEach(expId => {
-      const jsScript = `
-        (function() {
-          try {
-            var txt = document.body.innerText;
-            // Emit to Tauri main window
-            window.__TAURI__.event.emit('expert-text-extracted', { label: 'expert-${expId}', text: txt });
-          } catch(e) {
-            console.error("Text extraction failed", e);
-          }
-        })();
-      `;
-      invoke("eval_compare_window", { label: `expert-${expId}`, js: jsScript })
-        .catch(err => console.error("Text extraction eval error:", expId, err));
-    });
-  };
-
-  // Combine results from either API streams or Web page extracts, and feed it to target LLM
   const handleFusionSummary = async () => {
-    const textDict: { [name: string]: string } = {};
-
-    if (mode === "api") {
-      Object.entries(latestAnswers()).forEach(([accId, content]) => {
-        const name = targetInfo(accId).name;
-        if (content.trim()) textDict[name] = content;
-      });
-    } else {
-      // Trigger Webtext extraction first
-      triggerWebtextExtraction();
-      // Wait briefly for emit events to settle
-      await new Promise(resolve => setTimeout(resolve, 800));
-
-      selectedWebExps.forEach(expId => {
-        const text = extractedTexts[expId];
-        const exp = WEB_EXPERTS.find(e => e.id === expId);
-        if (text && text.trim().length > 100 && exp) {
-          textDict[exp.name] = text;
-        }
-      });
-    }
-
-    if (Object.keys(textDict).length === 0) {
-      toast.warning("无可熔炼的专家回答内容！请确保 AI 回答完全生成后再试。");
+    const answers = latestAnswers();
+    if (Object.keys(answers).length === 0) {
+      toast.warning("还没有可熔炼的回答", { description: "等各模型回答生成完再点。" });
       return;
     }
 
-    setFusionLoading(true);
-    setFusionContent("");
+    // 熔炼用的问题是最后一轮问的那个，不是输入框里的（那已经清空了）。
+    const lastQuestion =
+      Object.values(threads)
+        .map((msgs) => [...msgs].reverse().find((m) => m.role === "user")?.content)
+        .find(Boolean) || "";
 
-    const sources = Object.entries(textDict)
+    const sources = Object.entries(answers)
       .map(([name, text]) => `【${name} 的回答】：\n${text.slice(0, 3500)}`)
       .join("\n\n");
+    // ⚠️ 这段提示词的措辞会影响**路由**：Auto 靠关键词判断请求需要什么能力，
+    // 原文里的「代码」一词会让每一次熔炼都命中 need_coding，把评审工作固定交给
+    // 代码专用模型——哪怕你比对的是散文或产品问题。改动这里时别把
+    // 「代码 / algorithm / 算法 / 死锁 / 图片」这类词写回来。
+    const fusionPrompt = `以下是同一个问题、多个 AI 分别给出的回答。请你作为中立的评审，综合比较它们：核对事实、指出分歧与各自的强弱，去重去错，取长补短，融合出一份最全面、准确、可信的答案。若涉及工程实现，一并留意常见反模式与安全、并发方面的隐患。用与问题相同的语言作答。
 
-    const fusionPrompt = `以下是同一个问题、多个 AI 分别给出的回答。请你作为中立的评审，综合比较它们：核对事实、指出分歧与各自的强弱，去重去错，取长补短，融合出一份最全面、准确、可信的答案。若问题涉及代码或工程，同时留意常见反模式与安全/并发隐患。用与问题相同的语言作答。
-
-【问题】：${prompt}
+【问题】：${lastQuestion}
 
 ${sources}
 
 【融合后的最佳答案】：`;
 
-    if (fusionAbortControllerRef.current) {
-      fusionAbortControllerRef.current.abort();
-    }
+    fusionAbortControllerRef.current?.abort();
     const controller = new AbortController();
     fusionAbortControllerRef.current = controller;
+    setFusionLoading(true);
+    setFusionContent("");
 
     try {
-      const response = await fetch(`http://localhost:${DEFAULT_PROXY_PORT}/v1/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": "Bearer local-proxy"
-        },
-        body: JSON.stringify({
-          model: "Auto", // Route through Auto router
-          messages: [{ role: "user", content: fusionPrompt }],
-          stream: true
-        }),
-        signal: controller.signal
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${await response.text()}`);
-      }
-
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder();
-      if (!reader) throw new Error("Null response body");
-
-      let done = false;
-      let accumText = "";
-
-      while (!done) {
-        const { value, done: doneReading } = await reader.read();
-        done = doneReading;
-        if (value) {
-          const chunk = decoder.decode(value, { stream: true });
-          const lines = chunk.split("\n").filter(l => l.trim() !== "");
-
-          for (const line of lines) {
-            if (line.startsWith("data: [DONE]")) {
-              done = true;
-              break;
-            }
-            if (line.startsWith("data: ")) {
-              try {
-                const dataObj = JSON.parse(line.substring(6));
-                const delta = dataObj.choices?.[0]?.delta?.content || "";
-                accumText += delta;
-                setFusionContent(accumText);
-              } catch (_err) { /* non-JSON SSE line, skip */ }
-            }
-          }
-        }
-      }
-
+      const judge = fusionModel || "Auto";
+      await streamChat(
+        judge,
+        { model: judge, messages: [{ role: "user", content: fusionPrompt }], stream: true },
+        controller.signal,
+        setFusionContent,
+      );
     } catch (e: unknown) {
       const error = e instanceof Error ? e : new Error(String(e));
-      if (error.name === 'AbortError') return;
-      console.error("Fusion furnace summary error:", error);
-      setFusionContent("熔炼总结发生错误: " + error.message);
+      if (error.name === "AbortError") return;
+      setFusionContent(`熔炼失败：${error.message}`);
     } finally {
-      if (fusionAbortControllerRef.current === controller) {
-        fusionAbortControllerRef.current = null;
-      }
+      if (fusionAbortControllerRef.current === controller) fusionAbortControllerRef.current = null;
       setFusionLoading(false);
     }
   };
 
   const handleCopyText = (text: string) => {
     navigator.clipboard.writeText(text).then(
-      () => toast.success("文本已复制到剪贴板！"),
-      () => toast.error("复制失败，请手动复制。")
+      () => toast.success("已复制到剪贴板"),
+      () => toast.error("复制失败，请手动复制"),
     );
   };
 
+  const hasThreads = Object.keys(threads).length > 0;
+  // 聚焦的模型被取消勾选后要自动解除，否则结果区会整片空掉。
+  const activeFocus = focusedModel && selectedModelRefs.includes(focusedModel) ? focusedModel : null;
+  const visibleModels = activeFocus ? [activeFocus] : selectedModelRefs;
+
   return (
-    <div className="compare-hub-container flex flex-col h-full p-5 overflow-y-auto gap-5" ref={containerRef}>
-
-      {/* Title & Engine Mode Switcher */}
-      <div className="flex justify-between items-center">
-        <div>
-          <h2 className="m-0 text-lg flex items-center gap-2">
-            ⚖️ AI 专家比对与最佳结论熔炼炉
-          </h2>
-          <span className="text-xs text-muted-foreground">
-            多模型同对话：一次提问并排发给多个模型，可持续追问（每个模型各自保留上下文），再熔炼出最佳结论
-          </span>
-        </div>
-
-        <div className="tab-switcher flex bg-muted/10 p-1 rounded-lg border border-border">
-          <button
-            className={cn(
-              "px-4 py-1.5 border-none rounded-md text-xs cursor-pointer transition-all",
-              mode === "api"
-                ? "bg-accent text-accent-foreground font-medium shadow-sm"
-                : "bg-transparent text-muted-foreground hover:text-foreground"
-            )}
-            onClick={() => { setMode("api"); handleCloseWebCompare(); }}
-            disabled={webActive}
-          >
-            🔌 API 并行极速比对
-          </button>
-          <button
-            className={cn(
-              "px-4 py-1.5 border-none rounded-md text-xs cursor-pointer transition-all",
-              mode === "web"
-                ? "bg-accent text-accent-foreground font-medium shadow-sm"
-                : "bg-transparent text-muted-foreground hover:text-foreground"
-            )}
-            onClick={() => setMode("web")}
-            disabled={webActive}
-          >
-            🌐 Web 网页原生比对
-          </button>
-        </div>
+    // `min-h-0` 是关键：没有它，flex 子项的 `flex-1` 撑不开，结果区仍会被内容
+    // 高度决定，输入区收起来腾出的空间就白腾了。
+    <div className="flex h-full min-h-0 flex-col gap-5 overflow-y-auto p-5">
+      <div>
+        <h2 className="m-0 flex items-center gap-2 text-lg">⚖️ AI 专家比对与最佳结论熔炼炉</h2>
+        <span className="text-xs text-muted-foreground">
+          一次提问并排发给多个模型，每个模型各自保留上下文可持续追问，再熔炼出最佳结论。全部走 OMNIX 网关。
+        </span>
       </div>
 
-      {/* Selector Error Banner */}
-      {selectorError && (
-        <div className="card p-3 flex justify-between items-center bg-destructive/[0.08] border border-dashed border-destructive/40 rounded-lg">
-          <span className="text-sm text-destructive font-medium">
-            ⚠️ {selectorError}
+      {/* 收起态：一行搞定「继续追问」，不必展开整块。 */}
+      {!composerOpen && (
+        <form onSubmit={handleCompareSubmit} className="card flex items-center gap-2 p-2.5">
+          <span className="shrink-0 text-xs text-muted-foreground">
+            {selectedModelRefs.length} 个模型
           </span>
-          <button
-            className="btn btn-secondary px-2.5 py-1 text-xs border border-destructive/30 text-destructive bg-transparent cursor-pointer"
-            onClick={() => setSelectorError(null)}
-          >
-            我知道了
-          </button>
-        </div>
-      )}
-
-      {/* API Configuration Options */}
-      {mode === "api" && (
-        <div className="card p-4">
-          <div className="mb-2 flex items-center justify-between gap-2">
-            <span className="text-sm font-semibold text-secondary-foreground">
-              选择要比对的{apiSource === "model" ? "模型" : "API 专家账号"}
-            </span>
-            {/* Source: compare configured accounts, or any enabled gateway model. */}
-            <div className="flex rounded-lg border border-border bg-muted/10 p-0.5 text-xs">
-              <button
-                className={cn("rounded-md px-2.5 py-1", apiSource === "account" ? "bg-accent text-accent-foreground" : "text-muted-foreground")}
-                onClick={() => setApiSource("account")}
-              >按账号</button>
-              <button
-                className={cn("rounded-md px-2.5 py-1", apiSource === "model" ? "bg-accent text-accent-foreground" : "text-muted-foreground")}
-                onClick={() => setApiSource("model")}
-              >按模型</button>
-            </div>
-          </div>
-
-          {apiSource === "account" ? (
-            <div className="flex flex-wrap gap-2.5">
-              {accounts.length === 0 && <span className="text-xs text-muted-foreground">还没有配置账号 —— 或切到「按模型」直接比已启用的网关模型。</span>}
-              {accounts.map(acc => {
-                const connected = acc.api_key.trim().length > 0;
-                return (
-                  <label
-                    key={acc.id}
-                    className={cn(
-                      "checkbox-label flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer",
-                      selectedApiAccs.includes(acc.id) ? "checked bg-purple-500/12 border border-purple-500" : "bg-muted/5 border border-border",
-                      !connected && "cursor-not-allowed opacity-60"
-                    )}
-                    title={connected ? `模型: ${acc.target_model}` : "未配置 API Key"}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={selectedApiAccs.includes(acc.id)}
-                      disabled={!connected}
-                      onChange={(e) => {
-                        if (e.target.checked) {
-                          setSelectedApiAccs(prev => [...prev, acc.id]);
-                        } else {
-                          setSelectedApiAccs(prev => prev.filter(id => id !== acc.id));
-                        }
-                      }}
-                      className={cn(connected ? "cursor-pointer" : "cursor-not-allowed")}
-                    />
-                    <div>
-                      <span className="text-sm font-medium block">{acc.account_name}</span>
-                      <span className="text-xs text-muted-foreground">{acc.target_model}</span>
-                    </div>
-                  </label>
-                );
-              })}
-            </div>
+          <input
+            className="min-w-0 flex-1 rounded-md border border-border bg-muted/10 px-3 py-2 text-sm outline-none focus:border-accent"
+            placeholder="继续追问…（Enter 发送）"
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+          />
+          {anyStreaming ? (
+            <button type="button" className="btn btn-secondary shrink-0 px-3 py-2 text-sm" onClick={stopAll}>
+              ⏹ 停止
+            </button>
           ) : (
-            <div className="flex flex-wrap gap-2.5">
-              {models.length === 0 && <span className="text-xs text-muted-foreground">没有已启用的模型 —— 先到「模型」页启用几个。</span>}
-              {models.map(m => {
-                const ref = `${m.platform_id}:${m.model_name}`;
-                const on = selectedModelRefs.includes(ref);
-                return (
-                  <label
-                    key={m.id}
-                    className={cn(
-                      "checkbox-label flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer",
-                      on ? "checked bg-purple-500/12 border border-purple-500" : "bg-muted/5 border border-border",
-                    )}
-                    title={m.platform_id}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={on}
-                      onChange={(e) =>
-                        setSelectedModelRefs(prev => e.target.checked ? [...prev, ref] : prev.filter(r => r !== ref))
-                      }
-                      className="cursor-pointer"
-                    />
-                    <div>
-                      <span className="text-sm font-medium block">{m.model_name}</span>
-                      <span className="text-xs text-muted-foreground">{m.platform_id}</span>
-                    </div>
-                  </label>
-                );
-              })}
-            </div>
+            <button type="submit" className="btn btn-primary shrink-0 px-3 py-2 text-sm" disabled={!prompt.trim()}>
+              发送
+            </button>
           )}
-        </div>
-      )}
-
-      {/* Web Configuration Options */}
-      {mode === "web" && !webActive && (
-        <div className="card p-4">
-          <span className="text-sm font-semibold text-secondary-foreground block mb-2">
-            选择要开启比对的原生 AI 网页（建议 2 - 3 栏以防窗口过挤）
-          </span>
-          <div className="flex flex-wrap gap-2.5 mb-4">
-            {WEB_EXPERTS.map(exp => (
-              <label
-                key={exp.id}
-                className={cn(
-                  "flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer",
-                  selectedWebExps.includes(exp.id) ? "bg-pink-500/10 border border-pink-500" : "bg-muted/5 border border-border"
-                )}
-              >
-                <input
-                  type="checkbox"
-                  checked={selectedWebExps.includes(exp.id)}
-                  onChange={(e) => {
-                    if (e.target.checked) {
-                      setSelectedWebExps(prev => [...prev, exp.id]);
-                    } else {
-                      setSelectedWebExps(prev => prev.filter(id => id !== exp.id));
-                    }
-                  }}
-                  className="cursor-pointer"
-                />
-                <span className="text-sm font-medium">{exp.name}</span>
-              </label>
-            ))}
-          </div>
           <button
-            className="btn btn-primary w-full flex items-center justify-center gap-1.5"
-            onClick={handleLaunchWebCompare}
+            type="button"
+            className="shrink-0 rounded-md border border-border px-2.5 py-2 text-xs text-muted-foreground hover:text-foreground"
+            onClick={() => setComposerOpen(true)}
+            title="展开：换模型、用模板、写长提示词"
           >
-            🌐 启动网页版并排比对窗 (Launch Web Compare)
+            ⇕ 展开
           </button>
-        </div>
-      )}
-
-      {/* Web Active Floating Controller */}
-      {mode === "web" && webActive && (
-        <div className="card p-3 flex justify-between items-center bg-pink-500/[0.06] border border-dashed border-pink-500/40">
-          <span className="text-sm text-pink-500 font-medium">
-            ⚡ 网页并行比对中，您可以通过输入下方 Prompt 并点击【同步发送】进行提问。
-          </span>
-          <button className="btn btn-secondary px-3 py-1 text-xs" onClick={handleCloseWebCompare}>
-            ❌ 关闭所有子网页
+          <button
+            type="button"
+            className="shrink-0 rounded-md border border-border px-2.5 py-2 text-xs text-muted-foreground hover:text-foreground"
+            onClick={handleNewConversation}
+            title="清空所有模型的对话，开始新一轮"
+          >
+            🆕
           </button>
-        </div>
-      )}
-
-      {/* Central Input Prompt Form */}
-      {(!webActive || mode === "web") && (
-        <form onSubmit={mode === "api" ? handleApiCompareSubmit : (e) => e.preventDefault()} className="card p-5 flex flex-col gap-4">
-          <div className="form-group">
-            <label className="flex justify-between items-center mb-2">
-              <span className="text-sm font-semibold text-foreground">
-                📝 输入提问 / System Prompt
-              </span>
-              <span className="text-xs text-muted-foreground">
-                ⚡ Ctrl/⌘+Enter 发送 · 模板见下方
-              </span>
-            </label>
-            <textarea
-              className="w-full bg-muted/10 border border-border rounded-lg px-3.5 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30 resize-y leading-relaxed font-mono"
-              rows={6}
-              style={{ minHeight: "140px", maxHeight: "400px" }}
-              placeholder="输入要同时问多个模型的问题…（Ctrl/⌘+Enter 发送）"
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              onKeyDown={(e) => {
-                if (mode === "api" && (e.metaKey || e.ctrlKey) && e.key === "Enter") {
-                  e.preventDefault();
-                  e.currentTarget.form?.requestSubmit();
-                }
-              }}
-              required
-            />
-          </div>
-
-          <div className="flex gap-2.5">
-            {mode === "api" ? (
-              <>
-                {anyStreaming ? (
-                  <button type="button" className="btn btn-secondary flex-1 flex items-center justify-center gap-1.5 py-2.5" onClick={stopAll}>
-                    ⏹ 停止生成
-                  </button>
-                ) : (
-                  <button type="submit" className="btn btn-primary flex-1 flex items-center justify-center gap-1.5 py-2.5">
-                    {Object.keys(threads).length > 0 ? "💬 继续追问（多模型同对话）" : "🎯 开始并行比对"}
-                  </button>
-                )}
-                {Object.keys(threads).length > 0 && (
-                  <button
-                    type="button"
-                    className="btn btn-secondary px-4 flex items-center justify-center gap-1.5 py-2.5"
-                    onClick={handleNewCompareConversation}
-                    title="清空所有模型的对话，开始新一轮"
-                  >
-                    🆕 新对话
-                  </button>
-                )}
-              </>
-            ) : (
-              <button
-                type="button"
-                className="btn btn-primary flex-1 flex items-center justify-center gap-1.5 py-2.5"
-                onClick={handleWebSyncPrompt}
-                disabled={!webActive}
-              >
-                🚀 全局同步发问 (Sync Web Prompt)
-              </button>
-            )}
-          </div>
-
-          <div className="flex flex-wrap gap-2 pt-1 border-t border-border">
-            <span className="text-xs text-muted-foreground mr-1 self-center">模板：</span>
-            <button
-              type="button"
-              className="text-xs px-2.5 py-1 rounded-full border border-border bg-muted/10 hover:bg-accent/10 hover:border-accent/40 hover:text-accent text-foreground cursor-pointer transition-colors"
-              onClick={() => setPrompt("如何解决 Node.js 跨域请求（CORS）中首发 OPTIONS 预检请求抛出的 403 跨域失败错误？")}
-            >
-              CORS OPTIONS 预检
-            </button>
-            <button
-              type="button"
-              className="text-xs px-2.5 py-1 rounded-full border border-border bg-muted/10 hover:bg-accent/10 hover:border-accent/40 hover:text-accent text-foreground cursor-pointer transition-colors"
-              onClick={() => setPrompt("分析以下 Rust 代码在使用 tokio::sync::Mutex 时为什么在多路 select 中造成死锁，如何用 std 或 ParkingLot 锁修复？")}
-            >
-              Tokio 异步死锁
-            </button>
-            <button
-              type="button"
-              className="text-xs px-2.5 py-1 rounded-full border border-border bg-muted/10 hover:bg-accent/10 hover:border-accent/40 hover:text-accent text-foreground cursor-pointer transition-colors"
-              onClick={() => setPrompt("编写一个用 Rust 泛型实现的高并发 Thread-Safe LruCache 缓存模块，要求附带生命周期淘汰逻辑与单元测试用例。")}
-            >
-              高并发线程安全缓存
-            </button>
-          </div>
         </form>
       )}
 
-      {/* Side-by-Side Display Columns */}
-
-      {/* API Columns — one column per target; horizontal scroll when many. */}
-      {mode === "api" && Object.keys(threads).length > 0 && (
-        <div className="flex gap-[15px] min-h-[260px] overflow-x-auto pb-1">
-          {activeTargetIds.map(accId => {
-            const info = targetInfo(accId);
-            const msgs = threads[accId] || [];
-            const lastAssistant = [...msgs].reverse().find(m => m.role === "assistant");
+      {/* 比对目标：已启用的网关模型 */}
+      {composerOpen && (
+      <div className="card p-4">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <span className="text-sm font-semibold text-secondary-foreground">选择要比对的模型</span>
+          <span className="text-xs text-muted-foreground">已选 {selectedModelRefs.length} 个</span>
+        </div>
+        <div className="flex flex-wrap gap-2.5">
+          {models.length === 0 && (
+            <span className="text-xs text-muted-foreground">
+              没有已启用的模型 —— 先到「模型」页启用几个带 API Key 的供应商。
+            </span>
+          )}
+          {models.map((m) => {
+            const ref = `${m.platform_id}:${m.model_name}`;
+            const on = selectedModelRefs.includes(ref);
             return (
-              <div key={accId} className="card glass-card flex flex-col h-full w-[340px] shrink-0 p-4">
-                <div className="flex justify-between items-center border-b border-border pb-2.5 mb-3">
-                  <div className="min-w-0">
-                    <strong className="text-sm block truncate" title={accId}>{info.name}</strong>
-                    <span className="text-xs text-muted-foreground">{info.sub}</span>
+              <label
+                key={m.id}
+                className={cn(
+                  "checkbox-label flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2",
+                  on ? "checked border border-purple-500 bg-purple-500/12" : "border border-border bg-muted/5",
+                )}
+                title={m.platform_id}
+              >
+                <input
+                  type="checkbox"
+                  checked={on}
+                  onChange={(e) =>
+                    setSelectedModelRefs((prev) =>
+                      e.target.checked ? [...prev, ref] : prev.filter((r) => r !== ref),
+                    )
+                  }
+                  className="cursor-pointer"
+                />
+                <div>
+                  <span className="block text-sm font-medium">{m.model_name}</span>
+                  <span className="text-xs text-muted-foreground">{m.platform_id}</span>
+                </div>
+              </label>
+            );
+          })}
+        </div>
+      </div>
+      )}
+
+      {/* 提问 */}
+      {composerOpen && (
+      <form onSubmit={handleCompareSubmit} className="card flex flex-col gap-4 p-5">
+        <div className="form-group">
+          <label className="mb-2 flex items-center justify-between">
+            <span className="text-sm font-semibold text-foreground">📝 输入提问 / System Prompt</span>
+            <span className="flex items-center gap-3 text-xs text-muted-foreground">
+              <span>⚡ Ctrl/⌘+Enter 发送 · 模板见下方</span>
+              {hasThreads && (
+                <button
+                  type="button"
+                  className="rounded border border-border px-2 py-0.5 hover:text-foreground"
+                  onClick={() => setComposerOpen(false)}
+                  title="收起，把版面让给回答"
+                >
+                  ⇕ 收起
+                </button>
+              )}
+            </span>
+          </label>
+          <textarea
+            className="w-full resize-y rounded-lg border border-border bg-muted/10 px-3.5 py-2.5 font-mono text-sm leading-relaxed text-foreground placeholder:text-muted-foreground focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/30"
+            rows={6}
+            style={{ minHeight: "140px", maxHeight: "400px" }}
+            placeholder="输入要同时问多个模型的问题…（Ctrl/⌘+Enter 发送）"
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            onKeyDown={(e) => {
+              if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                e.preventDefault();
+                e.currentTarget.form?.requestSubmit();
+              }
+            }}
+            required
+          />
+        </div>
+
+        <div className="flex gap-2.5">
+          {anyStreaming ? (
+            <button
+              type="button"
+              className="btn btn-secondary flex flex-1 items-center justify-center gap-1.5 py-2.5"
+              onClick={stopAll}
+            >
+              ⏹ 停止生成
+            </button>
+          ) : (
+            <button
+              type="submit"
+              className="btn btn-primary flex flex-1 items-center justify-center gap-1.5 py-2.5"
+              disabled={selectedModelRefs.length === 0}
+            >
+              {hasThreads ? "💬 继续追问（多模型同对话）" : "🎯 开始并行比对"}
+            </button>
+          )}
+          {hasThreads && (
+            <button
+              type="button"
+              className="btn btn-secondary flex items-center justify-center gap-1.5 px-4 py-2.5"
+              onClick={handleNewConversation}
+              title="清空所有模型的对话，开始新一轮"
+            >
+              🆕 新对话
+            </button>
+          )}
+        </div>
+
+        <div className="flex flex-wrap gap-2 border-t border-border pt-1">
+          <span className="mr-1 self-center text-xs text-muted-foreground">模板：</span>
+          {[
+            ["CORS OPTIONS 预检", "如何解决 Node.js 跨域请求（CORS）中首发 OPTIONS 预检请求抛出的 403 跨域失败错误？"],
+            ["Tokio 异步死锁", "分析以下 Rust 代码在使用 tokio::sync::Mutex 时为什么在多路 select 中造成死锁，如何用 std 或 ParkingLot 锁修复？"],
+            ["高并发线程安全缓存", "编写一个用 Rust 泛型实现的高并发 Thread-Safe LruCache 缓存模块，要求附带生命周期淘汰逻辑与单元测试用例。"],
+          ].map(([label, text]) => (
+            <button
+              key={label}
+              type="button"
+              className="cursor-pointer rounded-full border border-border bg-muted/10 px-2.5 py-1 text-xs text-foreground transition-colors hover:border-accent/40 hover:bg-accent/10 hover:text-accent"
+              onClick={() => setPrompt(text)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </form>
+      )}
+
+      {/* 聚焦切换条：并排读不下去时，点一个模型让它独占整宽。 */}
+      {hasThreads && selectedModelRefs.length > 1 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="mr-1 text-xs text-muted-foreground">视图：</span>
+          <button
+            type="button"
+            onClick={() => setFocusedModel(null)}
+            className={cn(
+              "rounded-full border px-3 py-1 text-xs transition-colors",
+              activeFocus === null
+                ? "border-purple-500 bg-purple-500/12 text-foreground"
+                : "border-border text-muted-foreground hover:text-foreground",
+            )}
+          >
+            并排（{selectedModelRefs.length}）
+          </button>
+          {selectedModelRefs.map((ref) => (
+            <button
+              key={ref}
+              type="button"
+              onClick={() => setFocusedModel(ref)}
+              title={ref}
+              className={cn(
+                "max-w-[14rem] truncate rounded-full border px-3 py-1 text-xs transition-colors",
+                activeFocus === ref
+                  ? "border-purple-500 bg-purple-500/12 text-foreground"
+                  : "border-border text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {modelInfo(ref).name}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* 结果区。并排时少于 4 个铺满、多了横向滚动；聚焦时单列独占整宽。
+          高度吃满剩余空间——上面的输入区收起来腾出的地方，要真的用上。 */}
+      {hasThreads && (
+        <div className="flex min-h-0 flex-1 gap-[15px] overflow-x-auto pb-1">
+          {visibleModels.map((ref) => {
+            const info = modelInfo(ref);
+            const msgs = threads[ref] || [];
+            const lastAssistant = [...msgs].reverse().find((m) => m.role === "assistant");
+            return (
+              <div
+                key={ref}
+                className={cn(
+                  "card glass-card flex min-h-0 flex-col p-4",
+                  activeFocus
+                    ? "w-full"
+                    : visibleModels.length <= 3
+                      ? "min-w-[320px] flex-1"
+                      : "w-[340px] shrink-0",
+                )}
+              >
+                <div className="mb-3 flex items-center justify-between border-b border-border pb-2.5">
+                  <button
+                    type="button"
+                    className="min-w-0 cursor-pointer border-none bg-transparent p-0 text-left"
+                    onClick={() => setFocusedModel(activeFocus === ref ? null : ref)}
+                    title={activeFocus === ref ? "点击回到并排" : "点击让这个模型独占整宽"}
+                  >
+                    <strong className="block truncate text-sm">{info.name}</strong>
+                    <span className="text-xs text-muted-foreground">{info.platform}</span>
                     {lastAssistant?.latencyMs && !lastAssistant.loading && (
-                      <span className="text-xs text-cyan-400 ml-2">
+                      <span className="ml-2 text-xs text-cyan-400">
                         ⏱ {(lastAssistant.latencyMs / 1000).toFixed(1)}s · ~{Math.ceil((lastAssistant.tokenCount || 0) / 4)} tokens
                       </span>
                     )}
-                  </div>
+                  </button>
                   {lastAssistant?.loading ? (
                     <span className="pulse-dot active" title="正在生成实时流..." />
                   ) : lastAssistant?.content ? (
-                    <button className="btn-icon border-none bg-transparent cursor-pointer text-sm" onClick={() => handleCopyText(lastAssistant.content)} title="复制最新回答" aria-label="复制最新回答">
+                    <button
+                      className="btn-icon cursor-pointer border-none bg-transparent text-sm"
+                      onClick={() => handleCopyText(lastAssistant.content)}
+                      title="复制最新回答"
+                      aria-label="复制最新回答"
+                    >
                       📋
                     </button>
                   ) : null}
                 </div>
 
-                <div className="flex-1 min-h-[180px] max-h-[60vh] overflow-y-auto text-sm leading-relaxed flex flex-col gap-2.5">
-                  {msgs.map((m, i) => (
+                <div className="flex min-h-[220px] flex-1 flex-col gap-2.5 overflow-y-auto text-sm leading-relaxed">
+                  {msgs.map((m, i) =>
                     m.role === "user" ? (
-                      <div key={i} className="self-end max-w-[90%] rounded-lg bg-accent/15 px-2.5 py-1.5 text-xs text-foreground whitespace-pre-wrap">
+                      <div key={i} className="max-w-[90%] self-end whitespace-pre-wrap rounded-lg bg-accent/15 px-2.5 py-1.5 text-xs text-foreground">
                         {m.content}
                       </div>
                     ) : (
-                      <div key={i} className="text-foreground whitespace-pre-wrap">
+                      <div key={i} className="whitespace-pre-wrap text-foreground">
                         {m.error ? (
                           <span className="text-red-500">🚫 错误: {m.error}</span>
                         ) : (
                           m.content || <span className="text-muted-foreground">等待回答流生成中...</span>
                         )}
                       </div>
-                    )
-                  ))}
+                    ),
+                  )}
                 </div>
               </div>
             );
@@ -1012,77 +607,79 @@ ${sources}
         </div>
       )}
 
-      {/* Web Columns Placeholders */}
-      {mode === "web" && webActive && (
-        // TODO: migrate to Tailwind - gridTemplateColumns is dynamic based on selectedWebExps.length
-        <div style={{ display: "grid", gridTemplateColumns: `repeat(${selectedWebExps.length}, 1fr)` }} className="gap-3 h-[450px] border border-border rounded-xl bg-muted/10 p-2 overflow-hidden">
-          {selectedWebExps.map(expId => {
-            const exp = WEB_EXPERTS.find(e => e.id === expId);
-            return (
-              <div
-                key={expId}
-                className="web-placeholder-card h-full rounded-lg border border-dashed border-border bg-muted/5 flex items-center justify-center relative"
-                data-exp-id={expId}
-              >
-                {/* Visual indicator for HTML placeholder bounding box */}
-                <div className="text-center opacity-15 pointer-events-none">
-                  <span className="text-[28px] block mb-2">🌐</span>
-                  <span className="text-xs">{exp?.name} Native View</span>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Summary Fusion Furnace Card */}
-      {((mode === "api" && Object.keys(threads).length > 0) || (mode === "web" && webActive)) && (
-        <div className="card p-5 flex flex-col gap-4" style={{
-          background: "linear-gradient(135deg, rgba(168, 85, 247, 0.08) 0%, rgba(236, 72, 153, 0.08) 100%)",
-          border: "1px solid rgba(168, 85, 247, 0.25)",
-          boxShadow: "0 4px 20px rgba(168,85,247,0.15)"
-        }}>
-          <div className="flex justify-between items-center">
-            <div>
-              <strong className="text-base text-foreground block">🔮 AI 专家比对总结熔炼炉 (Fusion Summary Furnace)</strong>
+      {/* 熔炼炉 */}
+      {hasThreads && (
+        <div
+          className="card flex flex-col gap-4 p-5"
+          style={{
+            background: "linear-gradient(135deg, rgba(168, 85, 247, 0.08) 0%, rgba(236, 72, 153, 0.08) 100%)",
+            border: "1px solid rgba(168, 85, 247, 0.25)",
+            boxShadow: "0 4px 20px rgba(168,85,247,0.15)",
+          }}
+        >
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0">
+              <strong className="block text-base text-foreground">🔮 最佳结论熔炼炉</strong>
               <span className="text-xs text-muted-foreground">
-                {mode === "api"
-                  ? "提取上述所有 API 专家的回答内容进行智能提炼，融合出最安全、无漏洞的最优系统级决策。"
-                  : "自动抓取上述所有原生网页的内容文字（InnerText），并通过最强模型提炼最佳答案。"}
+                取各模型的最新一条回答，交叉评审后融合出一份结论。
               </span>
             </div>
-
-            <button
-              className="btn btn-primary py-2 px-5 flex items-center gap-1.5"
-              onClick={handleFusionSummary}
-              disabled={fusionLoading}
-            >
-              {fusionLoading ? "熔炼中..." : "🔥 开始点火熔炼"}
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                评审模型
+                <select
+                  value={fusionModel}
+                  onChange={(e) => setFusionModel(e.target.value)}
+                  className="h-8 max-w-[16rem] rounded-md border border-border bg-background px-2 text-xs text-foreground"
+                  title="熔炼只跑一趟，值得选准。留空则交给 Auto 路由按关键词猜。"
+                >
+                  <option value="">Auto（自动挑选）</option>
+                  {models.map((m) => {
+                    const ref = `${m.platform_id}:${m.model_name}`;
+                    return (
+                      <option key={m.id} value={ref}>
+                        {m.model_name} · {m.platform_id}
+                      </option>
+                    );
+                  })}
+                </select>
+              </label>
+              <button
+                className="btn btn-primary flex items-center gap-1.5 px-5 py-2"
+                onClick={handleFusionSummary}
+                disabled={fusionLoading || anyStreaming}
+                title={anyStreaming ? "等所有模型回答完再熔炼" : undefined}
+              >
+                {fusionLoading ? "熔炼中..." : "🔥 开始点火熔炼"}
+              </button>
+            </div>
           </div>
 
           {(fusionLoading || fusionContent) && (
-            <div className="bg-muted/10 border border-purple-500/15 rounded-lg p-4 min-h-[100px] text-sm leading-relaxed text-foreground whitespace-pre-wrap relative">
+            <div className="relative min-h-[100px] whitespace-pre-wrap rounded-lg border border-purple-500/15 bg-muted/10 p-4 text-sm leading-relaxed text-foreground">
               {fusionContent ? (
                 <>
-                  <div className="flex justify-end mb-2 border-b border-border pb-1.5">
-                    <button className="btn-icon border-none bg-transparent cursor-pointer text-sm" onClick={() => handleCopyText(fusionContent)} title="复制熔炼方案">
+                  <div className="mb-2 flex justify-end border-b border-border pb-1.5">
+                    <button
+                      className="btn-icon cursor-pointer border-none bg-transparent text-sm"
+                      onClick={() => handleCopyText(fusionContent)}
+                      title="复制熔炼方案"
+                    >
                       📋 复制方案
                     </button>
                   </div>
                   {fusionContent}
                 </>
               ) : (
-                <div className="text-center py-5">
-                  <span className="pulse-dot active inline-block mr-2.5" />
-                  <span className="text-muted-foreground">正在从各大网页与回答中深度提炼知识，生成首席架构师决策方案中...</span>
+                <div className="py-5 text-center">
+                  <span className="pulse-dot active mr-2.5 inline-block" />
+                  <span className="text-muted-foreground">正在交叉评审各模型的回答，熔炼结论中...</span>
                 </div>
               )}
             </div>
           )}
         </div>
       )}
-
     </div>
   );
 };

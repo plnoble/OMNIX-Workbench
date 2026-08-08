@@ -28,11 +28,14 @@ use std::sync::{Arc, Mutex};
 #[derive(Clone)]
 struct Recorder {
     seen: Arc<Mutex<Vec<Value>>>,
+    /// 上游收到的鉴权头（x-api-key / Authorization），按到达顺序。
+    auth: Arc<Mutex<Vec<String>>>,
     reply: Arc<Value>,
 }
 
 async fn record_and_reply(
     AxumState(rec): AxumState<Recorder>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<Value>,
 ) -> Json<Value> {
     // 坑点2：这里绝不能跨 await 持锁。lock → push → 立刻出作用域，
@@ -41,12 +44,27 @@ async fn record_and_reply(
         let mut seen = rec.seen.lock().expect("recorder lock");
         seen.push(body);
     }
+    {
+        let key = headers
+            .get("x-api-key")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+            .or_else(|| {
+                headers
+                    .get("authorization")
+                    .and_then(|v| v.to_str().ok())
+                    .map(|v| v.trim_start_matches("Bearer ").to_string())
+            })
+            .unwrap_or_default();
+        rec.auth.lock().expect("auth lock").push(key);
+    }
     Json((*rec.reply).clone())
 }
 
 struct FakeUpstream {
     base_url: String,
     seen: Arc<Mutex<Vec<Value>>>,
+    auth: Arc<Mutex<Vec<String>>>,
 }
 
 impl FakeUpstream {
@@ -59,13 +77,19 @@ impl FakeUpstream {
             .cloned()
             .expect("上游没有收到任何请求——网关在转发前就返回了")
     }
+
+    /// 上游第一次收到的鉴权头值（去掉 `Bearer ` 前缀）。
+    fn first_auth_header(&self) -> Option<String> {
+        self.auth.lock().expect("auth lock").first().cloned()
+    }
 }
 
 /// 起一个只会记录请求体、返回固定响应的上游。
 /// 同时挂 Anthropic 与 OpenAI 两个路径，这样一份夹具能测两条分支。
 async fn start_fake_upstream(reply: Value) -> FakeUpstream {
     let seen = Arc::new(Mutex::new(Vec::new()));
-    let rec = Recorder { seen: Arc::clone(&seen), reply: Arc::new(reply) };
+    let auth = Arc::new(Mutex::new(Vec::new()));
+    let rec = Recorder { seen: Arc::clone(&seen), auth: Arc::clone(&auth), reply: Arc::new(reply) };
     let app = Router::new()
         .route("/v1/messages", post(record_and_reply))
         .route("/chat/completions", post(record_and_reply))
@@ -79,7 +103,7 @@ async fn start_fake_upstream(reply: Value) -> FakeUpstream {
     tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
     });
-    FakeUpstream { base_url: format!("http://{addr}"), seen }
+    FakeUpstream { base_url: format!("http://{addr}"), seen, auth }
 }
 
 /// 会返回 SSE 的假上游。
@@ -113,7 +137,35 @@ async fn start_streaming_upstream(sse_body: &'static str) -> FakeUpstream {
     tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
     });
-    FakeUpstream { base_url: format!("http://{addr}"), seen }
+    FakeUpstream { base_url: format!("http://{addr}"), seen, auth: Arc::new(Mutex::new(Vec::new())) }
+}
+
+/// 一律拒绝的假上游：原样回指定状态码和错误体，用来验失败路径。
+async fn start_rejecting_upstream(status: StatusCode, body: &'static str) -> FakeUpstream {
+    let seen: Arc<std::sync::Mutex<Vec<Value>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorder = Arc::clone(&seen);
+    let handler = move |Json(payload): Json<Value>| {
+        let recorder = Arc::clone(&recorder);
+        async move {
+            recorder.lock().expect("记录锁").push(payload);
+            axum::response::Response::builder()
+                .status(status)
+                .header("Content-Type", "application/json")
+                .body(axum::body::Body::from(body))
+                .expect("拒绝响应")
+        }
+    };
+    let app = Router::new()
+        .route("/v1/messages", post(handler.clone()))
+        .route("/chat/completions", post(handler.clone()))
+        .route("/v1/chat/completions", post(handler));
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("绑定临时端口");
+    let addr = listener.local_addr().expect("本地地址");
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    FakeUpstream { base_url: format!("http://{addr}"), seen, auth: Arc::new(Mutex::new(Vec::new())) }
 }
 
 /// 把响应体读成文本（流式响应也是一段一段拼起来的字节）。
@@ -633,4 +685,477 @@ async fn wait_for_tokens(db: &DbManager) -> Option<(i64, i64)> {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
     None
+}
+
+// ── 回归：网关自己的错误必须是客户端认得的协议信封 ─────────────
+
+/// 原 bug：网关连不上上游时回 `(StatusCode::BAD_GATEWAY, 裸字符串)`。
+/// Codex 期待 OpenAI 形状的 `error.message`，解不出就打印
+/// `unexpected status 502 Bad Gateway: Unknown error` —— 真正的原因
+/// （连不上 / key 全挂 / 平台停用）一个字都到不了用户眼前。
+///
+/// 这条盯 Anthropic 那半边：Claude Code 同样只认 `{"type":"error","error":{...}}`。
+#[tokio::test]
+async fn gateway_failures_come_back_as_a_protocol_error_envelope() {
+    let (db, path) = temp_db("err_envelope");
+    reset_routing(&db);
+    // 指向一个笃定没人监听的端口，逼出 send 失败这条路径。
+    install_model(&db, "dead", "anthropic", "http://127.0.0.1:1", "claude-x", 1);
+    set_target(&db, "dead:claude-x");
+
+    let response = drive(proxy_state(Arc::clone(&db)), request_with_tools()).await;
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+
+    let body = body_json(response).await;
+    assert_eq!(body["type"], "error", "必须是 Anthropic 错误信封，实际：{body}");
+    let message = body["error"]["message"]
+        .as_str()
+        .unwrap_or_else(|| panic!("error.message 缺失，客户端只能显示 Unknown error：{body}"));
+    assert!(
+        message.contains("claude-x"),
+        "错误里要说清是哪个模型，否则用户无从下手：{message}"
+    );
+    let _ = std::fs::remove_file(path);
+}
+
+/// 会话网关（Codex 走的那条 `/session/:key/v1/responses`）找不到会话时，也要回
+/// OpenAI 信封。这条路径以前回 `(400, 裸字符串)`，Codex 一样显示 Unknown error。
+#[tokio::test]
+async fn session_gateway_rejects_unknown_sessions_in_openai_shape() {
+    let (db, path) = temp_db("session_err");
+    reset_routing(&db);
+
+    let response = super::handle_responses_for_session(
+        axum::extract::State(proxy_state(Arc::clone(&db))),
+        axum::extract::Path("conv_does_not_exist".to_string()),
+        axum::Json(json!({"model": "gpt-5-codex", "input": []})),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let body = body_json(response).await;
+    let message = body["error"]["message"]
+        .as_str()
+        .unwrap_or_else(|| panic!("OpenAI 错误信封缺 error.message：{body}"));
+    assert!(
+        message.contains("conv_does_not_exist"),
+        "要指名是哪个会话找不到：{message}"
+    );
+    let _ = std::fs::remove_file(path);
+}
+
+/// 原 bug：只有成功路径调 `log_request`，失败直接 return。于是「监控 → 用量」
+/// 里一条错误都没有——排查时唯一该看的那张表恰好是瞎的。一次真实的翻译失败
+/// （上游回「Model does not exist」）在 `request_logs` 里查不到任何痕迹。
+#[tokio::test]
+async fn upstream_rejections_are_recorded_not_just_shown_once_in_a_toast() {
+    // 假上游一律回 400 + 上游自己的错误体，模拟「模型名不存在」。
+    let upstream = start_rejecting_upstream(
+        StatusCode::BAD_REQUEST,
+        r#"{"code":20012,"message":"Model does not exist. Please check it carefully."}"#,
+    )
+    .await;
+    let (db, path) = temp_db("failure_log");
+    reset_routing(&db);
+    install_model(&db, "ark", "openai", &upstream.base_url, "ark-code-latest", 1);
+    set_target(&db, "ark:ark-code-latest");
+
+    let response = drive(proxy_state(Arc::clone(&db)), request_with_tools()).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST, "上游的状态码要原样透传");
+
+    // 落库是 spawn_blocking，等它一下。
+    let mut row = None;
+    for _ in 0..100 {
+        if let Ok(conn) = db.get_connection() {
+            row = conn
+                .query_row(
+                    "SELECT model, status_code, is_error, error_message
+                     FROM request_logs ORDER BY id DESC LIMIT 1",
+                    [],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?)),
+                )
+                .ok();
+            if row.is_some() {
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let (model, status, is_error, message) =
+        row.expect("失败请求必须落进 request_logs——否则用量看板永远看不到错误");
+
+    // 记的是 `resolved_model`，和成功路径同一个字段（带平台前缀时就带着）。
+    assert!(model.contains("ark-code-latest"), "日志里要认得出是哪个模型：{model}");
+    assert_eq!(status, 400);
+    assert_eq!(is_error, 1);
+    assert!(
+        message.contains("Model does not exist"),
+        "上游给的原因要存下来，不能只留一个状态码：{message}"
+    );
+    drop(db);
+    let _ = std::fs::remove_file(path);
+}
+
+// ── 回归：内部调用方要能指名模型 ─────────────
+
+/// `/v1/chat/completions` 给外部 CLI 用，所以它**不读 body 里的 `model`**——
+/// 那些客户端写死自己的模型名，必须由 OMNIX 改写成用户配置的上游。
+///
+/// 但 OMNIX 自己的功能（翻译 / 按模型比对）需要指名道姓。以前它们没有任何办法：
+/// 翻译传的 `chat_model` 被整个丢掉，永远打在全局 `target_model` 上；「按模型
+/// 比对」更荒唐——每一列都打到同一个模型，等于自己跟自己比。
+#[tokio::test]
+async fn internal_callers_can_pin_a_model_that_is_not_the_global_default() {
+    let upstream = start_fake_upstream(json!({
+        "id": "c1", "object": "chat.completion",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 3, "completion_tokens": 1}
+    }))
+    .await;
+    let (db, path) = temp_db("pin_model");
+    reset_routing(&db);
+    install_model(&db, "pa", "openai", &upstream.base_url, "global-default", 1);
+    install_model(&db, "pb", "openai", &upstream.base_url, "the-one-i-asked-for", 1);
+    set_target(&db, "pa:global-default");
+
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert("x-omnix-model", "pb:the-one-i-asked-for".parse().expect("头"));
+    let response = super::handle_openai_forward_impl(
+        proxy_state(Arc::clone(&db)),
+        None,
+        headers,
+        json!({"model": "whatever-the-client-said", "messages": [{"role": "user", "content": "hi"}]}),
+    )
+    .await
+    .into_response();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let sent = upstream.first_request();
+    assert_eq!(
+        sent["model"], "the-one-i-asked-for",
+        "带了 x-omnix-model 还打到全局默认，内部功能就没法选模型：{sent}"
+    );
+    let _ = std::fs::remove_file(path);
+}
+
+/// 反向控制：没带那个头时，行为一点都不能变——外部 CLI 写死的模型名仍然
+/// 必须被改写成用户配置的上游，否则 CLI 接管整个就废了。
+#[tokio::test]
+async fn without_the_header_the_client_model_is_still_overridden() {
+    let upstream = start_fake_upstream(json!({
+        "id": "c1", "object": "chat.completion",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 3, "completion_tokens": 1}
+    }))
+    .await;
+    let (db, path) = temp_db("no_pin");
+    reset_routing(&db);
+    install_model(&db, "p", "openai", &upstream.base_url, "global-default", 1);
+    set_target(&db, "p:global-default");
+
+    let response = super::handle_openai_forward_impl(
+        proxy_state(Arc::clone(&db)),
+        None,
+        axum::http::HeaderMap::new(),
+        json!({"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]}),
+    )
+    .await
+    .into_response();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let sent = upstream.first_request();
+    assert_eq!(
+        sent["model"], "global-default",
+        "外部 CLI 写死的模型名必须被改写成用户配置的上游：{sent}"
+    );
+    let _ = std::fs::remove_file(path);
+}
+
+// ── 回归：Key 只有一个来源 ─────────────
+
+/// 原 bug：解析 API Key 有三份各不相同的实现。会话网关读 `platform_api_keys`
+/// 新表，legacy 路由和健康检测只读 `model_platforms.api_key` 旧列。同一个平台
+/// 两处存的 Key 可以不一样——于是「⚡测试」测的 Key 根本不是实际跑的那个，
+/// 绿灯是假的；页头宣传的「主 Key + 故障切换」也只在会话网关那条路上成立。
+///
+/// 新表里有 Key 时，legacy 路由必须用新表的，不能退回旧列。
+#[tokio::test]
+async fn every_route_resolves_the_same_api_key() {
+    let upstream = start_fake_upstream(json!({
+        "type": "message", "role": "assistant",
+        "content": [{"type": "text", "text": "好"}],
+        "usage": {"input_tokens": 1, "output_tokens": 1}
+    }))
+    .await;
+    let (db, path) = temp_db("one_key");
+    reset_routing(&db);
+    install_model(&db, "p", "anthropic", &upstream.base_url, "m", 1);
+    set_target(&db, "p:m");
+
+    // 旧列留一个过时的 Key（install_model 写的是 'test-key'），新表放真正在用的。
+    {
+        let conn = db.get_connection().expect("db");
+        conn.execute(
+            "INSERT INTO platform_api_keys (id, platform_id, encrypted_key, label, is_active)
+             VALUES ('k1', 'p', 'the-real-key', 'main', 1)",
+            [],
+        )
+        .expect("插入新表 Key");
+    }
+
+    let response = drive(proxy_state(Arc::clone(&db)), request_with_tools()).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    assert_eq!(
+        upstream.first_auth_header().as_deref(),
+        Some("the-real-key"),
+        "legacy 路由还在用旧列的 Key——和会话网关、健康检测就对不上了",
+    );
+    let _ = std::fs::remove_file(path);
+}
+
+/// 原 bug：熔断器只认 5xx，400「Model does not exist」被当成中性。于是
+/// 「⚡测试」某次测绿之后，哪怕之后每一次真实请求都 400，模型中心那个点
+/// 一直是绿的——绿灯说的是「上次手动测过」，不是「现在能用」。
+#[tokio::test]
+async fn a_real_rejection_turns_the_model_light_red() {
+    let upstream = start_rejecting_upstream(
+        StatusCode::BAD_REQUEST,
+        r#"{"code":20012,"message":"Model does not exist. Please check it carefully."}"#,
+    )
+    .await;
+    let (db, path) = temp_db("light_red");
+    reset_routing(&db);
+    install_model(&db, "p", "anthropic", &upstream.base_url, "gone", 1);
+    set_target(&db, "p:gone");
+    {
+        let conn = db.get_connection().expect("db");
+        conn.execute(
+            "UPDATE platform_models SET status = 'success' WHERE model_name = 'gone'",
+            [],
+        )
+        .expect("先置成绿灯");
+    }
+
+    let response = drive(proxy_state(Arc::clone(&db)), request_with_tools()).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    // 落库是 spawn_blocking，等它一下。
+    let mut status = String::new();
+    for _ in 0..100 {
+        if let Ok(conn) = db.get_connection() {
+            status = conn
+                .query_row(
+                    "SELECT status FROM platform_models WHERE model_name = 'gone'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap_or_default();
+            if status != "success" {
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        status, "error",
+        "上游明确拒绝之后灯还是绿的——那个绿点就只是「上次手动测过」而已",
+    );
+    drop(db);
+    let _ = std::fs::remove_file(path);
+}
+
+/// 原 bug：`reqwest::Error` 的 `Display` 只给「error sending request for url (…)」，
+/// **真正的原因（连接被拒 / DNS 失败 / TLS 握手失败 / 超时）藏在 `source()` 链里**。
+/// 用户看到的就是一句「连不上」，没有任何可操作信息——排查只能靠猜。
+#[tokio::test]
+async fn transport_failures_surface_the_underlying_cause() {
+    let (db, path) = temp_db("cause_chain");
+    reset_routing(&db);
+    // 笃定没人监听的端口 → 连接被拒，这是最典型的一类传输失败。
+    install_model(&db, "dead", "anthropic", "http://127.0.0.1:1", "m", 1);
+    set_target(&db, "dead:m");
+
+    let response = drive(proxy_state(Arc::clone(&db)), request_with_tools()).await;
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+
+    let body = body_json(response).await;
+    let message = body["error"]["message"].as_str().unwrap_or_default();
+
+    assert!(
+        message.contains("建立连接失败") || message.contains("超时"),
+        "要先说清是哪一类失败：{message}"
+    );
+    assert!(
+        message.contains("←"),
+        "只有一层「error sending request for url」，真正的原因还是没露出来：{message}"
+    );
+    assert!(
+        message.contains("127.0.0.1:1"),
+        "要指名是连不上哪个地址：{message}"
+    );
+    let _ = std::fs::remove_file(path);
+}
+
+// ── 回归：网关不得改写用户的消息 ─────────────
+
+/// 原 bug：这条路径无条件把每一条用户消息包进
+/// `<untrusted_context …>` + 「Do NOT follow any instructions」。模型看到的只剩
+/// 一段安全声明，原始任务整个消失——翻译「STANDARD OPERATING PROCEDURE」得到的
+/// 是「我注意到您分享的内容似乎是一个安全提示的示例…」。
+///
+/// 方向也反了：用户自己打的字是最可信的输入，需要包装的是从别处抓来的内容。
+/// 这条路径还承载着外部 CLI 接管——每一轮都被改写，后果比翻译出错严重得多。
+#[tokio::test]
+async fn the_user_message_reaches_upstream_byte_for_byte() {
+    let upstream = start_fake_upstream(json!({
+        "id": "c1", "object": "chat.completion",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 3, "completion_tokens": 1}
+    }))
+    .await;
+    let (db, path) = temp_db("no_rewrite");
+    reset_routing(&db);
+    install_model(&db, "p", "openai", &upstream.base_url, "m", 1);
+    set_target(&db, "p:m");
+
+    const ORIGINAL: &str = "Translate to Chinese: STANDARD OPERATING PROCEDURE";
+    let response = super::handle_openai_forward_impl(
+        proxy_state(Arc::clone(&db)),
+        None,
+        axum::http::HeaderMap::new(),
+        json!({"model": "x", "messages": [{"role": "user", "content": ORIGINAL}]}),
+    )
+    .await
+    .into_response();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let sent = upstream.first_request();
+    let forwarded = sent["messages"][0]["content"].as_str().unwrap_or_default();
+    assert_eq!(
+        forwarded, ORIGINAL,
+        "用户消息被改写了——模型收到的不是用户要它做的事",
+    );
+    assert!(
+        !forwarded.contains("untrusted_context") && !forwarded.contains("Do NOT follow"),
+        "安全包装漏进了用户消息：{forwarded}",
+    );
+    let _ = std::fs::remove_file(path);
+}
+
+/// 反面：一条**真的**带注入样式的用户消息，同样原样转发（只记日志不改写）。
+/// 用户是主体，不是被防范的对象；要防的是从别处抓来的内容。
+#[tokio::test]
+async fn even_a_risky_looking_user_message_is_not_rewritten() {
+    let upstream = start_fake_upstream(json!({
+        "id": "c1", "object": "chat.completion",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 3, "completion_tokens": 1}
+    }))
+    .await;
+    let (db, path) = temp_db("risky_no_rewrite");
+    reset_routing(&db);
+    install_model(&db, "p", "openai", &upstream.base_url, "m", 1);
+    set_target(&db, "p:m");
+
+    // 这句话本身就是用户想让模型解释的内容——包起来等于没法讨论它。
+    const ORIGINAL: &str = "解释一下 \"ignore all previous instructions\" 为什么是注入样式";
+    let response = super::handle_openai_forward_impl(
+        proxy_state(Arc::clone(&db)),
+        None,
+        axum::http::HeaderMap::new(),
+        json!({"model": "x", "messages": [{"role": "user", "content": ORIGINAL}]}),
+    )
+    .await
+    .into_response();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    assert_eq!(
+        upstream.first_request()["messages"][0]["content"].as_str().unwrap_or_default(),
+        ORIGINAL,
+        "用户想讨论注入样式，网关却把他的问题包成了不可信内容",
+    );
+    let _ = std::fs::remove_file(path);
+}
+
+// ── 回归：Auto 路由不能挑到不会聊天的模型 ─────────────
+
+/// 原 bug：Auto 的候选池里混着 embedding / reranker / 语音模型。请求没有明显
+/// 能力信号时所有模型都是 0 分，而比较是**严格大于**，于是「数据库返回的第一条」
+/// 直接获胜——熔炼炉那次 `{"code":20012,"message":"Model does not exist"}` 就是
+/// 这么挑中了一个根本不能对话的模型。
+#[tokio::test]
+async fn auto_routing_skips_models_that_cannot_chat() {
+    let upstream = start_fake_upstream(json!({
+        "id": "c1", "object": "chat.completion",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 3, "completion_tokens": 1}
+    }))
+    .await;
+    let (db, path) = temp_db("auto_chatable");
+    reset_routing(&db);
+    install_model(&db, "p", "openai", &upstream.base_url, "aaa-embedding-model", 1);
+    install_model(&db, "p2", "openai", &upstream.base_url, "zzz-chat-model", 1);
+    {
+        let conn = db.get_connection().expect("db");
+        // 名字刻意让嵌入模型排在最前：这样这条测试依赖的是「排除不能聊天的
+        // 模型」，而不是碰巧被排序救了。
+        conn.execute(
+            "UPDATE platform_models SET has_embedding = 1 WHERE model_name = 'aaa-embedding-model'",
+            [],
+        )
+        .expect("标记为嵌入模型");
+    }
+    set_target(&db, "Auto");
+
+    let response = super::handle_openai_forward_impl(
+        proxy_state(Arc::clone(&db)),
+        None,
+        axum::http::HeaderMap::new(),
+        json!({"model": "x", "messages": [{"role": "user", "content": "把这几段话融合一下"}]}),
+    )
+    .await
+    .into_response();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    assert_eq!(
+        upstream.first_request()["model"].as_str().unwrap_or_default(),
+        "zzz-chat-model",
+        "Auto 挑中了不能对话的模型",
+    );
+    let _ = std::fs::remove_file(path);
+}
+
+/// 一个可聊天的模型都没有时，必须**说清楚**，而不是把字面量 "Auto" 当模型名
+/// 发给上游，让上游回一句「Model does not exist」。
+#[tokio::test]
+async fn auto_routing_never_sends_the_literal_word_auto_upstream() {
+    let upstream = start_fake_upstream(json!({"choices": []})).await;
+    let (db, path) = temp_db("auto_nothing");
+    reset_routing(&db);
+    install_model(&db, "p", "openai", &upstream.base_url, "only-an-embedding", 1);
+    {
+        let conn = db.get_connection().expect("db");
+        conn.execute("UPDATE platform_models SET has_embedding = 1", [])
+            .expect("标记为嵌入模型");
+    }
+    set_target(&db, "Auto");
+
+    let response = super::handle_openai_forward_impl(
+        proxy_state(Arc::clone(&db)),
+        None,
+        axum::http::HeaderMap::new(),
+        json!({"model": "x", "messages": [{"role": "user", "content": "hi"}]}),
+    )
+    .await
+    .into_response();
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = body_json(response).await;
+    let message = body["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("Auto 路由"),
+        "要说清是 Auto 没选出模型，而不是把锅甩给上游：{message}"
+    );
+    let _ = std::fs::remove_file(path);
 }

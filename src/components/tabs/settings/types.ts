@@ -1,5 +1,5 @@
 /** Split from SettingsTab.tsx — pure move, no behavior change. */
-import type { AgentAccount, BackupTableInfo, ImportResult, McpServer, ModelPlatform, ModelTestState, PlatformModel, SearchProvider, SelectionHistoryEntry, SettingsSubTab, WebSearchResult } from "@/types";
+import type { BackupTableInfo, ImportResult, McpServer, ModelPlatform, ModelTestState, PlatformModel, SelectionHistoryEntry, SettingsSubTab } from "@/types";
 
 export interface SettingsTabProps {
   settingsSubTab: SettingsSubTab;
@@ -29,12 +29,8 @@ export interface SettingsTabProps {
   batchTesting: Record<string, boolean>;
   onBatchTestModels: (platformId: string) => void;
 
-  // System sub-tab
-  accounts: AgentAccount[];
-  onAddAccount: () => void;
-  onEditAccount: (acc: AgentAccount) => void;
-  onDeleteAccount: (id: string) => void;
-  onSwitchAccount: (id: string) => void;
+  // 账号凭据（agent_accounts）不在设置里——它的唯一入口是「智能体」页的
+  // 右侧详情，那里按 agent 过滤，看得出哪个账号属于谁。
 
   // Settings form
   targetModel: string;
@@ -89,25 +85,6 @@ export interface SettingsTabProps {
   themeMode: "dark" | "light" | "auto";
   onSetThemeMode: (v: "dark" | "light" | "auto") => void;
 
-  // Search
-  searchProviders: SearchProvider[];
-  searchSelectedProviderId: string;
-  searchResults: WebSearchResult[];
-  searchQuery: string;
-  isSearching: boolean;
-  onSetSearchQuery: (q: string) => void;
-  onSetSearchSelectedProviderId: (id: string) => void;
-  onSearch: (query: string) => Promise<WebSearchResult[]>;
-  onAddSearchProvider: () => void;
-  onEditSearchProvider: (provider: SearchProvider) => void;
-  onDeleteSearchProvider: (id: string) => Promise<void>;
-  // Search provider modal
-  showSearchProviderModal: boolean;
-  editingSearchProvider: SearchProvider | null;
-  searchProviderForm: { id: string; name: string; api_type: string; api_key: string; api_address: string; is_enabled: boolean };
-  onCloseSearchProviderModal: () => void;
-  onUpdateSearchProviderForm: (field: string, value: string | boolean) => void;
-  onSaveSearchProvider: () => Promise<void>;
 
   // MCP Servers
   mcpServers: McpServer[];
