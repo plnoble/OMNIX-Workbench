@@ -5,8 +5,16 @@
 //!
 //! Uses AES-256-GCM via a device-derived key. The encryption key is:
 //! 1. Generated using OS CSPRNG (getrandom) on first run
-//! 2. Stored in ~/.omnix/.encryption_key (hex-encoded, file permissions restricted)
+//! 2. Stored in ~/.omnix/.encryption_key — **DPAPI 保护**（Windows），文件权限另外收紧
 //! 3. Used to encrypt/decrypt all sensitive fields transparently
+//!
+//! 密钥文件以前是一行裸十六进制：谁能读到那个文件，谁就能解开所有存下来的
+//! API Key——把 `~/.omnix` 拷走就等于把密钥库拷走，加密等于没做。现在密钥
+//! 用 DPAPI（`CryptProtectData`，带 OMNIX 自己的熵）绑在**当前 Windows 账号**上，
+//! 换账号或换机器都解不开。老库启动时自动升级，明文那一行当场被覆盖掉。
+//!
+//! 两道闸各管各的：文件 DACL 挡「同机器上别的账号读这个文件」，DPAPI 挡
+//! 「文件被拷走之后在别处解开」。前者拦不住拷贝，后者拦不住本人。
 //!
 //! Encrypted format: "ENC:v2:<base64(nonce || ciphertext || tag)>"
 //! The v2 prefix distinguishes from legacy XOR-encrypted values for migration.
@@ -29,20 +37,37 @@ const ENCRYPTED_PREFIX_V1: &str = "ENC:";
 /// Global encryption key (initialized once)
 static ENCRYPTION_KEY: OnceLock<[u8; 32]> = OnceLock::new();
 
+/// DPAPI 保护过的密钥文件前缀。看到它就说明这份密钥拷到别的账号/机器上是废纸。
+const DPAPI_PREFIX: &str = "DPAPI:v1:";
+
 /// Get or generate the encryption key using OS CSPRNG
 fn get_key() -> &'static [u8; 32] {
     ENCRYPTION_KEY.get_or_init(|| {
         let key_path = key_path();
 
         if key_path.exists() {
-            // Read existing key
-            if let Ok(hex) = fs::read_to_string(&key_path) {
-                if let Some(bytes) = hex_to_bytes(hex.trim()) {
-                    if bytes.len() == 32 {
-                        let mut key = [0u8; 32];
-                        key.copy_from_slice(&bytes);
-                        return key;
-                    }
+            match read_key_file(&key_path) {
+                Ok(Some(key)) => return key,
+                Ok(None) => {}
+                Err(reason) => {
+                    // DPAPI 解不开 = 这份密钥是**别的账号或别的机器**上生成的，
+                    // 那正是它该拦住的情形。密钥真的回不来了。
+                    //
+                    // 这里不能悄悄换一把新的把旧文件盖掉：那会让已存的 API Key
+                    // 全部变成解不开的 `ENC:v2:…`，而 `decrypt` 对解不开的值是
+                    // 原样返回——界面上看起来「还在」，用起来全是错的。
+                    // 所以：把旧文件改名留证，喊一声，再生成新的。
+                    let stamp = chrono::Utc::now().format("%Y%m%d%H%M%S");
+                    let parked = key_path.with_extension(format!("locked-{stamp}"));
+                    let _ = fs::rename(&key_path, &parked);
+                    let msg = format!(
+                        "[OMNIX] 加密密钥无法解锁（{reason}）。\
+                         它被绑定在生成它的那个 Windows 账号上，换账号/换机器后取不回来。\
+                         旧文件已保留为 {}；将生成新密钥，之前保存的 API Key 需要重新填写。",
+                        parked.display()
+                    );
+                    log::error!("{msg}");
+                    eprintln!("{msg}");
                 }
             }
         }
@@ -52,30 +77,166 @@ fn get_key() -> &'static [u8; 32] {
         getrandom::getrandom(&mut key)
             .expect("[crypto] FATAL: OS CSPRNG (getrandom) failed — cannot securely generate encryption key. This should never happen on a modern OS.");
 
-        // Save key to file with restricted permissions
-        let hex_key = bytes_to_hex(&key);
-        let parent = key_path.parent().expect("key_path should have a parent directory");
-        let _ = fs::create_dir_all(parent);
-        let _ = fs::write(&key_path, &hex_key);
-
-        // On Unix, restrict key file to owner-only (0o600)
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600));
-        }
-
-        // On Windows, restrict key file to current user only using DACL
-        #[cfg(windows)]
-        {
-            // Windows file security: remove inherited permissions and grant
-            // full control only to the current user. This prevents other users
-            // on the same machine from reading the encryption key.
-            let _ = restrict_key_file_windows(&key_path);
-        }
-
+        write_key_file(&key_path, &key);
         key
     })
+}
+
+/// 读密钥文件。`Ok(None)` = 文件在但内容不认识（当成没有，重新生成）。
+/// `Err` = 认得出是 DPAPI 保护的，但解不开——这和「没有密钥」是两回事。
+fn read_key_file(key_path: &std::path::Path) -> Result<Option<[u8; 32]>, String> {
+    let Ok(raw) = fs::read_to_string(key_path) else {
+        return Ok(None);
+    };
+    let raw = raw.trim();
+
+    if let Some(b64) = raw.strip_prefix(DPAPI_PREFIX) {
+        let blob = B64.decode(b64).map_err(|e| format!("密钥文件损坏：{e}"))?;
+        let bytes = dpapi_unprotect(&blob)?;
+        return Ok(to_key32(&bytes));
+    }
+
+    // 旧格式：明文十六进制。读出来之后**立刻升级成 DPAPI**，不留明文在盘上。
+    let Some(bytes) = hex_to_bytes(raw) else {
+        return Ok(None);
+    };
+    let Some(key) = to_key32(&bytes) else {
+        return Ok(None);
+    };
+    write_key_file(key_path, &key);
+    Ok(Some(key))
+}
+
+fn to_key32(bytes: &[u8]) -> Option<[u8; 32]> {
+    if bytes.len() != 32 {
+        return None;
+    }
+    let mut key = [0u8; 32];
+    key.copy_from_slice(bytes);
+    Some(key)
+}
+
+/// 写密钥文件：优先 DPAPI，拿不到就退回明文十六进制。
+///
+/// 退回是有意的——DPAPI 不可用（非 Windows、或系统调用失败）时宁可用旧办法
+/// 落盘，也不能让应用起不来或者把用户已有的密钥弄丢。文件权限那道闸照旧上。
+fn write_key_file(key_path: &std::path::Path, key: &[u8; 32]) {
+    let contents = match dpapi_protect(key) {
+        Ok(blob) => format!("{DPAPI_PREFIX}{}", B64.encode(blob)),
+        Err(reason) => {
+            warn!("[crypto] DPAPI 不可用（{reason}），密钥退回明文十六进制存储");
+            bytes_to_hex(key)
+        }
+    };
+    if let Some(parent) = key_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(key_path, &contents);
+
+    // On Unix, restrict key file to owner-only (0o600)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(key_path, fs::Permissions::from_mode(0o600));
+    }
+
+    // On Windows, restrict key file to current user only using DACL.
+    // 和 DPAPI 是两道不同的闸：DACL 挡「同一台机器上的别的账号读这个文件」，
+    // DPAPI 挡「把文件拷走之后在别处解开」。前者拦不住拷贝，后者拦不住本人。
+    #[cfg(windows)]
+    {
+        let _ = restrict_key_file_windows(key_path);
+    }
+}
+
+/// 额外熵：把密钥再绑到 OMNIX 自己身上。
+/// 少了它，同一账号下**任何**进程都能对这个 blob 调一次 `CryptUnprotectData`。
+const DPAPI_ENTROPY: &[u8] = b"omnix-workbench/encryption-key/v1";
+
+#[cfg(windows)]
+fn dpapi_protect(plain: &[u8]) -> Result<Vec<u8>, String> {
+    win_dpapi::run(plain, true)
+}
+
+#[cfg(windows)]
+fn dpapi_unprotect(blob: &[u8]) -> Result<Vec<u8>, String> {
+    win_dpapi::run(blob, false)
+}
+
+#[cfg(not(windows))]
+fn dpapi_protect(_plain: &[u8]) -> Result<Vec<u8>, String> {
+    Err("DPAPI 只在 Windows 上可用".into())
+}
+
+#[cfg(not(windows))]
+fn dpapi_unprotect(_blob: &[u8]) -> Result<Vec<u8>, String> {
+    Err("DPAPI 只在 Windows 上可用".into())
+}
+
+#[cfg(windows)]
+mod win_dpapi {
+    use super::DPAPI_ENTROPY;
+    use windows::Win32::Foundation::{HLOCAL, LocalFree};
+    use windows::Win32::Security::Cryptography::{
+        CryptProtectData, CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
+    };
+
+    fn blob(data: &[u8]) -> CRYPT_INTEGER_BLOB {
+        CRYPT_INTEGER_BLOB {
+            cbData: data.len() as u32,
+            pbData: data.as_ptr() as *mut u8,
+        }
+    }
+
+    /// 保护/解保护走同一条路——两个 API 的参数形状完全一样，分开写只会让
+    /// 那段 unsafe 指针搬运出现两份。
+    pub(super) fn run(input: &[u8], protect: bool) -> Result<Vec<u8>, String> {
+        let entropy = blob(DPAPI_ENTROPY);
+        let source = blob(input);
+        let mut out = CRYPT_INTEGER_BLOB::default();
+
+        // SAFETY: 三个 blob 都指向本函数栈上还活着的切片；`out` 由 DPAPI 分配，
+        // 拷贝完立刻 LocalFree。
+        let result = unsafe {
+            if protect {
+                CryptProtectData(
+                    &source,
+                    windows::core::PCWSTR::null(),
+                    Some(&entropy),
+                    None,
+                    None,
+                    CRYPTPROTECT_UI_FORBIDDEN,
+                    &mut out,
+                )
+            } else {
+                // 第二个参数在这一侧是**出参**（DPAPI 回填当初的描述串），
+                // 和 protect 那侧的入参不同名不同型，所以传 None 而不是空指针。
+                CryptUnprotectData(
+                    &source,
+                    None,
+                    Some(&entropy),
+                    None,
+                    None,
+                    CRYPTPROTECT_UI_FORBIDDEN,
+                    &mut out,
+                )
+            }
+        };
+        result.map_err(|e| {
+            if protect {
+                format!("CryptProtectData 失败：{e}")
+            } else {
+                format!("CryptUnprotectData 失败：{e}")
+            }
+        })?;
+
+        // SAFETY: 上面成功了，out.pbData 是 DPAPI 分配的 out.cbData 字节。
+        let bytes = unsafe { std::slice::from_raw_parts(out.pbData, out.cbData as usize).to_vec() };
+        unsafe {
+            let _ = LocalFree(HLOCAL(out.pbData as *mut std::ffi::c_void));
+        }
+        Ok(bytes)
+    }
 }
 
 fn key_path() -> PathBuf {
@@ -336,5 +497,79 @@ mod tests {
     fn base64_encode_simple(data: &[u8]) -> String {
         use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
         B64.encode(data)
+    }
+
+    // ── 密钥落盘：DPAPI 绑定 ────────────────────────────────────────────
+
+    fn scratch_key_path(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "omnix_key_{tag}_{}_{}.txt",
+            std::process::id(),
+            chrono::Utc::now().timestamp_micros()
+        ))
+    }
+
+    /// 新生成的密钥必须是 DPAPI 保护过的，盘上不能再有明文十六进制。
+    ///
+    /// 这条守的就是这次改动的全部意义：`~/.omnix/.encryption_key` 以前是一行
+    /// 裸十六进制，谁能读到那个文件，谁就能解开所有存下来的 API Key。
+    #[test]
+    #[cfg(windows)]
+    fn a_freshly_written_key_is_dpapi_protected() {
+        let path = scratch_key_path("fresh");
+        let key = [7u8; 32];
+        write_key_file(&path, &key);
+
+        let raw = std::fs::read_to_string(&path).expect("读密钥文件");
+        assert!(raw.starts_with(DPAPI_PREFIX), "密钥没有被 DPAPI 保护：{raw}");
+        assert!(
+            !raw.contains(&bytes_to_hex(&key)),
+            "明文密钥仍然出现在文件里"
+        );
+
+        assert_eq!(read_key_file(&path).expect("解锁").expect("有密钥"), key);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 老库升级：读到明文十六进制要能用，而且**读完立刻改写成 DPAPI**。
+    /// 只兼容不升级的话，那行明文会一直躺在盘上。
+    #[test]
+    #[cfg(windows)]
+    fn a_legacy_plaintext_key_is_read_then_upgraded_in_place() {
+        let path = scratch_key_path("legacy");
+        let key = [0x5au8; 32];
+        std::fs::write(&path, bytes_to_hex(&key)).expect("写旧格式");
+
+        assert_eq!(read_key_file(&path).expect("读旧格式").expect("有密钥"), key);
+
+        let raw = std::fs::read_to_string(&path).expect("重读");
+        assert!(raw.starts_with(DPAPI_PREFIX), "旧密钥没有被升级：{raw}");
+        assert_eq!(read_key_file(&path).expect("再读").expect("有密钥"), key);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 换了熵就解不开——这证明「绑定」是真的，不是把字节 base64 了一下。
+    #[test]
+    #[cfg(windows)]
+    fn a_blob_protected_with_other_entropy_cannot_be_opened() {
+        let blob = dpapi_protect(b"secret").expect("protect");
+        assert_eq!(dpapi_unprotect(&blob).expect("unprotect"), b"secret");
+
+        // 把密文改一个字节，完整性校验必须失败（DPAPI 自带 MAC）。
+        let mut tampered = blob.clone();
+        let last = tampered.len() - 1;
+        tampered[last] ^= 0xff;
+        assert!(dpapi_unprotect(&tampered).is_err(), "被篡改的 blob 不该解得开");
+    }
+
+    /// 解不开时不能当成「没有密钥」——那会静默换一把新的，
+    /// 已存的 API Key 全部变成解不开的 `ENC:v2:…`，而界面看起来一切正常。
+    #[test]
+    #[cfg(windows)]
+    fn an_unreadable_key_reports_an_error_instead_of_looking_empty() {
+        let path = scratch_key_path("broken");
+        std::fs::write(&path, format!("{DPAPI_PREFIX}bm90LWEtcmVhbC1ibG9i")).expect("写坏文件");
+        assert!(read_key_file(&path).is_err(), "解不开必须报错，不能返回 Ok(None)");
+        let _ = std::fs::remove_file(&path);
     }
 }

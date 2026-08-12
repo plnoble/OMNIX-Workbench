@@ -44,6 +44,8 @@ chrono = "0.4"
 portable-pty = "0.8"
 strip-ansi-escapes = "0.2"
 windows = { version = "0.58", features = [
+    # DPAPI（CryptProtectData/CryptUnprotectData）——加密密钥不再以明文落盘。
+    "Win32_Security_Cryptography",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Accessibility",
     "Win32_System_Com",
