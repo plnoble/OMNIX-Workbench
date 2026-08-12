@@ -230,6 +230,8 @@ pub fn resolve_skill_conflict(
     take_source: bool,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<(), String> {
+    // 这条会在两个目录之间复制技能文件，source_path 是前端给的。
+    crate::input_validation::validate_user_file_path(&source_path, "source_path")?;
     let conn = db.get_connection().map_err(|e| e.to_string())?;
     let central_dir: String = conn
         .query_row(

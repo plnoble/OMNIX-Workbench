@@ -170,5 +170,6 @@ pub async fn import_market_skill(
 /// 5. Experience Distillation — analyze project and recommend skills
 #[tauri::command]
 pub fn distill_from_project(project_path: String) -> Result<Vec<DistillRecommendation>, String> {
+    crate::input_validation::validate_workspace_path(&project_path, "project_path")?;
     crate::skill_library::distill_from_project(&project_path)
 }

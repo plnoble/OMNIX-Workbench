@@ -300,6 +300,7 @@ pub async fn team_build_preset(
     worker_agent: String,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<TeamRunDetail, String> {
+    crate::input_validation::validate_workspace_path(&workspace_path, "workspace_path")?;
     if task.trim().is_empty() {
         return Err("请先描述任务".into());
     }
@@ -371,6 +372,7 @@ pub async fn team_generate_plan(
     runtime: State<'_, Arc<RuntimeManager>>,
     agent_manager: State<'_, Arc<AgentManager>>,
 ) -> Result<TeamRunDetail, String> {
+    crate::input_validation::validate_workspace_path(&workspace_path, "workspace_path")?;
     if goal.trim().is_empty() {
         return Err("请先填写团队目标".into());
     }

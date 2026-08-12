@@ -91,10 +91,13 @@ pub fn detect_file_change(
     file_path: String,
     old_content: Option<String>,
     new_content: Option<String>,
-) -> TokenFileChange {
-    crate::token_economy::detect_file_change(
+) -> Result<TokenFileChange, String> {
+    // 这里的 file_path 从头到尾只是个标签——差异是拿参数里的两段内容算的，
+    // 文件根本没被打开。所以只挡控制字符（结果会进日志和界面），不挡目录。
+    crate::input_validation::validate_path_label(&file_path, "file_path")?;
+    Ok(crate::token_economy::detect_file_change(
         &file_path,
         old_content.as_deref(),
         new_content.as_deref(),
-    )
+    ))
 }

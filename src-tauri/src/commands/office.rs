@@ -102,6 +102,7 @@ pub async fn export_write_docx(
 /// 现有 docx → Markdown（进写作空间继续编辑）。
 #[tauri::command]
 pub async fn import_docx_markdown(file_path: String) -> Result<String, String> {
+    crate::input_validation::validate_user_file_path(&file_path, "file_path")?;
     if !file_path.to_lowercase().ends_with(".docx") {
         return Err("只支持 .docx 文件".to_string());
     }
@@ -218,6 +219,7 @@ pub async fn write_expand_ai(
 /// 任意 office 文件 → 自包含 HTML（表格工作台与工作区产物预览共用）。
 #[tauri::command]
 pub async fn office_preview_html(file_path: String) -> Result<String, String> {
+    crate::input_validation::validate_user_file_path(&file_path, "file_path")?;
     let lower = file_path.to_lowercase();
     if !(lower.ends_with(".docx") || lower.ends_with(".xlsx") || lower.ends_with(".pptx")) {
         return Err("只支持 .docx / .xlsx / .pptx".to_string());
@@ -256,6 +258,7 @@ pub async fn excel_ai_edit(
     chat_model: String,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<String, String> {
+    crate::input_validation::validate_user_file_path(&file_path, "file_path")?;
     if instruction.trim().is_empty() {
         return Err("请先输入指令".to_string());
     }
@@ -273,6 +276,8 @@ pub async fn excel_ai_edit(
 /// CSV/TSV 导入到指定工作表（officecli 原生 import）。
 #[tauri::command]
 pub async fn excel_import_csv(file_path: String, csv_path: String) -> Result<(), String> {
+    crate::input_validation::validate_user_file_path(&file_path, "file_path")?;
+    crate::input_validation::validate_user_file_path(&csv_path, "csv_path")?;
     let output = office::run(&["import", &file_path, "/Sheet1", &csv_path], 180).await?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
@@ -292,6 +297,7 @@ pub async fn import_pptx_deck(
     file_path: String,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<super::slides::DeckRecord, String> {
+    crate::input_validation::validate_user_file_path(&file_path, "file_path")?;
     if !file_path.to_lowercase().ends_with(".pptx") {
         return Err("只支持 .pptx 文件".to_string());
     }

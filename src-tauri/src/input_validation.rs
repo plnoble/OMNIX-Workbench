@@ -154,6 +154,77 @@ pub fn validate_workspace_path(path: &str, param_name: &str) -> Result<(), Strin
     Ok(())
 }
 
+/// 校验一个**用户自己挑的文件**路径——文档、幻灯、导出物、备份目标这类。
+///
+/// 和 [`validate_workspace_path`] 只差一处：**放行 OMNIX 自己的存储目录**
+/// （`exports` / `skills` / `notes` / `media` / `backups`）。那几个目录默认就落在
+/// `~/.omnix` 下面，而工作区那道闸专门拒 `~/.omnix`——直接套过来会把「打开自己
+/// 刚导出的那张表」也一起拒掉。系统目录、`~/.ssh` 这些照拒，`~/.omnix` 根下的
+/// 加密密钥和数据库也照拒。
+pub fn validate_user_file_path(path: &str, param_name: &str) -> Result<(), String> {
+    if path.trim().is_empty() {
+        return Err(format!("{} must not be empty", param_name));
+    }
+    if path.len() > 4096 {
+        return Err(format!("{} exceeds maximum path length", param_name));
+    }
+    let p = std::path::Path::new(path);
+    let resolved = std::fs::canonicalize(p).unwrap_or_else(|_| lexically_normalize(p));
+    let form = compare_form(&resolved);
+    for (key, _, _) in crate::storage::STORAGE_KEYS {
+        let dir = crate::storage::dir_for(key);
+        let dir_form = compare_form(&std::fs::canonicalize(&dir).unwrap_or(dir));
+        if form.starts_with(&format!("{dir_form}/")) {
+            return Ok(());
+        }
+    }
+    check_system_directory(&resolved)
+}
+
+/// 校验一个「路径形状的字符串」——**它不会被打开**，只当标识符或标签用
+/// （数据库主键、界面上展示的文件名）。
+///
+/// 和 [`validate_workspace_path`] 分开是有意的：那个会拒系统目录和 `~/.omnix`，
+/// 套到这里会把「删掉一条指向系统目录的旧记录」也一并拒掉——本该能清理的清理不了，
+/// 而清理动作本身根本不碰文件系统。这里要的只是：非空、不超长、没有控制字符
+/// （日志伪造 / 注入）。
+pub fn validate_path_label(value: &str, param_name: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        return Err(format!("{} must not be empty", param_name));
+    }
+    if value.len() > 4096 {
+        return Err(format!("{} exceeds maximum path length", param_name));
+    }
+    if contains_control_chars(value) {
+        return Err(format!("{} contains invalid control characters", param_name));
+    }
+    Ok(())
+}
+
+/// 校验一个路径确实落在 `root` 里面，并返回解析后的真实路径。
+///
+/// 这是「按目录关」，比黑名单强：不是「别碰这几个敏感位置」，而是「只能待在这里」。
+/// 必须 canonicalize 之后再比——纯字面的 `starts_with` 会放过
+/// `attachments/../../secret`，那是这个仓库真出过的 bug（见 `media_read_attachment`
+/// 的历史注释）。
+pub fn validate_contained(
+    path: &str,
+    root: &std::path::Path,
+    param_name: &str,
+) -> Result<std::path::PathBuf, String> {
+    if path.trim().is_empty() {
+        return Err(format!("{} must not be empty", param_name));
+    }
+    let root = std::fs::canonicalize(root)
+        .map_err(|e| format!("{} 的根目录无法解析：{e}", param_name))?;
+    let target = std::fs::canonicalize(path)
+        .map_err(|_| format!("{} 越界或不存在", param_name))?;
+    if !target.starts_with(&root) {
+        return Err(format!("{} 越界", param_name));
+    }
+    Ok(target)
+}
+
 /// 不碰文件系统地解析掉 `.` 和 `..`。
 ///
 /// 给「还不存在的路径」用——`canonicalize` 对不存在的路径直接失败，而那恰恰是
@@ -407,46 +478,12 @@ mod path_closure_tests {
 mod command_coverage_ratchet {
     use std::collections::BTreeSet;
 
-    /// 收路径参数、但**还没做校验**的命令。
+    /// 空了。**留着这个空名单是有用的**——名单外的命令一旦收路径参数却不校验，
+    /// `no_new_command_takes_a_path_without_validating_it` 立刻变红。清零之后它
+    /// 从「待办清单」变成了「守门人」。
     ///
-    /// 这是一份**待办清单，不是许可名单**。它存在的唯一理由是：一次修 57 个命令
-    /// 不现实，但「不许再变多」现在就能做到。
-    ///
-    /// 规则：
-    /// - 名单**外**的命令只要收路径参数就必须校验，否则测试红——新增命令自动被守住；
-    /// - 名单**内**的命令一旦补上校验，要把它从这里删掉，否则测试也红——名单只能
-    ///   变短，不会烂在这里。
-    const UNVALIDATED: &[&str] = &[
-        "analyze_codebase",
-        "backup_config_file",
-        "create_subagent",
-        "detect_file_change",
-        "distill_from_project",
-        "excel_ai_edit",
-        "excel_import_csv",
-        "get_lessons_preview",
-        "get_skill_content",
-        "get_workspace_snapshot",
-        "import_deck_html",
-        "import_docx_markdown",
-        "import_pptx_deck",
-        "media_read_attachment",
-        "office_preview_html",
-        "protocol_list_events",
-        "protocol_preview_init",
-        "protocol_remove_workspace",
-        "protocol_set_enabled",
-        "read_workspace_file",
-        "refresh_workspace_profile",
-        "resolve_skill_conflict",
-        "restore_backup",
-        "save_skill_content",
-        "sdd_plan_prompt",
-        "team_build_preset",
-        "team_generate_plan",
-        "update_skill_profile",
-        "write_remove_space",
-    ];
+    /// 要往回加，得在这里写清为什么。
+    const UNVALIDATED: &[&str] = &[];
 
     /// 参数名长这样的，值最终会落到文件系统上。
     fn takes_a_path(signature: &str) -> bool {
@@ -454,10 +491,15 @@ mod command_coverage_ratchet {
             let Some((name, ty)) = token.split_once(':') else { continue };
             let name = name.trim().trim_start_matches("mut ").trim();
             let ty = ty.trim();
-            let looks_like_path = name.contains("path")
+            // `contains("file")` 会把 **pro-file** 也算进来——技能那三个命令
+            // （`get_skill_content` / `save_skill_content` / `update_skill_profile`）
+            // 就是这么被冤枉挂了三个版本的，它们根本没有路径参数。
+            // 按词段比，别按子串。
+            let words: Vec<&str> = name.split('_').collect();
+            let looks_like_path = words.iter().any(|w| matches!(*w, "path" | "dir" | "file"))
+                || name.ends_with("_path")
                 || name.ends_with("_dir")
-                || name == "dir"
-                || name.contains("file")
+                || name.ends_with("_file")
                 || name.starts_with("workspace");
             let is_string = ty.starts_with("String") || ty.starts_with("&str")
                 || ty.starts_with("Option<String>");

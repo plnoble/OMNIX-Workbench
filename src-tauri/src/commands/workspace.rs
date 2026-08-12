@@ -198,6 +198,7 @@ fn build_workspace_snapshot(root: PathBuf) -> WorkspaceSnapshot {
 /// minimal snapshot (root only) rather than letting the panel spin forever.
 #[tauri::command]
 pub async fn get_workspace_snapshot(workspace_path: String) -> Result<WorkspaceSnapshot, String> {
+    crate::input_validation::validate_workspace_path(&workspace_path, "workspace_path")?;
     let requested = PathBuf::from(workspace_path.trim());
     let root = requested
         .canonicalize()
@@ -304,6 +305,9 @@ pub fn read_workspace_file(
     workspace_path: String,
     relative_path: String,
 ) -> Result<FilePreview, String> {
+    // 下面那道「解析后必须还在 root 里」只管住了 relative_path。root 本身
+    // 是前端给的，没人管过——传 `~/.ssh` 进来，配上 `id_rsa`，两道检查全过。
+    crate::input_validation::validate_workspace_path(&workspace_path, "workspace_path")?;
     let root = PathBuf::from(workspace_path.trim())
         .canonicalize()
         .map_err(|error| format!("工作区不存在或无法访问: {error}"))?;

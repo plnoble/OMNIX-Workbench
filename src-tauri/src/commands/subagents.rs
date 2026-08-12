@@ -90,6 +90,9 @@ pub fn create_subagent(
     worktree_path: String,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<SubAgent, String> {
+    // worktree_path 只是入库存着给界面显示，这条命令自己不碰文件系统
+    // （真正建 worktree 的是 `create_worktree`，那边已经过闸）。
+    crate::input_validation::validate_path_label(&worktree_path, "worktree_path")?;
     ensure_table(&db)?;
     let id = format!("sub_{}", chrono::Utc::now().timestamp_micros());
     let conn = db.get_connection().map_err(|e| e.to_string())?;

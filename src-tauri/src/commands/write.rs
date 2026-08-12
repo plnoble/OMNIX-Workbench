@@ -136,6 +136,9 @@ pub fn write_add_space(path: String, db: State<'_, Arc<DbManager>>) -> Result<Wr
 /// Removes a custom writing space from the list (does not delete files).
 #[tauri::command]
 pub fn write_remove_space(path: String, db: State<'_, Arc<DbManager>>) -> Result<(), String> {
+    // 只是从设置里那份列表摘掉一项，不删文件。这里**不能**用工作区那道闸：
+    // 目录后来变成不可访问了，正是最需要能把它移出列表的时候。
+    input_validation::validate_path_label(&path, "path")?;
     let mut custom = load_custom_spaces(&db);
     custom.retain(|s| s.path != path);
     db.set_setting("write_spaces", &serde_json::to_string(&custom).unwrap_or_default())

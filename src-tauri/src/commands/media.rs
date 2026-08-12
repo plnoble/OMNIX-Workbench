@@ -45,15 +45,11 @@ pub fn media_read_attachment(path: String) -> Result<String, String> {
     // Canonicalize BEFORE the containment check. The lexical `starts_with` this
     // replaces compared path components without resolving `..`, so
     // `attachments/../../secret` passed the prefix test and was then read.
-    let root = attachments_dir()?
-        .canonicalize()
-        .map_err(|error| error.to_string())?;
-    let target = PathBuf::from(&path)
-        .canonicalize()
-        .map_err(|_| "附件路径越界".to_string())?;
-    if !target.starts_with(&root) {
-        return Err("附件路径越界".into());
-    }
+    //
+    // 这段判断原先是抄在这里的一份手写实现；现在收进 `input_validation`，
+    // 全仓库「必须待在某个目录里」只此一份——同一套判断有两份迟早分叉，
+    // 而这一处的历史 bug 就是分叉出来的。
+    let target = crate::input_validation::validate_contained(&path, &attachments_dir()?, "path")?;
     let bytes = std::fs::read(&target).map_err(|error| error.to_string())?;
     let mime = match target.extension().and_then(|ext| ext.to_str()) {
         Some("jpg") | Some("jpeg") => "image/jpeg",

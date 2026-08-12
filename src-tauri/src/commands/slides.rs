@@ -396,6 +396,7 @@ pub fn import_deck_html(
     file_path: String,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<DeckRecord, String> {
+    crate::input_validation::validate_user_file_path(&file_path, "file_path")?;
     let html = std::fs::read_to_string(&file_path).map_err(|e| format!("读取失败: {e}"))?;
     let json = crate::slides::extract_deck_source(&html).ok_or_else(|| {
         "这个 HTML 里没有 OMNIX 的演示数据块——只有从 OMNIX 导出的 HTML 才能导回。".to_string()

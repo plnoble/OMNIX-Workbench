@@ -264,6 +264,8 @@ pub fn protocol_preview_init(
     workspace_path: String,
     project_name: Option<String>,
 ) -> Result<ProtocolInitPreview, String> {
+    // 这条要读工作区里的文件，和上面那三条不一样，走真闸。
+    crate::input_validation::validate_workspace_path(&workspace_path, "workspace_path")?;
     build_preview(&workspace_path, project_name)
 }
 
@@ -907,6 +909,7 @@ pub fn protocol_set_enabled(
     enabled: bool,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<(), String> {
+    crate::input_validation::validate_path_label(&workspace_path, "workspace_path")?;
     let conn = db.get_connection().map_err(|e| e.to_string())?;
     let affected = conn
         .execute(
@@ -929,6 +932,7 @@ pub fn protocol_remove_workspace(
     workspace_path: String,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<(), String> {
+    crate::input_validation::validate_path_label(&workspace_path, "workspace_path")?;
     let mut conn = db.get_connection().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     for table in [
@@ -956,6 +960,9 @@ pub fn protocol_list_events(
     limit: Option<u32>,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<Vec<ProjectProtocolEvent>, String> {
+    // 下面三条都只把 workspace_path 当数据库主键用，不碰文件系统。用工作区
+    // 那道闸会把「清理一条指向系统目录的旧记录」也拒掉——本该能删的删不掉。
+    crate::input_validation::validate_path_label(&workspace_path, "workspace_path")?;
     let limit = limit.unwrap_or(100).min(500);
     let conn = db.get_connection().map_err(|e| e.to_string())?;
     let mut stmt = conn

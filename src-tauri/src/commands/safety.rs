@@ -390,6 +390,7 @@ pub fn get_gpu_database() -> Vec<crate::model_knowledge::GpuSpec> {
 /// Analyze a codebase directory — returns file statistics and structure
 #[tauri::command]
 pub fn analyze_codebase(path: String) -> Result<serde_json::Value, String> {
+    crate::input_validation::validate_workspace_path(&path, "path")?;
     let dir = PathBuf::from(&path);
     if !dir.exists() || !dir.is_dir() {
         return Err(format!("Path does not exist or is not a directory: {}", path));
@@ -488,6 +489,10 @@ pub fn analyze_codebase(path: String) -> Result<serde_json::Value, String> {
 /// Backup a file before modification
 #[tauri::command]
 pub fn backup_config_file(file_path: String, category: String) -> Result<Option<String>, String> {
+    // `category` 会被当成目录名拼进备份根目录——不挡分隔符的话，
+    // `../../` 就能把任意文件的副本写到备份区外面去。
+    crate::input_validation::validate_user_file_path(&file_path, "file_path")?;
+    crate::input_validation::validate_path_component(&category, "category")?;
     let path = PathBuf::from(&file_path);
     crate::backup::backup_file(&path, &category).map(|p| p.map(|p| p.to_string_lossy().to_string()))
 }
@@ -501,6 +506,14 @@ pub fn list_backups(category: String) -> Vec<crate::backup::BackupEntry> {
 /// Restore a backup
 #[tauri::command]
 pub fn restore_backup(backup_path: String, target_path: String) -> Result<(), String> {
+    // 这条命令**往任意路径写任意内容**，是这批里最危险的一个。
+    // 来源按目录关死（只能是备份区里的东西），落点按用户文件那道闸走。
+    crate::input_validation::validate_contained(
+        &backup_path,
+        &crate::storage::backups_dir(),
+        "backup_path",
+    )?;
+    crate::input_validation::validate_user_file_path(&target_path, "target_path")?;
     crate::backup::restore_backup(&backup_path, &target_path)
 }
 

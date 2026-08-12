@@ -307,8 +307,11 @@ pub fn sdd_clarify_prompt(draft: String) -> String {
 
 /// Builds the plan-generation prompt targeting a reserved plan path.
 #[tauri::command]
-pub fn sdd_plan_prompt(draft: String, plan_relative_path: String) -> String {
-    build_sdd_plan_prompt(&draft, &plan_relative_path)
+pub fn sdd_plan_prompt(draft: String, plan_relative_path: String) -> Result<String, String> {
+    // 这条不自己写文件——它拼一段提示词，让 **Agent** 去那个路径写计划。
+    // 所以 `..` 一样要挡：挡的是「让 Agent 把文件写到工作区外面」。
+    crate::input_validation::validate_relative_path(std::path::Path::new(&plan_relative_path))?;
+    Ok(build_sdd_plan_prompt(&draft, &plan_relative_path))
 }
 
 #[cfg(test)]

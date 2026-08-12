@@ -315,6 +315,10 @@ pub fn get_lessons_preview(
     db: State<'_, Arc<DbManager>>,
 ) -> Result<LessonsInfo, String> {
     let ws = workspace_path.unwrap_or_default();
+    // 可空：不带工作区就是「全局预览」，那是正常用法，不该报错。
+    if !ws.trim().is_empty() {
+        crate::input_validation::validate_workspace_path(&ws, "workspace_path")?;
+    }
     let content =
         build_memory_block(&db, &ws)?.unwrap_or_else(|| "（暂无可注入经验）".to_string());
     Ok(LessonsInfo { count: experience_count(&db), content })
@@ -469,6 +473,7 @@ pub async fn refresh_workspace_profile(
     model_name: Option<String>,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<bool, String> {
+    crate::input_validation::validate_workspace_path(&workspace_path, "workspace_path")?;
     let signals = derive_workspace_signals(&workspace_path);
     if signals.trim().is_empty() {
         return Ok(false);
