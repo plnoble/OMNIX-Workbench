@@ -402,3 +402,172 @@ mod path_closure_tests {
         assert_eq!(normalized, std::path::PathBuf::from("/etc"), "{normalized:?}");
     }
 }
+
+#[cfg(test)]
+mod command_coverage_ratchet {
+    use std::collections::BTreeSet;
+
+    /// 收路径参数、但**还没做校验**的命令。
+    ///
+    /// 这是一份**待办清单，不是许可名单**。它存在的唯一理由是：一次修 57 个命令
+    /// 不现实，但「不许再变多」现在就能做到。
+    ///
+    /// 规则：
+    /// - 名单**外**的命令只要收路径参数就必须校验，否则测试红——新增命令自动被守住；
+    /// - 名单**内**的命令一旦补上校验，要把它从这里删掉，否则测试也红——名单只能
+    ///   变短，不会烂在这里。
+    const UNVALIDATED: &[&str] = &[
+    "analyze_codebase",
+    "backup_config_file",
+    "create_checkpoint",
+    "create_skill",
+    "create_subagent",
+    "create_workspace_run",
+    "create_worktree",
+    "detect_file_change",
+    "distill_from_project",
+    "excel_ai_edit",
+    "excel_import_csv",
+    "get_lessons_preview",
+    "get_previewable_files",
+    "get_skill_content",
+    "get_workspace_diff",
+    "get_workspace_git_diff",
+    "get_workspace_snapshot",
+    "import_deck_html",
+    "import_docx_markdown",
+    "import_pptx_deck",
+    "kb_import_directory",
+    "kb_import_document",
+    "list_checkpoints",
+    "list_worktrees",
+    "media_read_attachment",
+    "office_preview_html",
+    "protocol_archive_and_distill",
+    "protocol_get_status",
+    "protocol_init_workspace",
+    "protocol_list_actions",
+    "protocol_list_events",
+    "protocol_list_evolution_proposals",
+    "protocol_preview_init",
+    "protocol_remove_workspace",
+    "protocol_set_enabled",
+    "read_workspace_file",
+    "refresh_workspace_profile",
+    "resolve_skill_conflict",
+    "restore_backup",
+    "save_skill_content",
+    "sdd_list_plans",
+    "sdd_plan_prompt",
+    "sdd_read_plan",
+    "sdd_reserve_plan_path",
+    "sdd_toggle_plan_todo",
+    "sdd_write_plan",
+    "team_build_preset",
+    "team_generate_plan",
+    "update_skill_profile",
+    "write_create_file",
+    "write_delete_file",
+    "write_export_html",
+    "write_list_files",
+    "write_read_file",
+    "write_remove_space",
+    "write_rename_file",
+    "write_save_file",
+    ];
+
+    /// 参数名长这样的，值最终会落到文件系统上。
+    fn takes_a_path(signature: &str) -> bool {
+        for token in signature.split(',') {
+            let Some((name, ty)) = token.split_once(':') else { continue };
+            let name = name.trim().trim_start_matches("mut ").trim();
+            let ty = ty.trim();
+            let looks_like_path = name.contains("path")
+                || name.ends_with("_dir")
+                || name == "dir"
+                || name.contains("file")
+                || name.starts_with("workspace");
+            let is_string = ty.starts_with("String") || ty.starts_with("&str")
+                || ty.starts_with("Option<String>");
+            if looks_like_path && is_string {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// 扫一遍所有 `#[tauri::command]`，返回「收路径参数却没调用 input_validation」的。
+    fn offenders() -> BTreeSet<String> {
+        let mut found = BTreeSet::new();
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands");
+        let entries = std::fs::read_dir(&dir).expect("读 src/commands");
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).expect("读命令文件");
+            let mut rest = source.as_str();
+            while let Some(at) = rest.find("#[tauri::command]") {
+                rest = &rest[at + "#[tauri::command]".len()..];
+                let Some(paren) = rest.find('(') else { break };
+                let head = &rest[..paren];
+                let Some(fn_at) = head.rfind("fn ") else { continue };
+                let name = head[fn_at + 3..].trim().to_string();
+                // 函数体：从签名后的第一个 `{` 起，配对到闭合。
+                let Some(brace) = rest.find('{') else { break };
+                let signature = rest[paren + 1..brace].to_string();
+                let mut depth = 0usize;
+                let mut end = brace;
+                for (offset, ch) in rest[brace..].char_indices() {
+                    match ch {
+                        '{' => depth += 1,
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                end = brace + offset;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let body = &rest[brace..=end];
+                if takes_a_path(&signature)
+                    && !body.contains("input_validation")
+                    && !body.contains("validate_")
+                {
+                    found.insert(name);
+                }
+                rest = &rest[end..];
+            }
+        }
+        found
+    }
+
+    /// 新增一个收路径参数的命令而不校验 → 这条红。
+    #[test]
+    fn no_new_command_takes_a_path_without_validating_it() {
+        let known: BTreeSet<String> = UNVALIDATED.iter().map(|s| s.to_string()).collect();
+        let current = offenders();
+        let added: Vec<_> = current.difference(&known).collect();
+        assert!(
+            added.is_empty(),
+            "这些命令收路径参数却没调用 input_validation：{added:#?}
+             加一句 `input_validation::validate_workspace_path(&path, \"path\")?;`，
+             或者（确有理由时）把它加进 UNVALIDATED 并写清为什么。"
+        );
+    }
+
+    /// 名单只能变短。修好了就从名单里删掉，否则它会一直挂着假装还欠着。
+    #[test]
+    fn the_todo_list_does_not_rot() {
+        let known: BTreeSet<String> = UNVALIDATED.iter().map(|s| s.to_string()).collect();
+        let current = offenders();
+        let fixed: Vec<_> = known.difference(&current).collect();
+        assert!(
+            fixed.is_empty(),
+            "这些命令已经补上校验了，请把它们从 UNVALIDATED 里删掉：{fixed:#?}"
+        );
+    }
+}
