@@ -20,11 +20,13 @@ import { Button } from "@/components/ui/button";
 import { toast } from "@/components/ui/sonner";
 import { cn } from "@/lib/utils";
 import {
-  oauthApi, cliTakeoverApi, grokAuthApi,
+  oauthApi, cliTakeoverApi, grokAuthApi, upstreamAccountApi,
   type OAuthProvider, type OAuthAccountView, type OAuthStartResult,
   type AgentTakeoverState, type TakeoverTarget, type GrokAuthStatus,
 } from "@/lib/tauri-api";
 
+/// 接管目标。`name` 同时是后端 `list_agent_upstream_accounts` 认的 agent 名——
+/// 「当前生效的上游」那一列靠它去查。
 const TAKEOVER_AGENTS: { id: string; name: string }[] = [
   { id: "claude_code", name: "Claude Code" },
   { id: "codex", name: "Codex" },
@@ -45,6 +47,12 @@ export function AuthCenterTab() {
   const [busy, setBusy] = useState<string>("");
   // CLI takeover
   const [takeover, setTakeover] = useState<AgentTakeoverState[]>([]);
+  /// 每个 Agent 当前生效的上游（订阅 / API Key / CLI 自管），按 agent id 存。
+  ///
+  /// 补这一列是因为这一页原先分成对不上的两半：上半截「已连接账号」按账号一行，
+  /// 下半截「配置接管」按 Agent 一行，于是「这个 Agent 到底在用哪个账号」哪边都
+  /// 答不了。两个维度合到一张表里，一眼就看得见。
+  const [activeUpstream, setActiveUpstream] = useState<Record<string, string>>({});
   const [targetValue, setTargetValue] = useState("gateway");
   const [pickedAgents, setPickedAgents] = useState<string[]>(["claude_code"]);
   const [confirmApply, setConfirmApply] = useState(false);
@@ -60,6 +68,20 @@ export function AuthCenterTab() {
       const [accs, tk] = await Promise.all([oauthApi.listAccounts(), cliTakeoverApi.status()]);
       setAccounts(accs);
       setTakeover(tk);
+    } catch {
+      /* transient */
+    }
+    // 每个 Agent 当前生效的上游。逐个查而不是一次拿——后端的接口就是按 agent
+    // 名给的，且任何一个失败都不该让整列消失。
+    try {
+      const pairs = await Promise.all(
+        TAKEOVER_AGENTS.map(async (agent) => {
+          const options = await upstreamAccountApi.list(agent.name).catch(() => []);
+          const active = options.find((o) => o.is_active) ?? options[0];
+          return [agent.id, active ? active.label : ""] as const;
+        }),
+      );
+      setActiveUpstream(Object.fromEntries(pairs.filter(([, label]) => label)));
     } catch {
       /* transient */
     }
@@ -518,6 +540,14 @@ export function AuthCenterTab() {
                     <div className="text-sm font-medium">{agent.name}</div>
                     <div className="truncate text-xs text-muted-foreground">
                       {state?.current_base_url ? `当前指向 ${state.current_base_url}` : "当前使用 CLI 自身配置"}
+                    </div>
+                    {/* 「这个 Agent 在用哪个账号」——这一页原先答不了这个问题。 */}
+                    <div className="mt-0.5 truncate text-xs">
+                      {activeUpstream[agent.id] ? (
+                        <span className="text-success">上游：{activeUpstream[agent.id]}</span>
+                      ) : (
+                        <span className="text-warning">还没有可用上游</span>
+                      )}
                     </div>
                   </div>
                   {state?.has_backup && (

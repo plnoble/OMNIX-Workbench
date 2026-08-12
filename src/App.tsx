@@ -516,6 +516,7 @@ function MainApp() {
                   handleTabChange("work");
                 }}
                 onRefreshAgents={convs.detectAgents}
+                onOpenAuthCenter={() => setActiveTab("auth-center")}
               />
             )}
 

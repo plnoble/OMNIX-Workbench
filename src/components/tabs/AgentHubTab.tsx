@@ -4,6 +4,7 @@ import {
   CheckCircle2,
   Download,
   Loader2,
+  LogIn,
   Play,
   RefreshCw,
   Sparkles,
@@ -39,6 +40,9 @@ interface AgentHubTabProps {
    * workspace also reads. Every install/update/refresh here must go through
    * this, or the workspace keeps showing 「未检测到」 until an app restart. */
   onRefreshAgents: () => Promise<void>;
+  /** 跳到「认证中心」。订阅登录（含 Grok 的设备码流程）只在那一处实现，
+   *  这里给的是直达入口——把同一套 UI 在两个页面各维护一份不划算。 */
+  onOpenAuthCenter?: () => void;
 }
 
 const BUILTIN_MODELS: Record<string, string[]> = {
@@ -83,6 +87,7 @@ export function AgentHubTab({
   onDeleteAccount,
   onStartWork,
   onRefreshAgents,
+  onOpenAuthCenter,
 }: AgentHubTabProps) {
   // No local copy of the detection list — `detectedAgents` (App-level) is the
   // single source of truth shared with the workspace. A fork here once made the
@@ -607,8 +612,14 @@ export function AgentHubTab({
 
                 <div className="space-y-2">
                   {upstreams.length === 0 ? (
-                    <div className="text-sm text-muted-foreground">
-                      还没有可用的上游。到「认证中心」登录订阅，或在下方新增一个 API Key 账号。
+                    <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                      <span>还没有可用的上游。</span>
+                      {onOpenAuthCenter && (
+                        <Button size="sm" variant="outline" className="h-7" onClick={onOpenAuthCenter}>
+                          <LogIn className="h-3 w-3" /> 去登录订阅
+                        </Button>
+                      )}
+                      <span>或在下方新增一个 API Key 账号。</span>
                     </div>
                   ) : upstreams.map((option) => (
                     <div
@@ -656,6 +667,15 @@ export function AgentHubTab({
                     </div>
                   ))}
                 </div>
+
+                {upstreams.length > 0 && onOpenAuthCenter && (
+                  <button
+                    className="mt-2 text-xs text-primary hover:underline"
+                    onClick={onOpenAuthCenter}
+                  >
+                    登录别的订阅（Claude / OpenAI / Gemini / Grok）→
+                  </button>
+                )}
 
                 <div className="mt-3 flex flex-wrap gap-2">
                   <Button size="sm" variant="outline" onClick={onAddAccount}>新增 API Key 账号</Button>

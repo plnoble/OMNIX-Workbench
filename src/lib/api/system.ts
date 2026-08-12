@@ -148,32 +148,9 @@ export const agentExecApi = {
 
 // ── Autopilot ─────────────────────
 
-export interface AutopilotConfig {
-  task_id: string;
-  agent_name: string | null;
-  prompt_template: string | null;
-  trigger_type: string;     // "cron" | "webhook"
-  webhook_secret: string | null;
-  webhook_url: string | null;
-}
-
 // NOTE: legacy config-on-cron-task autopilot (never surfaced in the UI). The
 // active, standalone Autopilot feature is `autopilotApi` above. Kept only so the
 // registered backend commands remain reachable; rename avoids the name clash.
-export const autopilotConfigApi = {
-  /** Get autopilot config for a cron task */
-  getConfig: (taskId: string) =>
-    invoke<AutopilotConfig>("get_autopilot_config", { taskId }),
-
-  /** Save autopilot config */
-  saveConfig: (config: AutopilotConfig) =>
-    invoke("save_autopilot_config", { config }),
-
-  /** Save autopilot execution result to knowledge base */
-  saveResultToKb: (taskId: string, resultContent: string) =>
-    invoke<string>("save_autopilot_result_to_kb", { taskId, resultContent }),
-};
-
 // ── Workspace GC ──────────────────
 
 export interface WorkspaceGcConfig {

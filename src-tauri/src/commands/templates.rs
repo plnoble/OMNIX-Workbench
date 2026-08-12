@@ -288,90 +288,6 @@ pub fn save_agent_exec_config(
 // Autopilot Enhancement
 // ══════════════════════════════════════════════════
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AutopilotConfig {
-    pub task_id: String,
-    pub agent_name: Option<String>,
-    pub prompt_template: Option<String>,
-    pub trigger_type: String,       // "cron" | "webhook"
-    pub webhook_secret: Option<String>,
-    pub webhook_url: Option<String>,
-}
-
-/// Get autopilot config for a cron task
-#[tauri::command]
-pub fn get_autopilot_config(
-    task_id: String,
-    db: State<'_, Arc<DbManager>>,
-) -> AutopilotConfig {
-    let conn = match db.get_connection() { Ok(c) => c, Err(_) => {
-        return AutopilotConfig { task_id, agent_name: None, prompt_template: None, trigger_type: "cron".into(), webhook_secret: None, webhook_url: None };
-    }};
-
-    let get_val = |key: &str| -> Option<String> {
-        conn.query_row(
-            "SELECT config_value FROM autopilot_configs WHERE task_id = ?1 AND config_key = ?2",
-            params![task_id, key],
-            |r| r.get(0),
-        ).ok()
-    };
-
-    AutopilotConfig {
-        task_id: task_id.clone(),
-        agent_name: get_val("agent_name"),
-        prompt_template: get_val("prompt_template"),
-        trigger_type: get_val("trigger_type").unwrap_or_else(|| "cron".into()),
-        webhook_secret: get_val("webhook_secret"),
-        webhook_url: get_val("webhook_url"),
-    }
-}
-
-/// Save autopilot config
-#[tauri::command]
-pub fn save_autopilot_config(
-    config: AutopilotConfig,
-    db: State<'_, Arc<DbManager>>,
-) -> Result<(), String> {
-    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
-
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS autopilot_configs (
-            task_id TEXT NOT NULL,
-            config_key TEXT NOT NULL,
-            config_value TEXT NOT NULL,
-            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (task_id, config_key)
-        )", [],
-    ).map_err(|e: rusqlite::Error| e.to_string())?;
-
-    let set_val = |key: &str, val: &Option<String>| -> Result<(), String> {
-        if let Some(v) = val {
-            conn.execute(
-                "INSERT OR REPLACE INTO autopilot_configs (task_id, config_key, config_value) VALUES (?1, ?2, ?3)",
-                params![config.task_id, key, v],
-            ).map_err(|e: rusqlite::Error| e.to_string())?;
-        }
-        Ok(())
-    };
-
-    set_val("agent_name", &config.agent_name)?;
-    set_val("prompt_template", &config.prompt_template)?;
-    set_val("trigger_type", &Some(config.trigger_type.clone()))?;
-    set_val("webhook_secret", &config.webhook_secret)?;
-
-    // Generate webhook URL if trigger_type is webhook
-    if config.trigger_type == "webhook" {
-        let port = db.get_setting("proxy_port").ok().flatten().unwrap_or_else(|| "1421".into());
-        let url = format!("http://127.0.0.1:{}/webhook/{}", port, config.task_id);
-        conn.execute(
-            "INSERT OR REPLACE INTO autopilot_configs (task_id, config_key, config_value) VALUES (?1, 'webhook_url', ?2)",
-            params![config.task_id, url],
-        ).map_err(|e: rusqlite::Error| e.to_string())?;
-    }
-
-    Ok(())
-}
-
 /// Process prompt template variables: {{date}}, {{git_status}}, {{workspace}}
 #[allow(dead_code)]
 pub fn expand_prompt_template(template: &str, workspace: Option<&str>) -> String {
@@ -404,38 +320,6 @@ pub fn expand_prompt_template(template: &str, workspace: Option<&str>) -> String
 // ══════════════════════════════════════════════════
 // Autopilot Enhancement — Result to Knowledge Base
 // ══════════════════════════════════════════════════
-
-/// Save autopilot execution result to knowledge base
-#[tauri::command]
-pub fn save_autopilot_result_to_kb(
-    task_id: String,
-    result_content: String,
-    db: State<'_, Arc<DbManager>>,
-) -> Result<String, String> {
-    let home = dirs::home_dir().ok_or("Cannot determine home directory")?;
-    let kb_dir = home.join(".omnix").join("knowledge").join("autopilot_results");
-    std::fs::create_dir_all(&kb_dir).map_err(|e| e.to_string())?;
-
-    let filename = format!("{}_{}.md", task_id, chrono::Utc::now().format("%Y%m%d_%H%M%S"));
-    let file_path = kb_dir.join(&filename);
-
-    let content_with_frontmatter = format!(
-        "---\nname: autopilot-{}\ncategory: autopilot\nsource: {}\n---\n\n# Autopilot Result: {}\n\n{}\n",
-        task_id, task_id, task_id, result_content
-    );
-
-    std::fs::write(&file_path, &content_with_frontmatter).map_err(|e| e.to_string())?;
-
-    // Record in knowledge_documents if the table exists
-    if let Ok(conn) = db.get_connection() {
-        let _ = conn.execute(
-            "INSERT OR IGNORE INTO knowledge_documents (id, name, file_path, status, created_at) VALUES (?1, ?2, ?3, 'completed', datetime('now'))",
-            params![format!("autopilot-{}-{}", task_id, chrono::Utc::now().timestamp()), filename, file_path.to_string_lossy()],
-        );
-    }
-
-    Ok(file_path.to_string_lossy().to_string())
-}
 
 // ══════════════════════════════════════════════════
 // Workspace GC

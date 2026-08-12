@@ -618,8 +618,6 @@ pub fn run() {
             commands::get_agent_exec_config,
             commands::save_agent_exec_config,
             // Autopilot commands
-            commands::get_autopilot_config,
-            commands::save_autopilot_config,
             // Workspace GC commands
             commands::get_gc_config,
             commands::save_gc_config,
@@ -651,7 +649,6 @@ pub fn run() {
             commands::record_skill_usage,
             commands::get_top_skills_by_usage,
             // Autopilot Enhancement
-            commands::save_autopilot_result_to_kb,
             // Security & safety features
             commands::wrap_untrusted_content,
             commands::scan_prompt_injection,
