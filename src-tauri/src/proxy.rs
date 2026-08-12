@@ -520,16 +520,13 @@ async fn handle_messages_impl(
             &resolved_model,
             Some(&agent_name_for_routing),
         ) {
-            Ok((api_key_raw, api_host, api_type, actual_model_name, platform_id)) => (
+            // 逗号切分已经在 `platform_keys` 里做完了（那是旧列的多 Key 写法）。
+            // 在这里再切一次不但多余，还把新表来的 Key 数组压成长度 1。
+            Ok((api_keys, api_host, api_type, actual_model_name, platform_id)) => (
                 api_host,
                 api_type,
                 actual_model_name,
-                api_key_raw
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|key| !key.is_empty())
-                    .map(str::to_string)
-                    .collect(),
+                api_keys,
                 Some(platform_id),
                 false,
             ),
@@ -1428,7 +1425,7 @@ async fn handle_openai_forward_impl(
         );
     }
 
-    let (api_key_raw, api_host, api_type, actual_model_name, circuit_platform_id) =
+    let (api_keys, api_host, api_type, actual_model_name, circuit_platform_id) =
         match resolve_model_upstream_for_agent(
             &state.db,
             &resolved_model,
@@ -1444,11 +1441,7 @@ async fn handle_openai_forward_impl(
             }
         };
 
-    let keys: Vec<&str> = api_key_raw
-        .split(',')
-        .map(|k| k.trim())
-        .filter(|k| !k.is_empty())
-        .collect();
+    let keys: Vec<&str> = api_keys.iter().map(String::as_str).collect();
     if keys.is_empty() && api_type != "ollama" {
         return (
             StatusCode::UNAUTHORIZED,
@@ -1938,85 +1931,103 @@ fn query_param(query: Option<&str>, key: &str) -> Option<String> {
 /// checks), so a future panel route can't ship without auth. The per-handler
 /// checks stay as defense in depth. Successful panel auths are recorded so the
 /// desktop UI can list connected devices.
+/// 鉴权判定的输入，全是**已经取好的值**——没有 DB、没有 axum 类型。
+///
+/// 抽出来是为了能穷举测试。原先这套判断整个长在 middleware 里，要验一条分支
+/// 就得起一个真实服务器；结果是网关最关键的安全逻辑一条测试都没有。
+pub(crate) struct AccessRequest<'a> {
+    pub path: &'a str,
+    pub peer_is_loopback: bool,
+    pub header_token: &'a str,
+    /// URL 里的 `?token=`，只有远程面板认它。
+    pub query_token: Option<&'a str>,
+    pub expected_token: &'a str,
+    pub use_wsl: bool,
+    pub remote_enabled: bool,
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) enum AccessDecision {
+    Allow,
+    /// 放行并把来访者记进远程设备列表（只有远程面板走这条）。
+    AllowRemotePanel,
+    Deny(&'static str),
+}
+
+/// 网关鉴权的**全部**判断逻辑。middleware 只负责取值和执行结果。
+pub(crate) fn decide_gateway_access(req: &AccessRequest<'_>) -> AccessDecision {
+    // 远程面板：任何来源都要令牌，本机也不例外。
+    //
+    // Header 优先——查询串会进浏览器历史、Referer 和截图。`?token=` 保留作兜底：
+    // 手机是从一条普通链接/二维码打开面板的，那第一次导航带不了 header；页面
+    // 加载之后它自己的 API 调用就走 header 了。
+    if req.path == "/remote" || req.path.starts_with("/api/remote/") {
+        let provided = if req.header_token.is_empty() {
+            req.query_token.unwrap_or("")
+        } else {
+            req.header_token
+        };
+        if !token_matches(provided, req.expected_token) {
+            return AccessDecision::Deny("远程访问需要有效令牌（在链接中携带 ?token=…）");
+        }
+        return AccessDecision::AllowRemotePanel;
+    }
+
+    // `/mcp` 必须在这一行里：它把技能库、联网搜索和 Office 读写交给调用方，开了
+    // 手机远程访问之后网关绑的是 0.0.0.0，漏掉它等于把这些能力对局域网无鉴权敞开。
+    let is_gateway = req.path.starts_with("/v1/")
+        || req.path.starts_with("/agent/")
+        || req.path.starts_with("/session/")
+        || req.path == "/mcp";
+    if !is_gateway || req.peer_is_loopback {
+        return AccessDecision::Allow;
+    }
+
+    // WSL 里的 agent 是从非回环地址过来的，又不方便带令牌，所以 WSL 模式保留原来
+    // 的本地开发信任——**但仅限手机远程访问关着的时候**。两个都开时监听在
+    // 0.0.0.0，一刀切的 WSL 豁免等于把无鉴权的模型网关送给局域网上每一台设备。
+    if req.use_wsl && !req.remote_enabled {
+        return AccessDecision::Allow;
+    }
+    if !token_matches(req.header_token, req.expected_token) {
+        return AccessDecision::Deny("远程访问模型网关需要有效令牌 (x-omnix-remote-token)");
+    }
+    AccessDecision::Allow
+}
+
 async fn guard_gateway_access(
     axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<SocketAddr>,
     State(state): State<Arc<ProxyState>>,
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    let path = req.uri().path();
-
-    // Remote-panel surface: token required from every peer (query or header).
-    let is_remote_surface = path == "/remote" || path.starts_with("/api/remote/");
-    if is_remote_surface {
-        let expected = state
-            .db
-            .get_setting("remote_token")
-            .unwrap_or(None)
-            .unwrap_or_default();
-        // Header first: query strings leak into browser history, Referer and
-        // screenshots. `?token=` stays as a fallback because the phone opens
-        // the panel from a plain link/QR and can't set headers on that first
-        // navigation — the served page then uses the header for its API calls.
-        let provided = req
-            .headers()
-            .get("x-omnix-remote-token")
-            .and_then(|v| v.to_str().ok())
-            .map(|v| v.to_string())
-            .or_else(|| query_param(req.uri().query(), "token"))
-            .unwrap_or_default();
-        if !token_matches(&provided, &expected) {
-            return (StatusCode::FORBIDDEN, "远程访问需要有效令牌（在链接中携带 ?token=…）").into_response();
+    let setting = |key: &str| {
+        state.db.get_setting(key).unwrap_or(None).unwrap_or_default()
+    };
+    let header_token = req
+        .headers()
+        .get("x-omnix-remote-token")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let query_token = query_param(req.uri().query(), "token");
+    let decision = decide_gateway_access(&AccessRequest {
+        path: req.uri().path(),
+        peer_is_loopback: peer.ip().is_loopback(),
+        header_token: &header_token,
+        query_token: query_token.as_deref(),
+        expected_token: &setting("remote_token"),
+        use_wsl: setting("use_wsl") == "true",
+        remote_enabled: setting("remote_access_enabled") == "true",
+    });
+    match decision {
+        AccessDecision::Deny(reason) => (StatusCode::FORBIDDEN, reason).into_response(),
+        AccessDecision::AllowRemotePanel => {
+            record_remote_client(peer.ip().to_string());
+            next.run(req).await
         }
-        record_remote_client(peer.ip().to_string());
-        return next.run(req).await;
+        AccessDecision::Allow => next.run(req).await,
     }
-
-    // `/mcp` 必须在这一行里：它把技能库交给调用方，开了手机远程访问之后网关
-    // 绑的是 0.0.0.0，漏掉它等于把整个技能库对局域网无鉴权敞开。
-    let is_gateway = path.starts_with("/v1/")
-        || path.starts_with("/agent/")
-        || path.starts_with("/session/")
-        || path == "/mcp";
-    if is_gateway && !peer.ip().is_loopback() {
-        // WSL agents reach the host over a non-loopback address and can't
-        // easily carry the token, so WSL mode keeps the pre-existing local-dev
-        // trust — but ONLY while 手机远程访问 is off. With both enabled the
-        // listener is on 0.0.0.0 for the LAN, and a blanket WSL exemption would
-        // hand every device on that network an unauthenticated model gateway.
-        let use_wsl = state
-            .db
-            .get_setting("use_wsl")
-            .unwrap_or(None)
-            .as_deref()
-            == Some("true");
-        let remote_enabled = state
-            .db
-            .get_setting("remote_access_enabled")
-            .unwrap_or(None)
-            .as_deref()
-            == Some("true");
-        if !use_wsl || remote_enabled {
-            let expected = state
-                .db
-                .get_setting("remote_token")
-                .unwrap_or(None)
-                .unwrap_or_default();
-            let provided = req
-                .headers()
-                .get("x-omnix-remote-token")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("");
-            if !token_matches(provided, &expected) {
-                return (
-                    StatusCode::FORBIDDEN,
-                    "远程访问模型网关需要有效令牌 (x-omnix-remote-token)",
-                )
-                    .into_response();
-            }
-        }
-    }
-    next.run(req).await
 }
 
 fn classify_request_capabilities(messages: &[OpenAIRequestMessage]) -> (bool, bool, bool, bool) {
@@ -2261,18 +2272,24 @@ fn active_account_override(
 fn resolve_model_upstream(
     db: &DbManager,
     target_model_name: &str,
-) -> Result<(String, String, String, String, String), String> {
+) -> Result<(Vec<String>, String, String, String, String), String> {
     resolve_model_upstream_for_agent(db, target_model_name, None)
 }
 
 /// Resolve upstream with optional agent name for per-agent routing.
-/// Returns `(api_key, api_host, api_type, actual_model_name, platform_id)` — the
+/// Returns `(api_keys, api_host, api_type, actual_model_name, platform_id)` — the
 /// trailing `platform_id` lets the caller attribute circuit-breaker outcomes.
+///
+/// 返回**全部** Key 而不是第一个。以前这里是 `platform_keys(..).0.next()`，把
+/// 列表砍成一个再交给调用方；调用方又按 `,` 切一次（那是**旧列**的多 Key 写法，
+/// 新表 `platform_api_keys` 每条独立、不含逗号）。两下一叠加，
+/// `send_with_key_failover` 收到的数组长度永远是 1——**多 Key 轮换在这条路上
+/// 从来没生效过**：第一个 Key 额度用完或失效，网关直接失败，不会换第二个。
 fn resolve_model_upstream_for_agent(
     db: &DbManager,
     target_model_name: &str,
     agent_name: Option<&str>,
-) -> Result<(String, String, String, String, String), String> {
+) -> Result<(Vec<String>, String, String, String, String), String> {
     let conn = db.get_connection().map_err(|e| e.to_string())?;
 
     // 0. Check per-agent platform binding
@@ -2295,13 +2312,9 @@ fn resolve_model_upstream_for_agent(
         ) {
             let (platform_id, model_name, _legacy_key, api_address, api_type) = row;
             // 和会话网关、健康检测同一套 Key 解析（活跃 Key 在前，新表优先）。
-            let key = crate::commands::platform_keys(db, &platform_id)
-                .0
-                .into_iter()
-                .next()
-                .unwrap_or_default();
+            let keys = crate::commands::platform_keys(db, &platform_id).0;
             println!("OMNIX Router: Agent '{}' bound to platform '{}' → {}", agent, platform_id, model_name);
-            return Ok((key, api_address, api_type, model_name, platform_id));
+            return Ok((keys, api_address, api_type, model_name, platform_id));
         }
     }
 
@@ -2325,12 +2338,8 @@ fn resolve_model_upstream_for_agent(
             .ok();
 
         if let Some((_legacy_key, api_address, api_type)) = platform_opt {
-            let key = crate::commands::platform_keys(db, platform_id)
-                .0
-                .into_iter()
-                .next()
-                .unwrap_or_default();
-            return Ok((key, api_address, api_type, model_name.to_string(), platform_id.to_string()));
+            let keys = crate::commands::platform_keys(db, platform_id).0;
+            return Ok((keys, api_address, api_type, model_name.to_string(), platform_id.to_string()));
         }
     }
 
@@ -2347,13 +2356,9 @@ fn resolve_model_upstream_for_agent(
                 "UPDATE model_platforms SET last_used_at = datetime('now') WHERE id = ?1",
                 params![platform_id],
             );
-            let key = crate::commands::platform_keys(db, &platform_id)
-                .0
-                .into_iter()
-                .next()
-                .unwrap_or_default();
+            let keys = crate::commands::platform_keys(db, &platform_id).0;
             return Ok((
-                key,
+                keys,
                 api_address,
                 api_type,
                 target_model_name.to_string(),
@@ -2379,13 +2384,9 @@ fn resolve_model_upstream_for_agent(
         .ok();
 
     if let Some((platform_id, _legacy_key, api_address, api_type)) = fallback_opt {
-        let key = crate::commands::platform_keys(db, &platform_id)
-            .0
-            .into_iter()
-            .next()
-            .unwrap_or_default();
+        let keys = crate::commands::platform_keys(db, &platform_id).0;
         return Ok((
-            key,
+            keys,
             api_address,
             api_type,
             target_model_name.to_string(),
@@ -2830,7 +2831,7 @@ async fn handle_embeddings(
     };
 
     // Resolve the model to an upstream platform
-    let (api_key, api_address, api_type, actual_model, _circuit_platform_id) =
+    let (api_keys, api_address, api_type, actual_model, _circuit_platform_id) =
         match resolve_model_upstream(&state.db, &model_name) {
             Ok(res) => res,
             Err(e) => {
@@ -2879,6 +2880,8 @@ async fn handle_embeddings(
         .http_client
         .post(&upstream_url)
         .json(&forwarded_payload);
+    // 嵌入这条路没有走 `send_with_key_failover`，取活跃的那个（列表首位）。
+    let api_key = api_keys.first().map(String::as_str).unwrap_or("");
     if !api_key.trim().is_empty() {
         req = req.header("Authorization", format!("Bearer {}", api_key.trim()));
     }

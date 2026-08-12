@@ -48,14 +48,63 @@ const runtimeAgentId = getRuntimeAgentId;
 /** 每会话终端日志的内存上限（字符）。长会话/长跑 agent 的日志此前只增不减，
  * 是 OMNIX 自身唯一能省的内存点。超限时裁掉头部、保留最近内容（终端语义上也
  * 只关心最新输出），并标一行省略提示。 */
-const MAX_TERMINAL_LOG_CHARS = 262_144; // 256 KB
-function capLog(text: string): string {
+export const MAX_TERMINAL_LOG_CHARS = 262_144; // 256 KB
+export function capLog(text: string): string {
   if (text.length <= MAX_TERMINAL_LOG_CHARS) return text;
   const kept = text.slice(text.length - MAX_TERMINAL_LOG_CHARS);
   // 从第一个换行切，避免把一行截半。
   const nl = kept.indexOf("\n");
   const body = nl > 0 ? kept.slice(nl + 1) : kept;
   return `…（较早的日志已省略以节省内存）\n${body}`;
+}
+
+/** 一个会话是不是「工作」会话（绑了具体工作区）。 */
+export function conversationIsWork(conv: { workspace_path?: string | null }): boolean {
+  return !!conv.workspace_path && conv.workspace_path !== "direct";
+}
+
+/** `pickConversationForSurface` 的结论。 */
+export type SurfacePick =
+  | { kind: "keep" }                       // 当前会话就合适，什么都别动
+  | { kind: "select"; id: string }         // 切到这一个
+  | { kind: "blank" };                     // 清空，开一个新的空编辑器
+
+/**
+ * 切 Agent / 切「对话⇄工作」时该显示哪个会话。
+ *
+ * 抽成纯函数是因为这里出过一个很难查的 bug：**切个页签回来历史就没了**。
+ * 原因是「当前会话 id 有值、但它还不在 `conversations` 列表里」被当成了
+ * 「会话不存在」，一路走到清空。而那只说明列表还没刷新——刚发出第一条消息
+ * 就切走页签，新会话尚未回填。
+ *
+ * 判断混在 setState 里时没法单独验，只能靠手点。现在能穷举。
+ */
+export function pickConversationForSurface(args: {
+  agent: string;
+  surface: "chat" | "work";
+  conversations: { id: string; active_agent: string; workspace_path?: string | null; created_at: string }[];
+  currentConvId: string;
+}): SurfacePick {
+  const wantWork = args.surface === "work";
+  const current = args.conversations.find((conv) => conv.id === args.currentConvId);
+  if (current && current.active_agent === args.agent && conversationIsWork(current) === wantWork) {
+    return { kind: "keep" };
+  }
+  // 有 id 却不在列表里 = 列表没刷新，不是会话不存在。清空会吃掉用户的历史。
+  if (!current && args.currentConvId) {
+    return { kind: "keep" };
+  }
+  // 「对话」恢复该 Agent 最近一条普通会话；「工作」永远从干净的工作区选择开始，
+  // 而不是悄悄重开上一个工作区。
+  if (!wantWork) {
+    const candidates = args.conversations
+      .filter((conv) => conv.active_agent === args.agent && !conversationIsWork(conv))
+      .sort((a, b) => b.created_at.localeCompare(a.created_at));
+    if (candidates.length > 0) {
+      return { kind: "select", id: candidates[0].id };
+    }
+  }
+  return { kind: "blank" };
 }
 
 export interface UseConversationsReturn {
@@ -486,33 +535,20 @@ export function useConversations(
 
   // A conversation belongs to the 工作 (workspace) surface when it is bound to a
   // real workspace; otherwise it is a plain 对话 conversation.
-  const conversationIsWork = (conv: ConversationInfo) =>
-    !!conv.workspace_path && conv.workspace_path !== "direct";
 
   // Show the active Agent's latest conversation for a surface (对话 / 工作), or a
   // fresh empty composer when that (Agent, surface) pair has no conversation yet.
   const showLatestConversation = useCallback((agent: string, surface: "chat" | "work") => {
-    const wantWork = surface === "work";
-    const current = conversations.find((conv) => conv.id === currentConvIdRef.current);
-    if (current && current.active_agent === agent && conversationIsWork(current) === wantWork) {
-      return; // current conversation already fits this surface
-    }
-    // 打开着一个会话、但它不在 `conversations` 里 —— 这只说明列表还没刷新
-    // （刚发出第一条消息就切走页签，新会话尚未回填），**不说明会话不存在**。
-    // 以前这里会一路走到下面的 setMessages([])，于是「切个页签回来历史就没了」。
-    if (!current && currentConvIdRef.current) {
+    const pick = pickConversationForSurface({
+      agent,
+      surface,
+      conversations,
+      currentConvId: currentConvIdRef.current,
+    });
+    if (pick.kind === "keep") return;
+    if (pick.kind === "select") {
+      void selectConversation(pick.id);
       return;
-    }
-    // 对话: resume the Agent's latest plain conversation. 工作: always start from a
-    // clean workspace choice rather than silently reopening a previous workspace.
-    if (!wantWork) {
-      const candidates = conversations
-        .filter((conv) => conv.active_agent === agent && !conversationIsWork(conv))
-        .sort((a, b) => b.created_at.localeCompare(a.created_at));
-      if (candidates.length > 0) {
-        void selectConversation(candidates[0].id);
-        return;
-      }
     }
     setCurrentConvId("");
     setMessages([]);

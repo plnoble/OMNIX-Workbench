@@ -1159,3 +1159,273 @@ async fn auto_routing_never_sends_the_literal_word_auto_upstream() {
     );
     let _ = std::fs::remove_file(path);
 }
+
+// ── 网关鉴权：穷举 ────────────────────────────
+//
+// 这套判断以前整个长在 axum middleware 里，验一条分支要起真实服务器，
+// 于是网关最关键的安全逻辑一条测试都没有。抽成纯函数之后可以逐个组合过。
+//
+// 拆 proxy.rs 时这组测试就是「行为没变」的判据。
+#[cfg(test)]
+mod gateway_access_tests {
+    use crate::proxy::{decide_gateway_access, AccessDecision, AccessRequest};
+
+    const SECRET: &str = "s3cret-token-value";
+
+    fn req<'a>(path: &'a str, loopback: bool) -> AccessRequest<'a> {
+        AccessRequest {
+            path,
+            peer_is_loopback: loopback,
+            header_token: "",
+            query_token: None,
+            expected_token: SECRET,
+            use_wsl: false,
+            remote_enabled: false,
+        }
+    }
+
+    /// 本机怎么调都放行——OMNIX 自己和本地 CLI 都走这条。
+    #[test]
+    fn loopback_needs_no_token() {
+        for path in ["/v1/messages", "/agent/x/v1/messages", "/session/abc/v1/responses", "/mcp"] {
+            assert_eq!(decide_gateway_access(&req(path, true)), AccessDecision::Allow, "{path}");
+        }
+    }
+
+    /// **每一条网关路径**都必须挡住无令牌的外部来访。
+    ///
+    /// `/mcp` 尤其重要：它现在交出去的不只是技能库，还有联网搜索和 Office 读写。
+    /// 漏掉它 = 局域网上任何人都能用你的机器搜网、读写你的文档。
+    #[test]
+    fn every_gateway_path_refuses_a_remote_peer_without_a_token() {
+        for path in ["/v1/messages", "/v1/chat/completions", "/agent/claude/v1/messages",
+                     "/session/conv_1/v1/responses", "/mcp"] {
+            let decision = decide_gateway_access(&req(path, false));
+            assert!(
+                matches!(decision, AccessDecision::Deny(_)),
+                "{path} 对无令牌的外部来访应当拒绝，实际：{decision:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_remote_peer_with_the_right_token_gets_through() {
+        let mut r = req("/mcp", false);
+        r.header_token = SECRET;
+        assert_eq!(decide_gateway_access(&r), AccessDecision::Allow);
+    }
+
+    /// 令牌错一个字符也不行——这条同时守着 `token_matches` 没被换成
+    /// 「前缀相等」之类的宽松比较。
+    #[test]
+    fn a_wrong_token_is_refused() {
+        for wrong in ["", "s3cret-token-valu", "s3cret-token-values", "S3CRET-TOKEN-VALUE", "x"] {
+            let mut r = req("/v1/messages", false);
+            r.header_token = wrong;
+            assert!(
+                matches!(decide_gateway_access(&r), AccessDecision::Deny(_)),
+                "令牌「{wrong}」不该被接受"
+            );
+        }
+    }
+
+    /// 网关路径**不认** `?token=`：查询串会进历史和截图，而 CLI 完全有能力
+    /// 带 header。只有远程面板需要那个兜底。
+    #[test]
+    fn the_gateway_does_not_accept_a_token_from_the_query_string() {
+        let mut r = req("/v1/messages", false);
+        r.query_token = Some(SECRET);
+        assert!(
+            matches!(decide_gateway_access(&r), AccessDecision::Deny(_)),
+            "网关不该接受 ?token="
+        );
+    }
+
+    /// 远程面板反过来：本机也要令牌，且 `?token=` 是有意保留的兜底
+    /// （手机从二维码打开那一下带不了 header）。
+    #[test]
+    fn the_remote_panel_always_needs_a_token_but_accepts_the_query_fallback() {
+        for path in ["/remote", "/api/remote/messages"] {
+            // 本机、没令牌 → 拒
+            assert!(
+                matches!(decide_gateway_access(&req(path, true)), AccessDecision::Deny(_)),
+                "{path} 本机也要令牌"
+            );
+            // 查询串带对令牌 → 放行并记录设备
+            let mut r = req(path, false);
+            r.query_token = Some(SECRET);
+            assert_eq!(decide_gateway_access(&r), AccessDecision::AllowRemotePanel, "{path}");
+            // header 同样有效
+            let mut r = req(path, false);
+            r.header_token = SECRET;
+            assert_eq!(decide_gateway_access(&r), AccessDecision::AllowRemotePanel, "{path}");
+        }
+    }
+
+    /// WSL 豁免只在手机远程访问**关着**时成立。
+    ///
+    /// 两个都开时监听在 0.0.0.0，一刀切的豁免等于把无鉴权网关送给局域网上
+    /// 每一台设备——这正是当初写下那段注释要防的事。
+    #[test]
+    fn the_wsl_exemption_disappears_once_remote_access_is_on() {
+        let mut r = req("/v1/messages", false);
+        r.use_wsl = true;
+        r.remote_enabled = false;
+        assert_eq!(decide_gateway_access(&r), AccessDecision::Allow, "只开 WSL 时豁免成立");
+
+        r.remote_enabled = true;
+        assert!(
+            matches!(decide_gateway_access(&r), AccessDecision::Deny(_)),
+            "WSL + 远程访问同时开着时，豁免必须失效"
+        );
+    }
+
+    /// 非网关路径不受影响（健康检查、静态预览等）。过度拦截同样是 bug。
+    #[test]
+    fn unrelated_paths_are_not_gated() {
+        for path in ["/health", "/preview/x/y.html", "/"] {
+            assert_eq!(decide_gateway_access(&req(path, false)), AccessDecision::Allow, "{path}");
+        }
+    }
+}
+
+// ── Key 轮换（failover）────────────────────────
+//
+// `send_with_key_failover` 是「一个 Key 被拒就换下一个」的那段逻辑，目前零覆盖，
+// 而它同时管着三件容易改坏的事：换不换、按什么顺序换、什么错误不该换。
+//
+// 拆 proxy.rs 时这组就是判据。
+#[cfg(test)]
+mod key_failover_tests {
+    use super::*;
+
+    /// 只认一个 Key 的假上游：对得上回 200，对不上回 401。
+    ///
+    /// 现有的 `start_rejecting_upstream` 一直拒，验不了「换一个就成」。
+    async fn start_key_aware_upstream(good_key: &'static str, reject_status: StatusCode) -> FakeUpstream {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let auth = Arc::new(Mutex::new(Vec::new()));
+
+        async fn handler(
+            AxumState((auth, good, status)): AxumState<(Arc<Mutex<Vec<String>>>, &'static str, StatusCode)>,
+            headers: axum::http::HeaderMap,
+            Json(_body): Json<Value>,
+        ) -> axum::response::Response {
+            let key = headers
+                .get("x-api-key")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+                .or_else(|| {
+                    headers
+                        .get("authorization")
+                        .and_then(|v| v.to_str().ok())
+                        .map(|v| v.trim_start_matches("Bearer ").to_string())
+                })
+                .unwrap_or_default();
+            // 坑点2：lock → push → 立刻出作用域，中间没有 await。
+            {
+                auth.lock().expect("auth lock").push(key.clone());
+            }
+            if key == good {
+                Json(serde_json::json!({
+                    "id": "msg_ok", "type": "message", "role": "assistant",
+                    "model": "m", "stop_reason": "end_turn",
+                    "content": [{"type": "text", "text": "ok"}],
+                    "usage": {"input_tokens": 3, "output_tokens": 4}
+                }))
+                .into_response()
+            } else {
+                (status, "bad key").into_response()
+            }
+        }
+
+        let state = (Arc::clone(&auth), good_key, reject_status);
+        let app = Router::new()
+            .route("/v1/messages", post(handler))
+            .route("/chat/completions", post(handler))
+            .route("/v1/chat/completions", post(handler))
+            .with_state(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("端口");
+        let addr = listener.local_addr().expect("地址");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        FakeUpstream { base_url: format!("http://{addr}"), seen, auth }
+    }
+
+    /// 装若干个 Key 到 `platform_api_keys`，按给定顺序生效。
+    fn install_keys(db: &DbManager, platform: &str, keys: &[&str]) {
+        let conn = db.get_connection().expect("db");
+        for (index, key) in keys.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO platform_api_keys (id, platform_id, encrypted_key, label, is_active)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![
+                    format!("k{index}"),
+                    platform,
+                    crate::crypto::encrypt(key),
+                    format!("key{index}"),
+                    if index == 0 { 1 } else { 0 }
+                ],
+            )
+            .expect("插入 key");
+        }
+    }
+
+    /// 第一个 Key 被拒 → 自动换第二个 → 请求成功。
+    ///
+    /// 顺带验顺序：两个 Key 都被试过，坏的在前。只断言「最后成功」不够——
+    /// 那样即使实现变成「只用最后一个」也会绿。
+    #[tokio::test]
+    async fn a_rejected_key_falls_through_to_the_next_one() {
+        let upstream = start_key_aware_upstream("good-key", StatusCode::UNAUTHORIZED).await;
+        let (db, _p) = temp_db("failover_ok");
+        reset_routing(&db);
+        install_model(&db, "plat", "anthropic", &upstream.base_url, "m", 1);
+        install_keys(&db, "plat", &["bad-key", "good-key"]);
+        set_target(&db, "m");
+
+        let response = drive(proxy_state(Arc::clone(&db)), request_with_tools()).await;
+        assert_eq!(response.status(), StatusCode::OK, "换一个 Key 之后应当成功");
+
+        let tried = upstream.auth.lock().expect("auth").clone();
+        assert_eq!(tried, vec!["bad-key".to_string(), "good-key".to_string()], "要按顺序逐个试");
+    }
+
+    /// 所有 Key 都被拒时，必须把失败如实报出去——不能把最后那个 401
+    /// 当成正常响应交给调用方。
+    #[tokio::test]
+    async fn exhausting_every_key_surfaces_a_failure() {
+        let upstream = start_key_aware_upstream("nobody-has-this", StatusCode::UNAUTHORIZED).await;
+        let (db, _p) = temp_db("failover_exhaust");
+        reset_routing(&db);
+        install_model(&db, "plat", "anthropic", &upstream.base_url, "m", 1);
+        install_keys(&db, "plat", &["bad-1", "bad-2", "bad-3"]);
+        set_target(&db, "m");
+
+        let response = drive(proxy_state(Arc::clone(&db)), request_with_tools()).await;
+        assert_ne!(response.status(), StatusCode::OK, "全部失败不该报成功");
+
+        let tried = upstream.auth.lock().expect("auth").clone();
+        assert_eq!(tried.len(), 3, "三个 Key 都要试过：{tried:?}");
+    }
+
+    /// 400 不该触发轮换。
+    ///
+    /// 请求本身有问题时换 Key 没有任何用处，反而把每一个 Key 都拿去撞一次——
+    /// 白白消耗配额，还可能连累它们一起触发限流。
+    #[tokio::test]
+    async fn a_bad_request_does_not_burn_through_every_key() {
+        let upstream = start_key_aware_upstream("nobody-has-this", StatusCode::BAD_REQUEST).await;
+        let (db, _p) = temp_db("failover_400");
+        reset_routing(&db);
+        install_model(&db, "plat", "anthropic", &upstream.base_url, "m", 1);
+        install_keys(&db, "plat", &["k1", "k2", "k3"]);
+        set_target(&db, "m");
+
+        let _ = drive(proxy_state(Arc::clone(&db)), request_with_tools()).await;
+
+        let tried = upstream.auth.lock().expect("auth").clone();
+        assert_eq!(tried.len(), 1, "400 只该试一次，实际试了：{tried:?}");
+    }
+}
