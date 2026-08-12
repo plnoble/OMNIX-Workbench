@@ -36,24 +36,6 @@ pub struct SshHost {
     pub default_workdir: String,
 }
 
-fn ensure_table(db: &DbManager) -> Result<(), String> {
-    let conn = db.get_connection().map_err(|e| e.to_string())?;
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS ssh_hosts (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            host TEXT NOT NULL,
-            port INTEGER NOT NULL DEFAULT 22,
-            user TEXT NOT NULL DEFAULT '',
-            key_path TEXT NOT NULL DEFAULT '',
-            default_workdir TEXT NOT NULL DEFAULT '',
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )",
-        [],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
-}
 
 fn load_host(db: &DbManager, id: &str) -> Result<SshHost, String> {
     let conn = db.get_connection().map_err(|e| e.to_string())?;
@@ -147,7 +129,6 @@ fn augment_host_key_error(stderr: &str, h: &SshHost) -> String {
 
 #[tauri::command]
 pub fn list_ssh_hosts(db: State<'_, Arc<DbManager>>) -> Result<Vec<SshHost>, String> {
-    ensure_table(&db)?;
     let conn = db.get_connection().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare("SELECT id, name, host, port, user, key_path, default_workdir FROM ssh_hosts ORDER BY created_at")
@@ -170,7 +151,6 @@ pub fn list_ssh_hosts(db: State<'_, Arc<DbManager>>) -> Result<Vec<SshHost>, Str
 
 #[tauri::command]
 pub fn save_ssh_host(mut host: SshHost, db: State<'_, Arc<DbManager>>) -> Result<SshHost, String> {
-    ensure_table(&db)?;
     if host.host.trim().is_empty() {
         return Err("主机地址不能为空".into());
     }
@@ -192,7 +172,6 @@ pub fn save_ssh_host(mut host: SshHost, db: State<'_, Arc<DbManager>>) -> Result
 
 #[tauri::command]
 pub fn delete_ssh_host(id: String, db: State<'_, Arc<DbManager>>) -> Result<(), String> {
-    ensure_table(&db)?;
     let conn = db.get_connection().map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM ssh_hosts WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;

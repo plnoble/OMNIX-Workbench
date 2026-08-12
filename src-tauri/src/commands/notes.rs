@@ -75,24 +75,6 @@ pub struct Note {
     pub updated_at: String,
 }
 
-fn ensure_table(db: &DbManager) -> Result<(), String> {
-    let conn = db.get_connection().map_err(|e| e.to_string())?;
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS notes (
-            id TEXT PRIMARY KEY,
-            title TEXT NOT NULL DEFAULT '',
-            content TEXT NOT NULL DEFAULT '',
-            tags TEXT NOT NULL DEFAULT '',
-            source TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-        )",
-        [],
-    )
-    .map_err(|e| e.to_string())?;
-
-    Ok(())
-}
 
 fn row_to_note(row: &rusqlite::Row) -> rusqlite::Result<Note> {
     Ok(Note {
@@ -113,7 +95,6 @@ const COLS: &str = "id, title, content, tags, source, created_at, updated_at";
 /// 正本在 SQLite，磁盘上的 .md 只是镜像，所以换目录不需要「搬迁」——重新写一遍
 /// 就够了。旧目录里的文件留在原地不删：那是用户自己的文件夹，OMNIX 不替他决定。
 pub(crate) fn remirror_all(db: &DbManager) -> Result<usize, String> {
-    ensure_table(db)?;
     let conn = db.get_connection().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(&format!("SELECT {COLS} FROM notes"))
@@ -213,7 +194,6 @@ fn split_note_file(raw: &str, fallback_title: &str) -> (String, String) {
 
 #[tauri::command]
 pub fn list_notes(query: Option<String>, db: State<'_, Arc<DbManager>>) -> Result<Vec<Note>, String> {
-    ensure_table(&db)?;
     // 先把磁盘上的外部改动收进来，再列。否则 agent 通过 MCP 写的笔记你永远看不到。
     if let Err(error) = absorb_external_edits(&db) {
         log::warn!("回读笔记目录失败：{error}");
@@ -253,7 +233,6 @@ pub fn save_note(
     source: Option<String>,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<Note, String> {
-    ensure_table(&db)?;
     let conn = db.get_connection().map_err(|e| e.to_string())?;
     let id = id.unwrap_or_else(|| format!("note_{}", chrono::Utc::now().timestamp_micros()));
     // id is mirrored to ~/.omnix/notes/<id>.md — reject separators/`..` so a

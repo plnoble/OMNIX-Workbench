@@ -28,15 +28,6 @@ pub fn push_steering_message(
 ) -> Result<String, String> {
     // Store in DB
     let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
-    let _ = conn.execute(
-        "CREATE TABLE IF NOT EXISTS steering_queue (
-            id TEXT PRIMARY KEY,
-            session_id TEXT NOT NULL,
-            content TEXT NOT NULL,
-            consumed INTEGER NOT NULL DEFAULT 0,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )", [],
-    );
     let id = format!("steer_{}", chrono::Utc::now().timestamp_millis());
     conn.execute(
         "INSERT INTO steering_queue (id, session_id, content) VALUES (?1, ?2, ?3)",
@@ -52,12 +43,6 @@ pub fn get_steering_messages(
     db: State<'_, Arc<DbManager>>,
 ) -> Result<Vec<serde_json::Value>, String> {
     let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
-    let _ = conn.execute(
-        "CREATE TABLE IF NOT EXISTS steering_queue (
-            id TEXT PRIMARY KEY, session_id TEXT NOT NULL, content TEXT NOT NULL,
-            consumed INTEGER NOT NULL DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )", [],
-    );
     let mut stmt = conn.prepare(
         "SELECT id, content, created_at FROM steering_queue WHERE session_id = ?1 AND consumed = 0 ORDER BY created_at ASC"
     ).map_err(|e: rusqlite::Error| e.to_string())?;

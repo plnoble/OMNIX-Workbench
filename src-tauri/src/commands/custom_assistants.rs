@@ -21,26 +21,9 @@ pub struct CustomAssistant {
     pub created_at: String,
 }
 
-fn ensure_table(db: &DbManager) -> Result<(), String> {
-    let conn = db.get_connection().map_err(|e| e.to_string())?;
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS custom_assistants (
-            slug TEXT PRIMARY KEY,
-            name TEXT NOT NULL DEFAULT '',
-            description TEXT NOT NULL DEFAULT '',
-            category TEXT NOT NULL DEFAULT '自定义',
-            instructions TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
-        )",
-        [],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
-}
 
 #[tauri::command]
 pub fn list_custom_assistants(db: State<'_, Arc<DbManager>>) -> Result<Vec<CustomAssistant>, String> {
-    ensure_table(&db)?;
     let conn = db.get_connection().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare("SELECT slug, name, description, category, instructions, created_at FROM custom_assistants ORDER BY created_at DESC")
@@ -71,7 +54,6 @@ pub fn save_custom_assistant(
     instructions: String,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<CustomAssistant, String> {
-    ensure_table(&db)?;
     if name.trim().is_empty() {
         return Err("请填写助手名称".into());
     }

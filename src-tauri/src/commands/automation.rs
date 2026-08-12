@@ -165,17 +165,6 @@ pub fn send_mail(
     db: State<'_, Arc<DbManager>>,
 ) -> Result<String, String> {
     let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
-    let _ = conn.execute(
-        "CREATE TABLE IF NOT EXISTS agent_mailbox (
-            id TEXT PRIMARY KEY,
-            from_agent TEXT NOT NULL,
-            to_agent TEXT NOT NULL,
-            subject TEXT NOT NULL,
-            body TEXT NOT NULL,
-            read INTEGER NOT NULL DEFAULT 0,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )", [],
-    );
     let id = format!("mail_{}", chrono::Utc::now().timestamp_millis());
     conn.execute(
         "INSERT INTO agent_mailbox (id, from_agent, to_agent, subject, body) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -192,18 +181,11 @@ pub fn get_mail(
     db: State<'_, Arc<DbManager>>,
 ) -> Result<Vec<MailMessage>, String> {
     let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
-    let _ = conn.execute(
-        "CREATE TABLE IF NOT EXISTS agent_mailbox (
-            id TEXT PRIMARY KEY, from_agent TEXT NOT NULL, to_agent TEXT NOT NULL,
-            subject TEXT NOT NULL, body TEXT NOT NULL, read INTEGER NOT NULL DEFAULT 0,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )", [],
-    );
 
     let sql = if include_read.unwrap_or(false) {
-        "SELECT id, from_agent, to_agent, subject, body, read, created_at FROM agent_mailbox WHERE to_agent = ?1 ORDER BY created_at DESC"
+        "SELECT id, from_agent, to_agent, subject, body, is_read, created_at FROM agent_mailbox WHERE to_agent = ?1 ORDER BY created_at DESC"
     } else {
-        "SELECT id, from_agent, to_agent, subject, body, read, created_at FROM agent_mailbox WHERE to_agent = ?1 AND read = 0 ORDER BY created_at DESC"
+        "SELECT id, from_agent, to_agent, subject, body, is_read, created_at FROM agent_mailbox WHERE to_agent = ?1 AND is_read = 0 ORDER BY created_at DESC"
     };
 
     let mut stmt = conn.prepare(sql).map_err(|e: rusqlite::Error| e.to_string())?;
@@ -229,7 +211,7 @@ pub fn mark_mail_read(
 ) -> Result<(), String> {
     let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
     for id in &message_ids {
-        let _ = conn.execute("UPDATE agent_mailbox SET read = 1 WHERE id = ?1", params![id]);
+        let _ = conn.execute("UPDATE agent_mailbox SET is_read = 1 WHERE id = ?1", params![id]);
     }
     Ok(())
 }
@@ -246,20 +228,12 @@ pub fn set_task_blocks(
     db: State<'_, Arc<DbManager>>,
 ) -> Result<(), String> {
     let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
-    // Store blocks relationship in a separate table
-    let _ = conn.execute(
-        "CREATE TABLE IF NOT EXISTS task_dependencies (
-            task_id TEXT NOT NULL,
-            depends_on TEXT NOT NULL,
-            PRIMARY KEY (task_id, depends_on)
-        )", [],
-    );
     // Clear existing
     let _ = conn.execute("DELETE FROM task_dependencies WHERE task_id = ?1", params![task_id]);
     // Add new
     for dep in &blocks_ids {
         let _ = conn.execute(
-            "INSERT INTO task_dependencies (task_id, depends_on) VALUES (?1, ?2)",
+            "INSERT INTO task_dependencies (task_id, blocks_id) VALUES (?1, ?2)",
             params![task_id, dep],
         );
     }
@@ -273,15 +247,9 @@ pub fn auto_unblock_tasks(
     db: State<'_, Arc<DbManager>>,
 ) -> Result<Vec<String>, String> {
     let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
-    let _ = conn.execute(
-        "CREATE TABLE IF NOT EXISTS task_dependencies (
-            task_id TEXT NOT NULL, depends_on TEXT NOT NULL,
-            PRIMARY KEY (task_id, depends_on)
-        )", [],
-    );
     // Find tasks blocked by this completed task
     let mut stmt = conn.prepare(
-        "SELECT task_id FROM task_dependencies WHERE depends_on = ?1"
+        "SELECT task_id FROM task_dependencies WHERE blocks_id = ?1"
     ).map_err(|e: rusqlite::Error| e.to_string())?;
     let blocked: Vec<String> = stmt.query_map(params![completed_task_id], |r| r.get(0))
         .map_err(|e: rusqlite::Error| e.to_string())?
@@ -289,7 +257,7 @@ pub fn auto_unblock_tasks(
         .collect();
 
     // Remove the dependency
-    let _ = conn.execute("DELETE FROM task_dependencies WHERE depends_on = ?1", params![completed_task_id]);
+    let _ = conn.execute("DELETE FROM task_dependencies WHERE blocks_id = ?1", params![completed_task_id]);
 
     Ok(blocked)
 }
@@ -441,22 +409,6 @@ pub fn get_persistent_cron_tasks(
     db: State<'_, Arc<DbManager>>,
 ) -> Result<Vec<serde_json::Value>, String> {
     let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
-    let _ = conn.execute(
-        "CREATE TABLE IF NOT EXISTS cron_tasks_persistent (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            schedule TEXT NOT NULL,
-            timezone TEXT NOT NULL DEFAULT 'UTC',
-            agent_name TEXT NULL,
-            prompt_template TEXT NULL,
-            mode TEXT NOT NULL DEFAULT 'new_conversation',
-            keep_awake INTEGER NOT NULL DEFAULT 0,
-            enabled INTEGER NOT NULL DEFAULT 1,
-            last_run_at DATETIME NULL,
-            next_run_at DATETIME NULL,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )", [],
-    );
     let mut stmt = conn.prepare(
         "SELECT id, name, schedule, timezone, agent_name, prompt_template, mode, keep_awake, enabled, last_run_at, next_run_at FROM cron_tasks_persistent ORDER BY created_at DESC"
     ).map_err(|e: rusqlite::Error| e.to_string())?;
@@ -491,16 +443,6 @@ pub fn create_persistent_cron(
     db: State<'_, Arc<DbManager>>,
 ) -> Result<String, String> {
     let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
-    let _ = conn.execute(
-        "CREATE TABLE IF NOT EXISTS cron_tasks_persistent (
-            id TEXT PRIMARY KEY, name TEXT NOT NULL, schedule TEXT NOT NULL,
-            timezone TEXT NOT NULL DEFAULT 'UTC', agent_name TEXT NULL,
-            prompt_template TEXT NULL, mode TEXT NOT NULL DEFAULT 'new_conversation',
-            keep_awake INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1,
-            last_run_at DATETIME NULL, next_run_at DATETIME NULL,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )", [],
-    );
     let id = format!("pcron_{}", chrono::Utc::now().timestamp_millis());
     conn.execute(
         "INSERT INTO cron_tasks_persistent (id, name, schedule, timezone, agent_name, prompt_template, mode, keep_awake) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",

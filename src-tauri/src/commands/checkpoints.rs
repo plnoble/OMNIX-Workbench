@@ -95,23 +95,6 @@ fn canonical_root(workspace_path: &str) -> Result<PathBuf, String> {
     Ok(root)
 }
 
-fn ensure_table(db: &DbManager) -> Result<(), String> {
-    let conn = db.get_connection().map_err(|error| error.to_string())?;
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS checkpoints (
-            id TEXT PRIMARY KEY,
-            workspace_path TEXT NOT NULL,
-            session_id TEXT NOT NULL DEFAULT '',
-            label TEXT NOT NULL DEFAULT '',
-            vcs TEXT NOT NULL DEFAULT 'git',
-            ref_name TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
-        )",
-        [],
-    )
-    .map_err(|error| error.to_string())?;
-    Ok(())
-}
 
 fn lookup_checkpoint(db: &DbManager, id: &str) -> Result<(String, String), String> {
     let conn = db.get_connection().map_err(|error| error.to_string())?;
@@ -131,7 +114,6 @@ pub fn create_checkpoint_core(
     session_id: &str,
     label: &str,
 ) -> Result<Checkpoint, String> {
-    ensure_table(db)?;
     let root = canonical_root(workspace_path)?;
     let id = format!("cp_{}", chrono::Utc::now().timestamp_micros());
 
@@ -255,7 +237,6 @@ pub fn list_checkpoints(
     session_id: Option<String>,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<Vec<Checkpoint>, String> {
-    ensure_table(&db)?;
     let root = canonical_root(&workspace_path)?;
     let conn = db.get_connection().map_err(|error| error.to_string())?;
     let mut statement = conn
@@ -396,6 +377,9 @@ mod tests {
 
         let db_path = std::env::temp_dir().join(format!("omnix_cp_db_{}.sqlite", chrono::Utc::now().timestamp_micros()));
         let db = DbManager::new_runtime_test(db_path.clone());
+        // 表不再由命令自己懒建，测试得走和真实启动同一条路——
+        // 这正是收拢 schema 想要的效果：只有一个地方能建表。
+        db.init_schema().expect("schema");
 
         let cp = create_checkpoint_core(&db, root.to_string_lossy().as_ref(), "s1", "before edit").expect("checkpoint");
         assert!(!cp.skipped);

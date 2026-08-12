@@ -1027,6 +1027,190 @@ impl DbManager {
             [],
         );
 
+        self.init_late_tables(&conn)?;
+        Ok(())
+    }
+
+    /// 原先散在各命令文件里、靠 `ensure_table(&db)` 懒建的那批表。
+    ///
+    /// 那个写法有两个真问题，不是洁癖：
+    ///
+    /// 1. **同一张表有好几份定义。** `agent_mailbox` 三份、`task_dependencies` 三份、
+    ///    `steering_queue` / `cron_tasks_persistent` 各两份，同一个文件里就有一份
+    ///    展开的、一份压缩的。而 `CREATE TABLE IF NOT EXISTS` 撞上已存在的表是
+    ///    静默 no-op——谁先建谁说了算，后面那几份**永远不会生效**，却看起来像在生效。
+    /// 2. 于是列名对不上时没有任何报错：`init_schema` 建的 `agent_mailbox` 有
+    ///    `is_read`，命令文件按 `read` 查；`task_dependencies` 建的是 `blocks_id`，
+    ///    命令文件按 `depends_on` 写。两处都被 `let _ =` 吞掉，功能整段是死的，
+    ///    测试全绿、界面无异常。
+    ///
+    /// 收进来之后：一张表一处定义，命令只管查。`no_command_file_defines_a_table`
+    /// 守着不许再散回去。
+    fn init_late_tables(&self, conn: &Connection) -> Result<()> {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS checkpoints (
+                id TEXT PRIMARY KEY,
+                workspace_path TEXT NOT NULL,
+                session_id TEXT NOT NULL DEFAULT '',
+                label TEXT NOT NULL DEFAULT '',
+                vcs TEXT NOT NULL DEFAULT 'git',
+                ref_name TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS custom_assistants (
+                slug TEXT PRIMARY KEY,
+                name TEXT NOT NULL DEFAULT '',
+                description TEXT NOT NULL DEFAULT '',
+                category TEXT NOT NULL DEFAULT '自定义',
+                instructions TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS hooks (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL DEFAULT '',
+                event TEXT NOT NULL DEFAULT '*',
+                matcher TEXT NOT NULL DEFAULT '',
+                action_type TEXT NOT NULL DEFAULT 'notify',
+                action_payload TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                fire_count INTEGER NOT NULL DEFAULT 0,
+                last_fired_at TEXT
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS hook_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                hook_id TEXT NOT NULL,
+                hook_name TEXT NOT NULL DEFAULT '',
+                session_id TEXT NOT NULL DEFAULT '',
+                event TEXT NOT NULL DEFAULT '',
+                fired_at TEXT NOT NULL DEFAULT (datetime('now')),
+                ok INTEGER NOT NULL DEFAULT 1,
+                detail TEXT NOT NULL DEFAULT ''
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS notes (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL DEFAULT '',
+                content TEXT NOT NULL DEFAULT '',
+                tags TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS quick_actions (
+                id TEXT PRIMARY KEY,
+                label TEXT NOT NULL DEFAULT '',
+                emoji TEXT NOT NULL DEFAULT '✨',
+                prompt_template TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                order_num INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS ssh_hosts (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                host TEXT NOT NULL,
+                port INTEGER NOT NULL DEFAULT 22,
+                user TEXT NOT NULL DEFAULT '',
+                key_path TEXT NOT NULL DEFAULT '',
+                default_workdir TEXT NOT NULL DEFAULT '',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS subagents (
+                id TEXT PRIMARY KEY,
+                parent_conversation_id TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT '',
+                prompt TEXT NOT NULL DEFAULT '',
+                agent TEXT NOT NULL DEFAULT '',
+                child_conversation_id TEXT NOT NULL DEFAULT '',
+                child_session_id TEXT NOT NULL DEFAULT '',
+                worktree_id TEXT NOT NULL DEFAULT '',
+                worktree_path TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'running',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS worktrees (
+                id TEXT PRIMARY KEY,
+                repo_path TEXT NOT NULL,
+                worktree_path TEXT NOT NULL,
+                branch TEXT NOT NULL DEFAULT '',
+                session_id TEXT NOT NULL DEFAULT '',
+                label TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS steering_queue (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                content TEXT NOT NULL,
+                consumed INTEGER NOT NULL DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS cron_tasks_persistent (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                schedule TEXT NOT NULL,
+                timezone TEXT NOT NULL DEFAULT 'UTC',
+                agent_name TEXT NULL,
+                prompt_template TEXT NULL,
+                mode TEXT NOT NULL DEFAULT 'new_conversation',
+                keep_awake INTEGER NOT NULL DEFAULT 0,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                last_run_at DATETIME NULL,
+                next_run_at DATETIME NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS skill_audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                skill_name TEXT,
+                score INTEGER,
+                issues TEXT,
+                audited_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS agent_configs (
+                agent_name TEXT NOT NULL,
+                config_key TEXT NOT NULL,
+                config_value TEXT NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (agent_name, config_key)
+            )",
+            [],
+        )?;
         Ok(())
     }
 
@@ -1342,5 +1526,107 @@ impl DbManager {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod single_source_of_truth {
+    /// 建表这件事只许发生在这一个模块里。
+    ///
+    /// 收拢之前，同一张表能有三份定义散在命令文件里，而 `CREATE TABLE IF NOT EXISTS`
+    /// 撞上已存在的表是**静默 no-op**——谁先建谁说了算，剩下几份永远不生效，却看着
+    /// 像在生效。`agent_mailbox` 和 `task_dependencies` 就是这么把两个功能整段做死的：
+    /// 库里的列叫 `is_read` / `blocks_id`，命令按 `read` / `depends_on` 查，
+    /// 错误全被 `let _ =` 吞掉，测试全绿、界面无异常。
+    ///
+    /// 所以这条守的不是风格，是那类 bug 的入口。
+    #[test]
+    fn no_command_file_defines_a_table() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands");
+        let mut offenders = Vec::new();
+        for entry in std::fs::read_dir(&dir).expect("读 src/commands").flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).expect("读命令文件");
+            // 测试模块里自己造表是允许的——那是被测对象的替身，不是产品 schema。
+            let production = source
+                .split_once("#[cfg(test)]")
+                .map(|(before, _)| before)
+                .unwrap_or(&source);
+            if production.contains("CREATE TABLE") {
+                offenders.push(path.file_name().unwrap().to_string_lossy().to_string());
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "这些命令文件在自己建表：{offenders:?}\n\
+             把定义搬到 db_schema.rs 的 init_late_tables，命令只管查。\n\
+             散着建的代价见本模块注释——它不会报错，只会让功能悄悄失效。"
+        );
+    }
+
+    /// 收拢之后，一个全新的库必须一次就带齐所有表。
+    ///
+    /// 懒建时代这条根本无从谈起：表要等对应命令第一次被调用才出现。
+    #[test]
+    fn a_fresh_database_has_every_table() {
+        let path = std::env::temp_dir().join(format!(
+            "omnix_schema_{}_{}.sqlite",
+            std::process::id(),
+            chrono::Utc::now().timestamp_micros()
+        ));
+        let db = crate::db::DbManager::new_with_path(path.clone());
+        db.init_schema().expect("init_schema");
+        let conn = db.get_connection().expect("连接");
+        let mut stmt = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+            .expect("查表");
+        let tables: std::collections::BTreeSet<String> = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .expect("枚举")
+            .flatten()
+            .collect();
+        drop(stmt);
+        drop(conn);
+
+        // 原先靠 ensure_table 懒建的那批，一个都不能少。
+        for expected in [
+            "checkpoints", "custom_assistants", "hooks", "hook_runs", "notes",
+            "quick_actions", "ssh_hosts", "subagents", "worktrees",
+            "steering_queue", "cron_tasks_persistent", "skill_audit_log", "agent_configs",
+        ] {
+            assert!(tables.contains(expected), "新库缺表：{expected}");
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 命令查的列，得真的存在。
+    ///
+    /// 这条是冲着已经发生过的那次事故写的：`agent_mailbox` 库里是 `is_read`、
+    /// 命令按 `read` 查了不知道多久。列名对不上时 SQLite 只在**执行**时报错，
+    /// 而那两处都写成 `let _ =`，于是一声不吭。
+    #[test]
+    fn the_columns_the_commands_query_actually_exist() {
+        let path = std::env::temp_dir().join(format!(
+            "omnix_cols_{}_{}.sqlite",
+            std::process::id(),
+            chrono::Utc::now().timestamp_micros()
+        ));
+        let db = crate::db::DbManager::new_with_path(path.clone());
+        db.init_schema().expect("init_schema");
+        let conn = db.get_connection().expect("连接");
+        for sql in [
+            "SELECT id, from_agent, to_agent, subject, body, is_read, created_at FROM agent_mailbox",
+            "UPDATE agent_mailbox SET is_read = 1 WHERE id = ''",
+            "INSERT INTO task_dependencies (task_id, blocks_id) VALUES ('a', 'b')",
+            "SELECT task_id FROM task_dependencies WHERE blocks_id = ''",
+            "SELECT id, content, created_at FROM steering_queue WHERE session_id = '' AND consumed = 0",
+        ] {
+            conn.execute(sql, []).unwrap_or_else(|e| panic!("{sql}\n  → {e}"));
+        }
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
     }
 }

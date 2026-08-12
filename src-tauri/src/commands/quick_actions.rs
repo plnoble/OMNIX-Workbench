@@ -24,27 +24,9 @@ pub struct QuickAction {
     pub created_at: String,
 }
 
-fn ensure_table(db: &DbManager) -> Result<(), String> {
-    let conn = db.get_connection().map_err(|e| e.to_string())?;
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS quick_actions (
-            id TEXT PRIMARY KEY,
-            label TEXT NOT NULL DEFAULT '',
-            emoji TEXT NOT NULL DEFAULT '✨',
-            prompt_template TEXT NOT NULL DEFAULT '',
-            enabled INTEGER NOT NULL DEFAULT 1,
-            order_num INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
-        )",
-        [],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
-}
 
 #[tauri::command]
 pub fn list_quick_actions(db: State<'_, Arc<DbManager>>) -> Result<Vec<QuickAction>, String> {
-    ensure_table(&db)?;
     let conn = db.get_connection().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare("SELECT id, label, emoji, prompt_template, enabled, order_num, created_at FROM quick_actions ORDER BY order_num ASC, created_at ASC")
@@ -76,7 +58,6 @@ pub fn save_quick_action(
     order_num: i32,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<QuickAction, String> {
-    ensure_table(&db)?;
     if label.trim().is_empty() {
         return Err("请填写动作名称".into());
     }

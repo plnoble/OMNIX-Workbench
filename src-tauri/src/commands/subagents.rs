@@ -35,28 +35,6 @@ pub struct SubAgent {
     pub updated_at: String,
 }
 
-fn ensure_table(db: &DbManager) -> Result<(), String> {
-    let conn = db.get_connection().map_err(|e| e.to_string())?;
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS subagents (
-            id TEXT PRIMARY KEY,
-            parent_conversation_id TEXT NOT NULL,
-            title TEXT NOT NULL DEFAULT '',
-            prompt TEXT NOT NULL DEFAULT '',
-            agent TEXT NOT NULL DEFAULT '',
-            child_conversation_id TEXT NOT NULL DEFAULT '',
-            child_session_id TEXT NOT NULL DEFAULT '',
-            worktree_id TEXT NOT NULL DEFAULT '',
-            worktree_path TEXT NOT NULL DEFAULT '',
-            status TEXT NOT NULL DEFAULT 'running',
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-        )",
-        [],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
-}
 
 fn row_to_subagent(row: &rusqlite::Row) -> rusqlite::Result<SubAgent> {
     Ok(SubAgent {
@@ -93,7 +71,6 @@ pub fn create_subagent(
     // worktree_path 只是入库存着给界面显示，这条命令自己不碰文件系统
     // （真正建 worktree 的是 `create_worktree`，那边已经过闸）。
     crate::input_validation::validate_path_label(&worktree_path, "worktree_path")?;
-    ensure_table(&db)?;
     let id = format!("sub_{}", chrono::Utc::now().timestamp_micros());
     let conn = db.get_connection().map_err(|e| e.to_string())?;
     conn.execute(
@@ -115,7 +92,6 @@ pub fn list_subagents(
     parent_conversation_id: String,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<Vec<SubAgent>, String> {
-    ensure_table(&db)?;
     let conn = db.get_connection().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(&format!(
@@ -134,7 +110,6 @@ pub fn update_subagent_status(
     status: String,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<(), String> {
-    ensure_table(&db)?;
     let conn = db.get_connection().map_err(|e| e.to_string())?;
     conn.execute(
         "UPDATE subagents SET status = ?2, updated_at = datetime('now') WHERE id = ?1",

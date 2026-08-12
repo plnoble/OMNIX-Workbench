@@ -78,40 +78,6 @@ fn kind_str(kind: RuntimeEventKind) -> &'static str {
     }
 }
 
-fn ensure_tables(db: &DbManager) -> Result<(), String> {
-    let conn = db.get_connection().map_err(|e| e.to_string())?;
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS hooks (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL DEFAULT '',
-            event TEXT NOT NULL DEFAULT '*',
-            matcher TEXT NOT NULL DEFAULT '',
-            action_type TEXT NOT NULL DEFAULT 'notify',
-            action_payload TEXT NOT NULL DEFAULT '',
-            enabled INTEGER NOT NULL DEFAULT 1,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            fire_count INTEGER NOT NULL DEFAULT 0,
-            last_fired_at TEXT
-        )",
-        [],
-    )
-    .map_err(|e| e.to_string())?;
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS hook_runs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            hook_id TEXT NOT NULL,
-            hook_name TEXT NOT NULL DEFAULT '',
-            session_id TEXT NOT NULL DEFAULT '',
-            event TEXT NOT NULL DEFAULT '',
-            fired_at TEXT NOT NULL DEFAULT (datetime('now')),
-            ok INTEGER NOT NULL DEFAULT 1,
-            detail TEXT NOT NULL DEFAULT ''
-        )",
-        [],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
-}
 
 /// Run a single hook's action. Pure side-effects; returns `(ok, detail)`.
 /// `app` is optional so this is reusable from a manual test command.
@@ -285,9 +251,6 @@ pub fn evaluate_hooks(db: &DbManager, app: &AppHandle, envelope: &SessionEventEn
     if !HOOKABLE_KINDS.contains(&event) {
         return;
     }
-    if ensure_tables(db).is_err() {
-        return;
-    }
     let text = envelope.event.text.clone().unwrap_or_default();
 
     // Load matching enabled hooks into a Vec, then drop the connection.
@@ -338,7 +301,6 @@ pub fn evaluate_hooks(db: &DbManager, app: &AppHandle, envelope: &SessionEventEn
 
 #[tauri::command]
 pub fn list_hooks(db: State<'_, Arc<DbManager>>) -> Result<Vec<Hook>, String> {
-    ensure_tables(&db)?;
     let conn = db.get_connection().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(
@@ -377,7 +339,6 @@ pub fn save_hook(
     enabled: bool,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<Hook, String> {
-    ensure_tables(&db)?;
     if name.trim().is_empty() {
         return Err("请填写 Hook 名称".into());
     }
@@ -435,7 +396,6 @@ pub fn delete_hook(id: String, db: State<'_, Arc<DbManager>>) -> Result<(), Stri
 /// Manually fire a hook's action once (for the UI "测试" button).
 #[tauri::command]
 pub fn test_hook(id: String, app: AppHandle, db: State<'_, Arc<DbManager>>) -> Result<String, String> {
-    ensure_tables(&db)?;
     let hook = {
         let conn = db.get_connection().map_err(|e| e.to_string())?;
         conn.query_row(
@@ -473,7 +433,6 @@ pub fn test_hook(id: String, app: AppHandle, db: State<'_, Arc<DbManager>>) -> R
 
 #[tauri::command]
 pub fn get_hook_runs(limit: Option<u32>, db: State<'_, Arc<DbManager>>) -> Result<Vec<HookRun>, String> {
-    ensure_tables(&db)?;
     let limit = limit.unwrap_or(50).min(500);
     let conn = db.get_connection().map_err(|e| e.to_string())?;
     let mut stmt = conn
@@ -591,7 +550,7 @@ mod tests {
     fn matcher_and_log_action() {
         let db_path = std::env::temp_dir().join(format!("omnix_hooks_{}.sqlite", chrono::Utc::now().timestamp_micros()));
         let db = DbManager::new_runtime_test(db_path.clone());
-        ensure_tables(&db).expect("tables");
+        db.init_schema().expect("schema");
 
         // A log hook that only matches events whose text contains "deploy".
         let conn = db.get_connection().unwrap();

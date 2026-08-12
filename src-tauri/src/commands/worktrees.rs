@@ -95,23 +95,6 @@ fn repo_top_level(workspace_path: &str) -> Result<PathBuf, String> {
         .map_err(|error| format!("无法定位仓库根目录: {error}"))
 }
 
-fn ensure_table(db: &DbManager) -> Result<(), String> {
-    let conn = db.get_connection().map_err(|error| error.to_string())?;
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS worktrees (
-            id TEXT PRIMARY KEY,
-            repo_path TEXT NOT NULL,
-            worktree_path TEXT NOT NULL,
-            branch TEXT NOT NULL DEFAULT '',
-            session_id TEXT NOT NULL DEFAULT '',
-            label TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
-        )",
-        [],
-    )
-    .map_err(|error| error.to_string())?;
-    Ok(())
-}
 
 fn sanitize_segment(value: &str) -> String {
     let cleaned: String = value
@@ -147,7 +130,6 @@ pub fn create_worktree_core(
     label: &str,
     branch: Option<&str>,
 ) -> Result<Worktree, String> {
-    ensure_table(db)?;
     let repo = repo_top_level(workspace_path)?;
 
     let id = format!("wt_{}", chrono::Utc::now().timestamp_micros());
@@ -237,7 +219,6 @@ pub fn list_worktrees(
     workspace_path: String,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<Vec<Worktree>, String> {
-    ensure_table(&db)?;
     let repo = repo_top_level(&workspace_path)?;
 
     // DB metadata (session/label) keyed by worktree path.
@@ -317,7 +298,6 @@ pub fn remove_worktree(
     force: bool,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<(), String> {
-    ensure_table(&db)?;
     let conn = db.get_connection().map_err(|error| error.to_string())?;
     let (repo_path, worktree_path, branch): (String, String, String) = conn
         .query_row(
@@ -361,7 +341,6 @@ pub fn merge_worktree(
     worktree_id: String,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<MergeResult, String> {
-    ensure_table(&db)?;
     let conn = db.get_connection().map_err(|error| error.to_string())?;
     let (repo_path, branch): (String, String) = conn
         .query_row(
@@ -448,6 +427,9 @@ mod tests {
             chrono::Utc::now().timestamp_micros()
         ));
         let db = DbManager::new_runtime_test(db_path.clone());
+        // 表不再由命令自己懒建，测试得走和真实启动同一条路——
+        // 这正是收拢 schema 想要的效果：只有一个地方能建表。
+        db.init_schema().expect("schema");
 
         // Create an isolated worktree.
         let wt = create_worktree_core(&db, root.to_string_lossy().as_ref(), "s1", "feature A", None)
@@ -485,7 +467,6 @@ mod tests {
 
     // Helpers mirror the command bodies without a Tauri `State`.
     fn list_worktrees_for_test(db: &DbManager, ws: &str) -> Result<Vec<Worktree>, String> {
-        ensure_table(db)?;
         let repo = repo_top_level(ws)?;
         let porcelain = git(&repo, &["worktree", "list", "--porcelain"])?;
         let conn = db.get_connection().map_err(|e| e.to_string())?;

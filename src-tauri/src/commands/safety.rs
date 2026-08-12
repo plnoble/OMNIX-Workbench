@@ -244,9 +244,6 @@ pub struct SkillAuditResult {
 #[tauri::command]
 pub fn run_skill_audit(db: State<'_, Arc<DbManager>>) -> Result<Vec<SkillAuditResult>, String> {
     let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
-    let _ = conn.execute(
-        "CREATE TABLE IF NOT EXISTS skill_audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, skill_name TEXT, score INTEGER, issues TEXT, audited_at DATETIME DEFAULT CURRENT_TIMESTAMP)", [],
-    );
     let mut stmt = conn.prepare("SELECT name, file_path FROM skills WHERE is_active = 1")
         .map_err(|e: rusqlite::Error| e.to_string())?;
     let skills: Vec<(String, String)> = stmt.query_map([], |row| {

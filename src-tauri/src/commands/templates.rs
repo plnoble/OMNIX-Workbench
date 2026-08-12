@@ -250,16 +250,6 @@ pub fn save_agent_exec_config(
 ) -> Result<(), String> {
     let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
 
-    // Ensure table exists
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS agent_configs (
-            agent_name TEXT NOT NULL,
-            config_key TEXT NOT NULL,
-            config_value TEXT NOT NULL,
-            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (agent_name, config_key)
-        )", [],
-    ).map_err(|e: rusqlite::Error| e.to_string())?;
 
     let set_val = |key: &str, val: &Option<String>| -> Result<(), String> {
         if let Some(v) = val {
