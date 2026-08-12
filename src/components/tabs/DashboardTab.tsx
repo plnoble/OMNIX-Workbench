@@ -60,11 +60,11 @@ export function DashboardTab({
   }, [remoteEnabled]);
 
   const rotateToken = async () => {
-    if (!window.confirm("轮换令牌：旧链接与二维码将立刻全部失效，已连接的设备需要用新链接重新打开。确定？")) return;
+    if (!window.confirm("轮换令牌：所有已配对的手机会立刻被踢下线，需要重新扫码。确定？")) return;
     try {
       await remoteApi.rotateToken();
       onLoadRemoteAccess();
-      toast.success("令牌已轮换", { description: "旧令牌已全部失效，请用新链接/二维码访问。" });
+      toast.success("令牌已轮换", { description: "已配对设备全部失效，请重新扫码配对。" });
     } catch (e) {
       toast.error("轮换失败", { description: String(e) });
     }
@@ -76,6 +76,18 @@ export function DashboardTab({
       setQr("");
     }
   }, [remoteEnabled, remoteInfo?.url]);
+
+  /**
+   * 配对码会过期（5 分钟），所以屏幕上这个二维码得自己保鲜——不然用户盯着一个
+   * 早就失效的码去扫，只会看到「配对已失效」。到期前 30 秒换一张。
+   */
+  const codeTtl = remoteInfo?.code_ttl_secs ?? 300;
+  useEffect(() => {
+    if (!remoteEnabled) return;
+    const refreshMs = Math.max(30, codeTtl - 30) * 1000;
+    const t = setInterval(() => onLoadRemoteAccess(), refreshMs);
+    return () => clearInterval(t);
+  }, [remoteEnabled, codeTtl, onLoadRemoteAccess]);
 
   const toggleRemote = async (enabled: boolean) => {
     if (enabled && !window.confirm("启用远程访问：OMNIX 会把服务绑定到局域网(0.0.0.0)，同一网络内、持有令牌的设备可访问你的会话。确定开启？")) return;
@@ -221,17 +233,17 @@ export function DashboardTab({
           {remoteEnabled && (
             <div className="mb-3 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs leading-5 text-warning">
               ⚠️ 高风险：服务已绑定 0.0.0.0（监听地址 {remoteInfo?.ip || "本机局域网 IP"}:{DEFAULT_PROXY_PORT}），
-              同一网络内持有令牌的设备可访问你的会话与模型网关。仅在可信网络开启；怀疑令牌泄露时立即轮换。
+              同一网络内已配对的设备可访问你的会话与模型网关。仅在可信网络开启；怀疑设备丢失时立即轮换令牌。
             </div>
           )}
           {remoteEnabled ? (
             remoteInfo ? (
               <div className="flex flex-col gap-2 text-sm">
                 <div className="flex items-center gap-2">
-                  <span className="shrink-0 text-muted-foreground">手机访问链接:</span>
+                  <span className="shrink-0 text-muted-foreground">配对链接:</span>
                   <code className="min-w-0 flex-1 break-all text-foreground">{remoteInfo.url}</code>
                   <button
-                    onClick={() => navigator.clipboard.writeText(remoteInfo.url).then(() => toast.success("已复制链接"), () => toast.error("复制失败"))}
+                    onClick={() => navigator.clipboard.writeText(remoteInfo.url).then(() => toast.success("已复制配对链接"), () => toast.error("复制失败"))}
                     className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted/30 hover:text-foreground"
                     title="复制链接"
                   >
@@ -240,22 +252,33 @@ export function DashboardTab({
                 </div>
                 <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                   <span>
-                    局域网 IP <code className="text-foreground">{remoteInfo.ip}</code> · 令牌 <code className="text-foreground">{remoteInfo.token.slice(0, 12)}…</code>
+                    局域网 IP <code className="text-foreground">{remoteInfo.ip}</code> · 网关令牌{" "}
+                    <code className="text-foreground">{remoteInfo.token.slice(0, 12)}…</code>
                   </span>
                   <Button size="sm" variant="outline" className="h-6 px-2 text-xs" onClick={() => void rotateToken()}>
                     <RefreshCw className="h-3 w-3" /> 轮换令牌
                   </Button>
+                  <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={onLoadRemoteAccess}>
+                    换个配对码
+                  </Button>
                 </div>
                 {qr && (
                   <div className="mt-1 flex items-center gap-3">
-                    <img src={qr} alt="扫码访问" className="h-32 w-32 rounded-md bg-white p-1" />
-                    <span className="text-xs text-muted-foreground">手机扫这个二维码直接打开（同一 Wi-Fi）。</span>
+                    <img src={qr} alt="扫码配对" className="h-32 w-32 rounded-md bg-white p-1" />
+                    <span className="text-xs leading-5 text-muted-foreground">
+                      手机扫这个二维码完成配对（同一 Wi-Fi）。
+                      <br />
+                      链接里是<strong>一次性配对码</strong>：{Math.round(codeTtl / 60)} 分钟内有效、扫一次即废，
+                      屏幕上这张会自动换新。
+                      <br />
+                      配对成功后手机拿到的是一枚 HttpOnly Cookie，之后的请求不再把任何令牌放进网址里。
+                    </span>
                   </div>
                 )}
                 <div className="mt-1">
                   <div className="mb-1 text-xs font-medium text-muted-foreground">已连接设备（本次运行内）</div>
                   {remoteClients.length === 0 ? (
-                    <p className="m-0 text-xs text-muted-foreground/70">还没有设备通过令牌访问。</p>
+                    <p className="m-0 text-xs text-muted-foreground/70">还没有设备配对成功。</p>
                   ) : (
                     <div className="flex flex-col gap-1">
                       {remoteClients.map((client) => {

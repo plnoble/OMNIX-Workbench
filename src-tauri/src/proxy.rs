@@ -256,8 +256,8 @@ pub use auth::{remote_clients_snapshot, RemoteClientInfo};
 #[allow(unused_imports)]
 pub(crate) use auth::{decide_gateway_access, AccessDecision, AccessRequest};
 use auth::guard_gateway_access;
-// proxy_remote.rs（远程面板）也校验令牌，它靠 `use super::*;` 拿到这个名字。
-pub(crate) use auth::token_matches;
+// 面板 handler 用它当「闸放行过」的凭证——它们靠 `use super::*;` 拿到这个名字。
+pub(crate) use auth::PanelAuthed;
 
 
 fn classify_request_capabilities(messages: &[OpenAIRequestMessage]) -> (bool, bool, bool, bool) {

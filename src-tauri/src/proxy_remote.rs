@@ -7,25 +7,11 @@
 
 use super::*;
 
-pub(super) async fn serve_remote_html(
-    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
-    State(state): State<Arc<ProxyState>>,
-) -> impl IntoResponse {
-    let token = params.get("token").cloned().unwrap_or_default();
-    let expected_token = state
-        .db
-        .get_setting("remote_token")
-        .unwrap_or(None)
-        .unwrap_or_default();
-
-    if !token_matches(&token, &expected_token) {
-        return axum::response::Html("<h1>401 Unauthorized - Invalid Access Token</h1>")
-            .into_response();
-    }
-
-    let html = include_str!("remote_dashboard.html");
-    let parsed_html = html.replace("{{TOKEN}}", &token);
-    axum::response::Html(parsed_html).into_response()
+/// 面板页面本身。**不再往 HTML 里塞任何凭据**——页面拿到的是一个 HttpOnly
+/// Cookie（由 `guard_gateway_access` 在核销配对码时种下），脚本读不到它，
+/// 截图也截不出来。
+pub(super) async fn serve_remote_html(_: PanelAuthed) -> impl IntoResponse {
+    axum::response::Html(include_str!("remote_dashboard.html"))
 }
 
 #[derive(Debug, Serialize)]
@@ -48,20 +34,9 @@ pub(super) struct CronTaskInfo {
 }
 
 pub(super) async fn get_remote_status(
-    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    _: PanelAuthed,
     State(state): State<Arc<ProxyState>>,
 ) -> impl IntoResponse {
-    let token = params.get("token").cloned().unwrap_or_default();
-    let expected_token = state
-        .db
-        .get_setting("remote_token")
-        .unwrap_or(None)
-        .unwrap_or_default();
-
-    if !token_matches(&token, &expected_token) {
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
-    }
-
     let active_sessions = state.agent_manager.get_active_session_ids();
 
     let mut tasks = Vec::new();
@@ -141,21 +116,10 @@ pub(super) struct ApprovePayload {
 }
 
 pub(super) async fn post_remote_approve(
-    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    _: PanelAuthed,
     State(state): State<Arc<ProxyState>>,
     Json(body): Json<ApprovePayload>,
 ) -> impl IntoResponse {
-    let token = params.get("token").cloned().unwrap_or_default();
-    let expected_token = state
-        .db
-        .get_setting("remote_token")
-        .unwrap_or(None)
-        .unwrap_or_default();
-
-    if !token_matches(&token, &expected_token) {
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
-    }
-
     match state
         .agent_manager
         .send_stdin(&body.session_id, body.input.clone())
@@ -172,23 +136,13 @@ pub(super) struct SendPayload {
 }
 
 /// Remotely drive an active session: deliver a free-text instruction to the
-/// agent (same stdin channel the approval flow uses). Token-gated like the rest
-/// of the remote API.
+/// agent (same stdin channel the approval flow uses). Gated like the rest of the
+/// remote API — see `PanelAuthed`.
 pub(super) async fn post_remote_send(
-    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    _: PanelAuthed,
     State(state): State<Arc<ProxyState>>,
     Json(body): Json<SendPayload>,
 ) -> impl IntoResponse {
-    let token = params.get("token").cloned().unwrap_or_default();
-    let expected_token = state
-        .db
-        .get_setting("remote_token")
-        .unwrap_or(None)
-        .unwrap_or_default();
-
-    if !token_matches(&token, &expected_token) {
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
-    }
     if body.message.trim().is_empty() {
         return (StatusCode::BAD_REQUEST, "消息为空").into_response();
     }
@@ -208,21 +162,10 @@ pub(super) struct CronTriggerPayload {
 }
 
 pub(super) async fn post_remote_cron_trigger(
-    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    _: PanelAuthed,
     State(state): State<Arc<ProxyState>>,
     Json(body): Json<CronTriggerPayload>,
 ) -> impl IntoResponse {
-    let token = params.get("token").cloned().unwrap_or_default();
-    let expected_token = state
-        .db
-        .get_setting("remote_token")
-        .unwrap_or(None)
-        .unwrap_or_default();
-
-    if !token_matches(&token, &expected_token) {
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
-    }
-
     let db = Arc::clone(&state.db);
     let conn_res = db.get_connection();
     if let Ok(conn) = conn_res {
@@ -257,16 +200,6 @@ pub(super) async fn post_remote_cron_trigger(
 
 // ── Remote chat view + control ─────────────────────────────────────────────
 
-/// Token gate shared by the remote chat endpoints.
-/// Recently authenticated remote-panel clients (ip → last-seen unix ts).
-/// In-memory only — restarting the app clears it. Capped to avoid growth.
-
-pub(super) fn remote_token_ok(state: &ProxyState, params: &std::collections::HashMap<String, String>) -> bool {
-    let token = params.get("token").cloned().unwrap_or_default();
-    let expected = state.db.get_setting("remote_token").unwrap_or(None).unwrap_or_default();
-    token_matches(&token, &expected)
-}
-
 pub(super) fn parse_agent_id(name: &str) -> Option<crate::runtime::AgentId> {
     match name {
         "Claude Code" | "claude_code" | "claude" => Some(crate::runtime::AgentId::ClaudeCode),
@@ -292,12 +225,9 @@ pub(super) struct RemoteConversation {
 }
 
 pub(super) async fn get_remote_conversations(
-    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    _: PanelAuthed,
     State(state): State<Arc<ProxyState>>,
 ) -> impl IntoResponse {
-    if !remote_token_ok(&state, &params) {
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
-    }
     let Ok(conn) = state.db.get_connection() else {
         return (StatusCode::INTERNAL_SERVER_ERROR, "DB").into_response();
     };
@@ -332,12 +262,10 @@ pub(super) struct RemoteMessage {
 }
 
 pub(super) async fn get_remote_messages(
+    _: PanelAuthed,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
     State(state): State<Arc<ProxyState>>,
 ) -> impl IntoResponse {
-    if !remote_token_ok(&state, &params) {
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
-    }
     let conversation_id = params.get("conversation_id").cloned().unwrap_or_default();
     if conversation_id.is_empty() {
         return (StatusCode::BAD_REQUEST, "conversation_id required").into_response();
@@ -366,13 +294,10 @@ pub(super) struct ChatPayload {
 }
 
 pub(super) async fn post_remote_chat(
-    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    _: PanelAuthed,
     State(state): State<Arc<ProxyState>>,
     Json(body): Json<ChatPayload>,
 ) -> impl IntoResponse {
-    if !remote_token_ok(&state, &params) {
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
-    }
     if body.text.trim().is_empty() {
         return (StatusCode::BAD_REQUEST, "消息为空").into_response();
     }
@@ -417,12 +342,9 @@ pub(super) struct RemoteAgent {
 }
 
 pub(super) async fn get_remote_agents(
-    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    _: PanelAuthed,
     State(state): State<Arc<ProxyState>>,
 ) -> impl IntoResponse {
-    if !remote_token_ok(&state, &params) {
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
-    }
     let agents: Vec<RemoteAgent> = [
         "Claude Code",
         "Codex",
@@ -441,12 +363,9 @@ pub(super) async fn get_remote_agents(
 }
 
 pub(super) async fn get_remote_workspaces(
-    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    _: PanelAuthed,
     State(state): State<Arc<ProxyState>>,
 ) -> impl IntoResponse {
-    if !remote_token_ok(&state, &params) {
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
-    }
     let Ok(conn) = state.db.get_connection() else {
         return (StatusCode::INTERNAL_SERVER_ERROR, "DB").into_response();
     };
@@ -470,13 +389,10 @@ pub(super) struct NewPayload {
 }
 
 pub(super) async fn post_remote_new(
-    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    _: PanelAuthed,
     State(state): State<Arc<ProxyState>>,
     Json(body): Json<NewPayload>,
 ) -> impl IntoResponse {
-    if !remote_token_ok(&state, &params) {
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
-    }
     let Some(agent) = parse_agent_id(&body.agent) else {
         return (StatusCode::BAD_REQUEST, "不支持的 Agent").into_response();
     };
@@ -530,12 +446,10 @@ pub(super) struct PendingApproval {
 
 /// Whether the conversation's session is awaiting an approval the phone can answer.
 pub(super) async fn get_remote_pending(
+    _: PanelAuthed,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
     State(state): State<Arc<ProxyState>>,
 ) -> impl IntoResponse {
-    if !remote_token_ok(&state, &params) {
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
-    }
     let none = || Json(PendingApproval { pending: false, request_id: String::new(), title: String::new() });
     let conversation_id = params.get("conversation_id").cloned().unwrap_or_default();
     let Some(session_id) = latest_session_for(&state.db, &conversation_id) else {
@@ -576,13 +490,10 @@ pub(super) struct RespondPayload {
 /// Approve/deny the pending approval from the phone (Codex sessions only —
 /// Claude Code structured approval回传 is not yet supported).
 pub(super) async fn post_remote_respond(
-    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    _: PanelAuthed,
     State(state): State<Arc<ProxyState>>,
     Json(body): Json<RespondPayload>,
 ) -> impl IntoResponse {
-    if !remote_token_ok(&state, &params) {
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
-    }
     let Some(session_id) = latest_session_for(&state.db, &body.conversation_id) else {
         return (StatusCode::BAD_REQUEST, "无运行中的会话").into_response();
     };

@@ -501,9 +501,13 @@ export interface CronRun {
 /** Remote access connection info for cross-device debugging */
 export interface RemoteAccessInfo {
   ip: string;
-  port: string;
+  port: number;
+  /** `x-omnix-remote-token` 的值——脚本直连网关时用。**不出现在 url 里。** */
   token: string;
+  /** 带一次性配对码的手机链接。每取一次就换一个码，扫一次即废。 */
   url: string;
+  /** 配对码有效期（秒）。到期前前端会自动换一个新的。 */
+  code_ttl_secs: number;
 }
 
 /** Gateway status indicator */

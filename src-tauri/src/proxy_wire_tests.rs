@@ -1177,10 +1177,11 @@ mod gateway_access_tests {
             path,
             peer_is_loopback: loopback,
             header_token: "",
-            query_token: None,
             expected_token: SECRET,
             use_wsl: false,
             remote_enabled: false,
+            panel_session_ok: false,
+            panel_code_ok: false,
         }
     }
 
@@ -1229,37 +1230,93 @@ mod gateway_access_tests {
         }
     }
 
-    /// 网关路径**不认** `?token=`：查询串会进历史和截图，而 CLI 完全有能力
-    /// 带 header。只有远程面板需要那个兜底。
+    /// 网关路径不看浏览器凭据。
+    ///
+    /// 会话 Cookie 的作用域是整个 origin，手机上那个 Cookie 会跟着发到
+    /// `/v1/messages`；一旦网关判定也认它，等于用一个浏览器凭据打开了模型网关。
     #[test]
-    fn the_gateway_does_not_accept_a_token_from_the_query_string() {
-        let mut r = req("/v1/messages", false);
-        r.query_token = Some(SECRET);
-        assert!(
-            matches!(decide_gateway_access(&r), AccessDecision::Deny(_)),
-            "网关不该接受 ?token="
-        );
+    fn the_gateway_ignores_the_panel_session_and_pairing_code() {
+        for path in ["/v1/messages", "/mcp", "/agent/claude/v1/messages"] {
+            let mut r = req(path, false);
+            r.panel_session_ok = true;
+            r.panel_code_ok = true;
+            assert!(
+                matches!(decide_gateway_access(&r), AccessDecision::Deny(_)),
+                "{path} 不该认面板凭据"
+            );
+        }
     }
 
-    /// 远程面板反过来：本机也要令牌，且 `?token=` 是有意保留的兜底
-    /// （手机从二维码打开那一下带不了 header）。
+    /// 远程面板：本机也要凭据，而且**只认三样**——会话 Cookie、一次性配对码、
+    /// header 令牌。
     #[test]
-    fn the_remote_panel_always_needs_a_token_but_accepts_the_query_fallback() {
+    fn the_remote_panel_always_needs_a_credential() {
         for path in ["/remote", "/api/remote/messages"] {
-            // 本机、没令牌 → 拒
             assert!(
                 matches!(decide_gateway_access(&req(path, true)), AccessDecision::Deny(_)),
-                "{path} 本机也要令牌"
+                "{path} 本机也要凭据"
             );
-            // 查询串带对令牌 → 放行并记录设备
+            // 已配对的手机：Cookie 验过了 → 放行并记录设备
             let mut r = req(path, false);
-            r.query_token = Some(SECRET);
+            r.panel_session_ok = true;
             assert_eq!(decide_gateway_access(&r), AccessDecision::AllowRemotePanel, "{path}");
-            // header 同样有效
+            // 脚本/调试：header 令牌仍然有效（头不进浏览器历史）
             let mut r = req(path, false);
             r.header_token = SECRET;
             assert_eq!(decide_gateway_access(&r), AccessDecision::AllowRemotePanel, "{path}");
         }
+    }
+
+    /// **这条是这次改动的核心**：永久令牌不再能从 URL 进来。
+    ///
+    /// 旧版把 `remote_token` 直接拼进 `/remote?token=…`——URL 会进浏览器历史、
+    /// Referer、地址栏截图和被转发的二维码照片，而那个令牌泄一次就永久有效。
+    /// `AccessRequest` 里现在根本没有 `query_token` 这个字段，这条测试守的是
+    /// 「别有人把它加回来」：URL 里唯一还能带的凭据只有一次性配对码。
+    #[test]
+    fn the_panel_no_longer_takes_a_permanent_token_from_the_url() {
+        let source = include_str!("proxy_auth.rs");
+        assert!(
+            !source.contains("query_token"),
+            "面板不该再从查询串读永久令牌"
+        );
+        // 从查询串读到的东西只会被喂进 `consume_code`——用一次即废。
+        assert!(
+            source.contains("consume_code"),
+            "URL 里的凭据必须走一次性核销"
+        );
+    }
+
+    /// 配对码只在第一次导航（`/remote`）上认。
+    ///
+    /// 要是 `/api/remote/*` 也认，前端就会把它拼进 XHR 的 URL——那等于把刚拆掉的
+    /// 洞照原样开回来。
+    #[test]
+    fn a_pairing_code_opens_only_the_first_navigation() {
+        let mut r = req("/remote", false);
+        r.panel_code_ok = true;
+        assert_eq!(
+            decide_gateway_access(&r),
+            AccessDecision::AllowRemotePanelNewSession,
+            "配对码换会话：放行并种 Cookie"
+        );
+
+        let mut r = req("/api/remote/messages", false);
+        r.panel_code_ok = true;
+        assert!(
+            matches!(decide_gateway_access(&r), AccessDecision::Deny(_)),
+            "API 路径不该认配对码"
+        );
+    }
+
+    /// 已经有会话就不该再消耗配对码——否则带着旧二维码刷新一次页面，
+    /// 就白烧掉一个还能用的码。
+    #[test]
+    fn an_existing_session_wins_over_a_code() {
+        let mut r = req("/remote", false);
+        r.panel_session_ok = true;
+        r.panel_code_ok = true;
+        assert_eq!(decide_gateway_access(&r), AccessDecision::AllowRemotePanel);
     }
 
     /// WSL 豁免只在手机远程访问**关着**时成立。

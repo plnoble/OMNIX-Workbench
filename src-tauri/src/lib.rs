@@ -21,6 +21,7 @@ mod proc;
 mod prompt_guard;
 mod proxy;
 mod proxy_types;
+mod remote_session;
 mod responses_bridge;
 mod runtime;
 mod runtime_acp;

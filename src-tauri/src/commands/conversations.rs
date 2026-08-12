@@ -332,8 +332,15 @@ pub struct RemoteAccessInfo {
     pub token: String,
     #[serde(rename = "url")]
     pub connection_url: String,
+    /// 一次性配对码的有效期（秒）。前端拿它做倒计时并在到期前自动换一个。
+    pub code_ttl_secs: i64,
 }
 
+/// 手机配对信息。**每调用一次就发一个新的一次性配对码**——URL 里那段凭据
+/// 5 分钟过期、扫一次即废，不再是那个泄一次就永久有效的 `remote_token`。
+///
+/// `token` 仍然返回：它是 `x-omnix-remote-token` 头的值，脚本/调试要拿它直连
+/// 网关。头不进浏览器历史，所以留在头里是安全的。
 #[tauri::command]
 pub fn get_remote_access_info(db: State<'_, Arc<DbManager>>) -> Result<RemoteAccessInfo, String> {
     let local_ip = get_local_ip().unwrap_or_else(|| "127.0.0.1".to_string());
@@ -347,13 +354,15 @@ pub fn get_remote_access_info(db: State<'_, Arc<DbManager>>) -> Result<RemoteAcc
         .unwrap_or(None)
         .unwrap_or_default();
 
-    let connection_url = format!("http://{}:{}/remote?token={}", local_ip, port, token);
+    let code = crate::remote_session::mint_code(chrono::Utc::now().timestamp())?;
+    let connection_url = format!("http://{}:{}/remote?code={}", local_ip, port, code);
 
     Ok(RemoteAccessInfo {
         local_ip,
         port,
         token,
         connection_url,
+        code_ttl_secs: crate::remote_session::code_ttl_secs(),
     })
 }
 

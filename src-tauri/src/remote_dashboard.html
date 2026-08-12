@@ -123,13 +123,33 @@
   </div>
 
   <script>
-    const TOKEN = "{{TOKEN}}";
-    const q = (p) => p + (p.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(TOKEN);
+    // 凭据是一个 HttpOnly 的会话 Cookie（配对时由网关种下），同源请求浏览器
+    // 自动带上——所以这里**不往任何 URL 上拼令牌**。
+    //
+    // credentials 用 same-origin（本来就是默认值，写出来是为了标明「不是
+    // include」）：面板和 API 同源，用不着跨域；而 'include' 配上通配符 CORS
+    // 会被浏览器预检直接拦掉——CLAUDE.md 坑点1。
     async function api(path, opts) {
-      const res = await fetch(q(path), opts);
+      const res = await fetch(path, Object.assign({ credentials: "same-origin" }, opts || {}));
+      if (res.status === 401 || res.status === 403) {
+        showExpired();
+        throw new Error("会话已失效");
+      }
       if (!res.ok) throw new Error("HTTP " + res.status + " " + (await res.text().catch(() => "")));
       const ct = res.headers.get("content-type") || "";
       return ct.includes("json") ? res.json() : res.text();
+    }
+    /** 会话过期：把整页换成一句人话，别让手机上只剩一个红点。 */
+    function showExpired() {
+      if (window.__omnixExpired) return;
+      window.__omnixExpired = true;
+      stopPoll();
+      document.body.innerHTML =
+        '<div style="flex:1;display:flex;align-items:center;justify-content:center;padding:24px;text-align:center">' +
+        '<div style="max-width:22rem"><div style="font-size:40px">🔒</div>' +
+        '<h1 style="font-size:18px;margin:12px 0 8px">配对已失效</h1>' +
+        '<p style="font-size:13px;color:var(--muted);line-height:1.7;margin:0">' +
+        '到电脑上打开 OMNIX 的「诊断」页，在「手机远程访问」里重新扫一次二维码。</p></div></div>';
     }
     function setConn(ok) {
       const d = document.getElementById("conn");

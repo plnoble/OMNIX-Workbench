@@ -46,14 +46,7 @@ pub fn remote_clients_snapshot() -> Vec<RemoteClientInfo> {
 /// length or position through timing. An empty `expected` never matches, so a
 /// DB read failure can't turn into an open door.
 pub(crate) fn token_matches(provided: &str, expected: &str) -> bool {
-    if expected.is_empty() || provided.len() != expected.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (a, b) in provided.as_bytes().iter().zip(expected.as_bytes()) {
-        diff |= a ^ b;
-    }
-    diff == 0
+    !expected.is_empty() && crate::remote_session::ct_eq(provided, expected)
 }
 
 /// Extract a query-string parameter without pulling in a parser dependency.
@@ -88,11 +81,13 @@ pub(crate) struct AccessRequest<'a> {
     pub path: &'a str,
     pub peer_is_loopback: bool,
     pub header_token: &'a str,
-    /// URL 里的 `?token=`，只有远程面板认它。
-    pub query_token: Option<&'a str>,
     pub expected_token: &'a str,
     pub use_wsl: bool,
     pub remote_enabled: bool,
+    /// 面板会话 Cookie 已验签通过（调用方已经比对过，见 `remote_session`）。
+    pub panel_session_ok: bool,
+    /// URL 里的一次性配对码已核销——**调用方已经把它用掉了**，走到这儿只剩「认不认」。
+    pub panel_code_ok: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -100,26 +95,31 @@ pub(crate) enum AccessDecision {
     Allow,
     /// 放行并把来访者记进远程设备列表（只有远程面板走这条）。
     AllowRemotePanel,
+    /// 配对码刚被核销：放行，并把会话 Cookie 种回去。
+    AllowRemotePanelNewSession,
     Deny(&'static str),
 }
 
 /// 网关鉴权的**全部**判断逻辑。middleware 只负责取值和执行结果。
 pub(crate) fn decide_gateway_access(req: &AccessRequest<'_>) -> AccessDecision {
-    // 远程面板：任何来源都要令牌，本机也不例外。
+    // 远程面板：任何来源都要凭据，本机也不例外。
     //
-    // Header 优先——查询串会进浏览器历史、Referer 和截图。`?token=` 保留作兜底：
-    // 手机是从一条普通链接/二维码打开面板的，那第一次导航带不了 header；页面
-    // 加载之后它自己的 API 调用就走 header 了。
+    // 顺序就是安全性顺序：Cookie（不进 URL）→ 一次性配对码（进 URL，但用一次即废）
+    // → header 令牌（机器对机器）。**永久令牌不再认 `?token=`**：URL 会进浏览器
+    // 历史、Referer、截图和被转发的二维码照片，而那个令牌泄一次就永久有效。
     if req.path == "/remote" || req.path.starts_with("/api/remote/") {
-        let provided = if req.header_token.is_empty() {
-            req.query_token.unwrap_or("")
-        } else {
-            req.header_token
-        };
-        if !token_matches(provided, req.expected_token) {
-            return AccessDecision::Deny("远程访问需要有效令牌（在链接中携带 ?token=…）");
+        if req.panel_session_ok {
+            return AccessDecision::AllowRemotePanel;
         }
-        return AccessDecision::AllowRemotePanel;
+        // 配对码只在第一次导航（`/remote`）上认。API 路径不认，免得它又被拼进
+        // XHR 的 URL 里——那等于把刚拆掉的洞照原样开回来。
+        if req.panel_code_ok && req.path == "/remote" {
+            return AccessDecision::AllowRemotePanelNewSession;
+        }
+        if token_matches(req.header_token, req.expected_token) {
+            return AccessDecision::AllowRemotePanel;
+        }
+        return AccessDecision::Deny("远程面板需要有效会话：请在电脑上「诊断」页重新扫码或复制链接");
     }
 
     // `/mcp` 必须在这一行里：它把技能库、联网搜索和 Office 读写交给调用方，开了
@@ -144,10 +144,50 @@ pub(crate) fn decide_gateway_access(req: &AccessRequest<'_>) -> AccessDecision {
     AccessDecision::Allow
 }
 
+/// 「这个请求过了 `guard_gateway_access` 那道闸」的凭证。
+///
+/// 面板 handler 不再各自比对令牌。同一套判断有两份实现迟早分叉——这个会话已经
+/// 在 API Key、搜索供应商、多 Key 轮换上各栽过一次。它们现在只确认闸放行过；
+/// 万一以后有人把面板路由挂到没套这层 middleware 的 router 上，扩展不存在，
+/// 这里直接 401，是 fail-closed。
+#[derive(Clone, Copy)]
+pub(crate) struct PanelAuthed;
+
+#[axum::async_trait]
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for PanelAuthed {
+    type Rejection = (StatusCode, &'static str);
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        parts
+            .extensions
+            .get::<PanelAuthed>()
+            .copied()
+            .ok_or((StatusCode::UNAUTHORIZED, "远程面板需要有效会话"))
+    }
+}
+
+/// 配对失效时给手机看的页面。返回一行 403 文本的话，用户在手机上只会看到一串
+/// 英文报错，不知道该去电脑上做什么。
+const EXPIRED_PAGE: &str = r#"<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OMNIX 远程 · 需要重新配对</title></head>
+<body style="margin:0;height:100dvh;display:flex;align-items:center;justify-content:center;
+background:#0a0b10;color:#e8ecf5;font-family:-apple-system,system-ui,'PingFang SC',sans-serif">
+<div style="max-width:22rem;padding:24px;text-align:center">
+<div style="font-size:40px">🔒</div>
+<h1 style="font-size:18px;margin:12px 0 8px">需要重新配对</h1>
+<p style="font-size:13px;color:#8a91a8;line-height:1.7;margin:0">
+这个链接里的配对码已经用过或已过期（有效期 5 分钟，用一次即废）。<br><br>
+到电脑上打开 OMNIX 的「诊断」页，在「手机远程访问」里重新扫一次二维码。</p>
+</div></body></html>"#;
+
 pub(super) async fn guard_gateway_access(
     axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<SocketAddr>,
     State(state): State<Arc<ProxyState>>,
-    req: axum::extract::Request,
+    mut req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
     let setting = |key: &str| {
@@ -159,21 +199,64 @@ pub(super) async fn guard_gateway_access(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
-    let query_token = query_param(req.uri().query(), "token");
+    let expected_token = setting("remote_token");
+    let path = req.uri().path().to_string();
+    let is_panel = path == "/remote" || path.starts_with("/api/remote/");
+    let now = chrono::Utc::now().timestamp();
+
+    // 只有面板路径才看 Cookie/配对码——网关路径（`/v1/*` 等）继续只认 header。
+    // Cookie 的作用域是整个 origin，会跟着发到 `/v1/messages` 上；要是这里让它
+    // 参与网关判定，等于用一个浏览器凭据打开了模型网关。
+    let mut panel_session_ok = false;
+    let mut panel_code_ok = false;
+    if is_panel {
+        panel_session_ok = req
+            .headers()
+            .get(axum::http::header::COOKIE)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|raw| crate::remote_session::cookie_value(raw, crate::remote_session::SESSION_COOKIE))
+            .is_some_and(|c| crate::remote_session::session_valid(&c, &expected_token, now));
+        // 已经有有效会话就不动配对码——不然带着旧二维码刷新一次页面，
+        // 会白白烧掉一个还能用的码。
+        if !panel_session_ok && path == "/remote" {
+            panel_code_ok = query_param(req.uri().query(), "code")
+                .is_some_and(|c| crate::remote_session::consume_code(&c, now));
+        }
+    }
+
     let decision = decide_gateway_access(&AccessRequest {
-        path: req.uri().path(),
+        path: &path,
         peer_is_loopback: peer.ip().is_loopback(),
         header_token: &header_token,
-        query_token: query_token.as_deref(),
-        expected_token: &setting("remote_token"),
+        expected_token: &expected_token,
         use_wsl: setting("use_wsl") == "true",
         remote_enabled: setting("remote_access_enabled") == "true",
+        panel_session_ok,
+        panel_code_ok,
     });
     match decision {
+        AccessDecision::Deny(_) if path == "/remote" => {
+            (StatusCode::UNAUTHORIZED, axum::response::Html(EXPIRED_PAGE)).into_response()
+        }
         AccessDecision::Deny(reason) => (StatusCode::FORBIDDEN, reason).into_response(),
         AccessDecision::AllowRemotePanel => {
             record_remote_client(peer.ip().to_string());
+            req.extensions_mut().insert(PanelAuthed);
             next.run(req).await
+        }
+        AccessDecision::AllowRemotePanelNewSession => {
+            record_remote_client(peer.ip().to_string());
+            req.extensions_mut().insert(PanelAuthed);
+            let mut resp = next.run(req).await;
+            // 配对码换会话 Cookie：这一步之后手机再也不需要 URL 里的凭据。
+            if let Some(value) = crate::remote_session::issue_session(&expected_token, now) {
+                if let Ok(header) =
+                    axum::http::HeaderValue::from_str(&crate::remote_session::set_cookie_header(&value))
+                {
+                    resp.headers_mut().insert(axum::http::header::SET_COOKIE, header);
+                }
+            }
+            resp
         }
         AccessDecision::Allow => next.run(req).await,
     }

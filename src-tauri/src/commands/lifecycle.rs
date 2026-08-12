@@ -41,9 +41,12 @@ pub async fn set_remote_access(
 }
 
 /// Rotate the remote-access token: mint a fresh CSPRNG token and persist it.
-/// Every previously issued URL/QR (and any leaked token) stops working at once;
-/// the caller reloads the access info to show the new URL. Same no-fallback
-/// stance as first-boot generation — if the OS CSPRNG fails we error out.
+/// Same no-fallback stance as first-boot generation — if the OS CSPRNG fails we
+/// error out.
+///
+/// 这是**一键踢掉所有设备**：会话 Cookie 是用这个令牌签的，换掉密钥，已经配对的
+/// 手机下一次请求就验不过；没用掉的配对码也一并作废。UI 上「旧链接与二维码全部
+/// 失效」这句话，现在对已连上的设备也成立。
 #[tauri::command]
 pub fn rotate_remote_token(db: State<'_, Arc<DbManager>>) -> Result<String, String> {
     let mut bytes = [0u8; 32];
@@ -51,6 +54,7 @@ pub fn rotate_remote_token(db: State<'_, Arc<DbManager>>) -> Result<String, Stri
     let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
     let token = format!("tok_{hex}");
     db.set_setting("remote_token", &token).map_err(|e| e.to_string())?;
+    crate::remote_session::clear_codes();
     Ok(token)
 }
 
