@@ -243,6 +243,9 @@ pub fn create_checkpoint(
     label: String,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<Checkpoint, String> {
+    // 实际的闸在 `*_core` 调的解析函数里；这里再验一次是纵深防御，
+    // 也让「这个命令收路径」这件事在命令层就看得见（幂等，零成本）。
+    crate::input_validation::validate_workspace_path(&workspace_path, "workspace_path")?;
     create_checkpoint_core(&db, &workspace_path, &session_id, &label)
 }
 

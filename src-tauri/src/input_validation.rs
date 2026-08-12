@@ -419,11 +419,7 @@ mod command_coverage_ratchet {
     const UNVALIDATED: &[&str] = &[
         "analyze_codebase",
         "backup_config_file",
-        "create_checkpoint",
-        "create_skill",
         "create_subagent",
-        "create_workspace_run",
-        "create_worktree",
         "detect_file_change",
         "distill_from_project",
         "excel_ai_edit",
@@ -436,7 +432,6 @@ mod command_coverage_ratchet {
         "import_pptx_deck",
         "media_read_attachment",
         "office_preview_html",
-        "protocol_init_workspace",
         "protocol_list_events",
         "protocol_preview_init",
         "protocol_remove_workspace",
@@ -534,32 +529,40 @@ mod command_coverage_ratchet {
     /// 交给了一个会验的函数」这个事实。
     fn validating_helpers(source: &str) -> Vec<String> {
         let mut names = Vec::new();
-        let mut rest = source;
-        while let Some(at) = rest.find("
-fn ") {
-            let after = &rest[at + 4..];
+        let mut cursor = 0usize;
+        while let Some(rel) = source[cursor..].find("fn ") {
+            let at = cursor + rel;
+            cursor = at + 3;
+            // 名字必须是标识符，后面紧跟 `(`——排除 `fn` 出现在注释/字符串里。
+            let after = &source[at + 3..];
             let Some(paren) = after.find('(') else { break };
-            let name = after[..paren].trim().to_string();
-            let Some(brace) = after.find('{') else { break };
+            let name = after[..paren].trim();
+            if name.is_empty()
+                || !name.chars().all(|c| c.is_alphanumeric() || c == '_')
+                || after[..paren].contains(0x0a as char)
+            {
+                continue;
+            }
+            let Some(brace_rel) = after.find('{') else { break };
             let mut depth = 0usize;
-            let mut end = brace;
-            for (offset, ch) in after[brace..].char_indices() {
+            let mut end = brace_rel;
+            for (offset, ch) in after[brace_rel..].char_indices() {
                 match ch {
                     '{' => depth += 1,
                     '}' => {
                         depth -= 1;
                         if depth == 0 {
-                            end = brace + offset;
+                            end = brace_rel + offset;
                             break;
                         }
                     }
                     _ => {}
                 }
             }
-            if after[brace..=end].contains("input_validation") && !name.is_empty() {
+            if after[brace_rel..=end].contains("input_validation") {
                 names.push(format!("{name}("));
             }
-            rest = &after[end..];
+            cursor = at + 3 + end;
         }
         names
     }
