@@ -142,20 +142,39 @@ pub fn validate_workspace_path(path: &str, param_name: &str) -> Result<(), Strin
 
     let p = std::path::Path::new(path);
 
-    // Check for excessive traversal
-    let dot_dot_count = path.matches("..").count();
-    if dot_dot_count > 3 {
-        return Err(format!("{} contains excessive path traversal components", param_name));
-    }
-
-    // Reject if the path resolves to a system directory
-    if p.exists() {
-        if let Ok(canonical) = std::fs::canonicalize(p) {
-            check_system_directory(&canonical)?;
-        }
-    }
+    // 存在就用真实解析（能跟穿符号链接），不存在就按字面归一化。
+    //
+    // 以前这里是「`..` 出现超过 3 次就拒」+「`p.exists()` 时才检查」。两条都不成立：
+    // `../../../etc/passwd` 正好 3 个，直接放行；而**要写的文件本来就不存在**，
+    // 于是最需要检查的那一类路径从来没被检查过。
+    let resolved = std::fs::canonicalize(p)
+        .unwrap_or_else(|_| lexically_normalize(p));
+    check_system_directory(&resolved)?;
 
     Ok(())
+}
+
+/// 不碰文件系统地解析掉 `.` 和 `..`。
+///
+/// 给「还不存在的路径」用——`canonicalize` 对不存在的路径直接失败，而那恰恰是
+/// 新建文件的情形。逐段消解，`..` 弹掉上一段；已经在根上的 `..` 丢弃（和内核
+/// 行为一致，`/..` 就是 `/`）。
+fn lexically_normalize(path: &std::path::Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let mut out = std::path::PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                // 只弹普通段：弹掉根或盘符会把 `/..` 变成相对路径。
+                if out.components().next_back().is_some_and(|c| matches!(c, Component::Normal(_))) {
+                    out.pop();
+                }
+            }
+            Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 // ── Internal Helpers ───────────────────────────────────────
@@ -165,20 +184,55 @@ fn contains_control_chars(s: &str) -> bool {
     s.chars().any(|c| c.is_control() && c != '\n' && c != '\r' && c != '\t')
 }
 
-/// Check if a canonical path points to a system directory.
+/// 拒绝指向系统目录、或用户主目录下敏感位置的路径。
+///
+/// 两类分开处理：系统目录按绝对前缀匹配；主目录下的敏感位置要先拼出真实位置
+/// 再比——写死 `~/.ssh` 没用，`~` 在这一层已经被展开成真实路径了。
 fn check_system_directory(canonical: &std::path::Path) -> Result<(), String> {
-    let path_str = canonical.to_string_lossy();
+    let path_str = compare_form(canonical);
+    // 前缀一律写成 `/` 分隔的小写形式——`compare_form` 已经把两边拉成同一形态。
     let forbidden_prefixes = [
-        "/etc/", "/proc/", "/sys/", "/dev/", "/root/",
-        "C:\\Windows\\", "C:\\Program Files\\", "C:\\ProgramData\\",
-        "\\Windows\\", "\\Program Files\\", "\\ProgramData\\",
+        "/etc/", "/proc/", "/sys/", "/dev/", "/root/", "/boot/",
+        "c:/windows/", "c:/program files/", "c:/programdata/",
+        "/windows/", "/program files/", "/programdata/",
     ];
     for prefix in &forbidden_prefixes {
         if path_str.starts_with(prefix) {
             return Err(format!("Access to system directory is not allowed: {}", prefix));
         }
     }
+
+    // 主目录下的这几个，泄漏代价和系统目录一样高，而原来的黑名单一个都没盖到。
+    // `.omnix` 排在最前面是因为**加密密钥就在里面**（`~/.omnix/.encryption_key`）——
+    // 一个能读它的工作区，等于所有加密存储都白做了。
+    if let Some(home) = dirs::home_dir() {
+        for sensitive in [".omnix", ".ssh", ".aws", ".gnupg", ".kube", ".docker", ".config/gh"] {
+            let guarded = compare_form(&home.join(sensitive));
+            if path_str == guarded || path_str.starts_with(&format!("{guarded}/")) {
+                return Err(format!(
+                    "不允许把 {} 当作工作区——那里放着密钥或凭据",
+                    home.join(sensitive).display()
+                ));
+            }
+        }
+    }
     Ok(())
+}
+
+/// 把路径拉成可比较的统一形态：`/` 分隔、小写、去掉 Windows 的 `\\?\` 扩展前缀。
+///
+/// 三件事都必要，而且都是被测试逼出来的：
+/// - `Path::components()` 在 Windows 上把 `/etc` 归一成 `\etc`，拿去和 `/etc/`
+///   比永远不匹配——原来的黑名单在 Windows 上对 POSIX 路径根本没生效过；
+/// - `canonicalize` 在 Windows 返回 `\\?\C:\Users\…`，和 `home.join(..)` 拼出来
+///   的 `C:\Users\…` 不相等；
+/// - Windows 路径不区分大小写，`C:\WINDOWS\` 得能拦住。
+fn compare_form(path: &std::path::Path) -> String {
+    let raw = path.to_string_lossy().replace('\\', "/");
+    let stripped = raw.strip_prefix("//?/UNC/").map(|rest| format!("//{rest}"))
+        .or_else(|| raw.strip_prefix("//?/").map(str::to_string))
+        .unwrap_or(raw);
+    stripped.to_lowercase()
 }
 
 #[cfg(test)]
@@ -271,5 +325,80 @@ mod tests {
         assert!(validate_path_component("C:evil", "id").is_err());
         assert!(validate_path_component("..", "id").is_err());
         assert!(validate_path_component("", "id").is_err());
+    }
+}
+
+#[cfg(test)]
+mod path_closure_tests {
+    use super::*;
+
+    /// 旧实现是「`..` 超过 3 次就拒」+「路径存在时才检查」。这两条各自漏掉的
+    /// 东西，正好是最该拦的两类。
+    #[test]
+    fn traversal_that_slipped_through_the_old_heuristic_is_now_refused() {
+        // 正好 3 个 `..`——旧的计数阈值放行，而它明明落在 /etc。
+        assert!(validate_workspace_path("/a/b/c/../../../etc/passwd", "p").is_err());
+        assert!(validate_workspace_path("/x/../etc/shadow", "p").is_err());
+        assert!(
+            validate_workspace_path(r"C:\Users\me\..\..\Windows\System32", "p").is_err(),
+            "Windows 上同样要拦"
+        );
+    }
+
+    /// **不存在的路径也必须检查。** 要写的文件本来就不存在，而旧实现对它们
+    /// 一律放行——最该管的那一类反而完全没管。
+    #[test]
+    fn nonexistent_paths_are_checked_too() {
+        let ghost = "/etc/definitely-not-here-omnix-test/sub/file.txt";
+        assert!(!std::path::Path::new(ghost).exists(), "这条用例要求路径不存在");
+        assert!(validate_workspace_path(ghost, "p").is_err(), "不存在也要拦");
+    }
+
+    /// 主目录下的密钥/凭据目录。`.omnix` 尤其重要——加密密钥就在里面，
+    /// 能读它等于所有加密存储白做。
+    #[test]
+    fn sensitive_home_directories_are_refused() {
+        let Some(home) = dirs::home_dir() else { return };
+        for sensitive in [".omnix", ".ssh", ".aws", ".gnupg"] {
+            let path = home.join(sensitive);
+            assert!(
+                validate_workspace_path(&path.to_string_lossy(), "p").is_err(),
+                "{} 应被拒绝",
+                path.display()
+            );
+            // 子路径同样要拦，不能只拦目录本身。
+            let child = path.join("something");
+            assert!(
+                validate_workspace_path(&child.to_string_lossy(), "p").is_err(),
+                "{} 应被拒绝",
+                child.display()
+            );
+        }
+    }
+
+    /// 正常的工作区不能被误伤——过度拦截会把功能拦死，比漏拦更快被发现，
+    /// 但同样是 bug。
+    #[test]
+    fn ordinary_workspaces_still_pass() {
+        let Some(home) = dirs::home_dir() else { return };
+        for ok in [
+            home.join("projects").join("myapp"),
+            home.join("Documents").join("notes"),
+            std::path::PathBuf::from(r"D:\Agent\Project\OMNIX-Workbench"),
+        ] {
+            assert!(
+                validate_workspace_path(&ok.to_string_lossy(), "p").is_ok(),
+                "{} 不该被拒绝：{:?}",
+                ok.display(),
+                validate_workspace_path(&ok.to_string_lossy(), "p")
+            );
+        }
+    }
+
+    /// `..` 消解到根上就停，不能把绝对路径变成相对路径。
+    #[test]
+    fn parent_components_never_escape_the_root() {
+        let normalized = lexically_normalize(std::path::Path::new("/../../../etc"));
+        assert_eq!(normalized, std::path::PathBuf::from("/etc"), "{normalized:?}");
     }
 }

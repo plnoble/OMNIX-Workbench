@@ -306,21 +306,26 @@ pub fn get_model_platforms(db: State<'_, Arc<DbManager>>) -> Result<Vec<ModelPla
     // 按 priority 降序返回：列表顺序**就是**路由的优先级顺序，用户拖一下就能改。
     // 以前这里不排序，而 priority 在界面上根本无从设置——同名模型挂在多个平台
     // 上时，究竟走哪个既看不见也改不了。
+    // **不查 api_key。** 这个命令的返回值会整个过一遍 IPC 到前端，而 Key 没有任何
+    // 界面需要它的明文——密钥的增删改查走 `platform_api_keys` 那一套
+    // （`list_platform_api_keys` 只回掩码，要看明文得单独调 `reveal_platform_api_key`）。
+    // 以前这里连旧列一起 SELECT 出来原样回传，等于每次刷新平台列表都把所有 Key
+    // 抄送前端一遍。
     let mut stmt = conn
         .prepare(
-            "SELECT id, name, api_type, api_key, api_address, is_enabled
+            "SELECT id, name, api_type, api_address, is_enabled
              FROM model_platforms ORDER BY priority DESC, name",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |row| {
-            let is_enabled_int: i32 = row.get(5)?;
+            let is_enabled_int: i32 = row.get(4)?;
             Ok(ModelPlatform {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 api_type: row.get(2)?,
-                api_key: row.get(3)?,
-                api_address: row.get(4)?,
+                api_key: String::new(),
+                api_address: row.get(3)?,
                 is_enabled: is_enabled_int != 0,
             })
         })
@@ -341,26 +346,115 @@ pub fn save_model_platform(
     platform: ModelPlatform,
 ) -> Result<(), String> {
     let conn = db.get_connection().map_err(|e| e.to_string())?;
+    // **不写 api_key 旧列。** `platform.api_key` 仍然是入参（新建平台时表单里顺手
+    // 填的那个 Key 走这条命令过来），但它的归宿是 `platform_api_keys`——前端存完
+    // 平台紧接着就会调 `add_platform_api_key` 把它加密入库。
+    //
+    // 以前这里会把同一个 Key **再明文写一遍**到 `model_platforms.api_key`：
+    // 读的那一半早就迁到新表了（`platform_keys()` 优先查新表），写的这一半没迁，
+    // 于是每加一个平台，密钥就同时以密文和明文两份存在。而 `crypto::decrypt`
+    // 对没有 `ENC:` 前缀的值原样返回，明文照样能用——所以一切「工作正常」，
+    // 没有任何征兆。
     conn.execute(
-        "INSERT INTO model_platforms (id, name, api_type, api_key, api_address, is_enabled)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "INSERT INTO model_platforms (id, name, api_type, api_address, is_enabled)
+         VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(id) DO UPDATE SET
             name = excluded.name,
             api_type = excluded.api_type,
-            api_key = excluded.api_key,
             api_address = excluded.api_address,
             is_enabled = excluded.is_enabled",
         params![
             platform.id,
             platform.name,
             platform.api_type,
-            platform.api_key,
             platform.api_address,
             if platform.is_enabled { 1 } else { 0 }
         ],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// 把存量的 `model_platforms.api_key` 搬进 `platform_api_keys` 并清空旧列。
+///
+/// 启动时跑一次。返回搬走的 Key 条数（0 = 没有存量，正常）。
+///
+/// 光把新写入堵住不够——已经躺在库里的明文 Key 不会自己消失，而 `~/.omnix/omnix.db`
+/// 会被备份、被云盘同步、被任何能读用户目录的进程打开。
+///
+/// 判据很干净：`crypto::encrypt` 产出的值必带 `ENC:` 前缀，没有前缀的就是明文。
+/// 两种都搬（有前缀的原样搬，没前缀的加密后搬），搬完统一清空旧列。
+pub fn migrate_legacy_plaintext_keys(db: &DbManager) -> Result<usize, String> {
+    let conn = db.get_connection().map_err(|e| e.to_string())?;
+
+    let rows: Vec<(String, String)> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, api_key FROM model_platforms
+                 WHERE api_key IS NOT NULL AND TRIM(api_key) <> ''",
+            )
+            .map_err(|e| e.to_string())?;
+        let mapped = stmt
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .map_err(|e| e.to_string())?;
+        mapped.flatten().collect()
+    };
+    if rows.is_empty() {
+        return Ok(0);
+    }
+
+    let mut moved = 0usize;
+    for (platform_id, legacy) in rows {
+        // 旧列历来允许逗号分隔多个 Key。
+        for (index, raw) in legacy.split(',').map(str::trim).filter(|k| !k.is_empty()).enumerate() {
+            let plaintext = crate::crypto::decrypt(raw);
+            if plaintext.trim().is_empty() {
+                continue;
+            }
+            // 已经在新表里的就别搬第二遍——迁移可能因为上次崩溃跑了一半。
+            //
+            // 查重只能问**新表**，不能用 `platform_keys()`：它在新表为空时会回退去
+            // 读旧列，而旧列装的正是我们此刻要搬的东西——于是每一条都被判成重复，
+            // 一条都搬不动。（这个坑我踩进去过一次，测试才是发现它的原因。）
+            let existing: Vec<String> = {
+                let mut stmt = conn
+                    .prepare("SELECT encrypted_key FROM platform_api_keys WHERE platform_id = ?1")
+                    .map_err(|e| e.to_string())?;
+                let mapped = stmt
+                    .query_map(params![platform_id], |row| row.get::<_, String>(0))
+                    .map_err(|e| e.to_string())?;
+                mapped.flatten().map(|v| crate::crypto::decrypt(&v)).collect()
+            };
+            if existing.iter().any(|k| k == &plaintext) {
+                continue;
+            }
+            let already = existing.len() as i64;
+            let id = format!("key_mig_{}_{index}", chrono::Utc::now().timestamp_millis());
+            if conn
+                .execute(
+                    "INSERT INTO platform_api_keys (id, platform_id, encrypted_key, label, is_active)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        id,
+                        platform_id,
+                        crate::crypto::encrypt(&plaintext),
+                        "迁移自旧配置",
+                        if already == 0 && index == 0 { 1 } else { 0 }
+                    ],
+                )
+                .is_ok()
+            {
+                moved += 1;
+            }
+        }
+        // 清空旧列。搬失败的话上面 `moved` 不会涨，但这里照样清——留着明文比丢一个
+        // Key 更糟，而 Key 本身用户还能重新填。
+        let _ = conn.execute(
+            "UPDATE model_platforms SET api_key = '' WHERE id = ?1",
+            params![platform_id],
+        );
+    }
+    Ok(moved)
 }
 
 #[tauri::command]
@@ -2121,6 +2215,158 @@ pub fn reveal_platform_api_key(
         )
         .map_err(|e| e.to_string())?;
     Ok(crate::crypto::decrypt(&encrypted))
+}
+
+#[cfg(test)]
+mod key_storage_tests {
+    use super::*;
+    use crate::db::DbManager;
+
+    fn temp_db(tag: &str) -> Arc<DbManager> {
+        let path = std::env::temp_dir().join(format!(
+            "omnix_keys_{tag}_{}_{}.sqlite",
+            std::process::id(),
+            chrono::Utc::now().timestamp_micros()
+        ));
+        let _ = std::fs::remove_file(&path);
+        Arc::new(DbManager::new_with_path(path))
+    }
+
+    /// 模拟老版本留下的库：Key 明文躺在 `model_platforms.api_key`。
+    fn seed_legacy(db: &DbManager, platform: &str, legacy_value: &str) {
+        let conn = db.get_connection().expect("db");
+        conn.execute(
+            "INSERT INTO model_platforms (id, name, api_type, api_key, api_address, is_enabled)
+             VALUES (?1, 'P', 'openai', ?2, 'http://x', 1)",
+            params![platform, legacy_value],
+        )
+        .expect("插入平台");
+    }
+
+    fn legacy_column(db: &DbManager, platform: &str) -> String {
+        db.get_connection()
+            .expect("db")
+            .query_row(
+                "SELECT COALESCE(api_key,'') FROM model_platforms WHERE id = ?1",
+                params![platform],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap_or_default()
+    }
+
+    /// 迁移之后：旧列必须空，Key 必须还能用，落库的必须是密文。
+    ///
+    /// 三条缺一不可——只清空旧列会丢 Key，只搬不清空等于没修，搬过去还是明文
+    /// 则白搬一趟。
+    #[test]
+    fn plaintext_keys_move_into_encrypted_storage_and_the_old_column_is_cleared() {
+        let db = temp_db("migrate");
+        seed_legacy(&db, "p1", "sk-plain-secret-123");
+
+        assert_eq!(migrate_legacy_plaintext_keys(&db).expect("迁移"), 1);
+
+        assert_eq!(legacy_column(&db, "p1"), "", "旧列必须被清空");
+        let (keys, _) = platform_keys(&db, "p1");
+        assert_eq!(keys, vec!["sk-plain-secret-123".to_string()], "迁移后 Key 必须还能解出来");
+
+        let stored: String = db
+            .get_connection()
+            .unwrap()
+            .query_row(
+                "SELECT encrypted_key FROM platform_api_keys WHERE platform_id = 'p1'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("新表里应当有这条");
+        assert!(stored.starts_with("ENC:"), "落库的必须是密文，实际：{stored}");
+        assert!(!stored.contains("sk-plain-secret-123"), "密文里不该出现明文");
+    }
+
+    /// 旧列历来允许逗号分隔多个 Key，一个都不能漏。
+    #[test]
+    fn comma_separated_legacy_keys_all_migrate() {
+        let db = temp_db("multi");
+        seed_legacy(&db, "p2", "sk-a , sk-b,sk-c");
+        assert_eq!(migrate_legacy_plaintext_keys(&db).expect("迁移"), 3);
+        let (keys, _) = platform_keys(&db, "p2");
+        assert_eq!(keys.len(), 3, "{keys:?}");
+        assert!(keys.contains(&"sk-b".to_string()), "{keys:?}");
+    }
+
+    /// 迁移跑两遍不能把 Key 变成两份——上一次可能跑到一半就崩了。
+    #[test]
+    fn migrating_twice_is_idempotent() {
+        let db = temp_db("twice");
+        seed_legacy(&db, "p3", "sk-once");
+        assert_eq!(migrate_legacy_plaintext_keys(&db).expect("第一遍"), 1);
+        assert_eq!(migrate_legacy_plaintext_keys(&db).expect("第二遍"), 0, "第二遍不该再搬");
+        assert_eq!(platform_keys(&db, "p3").0.len(), 1);
+    }
+
+    /// **防复发的那一条。**
+    ///
+    /// `get_model_platforms` 的返回值会整个过 IPC 到前端。以后谁把 `api_key`
+    /// 加回那条 SELECT，这里立刻红——这正是当初出问题的方式：读的一半迁走了、
+    /// 写的一半留在原地，没有任何东西拦住。
+    #[test]
+    fn the_platform_list_never_carries_a_key_to_the_frontend() {
+        let db = temp_db("noleak");
+        seed_legacy(&db, "p4", "sk-must-not-leak");
+
+        // 同时把 Key 正经放进加密表——证明「新表里有 Key」也不会让它漏出去。
+        let conn = db.get_connection().unwrap();
+        conn.execute(
+            "INSERT INTO platform_api_keys (id, platform_id, encrypted_key, label, is_active)
+             VALUES ('k1', 'p4', ?1, 'x', 1)",
+            params![crate::crypto::encrypt("sk-must-not-leak")],
+        )
+        .unwrap();
+        drop(conn);
+
+        let mut stmt_db = db.get_connection().unwrap();
+        let _ = &mut stmt_db;
+        // 直接复刻命令体：`State` 在单测里造不出来，但 SQL 和映射是同一份。
+        let conn = db.get_connection().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, name, api_type, api_address, is_enabled
+                 FROM model_platforms ORDER BY priority DESC, name",
+            )
+            .expect("这条 SQL 必须不含 api_key");
+        let rows: Vec<ModelPlatform> = stmt
+            .query_map([], |row| {
+                let is_enabled_int: i32 = row.get(4)?;
+                Ok(ModelPlatform {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    api_type: row.get(2)?,
+                    api_key: String::new(),
+                    api_address: row.get(3)?,
+                    is_enabled: is_enabled_int != 0,
+                })
+            })
+            .unwrap()
+            .flatten()
+            .collect();
+
+        let payload = serde_json::to_string(&rows).expect("序列化");
+        assert!(
+            !payload.contains("sk-must-not-leak"),
+            "平台列表把 Key 带给前端了：{payload}"
+        );
+
+        // 光看 SQL 不够——命令体本身也不能再引用 api_key 列。
+        let source = include_str!("platforms.rs");
+        let body = source
+            .split_once("pub fn get_model_platforms")
+            .and_then(|(_, rest)| rest.split_once("\n}"))
+            .map(|(body, _)| body)
+            .expect("找不到 get_model_platforms 的函数体");
+        assert!(
+            !body.contains("api_key, api_address"),
+            "get_model_platforms 又把 api_key 查回来了"
+        );
+    }
 }
 
 #[cfg(test)]

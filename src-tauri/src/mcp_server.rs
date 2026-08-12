@@ -53,6 +53,14 @@ const REPORT_TOOL: &str = "team_report";
 /// 一句摘要；只给抓取，模型不知道该抓哪个网址。
 const WEB_SEARCH_TOOL: &str = "web_search";
 const FETCH_TOOL: &str = "fetch_url";
+/// Office：读 + 改。**刻意只有两个。**
+///
+/// 同类的开源 MCP 服务器（excel-mcp-server 25 个工具、Office-PowerPoint-MCP-Server
+/// 32 个）都是一个操作一个工具，而后者 v2.0 又专门做了 `manage_text` /
+/// `manage_image` 这样的「统一工具」往回收——工具铺开之后调用方的模型开始挑错。
+/// OMNIX 底下是 OfficeCLI 的 `batch`，本来就是通用的，没有理由拆成几十个。
+const OFFICE_READ_TOOL: &str = "office_read";
+const OFFICE_EDIT_TOOL: &str = "office_edit";
 
 /// 一次抓回多少字。给对面塞一整页 20 万字的文档只会把它的上下文撑爆。
 const FETCH_MAX_CHARS: usize = 20_000;
@@ -210,6 +218,43 @@ fn tool_definitions() -> Value {
             }
         },
         {
+            "name": OFFICE_READ_TOOL,
+            "description":
+                "读一个 Office 文件的内容，返回模型能直接看的文本。\
+                 支持 .docx（转 Markdown，保留标题和表格）、.xlsx（按 `A1=值` 逐格列出）、\
+                 .pptx（按页列出正文和备注）。\
+                 改文件之前**先用它看一眼**——不知道现在是什么样就改，多半改错地方。\
+                 不需要装 Microsoft Office。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "文件绝对路径，扩展名要是 docx/xlsx/pptx 之一" }
+                },
+                "required": ["path"]
+            }
+        },
+        {
+            "name": OFFICE_EDIT_TOOL,
+            "description":
+                "改一个已存在的 Office 文件，就地保存。命令是 OfficeCLI 的 batch 数组，\
+                 每项形如 {\"op\":\"set\",\"path\":\"Sheet1!B2\",\"value\":\"123\"}——\
+                 一次调用可以带多条，按顺序执行。\
+                 先用 office_read 看清楚当前内容再下命令。\
+                 新建演示文稿请用 create_deck，这个工具只改已有文件。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "文件绝对路径（docx/xlsx/pptx）" },
+                    "commands": {
+                        "type": "array",
+                        "description": "OfficeCLI batch 命令数组，非空",
+                        "items": { "type": "object" }
+                    }
+                },
+                "required": ["path", "commands"]
+            }
+        },
+        {
             "name": FETCH_TOOL,
             "description":
                 "抓一个网页的正文，去掉 HTML 标签后返回纯文本（过长会截断）。\
@@ -324,7 +369,90 @@ async fn call_tool(db: &Arc<DbManager>, params: &Value) -> Result<String, String
             }
             crate::commands::fetch_url_text(url, FETCH_MAX_CHARS).await
         }
+        OFFICE_READ_TOOL => {
+            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("").trim();
+            office_read(path).await
+        }
+        OFFICE_EDIT_TOOL => {
+            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let kind = office_kind(path)?;
+            if kind == OfficeKind::Unknown {
+                return Err(office_kind_error(path));
+            }
+            let commands = args
+                .get("commands")
+                .ok_or_else(|| "commands 不能为空。".to_string())?;
+            // 数组形状在 apply_batch 里还会再校一次；这里先挡住，错误信息更贴近调用方。
+            if !commands.is_array() || commands.as_array().is_some_and(|a| a.is_empty()) {
+                return Err("commands 必须是非空数组，每项是一条 OfficeCLI batch 命令。".into());
+            }
+            let json = serde_json::to_string(commands).map_err(|e| e.to_string())?;
+            crate::office::apply_batch(path, &json).await
+        }
         other => Err(format!("没有这个工具: {other}")),
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Office 读写
+// ─────────────────────────────────────────────────────────────────────────
+
+#[derive(PartialEq)]
+enum OfficeKind {
+    Doc,
+    Sheet,
+    Deck,
+    Unknown,
+}
+
+/// 按扩展名判断类型。**顺带就是一道闸**：这两个工具会被模型调用，而模型可能被
+/// 它读到的内容诱导去碰别的文件。只认这三类扩展名，等于把范围钉死在 Office
+/// 文件上——`office_read("~/.ssh/id_rsa")` 走不通。
+fn office_kind(path: &str) -> Result<OfficeKind, String> {
+    if path.is_empty() {
+        return Err("path 不能为空。".into());
+    }
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    Ok(match ext.as_str() {
+        "docx" | "docm" => OfficeKind::Doc,
+        "xlsx" | "xlsm" => OfficeKind::Sheet,
+        "pptx" | "pptm" => OfficeKind::Deck,
+        _ => OfficeKind::Unknown,
+    })
+}
+
+fn office_kind_error(path: &str) -> String {
+    format!("只支持 .docx / .xlsx / .pptx（收到「{path}」）。旧的 .doc/.xls/.ppt 请先另存为新格式。")
+}
+
+async fn office_read(path: &str) -> Result<String, String> {
+    match office_kind(path)? {
+        OfficeKind::Doc => crate::office::docx_to_markdown(path).await,
+        OfficeKind::Sheet => crate::office::xlsx_text(path).await,
+        OfficeKind::Deck => {
+            let slides = crate::office::extract_pptx_text(path).await?;
+            let mut out = String::new();
+            for (i, slide) in slides.iter().enumerate() {
+                out.push_str(&format!("## 第 {} 页\n", i + 1));
+                for line in &slide.lines {
+                    out.push_str(line);
+                    out.push('\n');
+                }
+                if !slide.notes.trim().is_empty() {
+                    out.push_str(&format!("\n[备注] {}\n", slide.notes.trim()));
+                }
+                out.push('\n');
+            }
+            if out.trim().is_empty() {
+                return Err(format!("{path} 读出来是空的（可能整份都是图片）"));
+            }
+            Ok(out)
+        }
+        OfficeKind::Unknown => Err(office_kind_error(path)),
     }
 }
 
@@ -517,8 +645,9 @@ mod tests {
         let r = handle_rpc(&d, req("tools/list", json!({}), Some(json!(2)))).await.unwrap();
         let tools = r.result.unwrap()["tools"].as_array().unwrap().clone();
         // 每个工具都占着对面每一轮的上下文，所以数字写死在这里：多一个就要多一条理由。
-        // 现在的 7 个分三组——能力（查/取/出片）、团队协作（看板/上报）、联网（搜/读）。
-        assert_eq!(tools.len(), 7, "多一个工具就要多一条理由");
+        // 现在的 9 个分四组——能力（查/取/出片）、团队协作（看板/上报）、联网（搜/读）、
+        // Office（读/改）。
+        assert_eq!(tools.len(), 9, "多一个工具就要多一条理由");
         for t in &tools {
             assert!(t["name"].is_string());
             assert!(!t["description"].as_str().unwrap().is_empty());
@@ -526,7 +655,8 @@ mod tests {
             assert!(t["inputSchema"]["required"].is_array());
         }
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-        for t in [SEARCH_TOOL, LOAD_TOOL, DECK_TOOL, BOARD_TOOL, REPORT_TOOL, WEB_SEARCH_TOOL, FETCH_TOOL] {
+        for t in [SEARCH_TOOL, LOAD_TOOL, DECK_TOOL, BOARD_TOOL, REPORT_TOOL, WEB_SEARCH_TOOL,
+                  FETCH_TOOL, OFFICE_READ_TOOL, OFFICE_EDIT_TOOL] {
             assert!(names.contains(&t), "{t} 不在工具清单里");
         }
     }
@@ -582,6 +712,8 @@ mod tests {
             (LOAD_TOOL, json!({"name": ""})),
             (WEB_SEARCH_TOOL, json!({"query": "   "})),
             (FETCH_TOOL, json!({"url": ""})),
+            (OFFICE_READ_TOOL, json!({"path": ""})),
+            (OFFICE_EDIT_TOOL, json!({"path": ""})),
         ] {
             let r = handle_rpc(
                 &d,
@@ -590,6 +722,64 @@ mod tests {
             .await
             .unwrap();
             assert_eq!(r.result.unwrap()["isError"], true, "{tool} 空参数应报错");
+        }
+    }
+
+    /// Office 这两个工具收的是文件路径，而路径可能来自模型读到的内容。只认三种
+    /// 扩展名，等于把范围钉死在 Office 文件上——顺手挡掉了「读一下 id_rsa」。
+    /// 走完整 tools/call，验的是闸接在路上而不是只存在于函数里。
+    #[tokio::test]
+    async fn office_tools_only_accept_office_extensions() {
+        let d = db();
+        for path in [
+            "C:/Users/me/.ssh/id_rsa",
+            "/etc/passwd",
+            "C:/secrets.txt",
+            "report.pdf",
+            "老报表.xls", // 旧二进制格式 OfficeCLI 不吃，要提示另存
+            "noextension",
+        ] {
+            for tool in [OFFICE_READ_TOOL, OFFICE_EDIT_TOOL] {
+                let r = handle_rpc(
+                    &d,
+                    req(
+                        "tools/call",
+                        json!({"name": tool, "arguments": {"path": path, "commands": [{"op": "set"}]}}),
+                        Some(json!(11)),
+                    ),
+                )
+                .await
+                .unwrap();
+                let v = r.result.unwrap();
+                assert_eq!(v["isError"], true, "{tool} 不该接受 {path}：{v}");
+                let text = v["content"][0]["text"].as_str().unwrap_or("");
+                assert!(text.contains("docx"), "错误信息要说明支持哪些格式：{text}");
+            }
+        }
+    }
+
+    /// 空命令数组要在**发给 OfficeCLI 之前**被拒。放过去只会得到一条 CLI 的
+    /// 英文报错，调用方看不懂该怎么改。
+    #[tokio::test]
+    async fn office_edit_rejects_empty_command_list() {
+        let d = db();
+        for commands in [json!([]), json!("set A1=1"), json!({})] {
+            let r = handle_rpc(
+                &d,
+                req(
+                    "tools/call",
+                    json!({"name": OFFICE_EDIT_TOOL, "arguments": {"path": "book.xlsx", "commands": commands}}),
+                    Some(json!(12)),
+                ),
+            )
+            .await
+            .unwrap();
+            let v = r.result.unwrap();
+            assert_eq!(v["isError"], true, "{v}");
+            assert!(
+                v["content"][0]["text"].as_str().unwrap_or("").contains("非空数组"),
+                "要说清 commands 该长什么样：{v}"
+            );
         }
     }
 

@@ -75,12 +75,20 @@ fn load_host(db: &DbManager, id: &str) -> Result<SshHost, String> {
     .map_err(|_| "主机不存在".to_string())
 }
 
-/// Base ssh args: non-interactive, fail fast, first-connect auto-accept.
+/// Base ssh args: non-interactive, fail fast, known host key required.
+///
+/// 以前这里是 `StrictHostKeyChecking=accept-new`：第一次连接自动接受对方的主机
+/// 密钥。省一步确认，代价是**首连没有任何中间人保护**——有人在你和服务器之间
+/// 应答，ssh 会安静地把他的密钥记下来，之后每次都「验证通过」。
+///
+/// 改成 `yes`：未知主机直接拒。用户要先自己确认指纹并 `ssh-keyscan` 入
+/// known_hosts（错误信息里给了命令），之后 OMNIX 才连得上。多一步，但那一步
+/// 正是信任的建立点，不该由程序替他跳过。
 fn ssh_args(h: &SshHost) -> Vec<String> {
     let mut a = vec![
         "-o".into(), "BatchMode=yes".into(),
         "-o".into(), "ConnectTimeout=10".into(),
-        "-o".into(), "StrictHostKeyChecking=accept-new".into(),
+        "-o".into(), "StrictHostKeyChecking=yes".into(),
         "-p".into(), h.port.to_string(),
     ];
     if !h.key_path.trim().is_empty() {
@@ -104,11 +112,35 @@ async fn ssh_capture(h: &SshHost, remote_cmd: &str) -> Result<(String, String, b
         .output()
         .await
         .map_err(|e| format!("ssh 启动失败（Windows 需已启用 OpenSSH 客户端）: {e}"))?;
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
     Ok((
         String::from_utf8_lossy(&out.stdout).to_string(),
-        String::from_utf8_lossy(&out.stderr).to_string(),
+        augment_host_key_error(&stderr, h),
         out.status.success(),
     ))
+}
+
+/// 主机密钥没在 known_hosts 里时，ssh 的原话是一句英文 + 一句「Host key
+/// verification failed.」，看不出该做什么。既然是我们把默认值收紧成 `yes` 的，
+/// 就该把下一步一并给出来。
+fn augment_host_key_error(stderr: &str, h: &SshHost) -> String {
+    let unknown = stderr.contains("Host key verification failed")
+        || stderr.contains("No RSA host key is known")
+        || stderr.contains("no matching host key")
+        || (stderr.contains("Host key") && stderr.contains("not known"));
+    if !unknown {
+        return stderr.to_string();
+    }
+    format!(
+        "{stderr}\n\
+         ── OMNIX 提示 ──\n\
+         这台主机的密钥不在 known_hosts 里，已拒绝连接（防中间人）。\n\
+         确认指纹无误后执行一次，之后就能连：\n\
+         ssh-keyscan -p {port} {host} >> ~/.ssh/known_hosts\n\
+         指纹可以在服务器上用 `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` 查。",
+        port = h.port,
+        host = h.host,
+    )
 }
 
 // ── 主机 CRUD ───────────────────────────────────────────────────────────────
@@ -473,4 +505,51 @@ pub async fn stop_remote_run(run_id: String) -> Result<(), String> {
         let _ = child.kill().await;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod host_key_tests {
+    use super::*;
+
+    fn host() -> SshHost {
+        SshHost {
+            id: "h1".into(),
+            name: "家里那台".into(),
+            host: "192.0.2.10".into(),
+            port: 2222,
+            user: "me".into(),
+            key_path: String::new(),
+            default_workdir: String::new(),
+        }
+    }
+
+    /// 首连不能自动接受主机密钥——那正是中间人能插进来的那一步。
+    #[test]
+    fn unknown_hosts_are_refused_not_auto_accepted() {
+        let args = ssh_args(&host()).join(" ");
+        assert!(
+            args.contains("StrictHostKeyChecking=yes"),
+            "首连必须拒绝未知主机：{args}"
+        );
+        assert!(
+            !args.contains("accept-new"),
+            "accept-new 会安静地记下中间人的密钥：{args}"
+        );
+    }
+
+    /// 拒绝之后要告诉用户怎么办，否则「连不上」就成了死路。
+    #[test]
+    fn the_refusal_explains_the_next_step() {
+        let augmented = augment_host_key_error("Host key verification failed.", &host());
+        assert!(augmented.contains("ssh-keyscan"), "{augmented}");
+        assert!(augmented.contains("2222"), "命令里要带上真实端口：{augmented}");
+        assert!(augmented.contains("192.0.2.10"), "{augmented}");
+    }
+
+    /// 别的错误原样透传——把无关的报错也套上主机密钥的提示只会误导。
+    #[test]
+    fn unrelated_errors_pass_through_untouched() {
+        let original = "Permission denied (publickey).";
+        assert_eq!(augment_host_key_error(original, &host()), original);
+    }
 }

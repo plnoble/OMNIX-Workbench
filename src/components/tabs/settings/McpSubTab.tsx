@@ -186,6 +186,17 @@ export function McpSubTab({
           <span className="text-[11px] text-muted-foreground">
             Codex 的 config.toml 目前只吃 stdio 的 MCP，这条 HTTP 会被跳过。挂完要重启对应 CLI 才生效。
           </span>
+          {/* 这条必须显眼：工具挂在网关上，OMNIX 一关就全断，而对面 CLI 只会看到
+              一句「Unable to connect」——它连不上，我们也就没机会解释原因。
+              唯一能提前说清楚的地方就是这里。 */}
+          {selfSyncedTo.length > 0 && (
+            <div className="w-full rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-[11px] leading-5 text-warning">
+              <strong>OMNIX 要开着这些工具才有效。</strong>
+              关掉之后 Claude Code 那边只会报「Unable to connect」，看不出是 OMNIX 没运行。
+              建议到「设置 → 系统 → 常规」把<strong>开机自启</strong>和<strong>启动时最小化至托盘</strong>打开，
+              让它一直在后台待着。
+            </div>
+          )}
         </CardContent>
       </Card>
 

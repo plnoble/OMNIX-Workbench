@@ -642,6 +642,81 @@ pub(crate) fn effective_slide(slide: &Slide) -> std::borrow::Cow<'_, Slide> {
     }
 }
 
+/// 放映器样式。默认还是从上往下滚着看；按「放映」才切成一次一页铺满屏幕。
+///
+/// 打印不受影响：`.deck-nav` 在 print 里隐藏，`.presenting` 只在屏幕上生效。
+const PLAYER_CSS: &str = "\
+.deck-nav{position:fixed;right:16px;bottom:16px;z-index:9;display:flex;gap:6px;align-items:center;\
+font:500 13px/1 system-ui,sans-serif;background:rgba(0,0,0,.55);color:#fff;padding:6px 10px;\
+border-radius:999px;backdrop-filter:blur(6px);}\
+.deck-nav button{all:unset;cursor:pointer;padding:2px 7px;border-radius:999px;}\
+.deck-nav button:hover{background:rgba(255,255,255,.18);}\
+.deck-nav .count{opacity:.75;font-variant-numeric:tabular-nums;}\
+body.presenting{overflow:hidden;margin:0;background:#000;}\
+body.presenting .slide{display:none;margin:0;box-shadow:none;}\
+body.presenting .slide.current{display:flex;position:fixed;inset:0;width:100vw;height:100vh;border-radius:0;}\
+@media print{.deck-nav{display:none;}}";
+
+/// 放映器脚本。**这一段是「文件即软件」的那一半。**
+///
+/// 导出的 HTML 本来就是自包含的（CSS 内联、图片 data URI、deck JSON 也嵌在里面），
+/// 但没有任何交互——发给别人只能当一张长图往下滚，想放映还得先装点什么。
+/// 补上这段之后，那个 .html 自己就是播放器：方向键翻页、F 放映、Esc 退出，
+/// 收到的人双击打开浏览器就行。
+///
+/// 刻意**不做编辑器**：那是另一个量级的东西，而 OMNIX 里改稿本来就该回到
+/// 「演示」工作台——deck JSON 还嵌在文件里，导回来就能接着改。
+const PLAYER_JS: &str = r#"
+(function(){
+  var slides=[].slice.call(document.querySelectorAll('.slide'));
+  if(slides.length===0)return;
+  var i=0,nav=document.createElement('div');
+  nav.className='deck-nav';
+  nav.innerHTML='<button data-go="-1" title="上一页">‹</button>'+
+    '<span class="count"></span>'+
+    '<button data-go="1" title="下一页">›</button>'+
+    '<button data-play title="放映（F）">▶</button>';
+  document.body.appendChild(nav);
+  var count=nav.querySelector('.count');
+  function show(n){
+    i=Math.max(0,Math.min(slides.length-1,n));
+    slides.forEach(function(s,k){s.classList.toggle('current',k===i);});
+    count.textContent=(i+1)+' / '+slides.length;
+    if(!document.body.classList.contains('presenting')){
+      slides[i].scrollIntoView({block:'start',behavior:'smooth'});
+    }
+  }
+  function present(on){
+    document.body.classList.toggle('presenting',on);
+    if(on){ if(document.documentElement.requestFullscreen)
+      document.documentElement.requestFullscreen().catch(function(){}); }
+    else if(document.fullscreenElement&&document.exitFullscreen)
+      document.exitFullscreen().catch(function(){});
+    show(i);
+  }
+  nav.addEventListener('click',function(e){
+    var b=e.target.closest('button'); if(!b)return;
+    if(b.hasAttribute('data-play'))present(!document.body.classList.contains('presenting'));
+    else show(i+Number(b.getAttribute('data-go')));
+  });
+  document.addEventListener('keydown',function(e){
+    if(e.metaKey||e.ctrlKey||e.altKey)return;
+    var k=e.key;
+    if(k==='ArrowRight'||k==='PageDown'||k===' ')  {show(i+1);e.preventDefault();}
+    else if(k==='ArrowLeft'||k==='PageUp')         {show(i-1);e.preventDefault();}
+    else if(k==='Home')                            {show(0);e.preventDefault();}
+    else if(k==='End')                             {show(slides.length-1);e.preventDefault();}
+    else if(k==='f'||k==='F')                      {present(!document.body.classList.contains('presenting'));}
+    else if(k==='Escape'&&document.body.classList.contains('presenting')){present(false);}
+  });
+  // 用户按浏览器自己的方式退出全屏时，把放映态一起收掉。
+  document.addEventListener('fullscreenchange',function(){
+    if(!document.fullscreenElement)document.body.classList.remove('presenting');
+  });
+  show(0);
+})();
+"#;
+
 pub fn render_deck_html(deck: &Deck, only: Option<usize>, print: bool) -> String {
     let theme = if THEMES.contains(&deck.theme.as_str()) {
         deck.theme.as_str()
@@ -698,17 +773,26 @@ pub fn render_deck_html(deck: &Deck, only: Option<usize>, print: bool) -> String
     };
     // Brand CSS comes after the theme so it wins.
     let brand_style = deck.brand.as_ref().map(brand_css).unwrap_or_default();
+    // 单页导出（`only`）是给缩略图/打印用的，塞播放器进去没有意义——
+    // 样式和脚本一起不要，只留样式会白白多出一段没人用的 CSS。
+    let (player_css, player) = if only.is_some() {
+        ("", String::new())
+    } else {
+        (PLAYER_CSS, format!("<script>{PLAYER_JS}</script>"))
+    };
     format!(
         "<!doctype html><html lang=\"zh\"><head><meta charset=\"utf-8\"/>\
 <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>\
-<title>{}</title><style>{}{}{}</style></head>\
-<body class=\"theme-{}\">{}</body></html>",
+<title>{}</title><style>{}{}{}{}</style></head>\
+<body class=\"theme-{}\">{}{}</body></html>",
         esc(&deck.title),
         BASE_CSS,
+        player_css,
         print_css,
         brand_style,
         theme,
-        sections
+        sections,
+        player
     )
 }
 
@@ -1215,9 +1299,43 @@ mod tests {
             serde_json::to_string(&back).unwrap(),
             "导出再导回必须字节一致"
         );
-        // 数据块不能破坏页面：脚本标签只能有我们加的这一个开闭对
-        assert_eq!(html.matches("<script").count(), 1);
-        assert_eq!(html.matches("</script>").count(), 1);
+        // 数据块不能破坏页面：脚本标签只有我们加的两段——放映器 + deck 源数据。
+        // 写死数字是为了让「不小心多塞一个脚本」这件事必须被看见。
+        assert_eq!(html.matches("<script").count(), 2, "只该有放映器和源数据两段脚本");
+        assert_eq!(html.matches("</script>").count(), 2, "开闭标签要配对");
+    }
+
+    /// 导出的 .html 发给别人，对方双击就该能放映——**不装任何东西**。
+    ///
+    /// 这要求三件事同时成立：自包含（没有外链）、带播放器、键盘能翻页。
+    /// 少任何一件，那个文件就退回成「一张长图」，只能往下滚。
+    #[test]
+    fn the_exported_html_is_a_player_not_just_a_long_page() {
+        let deck = Deck {
+            id: String::new(),
+            title: "放映测试".into(),
+            theme: "midnight".into(),
+            brand: None,
+            slides: vec![
+                Slide { layout: "cover".into(), title: "第一页".into(), ..Default::default() },
+                Slide { layout: "bullets".into(), title: "第二页".into(), ..Default::default() },
+            ],
+        };
+        let html = render_deck_html(&deck, None, false);
+
+        // 自包含：一个外链都不能有，否则拿到文件的人断网就白搭。
+        for external in ["src=\"http", "src='http", "href=\"http", "@import"] {
+            assert!(!html.contains(external), "导出里有外链 {external}：\n{html}");
+        }
+        // 播放器在场，且键盘能翻页。
+        assert!(html.contains("deck-nav"), "没有放映控件");
+        assert!(html.contains("ArrowRight"), "方向键翻不了页");
+        assert!(html.contains("Escape"), "退不出放映");
+        assert!(html.contains("presenting"), "没有放映态");
+
+        // 单页导出是给缩略图/打印用的，不该塞播放器进去。
+        let single = render_deck_html(&deck, Some(0), true);
+        assert!(!single.contains("deck-nav"), "单页导出不该带播放器");
     }
 
     /// 内容里出现 `</script>` 不能把数据块提前截断——那会同时毁掉页面和往返。
@@ -1236,7 +1354,10 @@ mod tests {
             }],
         };
         let html = embed_deck_source(&render_deck_html(&deck, None, true), &deck).unwrap();
-        assert_eq!(html.matches("<script").count(), 1, "内容不该造出第二个脚本标签:\n{html}");
+        // 关键不是数字本身，是**恶意标题没有让它变多**：基线是播放器 + 源数据
+        // 两段，标题里那个 `</script><script>` 必须已经被转义成文本。
+        assert_eq!(html.matches("<script").count(), 2, "内容造出了额外的脚本标签:\n{html}");
+        assert!(!html.contains("<script>alert(1)"), "注入的脚本没被转义:\n{html}");
         let back: Deck = serde_json::from_str(&extract_deck_source(&html).unwrap()).unwrap();
         assert_eq!(back.slides[0].title, deck.slides[0].title, "转义后仍要原样还原");
     }

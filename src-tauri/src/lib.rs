@@ -107,6 +107,14 @@ pub fn run() {
     let db = Arc::new(db::DbManager::new());
     // Load user-configured storage locations (backups/exports/skills store).
     storage::init_from_db(&db);
+    // 存量明文 Key 搬进加密表并清空旧列。放在这里而不是 db_schema 的 ALTER 序列里，
+    // 是因为它要用 crypto——那是逻辑迁移，不是表结构迁移。失败不拦启动：拿不到
+    // Key 只是某个平台调不通，而崩在启动上是所有功能都没了。
+    match commands::migrate_legacy_plaintext_keys(&db) {
+        Ok(0) => {}
+        Ok(n) => println!("[OMNIX] 已把 {n} 个明文 API Key 迁入加密存储并清空旧列"),
+        Err(e) => eprintln!("[OMNIX] 明文 Key 迁移失败（不影响启动）：{e}"),
+    }
 
     // 2. Initialize Agent Subprocess watchdog Manager
     let agent_manager = Arc::new(agent::AgentManager::new(Arc::clone(&db)));
