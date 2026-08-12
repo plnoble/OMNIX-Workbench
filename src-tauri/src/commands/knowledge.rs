@@ -26,6 +26,7 @@ pub struct PreviewFile {
 
 #[tauri::command]
 pub fn get_previewable_files(workspace_path: String) -> Result<Vec<PreviewFile>, String> {
+    input_validation::validate_workspace_path(&workspace_path, "workspace_path")?;
     use std::fs;
     use std::path::Path;
 
@@ -183,6 +184,7 @@ pub fn read_file_as_base64(file_path: String) -> Result<String, String> {
 
 #[tauri::command]
 pub fn get_workspace_git_diff(workspace_path: String) -> Result<String, String> {
+    input_validation::validate_workspace_path(&workspace_path, "workspace_path")?;
     use std::path::Path;
     let workspace = Path::new(&workspace_path);
     if !workspace.exists() || !workspace.is_dir() {
@@ -587,6 +589,7 @@ pub async fn kb_import_document(
     chunk_config: Option<ChunkConfigPayload>,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<KbDocument, String> {
+    input_validation::validate_workspace_path(&source_path, "source_path")?;
     let knowledge_base_id = knowledge_base_id.unwrap_or_else(|| "default".into());
     {
         let conn = db.get_connection().map_err(|e| e.to_string())?;
@@ -1002,6 +1005,7 @@ pub async fn kb_import_directory(
     knowledge_base_id: Option<String>,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<Vec<KbDocument>, String> {
+    input_validation::validate_workspace_path(&directory_path, "directory_path")?;
     use std::path::Path;
 
     let dir = Path::new(&directory_path);

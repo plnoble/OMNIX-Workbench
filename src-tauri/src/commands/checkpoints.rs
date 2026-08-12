@@ -83,6 +83,9 @@ const IDENTITY: &[(&str, &str)] = &[
 ];
 
 fn canonical_root(workspace_path: &str) -> Result<PathBuf, String> {
+    // 闸放在这个共用解析函数里，用它的命令一次全部覆盖——比往每个命令里抄
+    // 一句好，也不会漏掉将来新加的调用方。
+    crate::input_validation::validate_workspace_path(workspace_path, "workspace_path")?;
     let root = PathBuf::from(workspace_path.trim())
         .canonicalize()
         .map_err(|error| format!("工作区不存在或无法访问: {error}"))?;
