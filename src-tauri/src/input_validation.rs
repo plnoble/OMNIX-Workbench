@@ -417,63 +417,47 @@ mod command_coverage_ratchet {
     /// - 名单**内**的命令一旦补上校验，要把它从这里删掉，否则测试也红——名单只能
     ///   变短，不会烂在这里。
     const UNVALIDATED: &[&str] = &[
-    "analyze_codebase",
-    "backup_config_file",
-    "create_checkpoint",
-    "create_skill",
-    "create_subagent",
-    "create_workspace_run",
-    "create_worktree",
-    "detect_file_change",
-    "distill_from_project",
-    "excel_ai_edit",
-    "excel_import_csv",
-    "get_lessons_preview",
-    "get_previewable_files",
-    "get_skill_content",
-    "get_workspace_diff",
-    "get_workspace_git_diff",
-    "get_workspace_snapshot",
-    "import_deck_html",
-    "import_docx_markdown",
-    "import_pptx_deck",
-    "kb_import_directory",
-    "kb_import_document",
-    "list_checkpoints",
-    "list_worktrees",
-    "media_read_attachment",
-    "office_preview_html",
-    "protocol_archive_and_distill",
-    "protocol_get_status",
-    "protocol_init_workspace",
-    "protocol_list_actions",
-    "protocol_list_events",
-    "protocol_list_evolution_proposals",
-    "protocol_preview_init",
-    "protocol_remove_workspace",
-    "protocol_set_enabled",
-    "read_workspace_file",
-    "refresh_workspace_profile",
-    "resolve_skill_conflict",
-    "restore_backup",
-    "save_skill_content",
-    "sdd_list_plans",
-    "sdd_plan_prompt",
-    "sdd_read_plan",
-    "sdd_reserve_plan_path",
-    "sdd_toggle_plan_todo",
-    "sdd_write_plan",
-    "team_build_preset",
-    "team_generate_plan",
-    "update_skill_profile",
-    "write_create_file",
-    "write_delete_file",
-    "write_export_html",
-    "write_list_files",
-    "write_read_file",
-    "write_remove_space",
-    "write_rename_file",
-    "write_save_file",
+        "analyze_codebase",
+        "backup_config_file",
+        "create_checkpoint",
+        "create_skill",
+        "create_subagent",
+        "create_workspace_run",
+        "create_worktree",
+        "detect_file_change",
+        "distill_from_project",
+        "excel_ai_edit",
+        "excel_import_csv",
+        "get_lessons_preview",
+        "get_previewable_files",
+        "get_skill_content",
+        "get_workspace_diff",
+        "get_workspace_git_diff",
+        "get_workspace_snapshot",
+        "import_deck_html",
+        "import_docx_markdown",
+        "import_pptx_deck",
+        "kb_import_directory",
+        "kb_import_document",
+        "list_checkpoints",
+        "list_worktrees",
+        "media_read_attachment",
+        "office_preview_html",
+        "protocol_init_workspace",
+        "protocol_list_events",
+        "protocol_preview_init",
+        "protocol_remove_workspace",
+        "protocol_set_enabled",
+        "read_workspace_file",
+        "refresh_workspace_profile",
+        "resolve_skill_conflict",
+        "restore_backup",
+        "save_skill_content",
+        "sdd_plan_prompt",
+        "team_build_preset",
+        "team_generate_plan",
+        "update_skill_profile",
+        "write_remove_space",
     ];
 
     /// 参数名长这样的，值最终会落到文件系统上。
@@ -507,6 +491,8 @@ mod command_coverage_ratchet {
                 continue;
             }
             let source = std::fs::read_to_string(&path).expect("读命令文件");
+            // 本文件里「自己会校验」的辅助函数——命令调了它们就等于校验过了。
+            let guards = validating_helpers(&source);
             let mut rest = source.as_str();
             while let Some(at) = rest.find("#[tauri::command]") {
                 rest = &rest[at + "#[tauri::command]".len()..];
@@ -533,16 +519,56 @@ mod command_coverage_ratchet {
                     }
                 }
                 let body = &rest[brace..=end];
-                if takes_a_path(&signature)
-                    && !body.contains("input_validation")
-                    && !body.contains("validate_")
-                {
+                let validates = body.contains("input_validation")
+                    || body.contains("validate_")
+                    // 间接校验也算：闸放在共用 helper 里（比如 write.rs 的
+                    // `normalize_space`）比每个命令抄一句好得多——一处修，全部
+                    // 生效。只认直接调用会把这种正确修法判成「还没修」，等于
+                    // 用测试逼着大家复制粘贴。
+                    || guards.iter().any(|guard| body.contains(guard.as_str()));
+                if takes_a_path(&signature) && !validates {
                     found.insert(name);
                 }
                 rest = &rest[end..];
             }
         }
         found
+    }
+
+    /// 找出本文件里自己就会校验的普通函数（非 tauri 命令）。
+    ///
+    /// 只看 `fn name(` 这一层，够用了：这里要的不是完整解析，而是「命令把活
+    /// 交给了一个会验的函数」这个事实。
+    fn validating_helpers(source: &str) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut rest = source;
+        while let Some(at) = rest.find("
+fn ") {
+            let after = &rest[at + 4..];
+            let Some(paren) = after.find('(') else { break };
+            let name = after[..paren].trim().to_string();
+            let Some(brace) = after.find('{') else { break };
+            let mut depth = 0usize;
+            let mut end = brace;
+            for (offset, ch) in after[brace..].char_indices() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = brace + offset;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if after[brace..=end].contains("input_validation") && !name.is_empty() {
+                names.push(format!("{name}("));
+            }
+            rest = &after[end..];
+        }
+        names
     }
 
     /// 新增一个收路径参数的命令而不校验 → 这条红。

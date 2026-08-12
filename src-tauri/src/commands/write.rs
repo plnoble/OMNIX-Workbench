@@ -40,6 +40,15 @@ fn default_space_dir() -> Result<PathBuf, String> {
 
 /// Canonicalizes and validates a space path, and confirms it is a directory.
 fn normalize_space(space_path: &str) -> Result<PathBuf, String> {
+    // 闸放在这里，而不是逐个命令加一句。
+    //
+    // `write_add_space` 一直有校验——作者知道这个参数要验。但另外七个命令都是
+    // 直接收 `space_path` 再调这个函数，等于绕开了那道闸：前端传
+    // `~/.omnix` 进来，写作空间就成了密钥目录。
+    //
+    // 相对路径那一半本来就是安全的（`resolve_md` 拒 `..`、拒绝对路径、只准 .md；
+    // `sanitize_filename` 拒路径分隔符），缺的只有这一处。
+    input_validation::validate_workspace_path(space_path, "space_path")?;
     let path = PathBuf::from(space_path);
     if !path.is_dir() {
         return Err(format!("写作空间不存在或不是目录：{space_path}"));
