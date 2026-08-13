@@ -308,10 +308,6 @@ function MainAppShell() {
       mcpServers.loadMcpServers();
       backup.loadBackupInfo();
     }
-    if (nextTab === "team" && convs.currentConvId) {
-      const logs = convs.terminalLogsRef.current[convs.currentConvId] || "";
-      convs.setCollabLogs(logs);
-    }
   };
 
   // Keep a ref to the latest handler so the navigation listener (registered once)

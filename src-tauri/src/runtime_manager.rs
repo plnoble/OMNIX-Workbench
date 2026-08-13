@@ -20,7 +20,8 @@ use crate::runtime::{
     build_launch_spec, conversation_has_no_messages, conversation_parent_id,
     build_resume_launch_spec, create_agent_session_record, get_active_goal_objective,
     get_agent_session_record,
-    list_runtime_events, parse_claude_event, parse_codex_message, record_runtime_event,
+    list_runtime_events, parse_claude_event, parse_codex_message, prune_runtime_events,
+    record_runtime_event,
     record_user_message, update_agent_session_status, AdapterKind, AgentId, AgentSessionConfig,
     AgentSessionRecord, AgentSessionStatus, ImageAttachment, PermissionPolicy, RuntimeEvent,
     RuntimeEventKind, WorkMode,
@@ -116,6 +117,13 @@ impl RuntimeManager {
             std::process::id()
         );
         create_agent_session_record(&self.db, &session_id, &config)?;
+        // `runtime_events` 收边界。开会话是个天然的低频时机，所以不另起调度器
+        // （同 `oauth.rs` 清理过期 PKCE 会话的做法）。清不掉不该拦着开会话。
+        match prune_runtime_events(&self.db) {
+            Ok(n) if n > 0 => log::info!("清理了 {n} 条过期的 runtime_events"),
+            Ok(_) => {}
+            Err(error) => log::warn!("清理 runtime_events 失败（不影响本次会话）：{error}"),
+        }
         // 记忆库回注。以前挂在 `AgentManager::spawn_agent` 上——那条 PTY 路早已
         // 不可达，所以这个功能静默停摆了很久：`build_memory_block` 一直是好的，
         // 只是没有任何东西再调用写入端。runtime 会话就是当年 spawn 的对应位置。

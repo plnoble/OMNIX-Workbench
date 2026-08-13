@@ -2,9 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildDockStatus,
-  capLog,
   conversationIsWork,
-  MAX_TERMINAL_LOG_CHARS,
   pickConversationForSurface,
 } from "./useConversations";
 import type { StatusChangeEvent } from "@/types";
@@ -14,29 +12,8 @@ function conv(id: string, agent: string, workspace: string | null, createdAt: st
   return { id, active_agent: agent, workspace_path: workspace, created_at: createdAt };
 }
 
-describe("capLog", () => {
-  it("没超上限就原样返回——不该无端改写正常日志", () => {
-    const short = "line1\nline2\n";
-    expect(capLog(short)).toBe(short);
-  });
-
-  it("超限时保留最近内容并标出省略", () => {
-    const text = "x".repeat(MAX_TERMINAL_LOG_CHARS + 5000);
-    const capped = capLog(text);
-    expect(capped.length).toBeLessThanOrEqual(MAX_TERMINAL_LOG_CHARS + 64);
-    expect(capped).toContain("较早的日志已省略");
-  });
-
-  it("从换行处切，不把一行截成半句", () => {
-    // 头部塞满，尾部是几行完整日志。
-    const tail = "第一行完整\n第二行完整\n第三行完整\n";
-    const text = "A".repeat(MAX_TERMINAL_LOG_CHARS) + "\n" + tail;
-    const capped = capLog(text);
-    // 省略提示之后的第一行必须是完整的一行，不能是被切了一半的 "AAAA…"
-    const firstRealLine = capped.split("\n")[1];
-    expect(firstRealLine.startsWith("A")).toBe(false);
-  });
-});
+// `capLog` 的三条测试随内存日志缓冲一起删除：那个缓冲是 `runtime_events`
+// 的截断内存副本，没有任何组件渲染它。日志的完整来源在 SQLite 里。
 
 describe("conversationIsWork", () => {
   it('"direct" 和空值都算普通对话，不是工作会话', () => {

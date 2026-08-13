@@ -6,7 +6,6 @@
  * - Active agent selection and detection
  * - Chat message state and sending
  * - Runtime session lifecycle and its event stream (`agent-session-event`)
- * - Terminal log buffer fed by runtime `raw_log` events
  *
  * PTY（「兼容终端」）那条链已整体删除：它的入口 `start_agent_session` 没有任何
  * 调用方，所以 PTY 会话根本建不出来，`agent-output` 事件也就永远不会发。
@@ -45,19 +44,6 @@ export interface RuntimeSendConfig {
 
 // Single source: backend agent registry via src/lib/agentRegistry.
 const runtimeAgentId = getRuntimeAgentId;
-
-/** 每会话终端日志的内存上限（字符）。长会话/长跑 agent 的日志此前只增不减，
- * 是 OMNIX 自身唯一能省的内存点。超限时裁掉头部、保留最近内容（终端语义上也
- * 只关心最新输出），并标一行省略提示。 */
-export const MAX_TERMINAL_LOG_CHARS = 262_144; // 256 KB
-export function capLog(text: string): string {
-  if (text.length <= MAX_TERMINAL_LOG_CHARS) return text;
-  const kept = text.slice(text.length - MAX_TERMINAL_LOG_CHARS);
-  // 从第一个换行切，避免把一行截半。
-  const nl = kept.indexOf("\n");
-  const body = nl > 0 ? kept.slice(nl + 1) : kept;
-  return `…（较早的日志已省略以节省内存）\n${body}`;
-}
 
 /** 一个会话是不是「工作」会话（绑了具体工作区）。 */
 export function conversationIsWork(conv: { workspace_path?: string | null }): boolean {
@@ -144,7 +130,6 @@ export interface UseConversationsReturn {
   detectedAgents: DetectedAgent[];
   activeAgent: string;
   activeSessions: string[];
-  collabLogs: string;
   collabStdin: string;
   pendingApproval: RuntimeApprovalRequest | null;
   startingConversations: string[]; // conversations awaiting session start / first token
@@ -153,16 +138,12 @@ export interface UseConversationsReturn {
   isWorkspaceModalOpen: boolean;
   workspaceFormPath: string;
 
-  // Refs (exposed for Team tab)
-  terminalLogsRef: React.MutableRefObject<Record<string, string>>;
-
   // Actions
   setChatInput: (v: string) => void;
   setChatWorkspace: (v: string) => void;
   setActiveAgent: (v: string) => void; // Accepts any agent name string
   selectAgent: (name: string) => void; // Switch Agent and load that Agent's conversation
   enterSurface: (surface: "chat" | "work") => void; // Switch between 对话 and 工作
-  setCollabLogs: (v: string) => void;
   setCollabStdin: (v: string) => void;
   setIsWorkspaceModalOpen: (v: boolean) => void;
   setWorkspaceFormPath: (v: string) => void;
@@ -203,7 +184,6 @@ export function useConversations(
   const [detectedAgents, setDetectedAgents] = useState<DetectedAgent[]>([]);
   const [activeAgent, setActiveAgent] = useState<string>(AGENT_NAMES[0]);
   const [runtimeActiveConversations, setRuntimeActiveConversations] = useState<string[]>([]);
-  const [collabLogs, setCollabLogs] = useState("");
   const [collabStdin, setCollabStdin] = useState("");
   const [pendingApproval, setPendingApproval] = useState<RuntimeApprovalRequest | null>(null);
   const [startingConversations, setStartingConversations] = useState<string[]>([]);
@@ -220,7 +200,6 @@ export function useConversations(
   const [workspaceFormPath, setWorkspaceFormPath] = useState("");
 
   // Refs for cross-render access
-  const terminalLogsRef = useRef<Record<string, string>>({});
   const currentConvIdRef = useRef(currentConvId);
   // enterSurface 的去重依据。用 ref 不用 state：它要在同一轮事件里立刻反映
   // 最新值，而 setCurrentSurface 要等下一次渲染。
@@ -295,13 +274,11 @@ export function useConversations(
           }
         }
 
-        if (runtimeEvent.kind === "raw_log") {
-          const text = runtimeEvent.text || "";
-          terminalLogsRef.current[sessionId] = capLog(`${terminalLogsRef.current[sessionId] || ""}${text}\n`);
-          if (conversationId === currentConvIdRef.current) {
-            setCollabLogs((current) => capLog(`${current}${text}\n`));
-          }
-        }
+        // `raw_log` 曾在这里被拼进一个 256 KB 的内存缓冲，然后……没有任何组件
+        // 渲染它。而这些事件早已由 `record_runtime_event` 全量写进 SQLite 的
+        // `runtime_events`（不截断、重启还在，`runtime_get_events` 就能读）。
+        // 也就是说那份内存拷贝是同一批数据里更差的一份，还让当前会话每收到一行
+        // 未识别的协议消息就触发一次全应用重渲染。已删除。
 
         if (conversationId === currentConvIdRef.current && runtimeEvent.kind === "assistant_delta") {
           const delta = runtimeEvent.text || "";
@@ -452,8 +429,6 @@ export function useConversations(
       setActiveAgent(conv.active_agent);
       setChatWorkspace(conv.workspace_path);
 
-      const logs = terminalLogsRef.current[id] || "";
-      setCollabLogs(logs);
     }
   }, [conversations]);
 
@@ -990,13 +965,12 @@ export function useConversations(
   return {
     conversations, currentConvId, messages, chatInput, chatWorkspace,
     detectedAgents, activeAgent, activeSessions,
-    collabLogs, collabStdin, pendingApproval, startingConversations,
+    collabStdin, pendingApproval, startingConversations,
     enterSurface,
     isWorkspaceModalOpen, workspaceFormPath,
-    terminalLogsRef,
     archivedConversations,
     setChatInput, setChatWorkspace, setActiveAgent, selectAgent,
-    setCollabLogs, setCollabStdin,
+    setCollabStdin,
     setIsWorkspaceModalOpen, setWorkspaceFormPath,
     loadConversations, detectAgents, selectConversation,
     newConversation, saveWorkspaceChat, deleteConversation,

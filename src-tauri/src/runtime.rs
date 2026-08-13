@@ -603,6 +603,50 @@ pub fn get_agent_session_record(
     })
 }
 
+/// `raw_log` 的保留天数。
+///
+/// raw_log 是**适配器没认出来的协议行**的兜底分类——它是这张表里最大的一块，
+/// 同时**没有任何消费方读它**：TeamTab 只找最近一条 `approval_requested`，
+/// supervision 只看最后活动时间和当前待批，ACP 审批选项也只回查在飞的那条。
+/// 留一周足够回答「这个 agent 最近又冒出什么新事件类型」，再久就只是占地方。
+const RAW_LOG_RETENTION_DAYS: i64 = 7;
+
+/// 已结束会话的全部事件保留天数。raw_log 之外的那些（助手消息、工具调用、
+/// 审批）单条很小，但同样只在会话还活着或刚结束时被读到。
+const ENDED_SESSION_RETENTION_DAYS: i64 = 30;
+
+/// 给 `runtime_events` 收边界。
+///
+/// 这张表此前**只涨不减**：`record_runtime_event` 对每一种事件都 INSERT，
+/// 没有 DELETE、没有保留期。它虽然有从 `agent_sessions` 来的
+/// `ON DELETE CASCADE`，但 `agent_sessions` 自己也从不被删除，所以那条级联
+/// 一次都没触发过。长期使用下来这是 `~/.omnix/omnix.db` 最大的增长源。
+///
+/// 不另起调度器——按 `oauth.rs` 清理过期 PKCE 会话的先例，在自然时机顺手做
+/// （见 `RuntimeManager::start_session`）。返回删掉的行数，便于日志和测试。
+pub fn prune_runtime_events(db: &DbManager) -> Result<usize, String> {
+    let conn = db.get_connection().map_err(|error| error.to_string())?;
+    let mut removed = conn
+        .execute(
+            "DELETE FROM runtime_events
+             WHERE kind = 'raw_log' AND created_at < datetime('now', ?1)",
+            params![format!("-{RAW_LOG_RETENTION_DAYS} days")],
+        )
+        .map_err(|error| error.to_string())?;
+    // 会话「结束很久」才清它全部事件——还在跑（ended_at IS NULL）的一条都不动。
+    removed += conn
+        .execute(
+            "DELETE FROM runtime_events
+             WHERE session_id IN (
+                 SELECT id FROM agent_sessions
+                 WHERE ended_at IS NOT NULL AND ended_at < datetime('now', ?1)
+             )",
+            params![format!("-{ENDED_SESSION_RETENTION_DAYS} days")],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(removed)
+}
+
 pub fn record_runtime_event(
     db: &DbManager,
     session_id: &str,
@@ -1683,7 +1727,7 @@ mod tests {
         build_codex_thread_start_request, build_launch_spec, build_resume_launch_spec,
         create_agent_session_record, evaluate_model_compatibility, get_agent_session_record,
         list_runtime_events, managed_install_command, parse_claude_event, parse_codex_message,
-        record_runtime_event, record_user_message, resolve_model_selection,
+        prune_runtime_events, record_runtime_event, record_user_message, resolve_model_selection,
         update_agent_session_status, AgentBinding, AgentId, AgentSessionConfig, AgentSessionStatus,
         ModelCompatibilityLevel, ModelSelection, PermissionPolicy,
         RuntimeEventKind, WorkMode,
@@ -1992,6 +2036,90 @@ mod tests {
         drop(conn);
         let _ = std::fs::remove_file(db_path);
     }
+
+    /// 造一个带会话和若干事件的库。`ended` 为 None 表示会话还在跑。
+    fn prune_fixture(tag: &str) -> (DbManager, std::path::PathBuf) {
+        let db_path = std::env::temp_dir().join(format!(
+            "omnix_prune_{tag}_{}.sqlite",
+            chrono::Utc::now().timestamp_micros()
+        ));
+        let _ = std::fs::remove_file(&db_path);
+        let db = DbManager::new_runtime_test(db_path.clone());
+        let conn = db.get_connection().expect("db connection");
+        conn.execute(
+            "INSERT INTO conversations (id, title, workspace_path, active_agent)
+             VALUES ('c1', 'T', 'D:/w', 'Claude Code')",
+            [],
+        )
+        .unwrap();
+        // live：还在跑；old：一个月前就结束了
+        for (id, ended) in [("live", None::<&str>), ("old", Some("-40 days"))] {
+            conn.execute(
+                "INSERT INTO agent_sessions
+                 (id, conversation_id, agent_id, adapter_kind, executable_path, workspace_path,
+                  model_json, permission_json, work_mode, status, ended_at)
+                 VALUES (?1, 'c1', 'claude_code', 'claude', 'x', 'D:/w', '{}', '{}', 'direct',
+                         'completed', CASE WHEN ?2 IS NULL THEN NULL ELSE datetime('now', ?2) END)",
+                rusqlite::params![id, ended],
+            )
+            .unwrap();
+        }
+        let mut seq = 0;
+        let mut add = |session: &str, kind: &str, age: &str| {
+            seq += 1;
+            conn.execute(
+                "INSERT INTO runtime_events (id, session_id, sequence, kind, created_at)
+                 VALUES (?1, ?2, ?3, ?4, datetime('now', ?5))",
+                rusqlite::params![format!("e{seq}"), session, seq, kind, age],
+            )
+            .unwrap();
+        };
+        add("live", "raw_log", "-1 days");       // 新的 raw_log：留
+        add("live", "raw_log", "-30 days");      // 旧的 raw_log：删
+        add("live", "approval_requested", "-30 days"); // 旧但不是 raw_log 且会话在跑：留
+        add("old", "assistant_message", "-40 days");   // 会话早已结束：删
+        drop(conn);
+        (db, db_path)
+    }
+
+    fn remaining(db: &DbManager) -> Vec<String> {
+        let conn = db.get_connection().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT id FROM runtime_events ORDER BY sequence")
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        rows
+    }
+
+    /// `runtime_events` 此前只涨不减：每种事件都 INSERT，没有 DELETE、没有保留期，
+    /// 而它那条 `ON DELETE CASCADE` 因为 `agent_sessions` 也从不被删所以从未触发。
+    #[test]
+    fn prune_drops_stale_raw_logs_and_finished_sessions() {
+        let (db, path) = prune_fixture("basic");
+        let removed = prune_runtime_events(&db).expect("prune");
+        assert_eq!(removed, 2, "旧 raw_log 和早已结束会话的事件各一条");
+        assert_eq!(remaining(&db), vec!["e1".to_string(), "e3".to_string()]);
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// 最要紧的一条：**还在跑的会话一条都不能动**，哪怕它的事件很旧——
+    /// 待处理审批正是靠回查历史事件拿到选项的。
+    #[test]
+    fn prune_never_touches_a_running_session_beyond_raw_logs() {
+        let (db, path) = prune_fixture("live");
+        prune_runtime_events(&db).expect("prune");
+        let left = remaining(&db);
+        assert!(left.contains(&"e3".to_string()), "在跑会话的旧审批事件必须留着");
+        let _ = std::fs::remove_file(path);
+    }
+
+    // 这里本来还有一条 `prune_is_idempotent`（断言第二次清理删 0 条）。做反向
+    // 验证时构造不出能让它变红的合理改动——任何大致正确的实现都满足它，也就是
+    // 说它没在守任何具体的东西。删掉，不留装饰性测试。
 
     #[test]
     fn user_message_status_and_runtime_log_survive_restart() {
