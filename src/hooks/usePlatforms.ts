@@ -9,7 +9,6 @@ import { useState, useCallback } from "react";
 import { platformApi, modelApi } from "@/lib/tauri-api";
 import type { ModelPlatform, PlatformModel, ModelTestState, ProviderType, HealthCheckDetail } from "@/types";
 
-type CapabilityField = "vision" | "audio" | "reasoning" | "coding" | "long_context" | "tool_use" | "embedding" | "speedy";
 
 interface PlatformFormState {
   name: string;
@@ -78,7 +77,6 @@ export interface UsePlatformsReturn {
 
   // Model actions
   toggleModelEnabled: (model: PlatformModel) => Promise<void>;
-  toggleCapability: (model: PlatformModel, field: CapabilityField) => Promise<void>;
   testModel: (modelId: string) => Promise<HealthCheckDetail>;
   saveCustomModel: () => Promise<void>;
   deleteModel: (id: string) => Promise<void>;
@@ -269,16 +267,6 @@ export function usePlatforms(): UsePlatformsReturn {
     await loadActiveModels();
   }, [selectedPlatformId, selectPlatform, loadActiveModels]);
 
-  const toggleCapability = useCallback(
-    async (model: PlatformModel, field: CapabilityField) => {
-      const key = `has_${field}` as keyof PlatformModel; // field is CapabilityField which maps to has_* boolean fields
-      const updated = { ...model, [key]: !model[key] };
-      await modelApi.save(updated);
-      if (selectedPlatformId) await selectPlatform(selectedPlatformId);
-    },
-    [selectedPlatformId, selectPlatform]
-  );
-
   const testModel = useCallback(async (modelId: string) => {
     setModelTestingState((prev) => ({ ...prev, [modelId]: "testing" }));
     try {
@@ -354,7 +342,7 @@ export function usePlatforms(): UsePlatformsReturn {
     loadPlatforms, selectPlatform, togglePlatform, savePlatform,
     deletePlatform, fetchRemoteModels, batchTestModels,
     openPlatformModal, closePlatformModal, updatePlatformForm,
-    toggleModelEnabled, toggleCapability, testModel,
+    toggleModelEnabled, testModel,
     saveCustomModel, deleteModel, loadActiveModels,
     openModelModal, closeModelModal, updateModelForm,
   };

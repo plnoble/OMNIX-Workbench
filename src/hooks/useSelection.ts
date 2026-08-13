@@ -19,7 +19,6 @@ export interface UseSelectionReturn {
   captureError: string | null;
 
   // Settings
-  selectionShortcut: string;
   captureMode: "hybrid" | "uia_only" | "clipboard_only";
   showOnCapture: boolean;
   preserveClipboard: boolean;
@@ -53,7 +52,6 @@ export function useSelection(): UseSelectionReturn {
   const [captureError, setCaptureError] = useState<string | null>(null);
 
   // ── Settings state ────────────────────────────────
-  const [selectionShortcut, setSelectionShortcut] = useState("Ctrl+Alt+C");
   const [captureMode, setCaptureMode] = useState<"hybrid" | "uia_only" | "clipboard_only">("hybrid");
   const [showOnCapture, setShowOnCapture] = useState(true);
   const [preserveClipboard, setPreserveClipboard] = useState(false);
@@ -102,7 +100,7 @@ export function useSelection(): UseSelectionReturn {
 
   const loadSelectionSettings = useCallback(async () => {
     try {
-      const [shortcut, mode, show, preserve, autoCapture, blacklistValue] = await Promise.all([
+      const [, mode, show, preserve, autoCapture, blacklistValue] = await Promise.all([
         settingsApi.get("selection_assistant_shortcut"),
         settingsApi.get("selection_assistant_capture_mode"),
         settingsApi.get("selection_assistant_show_on_capture"),
@@ -110,7 +108,6 @@ export function useSelection(): UseSelectionReturn {
         settingsApi.get("selection_assistant_auto_capture"),
         settingsApi.get("selection_assistant_blacklist"),
       ]);
-      if (shortcut) setSelectionShortcut(shortcut);
       if (mode === "uia_only" || mode === "clipboard_only" || mode === "hybrid") {
         setCaptureMode(mode);
       }
@@ -156,7 +153,6 @@ export function useSelection(): UseSelectionReturn {
     try {
       if (updates.shortcut !== undefined) {
         await settingsApi.set("selection_assistant_shortcut", updates.shortcut);
-        setSelectionShortcut(updates.shortcut);
       }
       if (updates.captureMode !== undefined) {
         await settingsApi.set("selection_assistant_capture_mode", updates.captureMode);
@@ -219,7 +215,6 @@ export function useSelection(): UseSelectionReturn {
     isCapturing,
     lastCapture,
     captureError,
-    selectionShortcut,
     captureMode,
     showOnCapture,
     preserveClipboard,

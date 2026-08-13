@@ -26,8 +26,10 @@ import type {
   ConversationInfo,
   ConversationMessage,
   DetectedAgent,
+  DevStatus,
   PromptType,
   GatewayStatus,
+  StatusChangeEvent,
   RuntimeAgentId,
   RuntimeApprovalRequest,
   RuntimeModelSelection,
@@ -107,6 +109,32 @@ export function pickConversationForSurface(args: {
   return { kind: "blank" };
 }
 
+/**
+ * 主窗口发给悬浮状态坞的那条状态。
+ *
+ * 抽成纯函数的理由和 `pickConversationForSurface` 一样——它此前是 useEffect 里
+ * 的一段内联对象字面量，字段名和坞里读的那份**完全不一样**（发 active_agent /
+ * session_id / gateway_status，读 status / text），坞里因此常年读到 undefined。
+ * `emit` 的载荷类型是 unknown、`listen<T>` 只是断言，两端各写一份就没人拦得住。
+ * 现在两端共用 `StatusChangeEvent`，并且这里能被单独验。
+ */
+export function buildDockStatus(args: {
+  activeAgent: string;
+  gatewayStatus: GatewayStatus;
+  waitingForApproval: boolean;
+  working: boolean;
+}): StatusChangeEvent {
+  const status: DevStatus = args.gatewayStatus === "error"
+    ? "error"
+    : args.waitingForApproval
+      ? "pending"
+      : args.working
+        ? "busy"
+        : "idle";
+  const suffix = args.waitingForApproval ? "等待审批" : args.working ? "运行中" : "就绪";
+  return { status, text: `${args.activeAgent} · ${suffix}` };
+}
+
 export interface UseConversationsReturn {
   // Conversation state
   conversations: ConversationInfo[];
@@ -127,22 +155,19 @@ export interface UseConversationsReturn {
   isWorkspaceModalOpen: boolean;
   workspaceFormPath: string;
 
-  // Refs (exposed for Team tab and status dock bridge)
+  // Refs (exposed for Team tab)
   terminalLogsRef: React.MutableRefObject<Record<string, string>>;
-  currentConvIdRef: React.MutableRefObject<string>;
 
   // Actions
   setChatInput: (v: string) => void;
   setChatWorkspace: (v: string) => void;
   setActiveAgent: (v: string) => void; // Accepts any agent name string
   selectAgent: (name: string) => void; // Switch Agent and load that Agent's conversation
-  currentSurface: "chat" | "work";
   enterSurface: (surface: "chat" | "work") => void; // Switch between 对话 and 工作
   setCollabLogs: (v: string) => void;
   setCollabStdin: (v: string) => void;
   setIsWorkspaceModalOpen: (v: boolean) => void;
   setWorkspaceFormPath: (v: string) => void;
-  setCurrentConvId: (v: string) => void;
 
   loadConversations: () => Promise<void>;
   detectAgents: () => Promise<void>;
@@ -162,9 +187,7 @@ export interface UseConversationsReturn {
   // Send assembled text as a turn (SDD clarify / plan prompts)
   sendPreparedMessage: (agentText: string, displayText: string, config: RuntimeSendConfig) => Promise<void>;
   respondToApproval: (approved: boolean, forSession?: boolean) => Promise<void>;
-  sendStdinDirect: (input: string) => Promise<void>;
   stopAgentSession: (sessionId: string) => Promise<void>;
-  startAgentSession: (sessionId: string) => Promise<void>;
   acpModelOptions: Record<string, AcpModelOption>;
   setSessionModel: (conversationId: string, model: string) => Promise<void>;
 }
@@ -421,14 +444,8 @@ export function useConversations(
   }, []);
 
   // ── Status Dock events bridge ──────────────────────
-  // Use a ref so the listeners always call the latest sendStdinDirect without re-registering.
-  // The ref is initialized as a no-op and updated after sendStdinDirect is defined.
-  const sendStdinRef = useRef<(input: string) => void>(() => {});
 
   useEffect(() => {
-    const unlistenApproval = listen("omnix-action-toggle-approval", () => {
-      sendStdinRef.current("\r");
-    });
     const unlistenNewConv = listen("omnix-action-new-conversation", () => {
       newConversation();
     });
@@ -439,7 +456,6 @@ export function useConversations(
     });
 
     return () => {
-      unlistenApproval.then((fn) => fn());
       unlistenNewConv.then((fn) => fn());
       unlistenSettings.then((fn) => fn());
     };
@@ -448,17 +464,16 @@ export function useConversations(
   // ── Persist status updates to StatusDock window ────
 
   useEffect(() => {
-    const statusPayload = {
-      active_agent: activeAgent,
-      session_id: currentConvId,
-      gateway_status: gatewayStatus,
-      active_sessions_count: activeSessions.length,
-      db_status: "已连接",
-    };
-    emit("omnix-dev-status-change", statusPayload).catch((e) =>
+    const payload = buildDockStatus({
+      activeAgent,
+      gatewayStatus,
+      waitingForApproval: !!pendingApproval,
+      working: startingConversations.length > 0 || activeSessions.length > 0,
+    });
+    emit("omnix-dev-status-change", payload).catch((e) =>
       console.error("[useConversations] Emit error:", e)
     );
-  }, [activeAgent, currentConvId, gatewayStatus, activeSessions]);
+  }, [activeAgent, gatewayStatus, activeSessions, pendingApproval, startingConversations]);
 
   // ── Agent Detection ────────────────────────────────
 
@@ -682,26 +697,6 @@ export function useConversations(
   }, []);
 
   // ── PTY Session Management ─────────────────────────
-
-  const startAgentSession = useCallback(async (sessionId: string) => {
-    const agent = detectedAgents.find((a) => a.name === activeAgent);
-    const exePath = agent ? agent.path : "";
-
-    setCollabLogs((prev) => prev + `\n--- 正在启动 ${activeAgent} 进程... ---\n`);
-    try {
-      await ptyApi.start({
-        sessionId,
-        agentName: activeAgent,
-        exePath,
-        args: [],
-        workspaceDir: chatWorkspace,
-      });
-    } catch (err) {
-      console.error("[useConversations] Failed to start agent session:", err);
-      setCollabLogs((prev) => prev + `\n[错误] 启动进程失败: ${err}\n`);
-      throw err;
-    }
-  }, [detectedAgents, activeAgent, chatWorkspace]);
 
   // Switch the model of a running ACP session (opencode etc.). The choice is
   // applied live via `session/set_config_option` and remembered per-agent.
@@ -1039,18 +1034,6 @@ export function useConversations(
     setPendingApproval(null);
   }, [pendingApproval]);
 
-  const sendStdinDirect = useCallback(async (inputStr: string) => {
-    if (!currentConvId) return;
-    try {
-      await ptyApi.sendStdin({ sessionId: currentConvId, input: inputStr });
-    } catch (err) {
-      console.error("[useConversations] Failed to send direct stdin:", err);
-    }
-  }, [currentConvId]);
-
-  // Keep the ref in sync so the event listener always calls the latest version
-  sendStdinRef.current = sendStdinDirect;
-
   const stopAgentSession = useCallback(async (sessionId: string) => {
     try {
       const runtimeSessionId = runtimeSessionByConversationRef.current[sessionId];
@@ -1093,18 +1076,17 @@ export function useConversations(
     conversations, currentConvId, messages, chatInput, chatWorkspace,
     detectedAgents, activeAgent, activeSessions, promptType,
     collabLogs, collabStdin, pendingApproval, startingConversations,
-    currentSurface, enterSurface,
+    enterSurface,
     isWorkspaceModalOpen, workspaceFormPath,
-    terminalLogsRef, currentConvIdRef,
+    terminalLogsRef,
     archivedConversations,
     setChatInput, setChatWorkspace, setActiveAgent, selectAgent,
     setCollabLogs, setCollabStdin,
     setIsWorkspaceModalOpen, setWorkspaceFormPath,
-    setCurrentConvId,
     loadConversations, detectAgents, selectConversation,
     newConversation, saveWorkspaceChat, deleteConversation,
     archiveConversation, unarchiveConversation, loadArchivedConversations,
-    sendMessage, respondToApproval, sendStdinDirect, stopAgentSession, startAgentSession,
+    sendMessage, respondToApproval, stopAgentSession,
     acpModelOptions, setSessionModel,
     activeGoal, setGoalStatus, clearActiveGoal,
     sendPreparedMessage,

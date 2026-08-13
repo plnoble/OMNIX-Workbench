@@ -8,14 +8,7 @@ import { PRODUCT_NAME } from "@/lib/constants";
 import { settingsApi } from "@/lib/tauri-api";
 import { useTheme, type ThemeMode } from "@/hooks/useTheme";
 
-type DevStatus = "idle" | "busy" | "pending" | "error";
-
-interface StatusChangeEvent {
-  status: DevStatus;
-  text: string;
-  approvalMode: "auto" | "manual" | "plan";
-  keepAwake: boolean;
-}
+import type { DevStatus, StatusChangeEvent } from "@/types";
 
 const DOCK_W = 200;
 const DOCK_H = 48;
@@ -28,7 +21,6 @@ const OPACITY_LABELS = ["100%", "75%", "50%"] as const;
 export default function StatusDock() {
   const [status, setStatus] = useState<DevStatus>("idle");
   const [activeAgentText, setActiveAgentText] = useState<string>("就绪");
-  const [approvalMode, setApprovalMode] = useState<"auto" | "manual" | "plan">("auto");
 
   // This is a separate window (App.tsx returns early for it before its own
   // useTheme runs), so it must read + apply the saved theme itself — otherwise
@@ -53,7 +45,6 @@ export default function StatusDock() {
     const unlisten = listen<StatusChangeEvent>("omnix-dev-status-change", (event) => {
       setStatus(event.payload.status);
       setActiveAgentText(event.payload.text);
-      setApprovalMode(event.payload.approvalMode);
     });
     return () => { unlisten.then((fn) => fn()); };
   }, []);
@@ -116,11 +107,6 @@ export default function StatusDock() {
   };
 
   // ─── Menu actions ───
-  const handleToggleApproval = async () => {
-    emit("omnix-action-toggle-approval");
-    await closeMenu();
-  };
-
   const handleNewConversation = async () => {
     // Emit event to App.tsx to create a new conversation and switch to team tab
     emit("omnix-action-new-conversation");
@@ -255,10 +241,11 @@ export default function StatusDock() {
           onClick={(e) => e.stopPropagation()}
           onMouseDown={(e) => e.stopPropagation()}
         >
-          <MenuItem onClick={handleToggleApproval}>
-            🛡️ 审批: {approvalMode === "auto" ? "全自动" : approvalMode === "manual" ? "手动确认" : "计划模式"}
-          </MenuItem>
-
+          {/* 这里曾经有一项「🛡️ 审批: 全自动/手动确认/计划模式」。它用的是一套
+              已经不存在的词表（当前是按会话在输入框里选 请求审批/风险审批/完全访问），
+              显示的值永远来自 undefined，点击则是往一个不可能存在的 PTY 写回车。
+              审批模式是每个会话各自的选择，做成全局悬浮开关需要另铺一套通路，
+              所以这里直接去掉，不留一个假开关。 */}
           <MenuItem onClick={handleNewConversation}>
             📋 快速新建对话
           </MenuItem>

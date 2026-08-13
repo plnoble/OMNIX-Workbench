@@ -513,6 +513,22 @@ export interface RemoteAccessInfo {
 /** Gateway status indicator */
 export type GatewayStatus = "idle" | "busy" | "error";
 
+/** Dot colour / pulse state on the floating status dock. */
+export type DevStatus = "idle" | "busy" | "pending" | "error";
+
+/**
+ * Payload of the `omnix-dev-status-change` event (main window → status dock).
+ *
+ * Lives here rather than in either window because both ends must agree on it:
+ * the emitter used to send an entirely different set of field names and the
+ * dock read `undefined` for everything. `emit` takes an `unknown` payload and
+ * `listen<T>` only asserts, so nothing but a shared type catches that drift.
+ */
+export interface StatusChangeEvent {
+  status: DevStatus;
+  text: string;
+}
+
 /** PTY interactive prompt type detected from terminal output */
 export type PromptType = "none" | "trust" | "update" | "menu" | "editor";
 

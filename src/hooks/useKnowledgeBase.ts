@@ -74,10 +74,7 @@ export interface UseKnowledgeBaseReturn {
   activeSubTab: "chunks" | "search" | "rag";
 
   // Actions — Data loading
-  loadDocuments: () => Promise<void>;
   loadKnowledgeBases: () => Promise<void>;
-  loadChunks: (docId: string) => Promise<void>;
-  loadEmbeddingModels: () => Promise<void>;
 
   // Actions — Selection
   selectDocument: (id: string | null) => void;
@@ -428,7 +425,7 @@ export function useKnowledgeBase(): UseKnowledgeBaseReturn {
     showImportForm, isImporting, importForm,
     activeSubTab,
 
-    loadDocuments, loadKnowledgeBases, loadChunks, loadEmbeddingModels,
+    loadKnowledgeBases,
     selectDocument, selectKnowledgeBase, createKnowledgeBase, deleteKnowledgeBase, selectChunk,
     importDocument, importFile, importDirectory, deleteDocument, setShowImportForm, updateImportForm,
     generateEmbeddings, batchEmbedAll, setSelectedEmbedModel: chooseEmbedModel,

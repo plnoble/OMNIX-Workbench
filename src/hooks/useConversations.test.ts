@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildDockStatus,
   capLog,
   conversationIsWork,
   MAX_TERMINAL_LOG_CHARS,
   pickConversationForSurface,
 } from "./useConversations";
+import type { StatusChangeEvent } from "@/types";
 
 /** 造一条会话记录，只填判断用得上的字段。 */
 function conv(id: string, agent: string, workspace: string | null, createdAt: string) {
@@ -112,5 +114,48 @@ describe("pickConversationForSurface", () => {
     expect(
       pickConversationForSurface({ agent: "claude", surface: "chat", conversations: [], currentConvId: "" })
     ).toEqual({ kind: "blank" });
+  });
+});
+
+describe("buildDockStatus", () => {
+  const base = {
+    activeAgent: "Claude Code",
+    gatewayStatus: "idle" as const,
+    waitingForApproval: false,
+    working: false,
+  };
+
+  /**
+   * 这条是给悬浮坞的契约兜底的。发送方以前发的是 active_agent / session_id /
+   * gateway_status / active_sessions_count / db_status，坞里读 status / text，
+   * 一个都对不上——tsc 拦不住（emit 收 unknown，listen<T> 只是断言），所以只能
+   * 在这里钉死：产出必须正好是 StatusChangeEvent 的那两个键，不多不少。
+   */
+  it("产出的键正好是坞要读的那两个", () => {
+    const out = buildDockStatus(base);
+    expect(Object.keys(out).sort()).toEqual(["status", "text"]);
+    // 赋给 StatusChangeEvent 编译期就要过——两端共用同一个类型。
+    const typed: StatusChangeEvent = out;
+    expect(typed.text).toContain("Claude Code");
+  });
+
+  it("空闲时是 idle", () => {
+    expect(buildDockStatus(base)).toEqual({ status: "idle", text: "Claude Code · 就绪" });
+  });
+
+  it("有会话在跑时是 busy", () => {
+    expect(buildDockStatus({ ...base, working: true }))
+      .toEqual({ status: "busy", text: "Claude Code · 运行中" });
+  });
+
+  it("等待审批优先于运行中", () => {
+    expect(buildDockStatus({ ...base, working: true, waitingForApproval: true }))
+      .toEqual({ status: "pending", text: "Claude Code · 等待审批" });
+  });
+
+  it("网关故障压过其余一切", () => {
+    expect(
+      buildDockStatus({ ...base, gatewayStatus: "error", working: true, waitingForApproval: true }).status
+    ).toBe("error");
   });
 });

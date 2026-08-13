@@ -26,8 +26,6 @@ export type { UseDiagnosticsReturn } from "./useDiagnostics";
 export { useRemoteAccess } from "./useRemoteAccess";
 export type { UseRemoteAccessReturn } from "./useRemoteAccess";
 
-export { useResizer } from "./useResizer";
-export type { UseResizerReturn } from "./useResizer";
 
 export { useKnowledgeBase } from "./useKnowledgeBase";
 export type { UseKnowledgeBaseReturn, RagMessage, ImportFormState } from "./useKnowledgeBase";
