@@ -6,38 +6,30 @@
  */
 
 import { useState, useMemo, useEffect } from "react";
+import { useConversationsStore } from "@/store/AppStore";
 import { Search, MessageSquare, FolderOpen, Archive, ArchiveRestore, Trash2, X, Plus, Clock } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import type { ConversationInfo } from "@/types";
 
 interface ConversationHistoryViewProps {
-  conversations: ConversationInfo[];
-  archivedConversations: ConversationInfo[];
-  currentConvId: string;
-  activeSessions: string[];
-  onSelectConversation: (id: string) => void;
-  onDeleteConversation: (id: string, e: React.MouseEvent) => void;
+  /** 归档要走 App 层那个「顺带蒸馏吗」的确认框，所以仍由 App 传。 */
   onArchiveConversation: (id: string, title: string) => void;
-  onUnarchiveConversation: (id: string) => void;
-  onNewConversation: () => void;
-  onLoadArchived: () => void;
   onClose: () => void;
 }
 
 export function ConversationHistoryView({
-  conversations,
-  archivedConversations,
-  currentConvId,
-  activeSessions,
-  onSelectConversation,
-  onDeleteConversation,
   onArchiveConversation,
-  onUnarchiveConversation,
-  onNewConversation,
-  onLoadArchived,
   onClose,
 }: ConversationHistoryViewProps) {
+  const convs = useConversationsStore();
+  const {
+    conversations, archivedConversations, currentConvId, activeSessions,
+    selectConversation: onSelectConversation,
+    deleteConversation: onDeleteConversation,
+    unarchiveConversation: onUnarchiveConversation,
+    newConversation: onNewConversation,
+    loadArchivedConversations: onLoadArchived,
+  } = convs;
   const [tab, setTab] = useState<"active" | "archived">("active");
   const [query, setQuery] = useState("");
   const [pendingDelete, setPendingDelete] = useState<{ id: string; title: string } | null>(null);

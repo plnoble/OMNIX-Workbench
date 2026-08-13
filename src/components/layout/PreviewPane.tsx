@@ -3,40 +3,22 @@
  */
 
 import { Button } from "@/components/ui/button";
+import { usePreviewStore } from "@/store/AppStore";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { X, RefreshCw, Search } from "lucide-react";
 import type { PreviewType } from "@/types";
-import type { PreviewFileEntry } from "@/lib/tauri-api";
 
-interface PreviewPaneProps {
-  // 后端返回的是对象数组，不是字符串数组。以前这里标成 `string[]`，于是
-  // `<SelectItem value={f}>{f}</SelectItem>` 把整个对象当成 React 子节点渲染
-  // ——一打开预览就炸。
-  previewFiles: PreviewFileEntry[];
-  selectedPreviewFile: string;
-  previewType: PreviewType;
-  previewHtmlUrl: string;
-  previewTextContent: string;
-  previewImageBase64: string;
-  chatWorkspace: string;
-  onSelectFile: (file: string) => void;
-  onRefreshFiles: () => void;
-  onLoadGitDiff: () => void;
-  onClose: () => void;
-}
-
-export function PreviewPane({
-  previewFiles,
-  selectedPreviewFile,
-  previewType,
-  previewHtmlUrl,
-  previewTextContent,
-  previewImageBase64,
-  onSelectFile,
-  onRefreshFiles,
-  onLoadGitDiff,
-  onClose,
-}: PreviewPaneProps) {
+export function PreviewPane({ onClose }: { onClose: () => void }) {
+  // 以前是 11 个 prop 从 App.tsx 透传，其中 `chatWorkspace` 声明了却从没被解构——
+  // 传了一路没人接。`onClose` 关的是 App 层的面板开关，所以留着。
+  const preview = usePreviewStore();
+  const {
+    previewFiles, selectedPreviewFile, previewType,
+    previewHtmlUrl, previewTextContent, previewImageBase64,
+    selectPreviewFile: onSelectFile,
+    loadPreviewFiles: onRefreshFiles,
+    loadGitDiff: onLoadGitDiff,
+  } = preview;
   return (
     <aside className="w-[min(420px,30vw)] border-l border-border glass-panel flex flex-col h-full">
       {/* Header */}

@@ -1,4 +1,5 @@
 import { useMemo, useState, type MouseEvent, type ReactNode } from "react";
+import { useConversationsStore, useSettingsStore } from "@/store/AppStore";
 import { createPortal } from "react-dom";
 import {
   Archive,
@@ -14,41 +15,32 @@ import {
 
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
-import type { ConversationInfo, GatewayStatus } from "@/types";
+import type { ConversationInfo } from "@/types";
 
 interface AppSidebarProps {
+  // 顶层页签与对话框开关属于 App 层，不在任何 store 里。
   activeTab: string;
   onTabChange: (tab: string) => void;
-  gatewayStatus: GatewayStatus;
   showConversations: boolean;
-  conversations: ConversationInfo[];
-  activeAgent: string;
-  currentConvId: string;
-  activeSessions: string[];
-  onSelectConversation: (id: string) => void;
-  onDeleteConversation: (id: string, e: MouseEvent) => void;
   onArchiveConversation?: (id: string, title: string) => void;
   onOpenHistoryFullscreen?: () => void;
-  onNewConversation: () => void;
-  onOpenWorkspaceModal: () => void;
 }
 
 export function AppSidebar({
   activeTab,
   onTabChange,
-  gatewayStatus,
   showConversations,
-  conversations,
-  activeAgent,
-  currentConvId,
-  activeSessions,
-  onSelectConversation,
-  onDeleteConversation,
   onArchiveConversation,
   onOpenHistoryFullscreen,
-  onNewConversation,
-  onOpenWorkspaceModal,
 }: AppSidebarProps) {
+  // 会话与网关状态直接取 store，不再从 App.tsx 逐个透传。
+  const convs = useConversationsStore();
+  const { conversations, activeAgent, currentConvId, activeSessions } = convs;
+  const { gatewayStatus } = useSettingsStore();
+  const onSelectConversation = convs.selectConversation;
+  const onDeleteConversation = convs.deleteConversation;
+  const onNewConversation = convs.newConversation;
+  const onOpenWorkspaceModal = () => convs.setIsWorkspaceModalOpen(true);
   const [pendingDelete, setPendingDelete] = useState<{ id: string; title: string } | null>(null);
   const isWorkSurface = showConversations && (activeTab === "chat" || activeTab === "work" || activeTab === "team");
   const showWorkspaceList = activeTab === "work" || activeTab === "team";

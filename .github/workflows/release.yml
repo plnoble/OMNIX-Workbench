@@ -48,7 +48,11 @@ jobs:
           # tag, release name and app version always agree.
           tagName: v__VERSION__
           releaseName: "OMNIX Workbench v__VERSION__"
-          releaseBody: "自动发布。软件内会自动检测并提示更新。详见 CHANGELOG。"
+          # 这句会同时进 Release 正文和 latest.json 的 notes（更新提示里显示的
+          # 就是它）。原文是「详见 CHANGELOG」——而 CHANGELOG 当时停在 0.4.0、
+          # 应用已经发到 0.28.0，等于把用户指向一份对不上的文件。CHANGELOG 已补齐，
+          # 但这里改成指向本次 Release 页面：那里永远有这一版真正的说明。
+          releaseBody: "自动发布，软件内会自动检测并提示更新。本版改动见下方提交记录；历次版本见仓库根目录的 CHANGELOG.md。"
           releaseDraft: false
           prerelease: false
           # Emit latest.json alongside the installers for the in-app updater.

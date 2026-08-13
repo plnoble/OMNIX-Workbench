@@ -464,18 +464,9 @@ function MainAppShell() {
       <AppSidebar
         activeTab={activeTab}
         onTabChange={handleTabChange}
-        gatewayStatus={settings.gatewayStatus}
         showConversations={showConversations}
-        conversations={convs.conversations}
-        activeAgent={convs.activeAgent}
-        currentConvId={convs.currentConvId}
-        activeSessions={convs.activeSessions}
-        onSelectConversation={convs.selectConversation}
-        onDeleteConversation={convs.deleteConversation}
         onArchiveConversation={(id, title) => setPendingArchive({ id, title })}
         onOpenHistoryFullscreen={() => setShowHistoryFullscreen(true)}
-        onNewConversation={convs.newConversation}
-        onOpenWorkspaceModal={() => convs.setIsWorkspaceModalOpen(true)}
       />
 
       <main className="relative flex min-w-0 flex-1 flex-col bg-background">
@@ -558,19 +549,7 @@ function MainAppShell() {
 
       {/* Preview Pane */}
       {preview.showPreviewPane && showPreviewButton && (
-        <PreviewPane
-          previewFiles={preview.previewFiles}
-          selectedPreviewFile={preview.selectedPreviewFile}
-          previewType={preview.previewType}
-          previewHtmlUrl={preview.previewHtmlUrl}
-          previewTextContent={preview.previewTextContent}
-          previewImageBase64={preview.previewImageBase64}
-          chatWorkspace={convs.chatWorkspace}
-          onSelectFile={preview.selectPreviewFile}
-          onRefreshFiles={preview.loadPreviewFiles}
-          onLoadGitDiff={preview.loadGitDiff}
-          onClose={() => preview.setShowPreviewPane(false)}
-        />
+        <PreviewPane onClose={() => preview.setShowPreviewPane(false)} />
       )}
       </div>
 
@@ -662,16 +641,7 @@ function MainAppShell() {
       {/* Conversation History Fullscreen */}
       {showHistoryFullscreen && (
         <ConversationHistoryView
-          conversations={convs.conversations}
-          archivedConversations={convs.archivedConversations}
-          currentConvId={convs.currentConvId}
-          activeSessions={convs.activeSessions}
-          onSelectConversation={convs.selectConversation}
-          onDeleteConversation={convs.deleteConversation}
           onArchiveConversation={(id, title) => setPendingArchive({ id, title })}
-          onUnarchiveConversation={convs.unarchiveConversation}
-          onNewConversation={convs.newConversation}
-          onLoadArchived={convs.loadArchivedConversations}
           onClose={() => setShowHistoryFullscreen(false)}
         />
       )}
