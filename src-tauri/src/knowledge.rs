@@ -529,22 +529,33 @@ pub struct SearchResult {
 
 /// BM25 full-text search using FTS5.
 ///
-/// ⚠️ 中文内容上这一半**基本不出结果**。`kb_chunks_fts` 用的是
-/// `tokenize='porter unicode61'`，实测（bundled SQLite）会把一整段中文当成
-/// **一个** token：「量子计算」匹配不到「量子计算的进展」，两字词同样落空。
-/// 也就是说对中文知识库，`hybrid_search` 实际退化成了纯向量检索——RRF 融合里
-/// BM25 那一路长期返回空集。
+/// ⚠️ 这里以前有一段注释，说 BM25 这一路在**中文**上不出结果，原因是分词器。
+/// 现象是真的，结论是错的：真实情况是**所有语言都不出结果**。
+/// `kb_chunks_fts` 是外部内容表（`content='kb_chunks'`），取列值要回 `kb_chunks`
+/// 按 rowid 查同名列——而 fts 表的列叫 `chunk_id`，源表的主键叫 `id`。于是
+/// `SELECT chunk_id FROM kb_chunks_fts` 每一行都报 `no such column: T.chunk_id`，
+/// 英文、完全匹配的查询也一样。`hybrid_search` 又用 `.unwrap_or_default()`
+/// 把这个错吞成空数组，所以混合检索一直是纯向量检索，而且看不出来。
+/// 现在改成从 `kb_chunks` 按 rowid 回连取 `c.id`，不碰 fts 表的列。
 ///
-/// 内置分词器里没有能用的：`trigram` 三字以上可以，但两字词（中文里最常见）
-/// 一律落空。要修得换 ICU 分词器（需要带 ICU 的 SQLite 构建）或自己做中文分词，
-/// 都不是改一行的事，所以先把现状写在这里，别让人以为混合检索在中文上是两条腿
-/// 走路。
+/// 分词器的限制**依然存在**，只是不再是空集的原因：`unicode61` 会把一整段中文
+/// 当成一个 token，所以「量子计算」匹配不到「量子计算的进展很快」，只有整段完全
+/// 相同才命中（见 `bm25_chinese_matches_only_the_whole_run`）。内置分词器里没有
+/// 能用的替代：`trigram` 三字以上可以，两字词一律落空。要真修得换 ICU 分词器
+/// （需要带 ICU 的 SQLite 构建）或自己做中文分词，都不是改一行的事。
+/// 也就是说中文知识库目前仍然主要靠向量那一路。
 ///
 /// Returns (chunk_id, bm25_score) pairs. FTS5's rank is negative (more negative = better),
 /// so we negate it for consistency.
+///
+/// `knowledge_base_ids` restricts the search **inside SQL**. It used to be a
+/// post-filter over a globally-ranked top-5000: with a corpus bigger than that,
+/// a small selected base whose chunks all ranked below 5000 silently returned
+/// nothing. The join makes `limit` mean what it says.
 pub fn bm25_search(
     db: &DbManager,
     query: &str,
+    knowledge_base_ids: Option<&[String]>,
     limit: usize,
 ) -> Result<Vec<(String, f64)>, String> {
     let conn = db.get_connection().map_err(|e| e.to_string())?;
@@ -559,14 +570,29 @@ pub fn bm25_search(
         .replace("AND", "")
         .replace("NOT", "");
 
-    let mut stmt = conn
-        .prepare(
-            "SELECT chunk_id, rank AS bm25_score FROM kb_chunks_fts WHERE kb_chunks_fts MATCH ?1 ORDER BY rank LIMIT ?2",
-        )
-        .map_err(|e| e.to_string())?;
+    let scope = knowledge_base_ids.filter(|ids| !ids.is_empty());
+    // The id comes from `kb_chunks` via rowid, never from the FTS table. See the
+    // doc comment above: selecting `chunk_id` off an external-content FTS5 table
+    // whose content table calls that column `id` fails on every row.
+    let mut sql = String::from(
+        "SELECT c.id, f.rank AS bm25_score FROM kb_chunks_fts f
+         JOIN kb_chunks c ON c.rowid = f.rowid",
+    );
+    if scope.is_some() {
+        sql.push_str(" JOIN kb_documents d ON d.id = c.document_id");
+    }
+    sql.push_str(" WHERE kb_chunks_fts MATCH ?");
+    let mut args: Vec<rusqlite::types::Value> = vec![safe_query.into()];
+    if let Some(ids) = scope {
+        sql.push_str(&format!(" AND d.knowledge_base_id IN ({})", sql_placeholders(ids.len())));
+        args.extend(ids.iter().map(|id| rusqlite::types::Value::from(id.clone())));
+    }
+    sql.push_str(" ORDER BY f.rank LIMIT ?");
+    args.push((limit as i64).into());
 
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let results = stmt
-        .query_map(params![safe_query, limit as i64], |row| {
+        .query_map(rusqlite::params_from_iter(args), |row| {
             let chunk_id: String = row.get(0)?;
             let score: f64 = row.get(1)?;
             Ok((chunk_id, -score)) // Negate: FTS5 rank is negative
@@ -578,23 +604,57 @@ pub fn bm25_search(
     Ok(results)
 }
 
+/// `?,?,?` for an `IN (...)` clause.
+fn sql_placeholders(n: usize) -> String {
+    std::iter::repeat("?").take(n).collect::<Vec<_>>().join(",")
+}
+
 /// Vector similarity search using brute-force cosine similarity.
 ///
-/// Loads all embeddings from the database, computes cosine similarity against
-/// the query embedding, and returns the top-k results.
+/// Scores only the rows that are actually comparable to the query vector, and
+/// says so in SQL rather than after loading the table:
+///
+/// - `model` — **cosine between two different models' vectors is meaningless.**
+///   `kb_embeddings.model` had been written since the table existed and never
+///   read back; same-dimension models (plenty of them are 1536) scored against
+///   each other produced confident-looking numbers that RRF then fused into the
+///   RAG context. Different-dimension ones scored a silent 0.0. Neither warned.
+/// - `dimensions` — belt to the model's braces, and it keeps a corrupt row from
+///   poisoning a whole search.
+/// - `knowledge_base_ids` — the scope used to be applied *after* loading every
+///   embedding in the database and sorting all of them.
+///
+/// Brute force is still brute force; what changed is how much it chews through.
 pub fn vector_search(
     db: &DbManager,
     query_embedding: &[f32],
+    model: &str,
+    knowledge_base_ids: Option<&[String]>,
     limit: usize,
 ) -> Result<Vec<(String, f64)>, String> {
     let conn = db.get_connection().map_err(|e| e.to_string())?;
 
-    let mut stmt = conn
-        .prepare("SELECT chunk_id, embedding, dimensions FROM kb_embeddings")
-        .map_err(|e| e.to_string())?;
+    let scope = knowledge_base_ids.filter(|ids| !ids.is_empty());
+    let mut sql = String::from("SELECT e.chunk_id, e.embedding, e.dimensions FROM kb_embeddings e");
+    if scope.is_some() {
+        sql.push_str(
+            " JOIN kb_chunks c ON c.id = e.chunk_id
+              JOIN kb_documents d ON d.id = c.document_id",
+        );
+    }
+    sql.push_str(" WHERE e.model = ? AND e.dimensions = ?");
+    let mut args: Vec<rusqlite::types::Value> = vec![
+        model.to_string().into(),
+        (query_embedding.len() as i64).into(),
+    ];
+    if let Some(ids) = scope {
+        sql.push_str(&format!(" AND d.knowledge_base_id IN ({})", sql_placeholders(ids.len())));
+        args.extend(ids.iter().map(|id| rusqlite::types::Value::from(id.clone())));
+    }
 
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let mut scored: Vec<(String, f64)> = stmt
-        .query_map([], |row| {
+        .query_map(rusqlite::params_from_iter(args), |row| {
             let chunk_id: String = row.get(0)?;
             let blob: Vec<u8> = row.get(1)?;
             let dimensions: i32 = row.get(2)?;
@@ -602,17 +662,88 @@ pub fn vector_search(
         })
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
-        .map(|(chunk_id, blob, dimensions)| {
+        .filter_map(|(chunk_id, blob, dimensions)| {
             let vec = blob_to_vec_f32(&blob, dimensions as usize);
-            let score = cosine_similarity(query_embedding, &vec);
-            (chunk_id, score)
+            // `dimensions` is what the row claims; the blob is what it has. A
+            // short blob would otherwise score a silent 0.0 and rank as a real
+            // (bad) hit — drop it instead.
+            (vec.len() == query_embedding.len())
+                .then(|| (chunk_id, cosine_similarity(query_embedding, &vec)))
         })
         .collect();
 
-    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    scored.truncate(limit);
+    // Partition around the k-th score instead of ordering the whole candidate
+    // set; only the survivors get sorted.
+    let by_score_desc =
+        |a: &(String, f64), b: &(String, f64)| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal);
+    if scored.len() > limit {
+        scored.select_nth_unstable_by(limit, by_score_desc);
+        scored.truncate(limit);
+    }
+    scored.sort_by(by_score_desc);
 
     Ok(scored)
+}
+
+/// How many embeddings live in scope, and how many of them the query model can
+/// actually read. Used to tell "this base has no embeddings yet" (fine, BM25
+/// carries the search) apart from "this base is embedded with another model"
+/// (not fine — the vector half is dead and nothing would have said so).
+fn embedding_coverage(
+    db: &DbManager,
+    model: &str,
+    knowledge_base_ids: Option<&[String]>,
+) -> Result<(i64, i64, Vec<String>), String> {
+    let conn = db.get_connection().map_err(|e| e.to_string())?;
+    let scope = knowledge_base_ids.filter(|ids| !ids.is_empty());
+
+    let mut sql = String::from(
+        "SELECT COUNT(*), SUM(CASE WHEN e.model = ? THEN 1 ELSE 0 END) FROM kb_embeddings e",
+    );
+    let mut args: Vec<rusqlite::types::Value> = vec![model.to_string().into()];
+    if let Some(ids) = scope {
+        sql.push_str(
+            " JOIN kb_chunks c ON c.id = e.chunk_id
+              JOIN kb_documents d ON d.id = c.document_id",
+        );
+        sql.push_str(&format!(" WHERE d.knowledge_base_id IN ({})", sql_placeholders(ids.len())));
+        args.extend(ids.iter().map(|id| rusqlite::types::Value::from(id.clone())));
+    }
+    let (total, matching): (i64, i64) = conn
+        .prepare(&sql)
+        .map_err(|e| e.to_string())?
+        .query_row(rusqlite::params_from_iter(args.clone()), |row| {
+            Ok((row.get(0)?, row.get::<_, Option<i64>>(1)?.unwrap_or(0)))
+        })
+        .map_err(|e| e.to_string())?;
+
+    if total == 0 || matching > 0 {
+        return Ok((total, matching, Vec::new()));
+    }
+
+    // Nothing matched — name the models that are actually in there, so the
+    // error can tell the user what to switch to (or re-embed from).
+    let mut names_sql = String::from("SELECT DISTINCT e.model FROM kb_embeddings e");
+    let mut names_args: Vec<rusqlite::types::Value> = Vec::new();
+    if let Some(ids) = scope {
+        names_sql.push_str(
+            " JOIN kb_chunks c ON c.id = e.chunk_id
+              JOIN kb_documents d ON d.id = c.document_id",
+        );
+        names_sql.push_str(&format!(" WHERE d.knowledge_base_id IN ({})", sql_placeholders(ids.len())));
+        names_args.extend(ids.iter().map(|id| rusqlite::types::Value::from(id.clone())));
+    }
+    let stored = conn
+        .prepare(&names_sql)
+        .map_err(|e| e.to_string())?
+        .query_map(rusqlite::params_from_iter(names_args), |row| {
+            row.get::<_, String>(0)
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    Ok((total, matching, stored))
 }
 
 /// Reciprocal Rank Fusion: merge BM25 and vector search results.
@@ -697,67 +828,51 @@ pub async fn hybrid_search(
     rrf_k: u32,
     knowledge_base_ids: Option<&[String]>,
 ) -> Result<Vec<SearchResult>, String> {
-    let allowed_chunks = if let Some(base_ids) = knowledge_base_ids.filter(|ids| !ids.is_empty()) {
-        let conn = db.get_connection().map_err(|e| e.to_string())?;
-        let placeholders = std::iter::repeat("?")
-            .take(base_ids.len())
-            .collect::<Vec<_>>()
-            .join(",");
-        let sql = format!(
-            "SELECT c.id FROM kb_chunks c
-             JOIN kb_documents d ON d.id = c.document_id
-             WHERE d.knowledge_base_id IN ({placeholders})"
-        );
-        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-        let params = rusqlite::params_from_iter(base_ids.iter());
-        let ids = stmt
-            .query_map(params, |row| row.get::<_, String>(0))
-            .map_err(|e| e.to_string())?
-            .collect::<Result<std::collections::HashSet<_>, _>>()
-            .map_err(|e| e.to_string())?;
-        Some(ids)
+    // 1. BM25 search (synchronous SQLite) — scoped in SQL.
+    //    Half the search failing is a degraded mode, not a dead end, so it stays
+    //    non-fatal — but it no longer happens quietly. A bare `unwrap_or_default`
+    //    here is what let a broken FTS5 query pass for "no keyword matches".
+    let bm25_results = bm25_search(db, query, knowledge_base_ids, bm25_limit)
+        .inspect_err(|e| log::error!("BM25 检索失败，本次只用向量结果：{e}"))
+        .unwrap_or_default();
+
+    // 2. Can the vector half run here at all? Two very different "no vector
+    //    results" cases used to look identical from the outside.
+    let (total_embeddings, usable_embeddings, stored_models) =
+        embedding_coverage(db, embedding_model, knowledge_base_ids)?;
+    if total_embeddings > 0 && usable_embeddings == 0 {
+        return Err(format!(
+            "向量检索没法做：所选范围里的 {total_embeddings} 条嵌入是用「{}」生成的，\
+             而这次检索用的是「{embedding_model}」。不同模型的向量之间算余弦没有意义\
+             （维度相同也一样），所以这里不给你一个看着像模像样的排序。\
+             请换回同一个嵌入模型检索，或者用当前模型重新生成嵌入。",
+            stored_models.join("、"),
+        ));
+    }
+
+    // 3. Query embedding + vector search. Skipped entirely when nothing in
+    //    scope is embedded yet — that's a normal state for a freshly indexed
+    //    base, and BM25 carries the search. (It also saves an API round-trip
+    //    that used to be spent producing a vector with nothing to compare to.)
+    let vector_results = if usable_embeddings > 0 {
+        let query_embeddings =
+            generate_embeddings(db, vec![query.to_string()], embedding_model, None).await?;
+        let query_embedding = query_embeddings
+            .into_iter()
+            .next()
+            .ok_or("Failed to generate query embedding")?;
+        vector_search(
+            db,
+            &query_embedding,
+            embedding_model,
+            knowledge_base_ids,
+            vector_limit,
+        )
+        .inspect_err(|e| log::error!("向量检索失败，本次只用 BM25 结果：{e}"))
+        .unwrap_or_default()
     } else {
-        None
+        Vec::new()
     };
-
-    // 1. BM25 search (synchronous SQLite)
-    let mut bm25_results = bm25_search(
-        db,
-        query,
-        if allowed_chunks.is_some() {
-            5_000
-        } else {
-            bm25_limit
-        },
-    )
-    .unwrap_or_default();
-    if let Some(allowed) = &allowed_chunks {
-        filter_ranked_results(&mut bm25_results, allowed, bm25_limit);
-    }
-
-    // 2. Generate query embedding
-    let query_embeddings =
-        generate_embeddings(db, vec![query.to_string()], embedding_model, None).await?;
-
-    let query_embedding = query_embeddings
-        .into_iter()
-        .next()
-        .ok_or("Failed to generate query embedding")?;
-
-    // 3. Vector search
-    let mut vector_results = vector_search(
-        db,
-        &query_embedding,
-        if allowed_chunks.is_some() {
-            usize::MAX
-        } else {
-            vector_limit
-        },
-    )
-    .unwrap_or_default();
-    if let Some(allowed) = &allowed_chunks {
-        filter_ranked_results(&mut vector_results, allowed, vector_limit);
-    }
 
     // 4. RRF fusion
     let mut results = rrf_fuse(bm25_results, vector_results, rrf_k, limit);
@@ -1055,30 +1170,249 @@ pub async fn chat_once(
     Ok(answer)
 }
 
-fn filter_ranked_results(
-    results: &mut Vec<(String, f64)>,
-    allowed: &std::collections::HashSet<String>,
-    limit: usize,
-) {
-    results.retain(|(chunk_id, _)| allowed.contains(chunk_id));
-    results.truncate(limit);
-}
-
 #[cfg(test)]
-mod knowledge_base_filter_tests {
-    use std::collections::HashSet;
+mod search_scoping_tests {
+    use super::*;
 
-    use super::filter_ranked_results;
+    fn test_db(tag: &str) -> DbManager {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        // Unique per test — cargo runs these in parallel.
+        let path = std::env::temp_dir().join(format!(
+            "omnix_kbsearch_{tag}_{}_{}.db",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_file(&path);
+        DbManager::new_with_path(path)
+    }
+
+    /// One base, one document, and a chunk per (id, text) with an embedding
+    /// tagged `model`. `vec` is stored verbatim so tests control the scores.
+    fn seed(db: &DbManager, base: &str, chunks: &[(&str, &str, &str, &[f32])]) {
+        let conn = db.get_connection().unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO knowledge_bases (id, name) VALUES (?1, ?1)",
+            params![base],
+        )
+        .unwrap();
+        let doc = format!("doc-{base}");
+        conn.execute(
+            "INSERT OR IGNORE INTO kb_documents (id, knowledge_base_id, title, source_path)
+             VALUES (?1, ?2, ?1, '')",
+            params![doc, base],
+        )
+        .unwrap();
+        for (i, (id, text, model, vec)) in chunks.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO kb_chunks (id, document_id, chunk_index, content)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![id, doc, i as i64, text],
+            )
+            .unwrap();
+            if !model.is_empty() {
+                conn.execute(
+                    "INSERT INTO kb_embeddings (chunk_id, embedding, model, dimensions)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![id, vec_f32_to_blob(vec), model, vec.len() as i64],
+                )
+                .unwrap();
+            }
+        }
+    }
+
+    fn ids(results: &[(String, f64)]) -> Vec<&str> {
+        results.iter().map(|(id, _)| id.as_str()).collect()
+    }
+
+    /// The bug this whole change exists for: `kb_embeddings.model` was written
+    /// from day one and never read, so a base embedded with another model got
+    /// scored anyway — silently, and plausibly, when the dimensions happened to
+    /// line up (1536 is a very popular number).
+    #[test]
+    fn vector_search_ignores_other_models() {
+        let db = test_db("model");
+        seed(
+            &db,
+            "b1",
+            &[
+                ("mine", "x", "model-a", &[1.0, 0.0]),
+                // Same dimensions, different model: cosine against it returns a
+                // perfectly respectable 1.0 that means nothing at all.
+                ("theirs", "x", "model-b", &[1.0, 0.0]),
+            ],
+        );
+        let hits = vector_search(&db, &[1.0, 0.0], "model-a", None, 10).unwrap();
+        assert_eq!(ids(&hits), vec!["mine"]);
+    }
+
+    /// Rows the query vector cannot be compared against, dropped two different
+    /// ways: a different declared dimension never leaves SQL, and a row whose
+    /// blob disagrees with its own `dimensions` column is thrown out in Rust.
+    /// The second one is the nasty case — it used to score a silent 0.0 and take
+    /// a slot in the ranking as if it were a real (bad) hit.
+    #[test]
+    fn vector_search_drops_wrong_dimensions() {
+        let db = test_db("dims");
+        seed(
+            &db,
+            "b1",
+            &[
+                ("ok", "x", "model-a", &[1.0, 0.0]),
+                ("other-dim", "x", "model-a", &[1.0, 0.0, 0.0]),
+                ("corrupt", "x", "", &[]),
+            ],
+        );
+        // Claims 2 dimensions, carries 1 — passes the SQL filter, and only the
+        // in-Rust length check keeps it out.
+        db.get_connection()
+            .unwrap()
+            .execute(
+                "INSERT INTO kb_embeddings (chunk_id, embedding, model, dimensions)
+                 VALUES ('corrupt', ?1, 'model-a', 2)",
+                params![vec_f32_to_blob(&[1.0])],
+            )
+            .unwrap();
+
+        let hits = vector_search(&db, &[1.0, 0.0], "model-a", None, 10).unwrap();
+        assert_eq!(ids(&hits), vec!["ok"]);
+    }
 
     #[test]
-    fn selected_knowledge_bases_exclude_unbound_chunks() {
-        let mut ranked = vec![
-            ("allowed-1".into(), 1.0),
-            ("foreign".into(), 0.9),
-            ("allowed-2".into(), 0.8),
-        ];
-        let allowed = HashSet::from(["allowed-1".to_string(), "allowed-2".to_string()]);
-        filter_ranked_results(&mut ranked, &allowed, 1);
-        assert_eq!(ranked, vec![("allowed-1".to_string(), 1.0)]);
+    fn vector_search_scopes_to_selected_bases() {
+        let db = test_db("scope");
+        seed(&db, "b1", &[("in", "x", "m", &[1.0, 0.0])]);
+        seed(&db, "b2", &[("out", "x", "m", &[1.0, 0.0])]);
+
+        let scoped = vector_search(&db, &[1.0, 0.0], "m", Some(&["b1".into()]), 10).unwrap();
+        assert_eq!(ids(&scoped), vec!["in"]);
+
+        let all = vector_search(&db, &[1.0, 0.0], "m", None, 10).unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    /// Ordering has to survive the switch from "sort everything" to "partition,
+    /// then sort the survivors".
+    #[test]
+    fn vector_search_returns_best_k_in_order() {
+        let db = test_db("topk");
+        seed(
+            &db,
+            "b1",
+            &[
+                ("far", "x", "m", &[0.0, 1.0]),
+                ("near", "x", "m", &[1.0, 0.0]),
+                ("mid", "x", "m", &[1.0, 1.0]),
+            ],
+        );
+        let hits = vector_search(&db, &[1.0, 0.0], "m", None, 2).unwrap();
+        assert_eq!(ids(&hits), vec!["near", "mid"]);
+        assert!(hits[0].1 > hits[1].1);
+    }
+
+    /// Also proves the FTS5 join compiles and `rank` is still reachable through
+    /// it — the scope used to be applied after a global top-5000 cut.
+    #[test]
+    fn bm25_search_scopes_in_sql() {
+        let db = test_db("bm25");
+        seed(&db, "b1", &[("in", "quantum computing", "", &[])]);
+        seed(&db, "b2", &[("out", "quantum computing", "", &[])]);
+
+        let scoped = bm25_search(&db, "quantum", Some(&["b1".into()]), 10).unwrap();
+        assert_eq!(ids(&scoped), vec!["in"]);
+
+        let all = bm25_search(&db, "quantum", None, 10).unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    /// Pins the Chinese limitation described on `bm25_search` to a measurement
+    /// rather than a belief. `unicode61` makes one token out of a whole run of
+    /// Chinese, so only an exact whole-run query matches. If someone swaps in a
+    /// segmenting tokenizer, this test fails and the doc comment gets revisited.
+    #[test]
+    fn bm25_chinese_matches_only_the_whole_run() {
+        let db = test_db("zh");
+        seed(&db, "b1", &[("zh", "量子计算的进展很快", "", &[])]);
+        assert_eq!(bm25_search(&db, "量子计算", None, 10).unwrap().len(), 0);
+        assert_eq!(bm25_search(&db, "量子", None, 10).unwrap().len(), 0);
+        assert_eq!(
+            bm25_search(&db, "量子计算的进展很快", None, 10).unwrap().len(),
+            1
+        );
+    }
+
+    /// English is the control: it proves the half works now. It did not before —
+    /// the id column could not be read off the external-content FTS5 table, so
+    /// every query errored and `hybrid_search` swallowed it into an empty list.
+    #[test]
+    fn bm25_english_actually_returns_hits() {
+        let db = test_db("en");
+        seed(&db, "b1", &[("en", "quantum computing advances", "", &[])]);
+        assert_eq!(ids(&bm25_search(&db, "quantum", None, 10).unwrap()), vec!["en"]);
+    }
+
+    #[test]
+    fn coverage_separates_not_embedded_from_wrong_model() {
+        let db = test_db("cover");
+        seed(&db, "empty", &[("plain", "x", "", &[])]);
+        seed(&db, "other", &[("theirs", "x", "model-b", &[1.0, 0.0])]);
+
+        let (total, usable, _) =
+            embedding_coverage(&db, "model-a", Some(&["empty".into()])).unwrap();
+        assert_eq!((total, usable), (0, 0), "未生成嵌入不该被当成模型不匹配");
+
+        let (total, usable, stored) =
+            embedding_coverage(&db, "model-a", Some(&["other".into()])).unwrap();
+        assert_eq!((total, usable), (1, 0));
+        assert_eq!(stored, vec!["model-b".to_string()]);
+    }
+
+    /// The mismatch is refused before any embedding API call, so this needs no
+    /// network: `hybrid_search` must not hand back a confident-looking ranking
+    /// built from incomparable vectors.
+    #[tokio::test]
+    async fn hybrid_search_refuses_a_model_mismatch() {
+        let db = test_db("mismatch");
+        seed(&db, "b1", &[("theirs", "quantum", "model-b", &[1.0, 0.0])]);
+
+        let err = hybrid_search(
+            &db,
+            "quantum",
+            "model-a",
+            10,
+            20,
+            20,
+            60,
+            Some(&["b1".to_string()]),
+        )
+        .await
+        .expect_err("跨模型检索必须报错，而不是给一个像模像样的排序");
+        assert!(err.contains("model-a"), "错误里要写清当前用的模型: {err}");
+        assert!(err.contains("model-b"), "错误里要写清库里存的模型: {err}");
+    }
+
+    /// A base that is indexed but not embedded yet is a normal state — BM25
+    /// still carries the search, and no embedding API call is made (this test
+    /// would hang or fail on a network call, since no platform is configured).
+    #[tokio::test]
+    async fn hybrid_search_runs_bm25_only_when_nothing_is_embedded() {
+        let db = test_db("bm25only");
+        seed(&db, "b1", &[("plain", "quantum computing", "", &[])]);
+
+        let hits = hybrid_search(
+            &db,
+            "quantum",
+            "model-a",
+            10,
+            20,
+            20,
+            60,
+            Some(&["b1".to_string()]),
+        )
+        .await
+        .expect("没生成嵌入不该让整个检索失败");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].chunk_id, "plain");
+        assert!(hits[0].vector_score.is_none());
     }
 }
