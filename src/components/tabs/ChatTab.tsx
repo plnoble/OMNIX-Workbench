@@ -41,18 +41,14 @@ import { RequirementModal } from "@/components/modals/RequirementModal";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { knowledgeApi, promptGuardApi, runtimeApi, searchApi, shellApi, workspaceApi, notesApi, sddApi, upstreamAccountApi, conversationApi, type UpstreamAccountOption, type ConversationGoal, type ConversationGoalStatus } from "@/lib/tauri-api";
+import { knowledgeApi, promptGuardApi, runtimeApi, searchApi, shellApi, workspaceApi, notesApi, sddApi, upstreamAccountApi, conversationApi, type UpstreamAccountOption } from "@/lib/tauri-api";
 import type { ConversationInfo } from "@/types";
 import { getRuntimeAgentId, isAcpAgent } from "@/lib/agentRegistry";
 import type {
-  ConversationMessage,
-  DetectedAgent,
-  AcpModelOption,
   ChatImageAttachment,
   EmbeddingModelInfo,
   KnowledgeBase,
   PermissionPolicy,
-  RuntimeApprovalRequest,
   RuntimeModelOption,
   RuntimePermissionPolicy,
   WorkMode,
@@ -61,39 +57,13 @@ import type {
 import { AttachmentStrip, MessageContent } from "./chat/MessageParts";
 import { AgentStrip, FirstScreen, KnowledgePicker, formatKnowledgeContext, ApprovalCard } from "./chat/ChatParts";
 import type { RuntimeSendConfig } from "@/hooks/useConversations";
+import { useConversationsStore } from "@/store/AppStore";
 
 export interface ChatTabProps {
+  /** 当前是「对话」还是「工作」——顶层页签状态，不属于会话 store。 */
   surface: "chat" | "work";
-  activeAgent: string;
-  detectedAgents: DetectedAgent[];
-  /** 重新跑一次全局检测（App 级单一数据源）——工作区提示未检测到时的自救按钮。 */
-  onRedetectAgents?: () => Promise<void>;
-  messages: ConversationMessage[];
-  chatInput: string;
-  chatWorkspace: string;
-  currentConvId: string;
-  activeSessions: string[];
-  pendingApproval: RuntimeApprovalRequest | null;
-  isAwaitingResponse?: boolean;
-  setActiveAgent: (name: string) => void;
-  setChatInput: (val: string) => void;
-  setChatWorkspace: (val: string) => void;
-  onOpenWorkspaceModal?: () => void;
-  onSendMessage: (e: React.FormEvent, config: RuntimeSendConfig, searchContext?: string, images?: ChatImageAttachment[]) => void;
-  onRespondApproval: (approved: boolean, forSession?: boolean) => void;
-  onStopSession: (id: string) => void;
+  /** 切到团队入口并带上当前输入。涉及顶层页签切换，仍由 App 传。 */
   onSuggestTeam?: (prompt: string) => void;
-  onReloadMessages?: () => void;
-  onSelectConversation?: (id: string) => void;
-  /// The running ACP session's selectable model (opencode etc.), if any.
-  acpModelOption?: AcpModelOption;
-  onSetSessionModel?: (conversationId: string, model: string) => void;
-  /// Long-term goal for the current conversation (/goal).
-  activeGoal?: ConversationGoal | null;
-  onSetGoalStatus?: (status: ConversationGoalStatus) => void;
-  onClearGoal?: () => void;
-  /// Send assembled text as a turn (SDD clarify / plan prompts).
-  onSendPrepared?: (agentText: string, displayText: string, config: RuntimeSendConfig) => void;
 }
 
 const PERMISSION_OPTIONS: Array<{ id: PermissionPolicy; label: string; desc: string }> = [
@@ -111,35 +81,42 @@ const WORK_MODE_OPTIONS: Array<{ id: WorkMode; label: string; desc: string }> = 
 /** 用户为某个 Agent 选的模型，按 Agent 分开记——各 Agent 的可选模型并不一样。 */
 const modelMemoryKey = (agentId: string) => `omnix_model_choice_${agentId}`;
 
-export function ChatTab({
-  surface,
-  activeAgent,
-  detectedAgents,
-  onRedetectAgents,
-  messages,
-  chatInput,
-  chatWorkspace,
-  currentConvId,
-  activeSessions,
-  pendingApproval,
-  isAwaitingResponse,
-  setActiveAgent,
-  setChatInput,
-  setChatWorkspace,
-  onOpenWorkspaceModal,
-  onSendMessage,
-  onRespondApproval,
-  onStopSession,
-  onSuggestTeam,
-  onReloadMessages,
-  onSelectConversation,
-  acpModelOption,
-  onSetSessionModel,
-  activeGoal,
-  onSetGoalStatus,
-  onClearGoal,
-  onSendPrepared,
-}: ChatTabProps) {
+export function ChatTab({ surface, onSuggestTeam }: ChatTabProps) {
+  // 这些以前是 27 个 prop，由 App.tsx 从同一个 `convs` 上逐个摘下来再传进来。
+  // 现在直接从 store 取；下面这段只是把 store 的命名对到组件内部原有的命名，
+  // 组件主体一行未改。
+  const convs = useConversationsStore();
+  const {
+    activeAgent,
+    detectedAgents,
+    messages,
+    chatInput,
+    chatWorkspace,
+    currentConvId,
+    activeSessions,
+    pendingApproval,
+    activeGoal,
+    setChatInput,
+    setChatWorkspace,
+  } = convs;
+  const onRedetectAgents = convs.detectAgents;
+  const isAwaitingResponse =
+    !!currentConvId && convs.startingConversations.includes(currentConvId);
+  const setActiveAgent = convs.selectAgent;
+  const onOpenWorkspaceModal = () => convs.setIsWorkspaceModalOpen(true);
+  const onSendMessage = convs.sendMessage;
+  const onRespondApproval = convs.respondToApproval;
+  const onStopSession = convs.stopAgentSession;
+  const onReloadMessages = () => {
+    if (currentConvId) void convs.selectConversation(currentConvId);
+  };
+  const onSelectConversation = (id: string) => void convs.selectConversation(id);
+  const acpModelOption = convs.acpModelOptions[currentConvId];
+  const onSetSessionModel = convs.setSessionModel;
+  const onSetGoalStatus = convs.setGoalStatus;
+  const onClearGoal = convs.clearActiveGoal;
+  const onSendPrepared = convs.sendPreparedMessage;
+
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // Auto-scroll: keep the newest message in view as the reply streams in, but
   // don't yank the user back down if they scrolled up to read history.

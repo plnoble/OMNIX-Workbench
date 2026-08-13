@@ -16,22 +16,24 @@ import { listen } from "@tauri-apps/api/event";
 // Global shortcuts registered on Rust side (lib.rs) for reliability
 
 // Hooks
-import { useSettings } from "@/hooks/useSettings";
-import { usePlatforms } from "@/hooks/usePlatforms";
-import { useAccounts } from "@/hooks/useAccounts";
-import { useConversations } from "@/hooks/useConversations";
-import { useAutopilotRunner } from "@/hooks/useAutopilotRunner";
-import { useCron } from "@/hooks/useCron";
-import { usePreview } from "@/hooks/usePreview";
-import { useDiagnostics } from "@/hooks/useDiagnostics";
-import { useRemoteAccess } from "@/hooks/useRemoteAccess";
-import { useSelection } from "@/hooks/useSelection";
-import { useTranslation } from "@/hooks/useTranslation";
 import { useTheme } from "@/hooks/useTheme";
-import { useSearch } from "@/hooks/useSearch";
-import { useMcpServers } from "@/hooks/useMcpServers";
-import { useBackup } from "@/hooks/useBackup";
 import { useNavigationLayout } from "@/hooks/useNavigationLayout";
+import {
+  AppStoreProvider,
+  useAccountsStore,
+  useBackupStore,
+  useConversationsStore,
+  useCronStore,
+  useDiagnosticsStore,
+  useMcpServersStore,
+  usePlatformsStore,
+  usePreviewStore,
+  useRemoteAccessStore,
+  useSearchStore,
+  useSelectionStore,
+  useSettingsStore,
+  useTranslationStore,
+} from "@/store/AppStore";
 
 // Layout (eager — always visible)
 import { AppSidebar } from "@/components/layout/AppSidebar";
@@ -162,22 +164,29 @@ function App() {
 // ── Main Orchestrator ────────────────────────────────
 
 function MainApp() {
-  // ── Instantiate all hooks ──────────────────────────
-  const settings = useSettings();
-  const platforms = usePlatforms();
-  const accounts = useAccounts(platforms.activeModels);
-  const convs = useConversations(settings.gatewayStatus);
-  // Execute due autopilot runs through the real runtime.
-  useAutopilotRunner(convs.loadConversations);
-  const cron = useCron(convs.detectedAgents);
-  const preview = usePreview(convs.chatWorkspace);
-  const diagnostics = useDiagnostics();
-  const remote = useRemoteAccess();
-  const selection = useSelection();
-  const translation = useTranslation();
-  const search = useSearch();
-  const mcpServers = useMcpServers();
-  const backup = useBackup();
+  // hook 的实例化搬到了 AppStoreProvider——它们互相有依赖，必须在同一处按序运行。
+  return (
+    <AppStoreProvider>
+      <MainAppShell />
+    </AppStoreProvider>
+  );
+}
+
+function MainAppShell() {
+  // 同一批对象，来源从「上游传进来」换成「从 store 取」。
+  const settings = useSettingsStore();
+  const platforms = usePlatformsStore();
+  const accounts = useAccountsStore();
+  const convs = useConversationsStore();
+  const cron = useCronStore();
+  const preview = usePreviewStore();
+  const diagnostics = useDiagnosticsStore();
+  const remote = useRemoteAccessStore();
+  const selection = useSelectionStore();
+  const translation = useTranslationStore();
+  const search = useSearchStore();
+  const mcpServers = useMcpServersStore();
+  const backup = useBackupStore();
   const navigation = useNavigationLayout();
 
   // ── Apply theme ──────────────────────────────────────
@@ -467,37 +476,12 @@ function MainApp() {
           <Suspense fallback={<LazyFallback />}>
             {(activeTab === "chat" || activeTab === "work") && (
               <ChatTab
-                onRedetectAgents={convs.detectAgents}
                 surface={activeTab}
-                activeAgent={convs.activeAgent}
-                detectedAgents={convs.detectedAgents}
-                messages={convs.messages}
-                chatInput={convs.chatInput}
-                chatWorkspace={convs.chatWorkspace}
-                currentConvId={convs.currentConvId}
-                activeSessions={convs.activeSessions}
-                pendingApproval={convs.pendingApproval}
-                isAwaitingResponse={!!convs.currentConvId && convs.startingConversations.includes(convs.currentConvId)}
-                setActiveAgent={convs.selectAgent}
-                setChatInput={convs.setChatInput}
-                setChatWorkspace={convs.setChatWorkspace}
-                onOpenWorkspaceModal={() => convs.setIsWorkspaceModalOpen(true)}
-                onSendMessage={convs.sendMessage}
-                onRespondApproval={convs.respondToApproval}
-                onStopSession={convs.stopAgentSession}
                 onSuggestTeam={(prompt) => {
                   if (prompt.trim()) convs.setCollabStdin(prompt);
                   handleTabChange("team");
                   toast.message("已切到团队入口，队长计划仍需你确认后才会启动 Worker。");
                 }}
-                onReloadMessages={() => { if (convs.currentConvId) void convs.selectConversation(convs.currentConvId); }}
-                onSelectConversation={(id) => void convs.selectConversation(id)}
-                acpModelOption={convs.acpModelOptions[convs.currentConvId]}
-                onSetSessionModel={convs.setSessionModel}
-                activeGoal={convs.activeGoal}
-                onSetGoalStatus={convs.setGoalStatus}
-                onClearGoal={convs.clearActiveGoal}
-                onSendPrepared={convs.sendPreparedMessage}
               />
             )}
 
@@ -522,50 +506,10 @@ function MainApp() {
 
             {SimpleTabComponent && <SimpleTabComponent />}
             {activeTab === "models" && (
-              <ModelsTab
-                platforms={platforms.platforms}
-                selectedPlatformId={platforms.selectedPlatformId}
-                platformModels={platforms.platformModels}
-                modelTestingState={platforms.modelTestingState}
-                fetchingModels={platforms.fetchingModels}
-                onSelectPlatform={platforms.selectPlatform}
-                onTogglePlatform={platforms.togglePlatform}
-                onAddPlatform={() => platforms.openPlatformModal()}
-                onEditPlatform={(p) => platforms.openPlatformModal(p)}
-                onDeletePlatform={platforms.deletePlatform}
-                onFetchRemoteModels={platforms.fetchRemoteModels}
-                onAddModel={platforms.openModelModal}
-                onToggleModelEnabled={platforms.toggleModelEnabled}
-                onTestModel={platforms.testModel}
-                onDeleteModel={platforms.deleteModel}
-                batchTesting={platforms.batchTesting}
-                onBatchTestModels={platforms.batchTestModels}
-              />
+              <ModelsTab />
             )}
             {activeTab === "search" && (
-              <SearchResourceTab
-                providers={search.providers}
-                selectedProviderId={search.selectedProviderId}
-                results={search.results}
-                history={search.history}
-                query={search.searchQuery}
-                isSearching={search.isSearching}
-                onSetQuery={search.setSearchQuery}
-                onSetSelectedProviderId={search.setSelectedProviderId}
-                onSearch={search.search}
-                onLoadHistory={search.loadHistory}
-                onDeleteHistoryItem={search.deleteHistoryItem}
-                onClearHistory={search.clearHistory}
-                onAddProvider={() => search.openSearchProviderModal()}
-                onEditProvider={(provider) => search.openSearchProviderModal(provider)}
-                onDeleteProvider={search.deleteProvider}
-                showProviderModal={search.showSearchProviderModal}
-                editingProvider={search.editingSearchProvider}
-                providerForm={search.searchProviderForm}
-                onCloseProviderModal={search.closeSearchProviderModal}
-                onUpdateProviderForm={search.updateSearchProviderForm}
-                onSaveProvider={() => search.saveProvider(search.searchProviderForm)}
-              />
+              <SearchResourceTab />
             )}
             {activeTab === "quick-assistant" && (
               <QuickAssistantTab
@@ -703,26 +647,11 @@ function MainApp() {
             )}
 
             {activeTab === "team" && (
-              <TeamTab
-                activeAgent={convs.activeAgent}
-                detectedAgents={convs.detectedAgents}
-                collabStdin={convs.collabStdin}
-                setActiveAgent={convs.setActiveAgent}
-                setCollabStdin={convs.setCollabStdin}
-              />
+              <TeamTab />
             )}
 
             {activeTab === "cron" && (
-              <CronTab
-                cronTasks={cron.cronTasks}
-                cronRuns={cron.cronRuns}
-                onAddTask={() => cron.openCronModal()}
-                onEditTask={(task) => cron.openCronModal(task)}
-                onDeleteTask={cron.deleteCronTask}
-                onToggleTask={cron.toggleCronTask}
-                onTriggerTask={cron.triggerCronTask}
-                onClearRuns={cron.clearCronRuns}
-              />
+              <CronTab />
             )}
 
             {activeTab === "settings" && (

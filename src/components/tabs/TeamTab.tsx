@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useConversationsStore } from "@/store/AppStore";
 import {
   AlertTriangle,
   Check,
@@ -22,15 +23,7 @@ import { toast } from "@/components/ui/sonner";
 import { runtimeApi, shellApi, teamRunApi } from "@/lib/tauri-api";
 import { cn } from "@/lib/utils";
 import { TeamGraph } from "@/components/TeamGraph";
-import type { DetectedAgent, TeamRunDetail, WorkspaceRun } from "@/types";
-
-interface TeamTabProps {
-  activeAgent: string;
-  detectedAgents: DetectedAgent[];
-  collabStdin: string;
-  setActiveAgent: (name: string) => void;
-  setCollabStdin: (value: string) => void;
-}
+import type { TeamRunDetail, WorkspaceRun } from "@/types";
 
 const terminalStatuses = new Set(["completed", "failed", "validation_failed", "cancelled"]);
 
@@ -62,13 +55,9 @@ const STATUS_DOT: Record<string, string> = {
   cancelled: "#6b7280",
 };
 
-export function TeamTab({
-  activeAgent,
-  detectedAgents,
-  collabStdin,
-  setActiveAgent,
-  setCollabStdin,
-}: TeamTabProps) {
+export function TeamTab() {
+  const convs = useConversationsStore();
+  const { activeAgent, detectedAgents, collabStdin, setActiveAgent, setCollabStdin } = convs;
   const supported = useMemo(
     () => detectedAgents.filter((agent) => ["Claude Code", "Codex"].includes(agent.name) && agent.status === "installed"),
     [detectedAgents],

@@ -3,33 +3,24 @@
  */
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { useCronStore } from "@/store/AppStore";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Plus, Zap, Edit, Trash2, Clock, Trash } from "lucide-react";
-import type { CronTask, CronRun } from "@/types";
+import type { CronTask } from "@/types";
 
-interface CronTabProps {
-  cronTasks: CronTask[];
-  cronRuns: CronRun[];
-  onAddTask: () => void;
-  onEditTask: (task: CronTask) => void;
-  onDeleteTask: (id: string) => void;
-  onToggleTask: (task: CronTask) => void;
-  onTriggerTask: (id: string) => void;
-  onClearRuns: () => void;
-}
-
-export function CronTab({
-  cronTasks,
-  cronRuns,
-  onAddTask,
-  onEditTask,
-  onDeleteTask,
-  onToggleTask,
-  onTriggerTask,
-  onClearRuns,
-}: CronTabProps) {
+export function CronTab() {
+  const cron = useCronStore();
+  const {
+    cronTasks, cronRuns,
+    deleteCronTask: onDeleteTask,
+    toggleCronTask: onToggleTask,
+    triggerCronTask: onTriggerTask,
+    clearCronRuns: onClearRuns,
+  } = cron;
+  const onAddTask = () => cron.openCronModal();
+  const onEditTask = (task: CronTask) => cron.openCronModal(task);
   return (
     <div className="flex flex-col h-full overflow-hidden flex-1">
       {/* Header */}

@@ -9,6 +9,7 @@
  * 命令、hook、类型全都齐了——但**从来没有任何界面读过它**。
  */
 import { useEffect, useState } from "react";
+import { useSearchStore } from "@/store/AppStore";
 import { Edit, ExternalLink, Globe, History, Plus, Save, Search, Trash2 } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
@@ -19,7 +20,7 @@ import { Switch } from "@/components/ui/switch";
 import { toast } from "@/components/ui/sonner";
 import { cn } from "@/lib/utils";
 import { searchApi } from "@/lib/tauri-api";
-import type { SearchProvider, SearchHistoryEntry, WebSearchResult } from "@/types";
+import type { SearchProvider } from "@/types";
 
 /** 后端 `commands/search.rs` 认得的类型，顺序即弹窗里的排列顺序。 */
 const API_TYPES = ["tavily", "exa", "jina", "brave", "zhipu", "google", "duckduckgo"] as const;
@@ -38,54 +39,28 @@ const PRESETS: { name: string; type: string; url: string; color: string; desc: s
   { name: "Google", type: "google", url: "https://programmablesearchengine.google.com/controlpanel/create", color: "text-sky-400", desc: "每天 100 次免费 · 要先建搜索引擎拿 CX" },
 ];
 
-interface SearchResourceTabProps {
-  providers: SearchProvider[];
-  selectedProviderId: string;
-  results: WebSearchResult[];
-  history: SearchHistoryEntry[];
-  query: string;
-  isSearching: boolean;
-  onSetQuery: (query: string) => void;
-  onSetSelectedProviderId: (id: string) => void;
-  onSearch: (query: string) => Promise<WebSearchResult[]>;
-  onLoadHistory: () => Promise<void>;
-  onDeleteHistoryItem: (id: string) => Promise<void>;
-  onClearHistory: () => Promise<void>;
-  // 供应商增删改（原先在 设置 → 系统 → 搜索服务）
-  onAddProvider: () => void;
-  onEditProvider: (provider: SearchProvider) => void;
-  onDeleteProvider: (id: string) => Promise<void>;
-  showProviderModal: boolean;
-  editingProvider: SearchProvider | null;
-  providerForm: { id: string; name: string; api_type: string; api_key: string; api_address: string; is_enabled: boolean };
-  onCloseProviderModal: () => void;
-  onUpdateProviderForm: (field: string, value: string | boolean) => void;
-  onSaveProvider: () => Promise<void>;
-}
-
-export function SearchResourceTab({
-  providers,
-  selectedProviderId,
-  results,
-  history,
-  query,
-  isSearching,
-  onSetQuery,
-  onSetSelectedProviderId,
-  onSearch,
-  onLoadHistory,
-  onDeleteHistoryItem,
-  onClearHistory,
-  onAddProvider,
-  onEditProvider,
-  onDeleteProvider,
-  showProviderModal,
-  editingProvider,
-  providerForm,
-  onCloseProviderModal,
-  onUpdateProviderForm,
-  onSaveProvider,
-}: SearchResourceTabProps) {
+export function SearchResourceTab() {
+  // 以前是 21 个 prop 从 App.tsx 逐个透传；下面只是把 store 的命名对到组件内原有命名。
+  const search = useSearchStore();
+  const {
+    providers, selectedProviderId, results, history, isSearching,
+    setSelectedProviderId: onSetSelectedProviderId,
+    setSearchQuery: onSetQuery,
+    searchQuery: query,
+    search: onSearch,
+    loadHistory: onLoadHistory,
+    deleteHistoryItem: onDeleteHistoryItem,
+    clearHistory: onClearHistory,
+    deleteProvider: onDeleteProvider,
+    showSearchProviderModal: showProviderModal,
+    editingSearchProvider: editingProvider,
+    searchProviderForm: providerForm,
+    closeSearchProviderModal: onCloseProviderModal,
+    updateSearchProviderForm: onUpdateProviderForm,
+  } = search;
+  const onAddProvider = () => search.openSearchProviderModal();
+  const onEditProvider = (provider: SearchProvider) => search.openSearchProviderModal(provider);
+  const onSaveProvider = () => search.saveProvider(search.searchProviderForm);
   const [error, setError] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [testing, setTesting] = useState(false);
