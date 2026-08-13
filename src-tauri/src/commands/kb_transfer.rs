@@ -203,13 +203,16 @@ pub fn kb_import_base(
 
         for chunk in &doc.chunks {
             let chunk_id = format!("chunk_{}_{}", doc_id, chunk.chunk_index);
-            // Inserting into kb_chunks fires the FTS trigger → BM25 search works.
+            // 全文索引由下面的 index_chunk 显式写入（触发器那套已移除）。
             conn.execute(
                 "INSERT INTO kb_chunks (id, document_id, chunk_index, content, char_start, char_end, metadata)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![chunk_id, doc_id, chunk.chunk_index, chunk.content, chunk.char_start, chunk.char_end, chunk.metadata],
             )
             .map_err(|e| e.to_string())?;
+            // 索引不再由触发器同步，导入也要自己写一条。
+            crate::knowledge::index_chunk(&conn, &chunk_id, &chunk.content)
+                .map_err(|e| e.to_string())?;
 
             if let Some(emb) = &chunk.embedding {
                 let blob = base64::engine::general_purpose::STANDARD

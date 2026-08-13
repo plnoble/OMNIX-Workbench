@@ -529,21 +529,23 @@ pub struct SearchResult {
 
 /// BM25 full-text search using FTS5.
 ///
-/// ⚠️ 这里以前有一段注释，说 BM25 这一路在**中文**上不出结果，原因是分词器。
-/// 现象是真的，结论是错的：真实情况是**所有语言都不出结果**。
-/// `kb_chunks_fts` 是外部内容表（`content='kb_chunks'`），取列值要回 `kb_chunks`
-/// 按 rowid 查同名列——而 fts 表的列叫 `chunk_id`，源表的主键叫 `id`。于是
-/// `SELECT chunk_id FROM kb_chunks_fts` 每一行都报 `no such column: T.chunk_id`，
-/// 英文、完全匹配的查询也一样。`hybrid_search` 又用 `.unwrap_or_default()`
-/// 把这个错吞成空数组，所以混合检索一直是纯向量检索，而且看不出来。
-/// 现在改成从 `kb_chunks` 按 rowid 回连取 `c.id`，不碰 fts 表的列。
+/// 这一路曾经**对任何语言都返回空**，而且看不出来。两个原因叠在一起：
 ///
-/// 分词器的限制**依然存在**，只是不再是空集的原因：`unicode61` 会把一整段中文
-/// 当成一个 token，所以「量子计算」匹配不到「量子计算的进展很快」，只有整段完全
-/// 相同才命中（见 `bm25_chinese_matches_only_the_whole_run`）。内置分词器里没有
-/// 能用的替代：`trigram` 三字以上可以，两字词一律落空。要真修得换 ICU 分词器
-/// （需要带 ICU 的 SQLite 构建）或自己做中文分词，都不是改一行的事。
-/// 也就是说中文知识库目前仍然主要靠向量那一路。
+/// 1. `kb_chunks_fts` 是外部内容表，取列值要回 `kb_chunks` 按 rowid 查同名列，
+///    而 fts 的列叫 `chunk_id`、源表主键叫 `id`，于是每一行都报
+///    `no such column: T.chunk_id`。`hybrid_search` 又用 `.unwrap_or_default()`
+///    把这个硬错误吞成了「没有关键词命中」。
+/// 2. `unicode61` 把一整段中文当成**一个** token，所以即便查询能跑，
+///    「量子计算」也匹配不到「量子计算的进展很快」。
+///
+/// 现在 fts 是独立表（`chunk_id` 是它自己的 UNINDEXED 列，不再回源），索引和
+/// 查询都先过 `segment_for_index`——CJK 连写段切成二元组，英文原样走 porter。
+/// 两字词、四字词、句中词都能命中（见 `bm25_chinese_matches_words_not_just_whole_runs`），
+/// 不相干的词不会命中（`bm25_chinese_does_not_match_unrelated_words`）。
+///
+/// 代价：二元切分的精度不如真正的分词器（相邻二元组可能跨词），偶尔会多召回。
+/// BM25 只是混合检索的一路，RRF 融合和向量那一路会把排序拉回来。要更准就得上
+/// ICU 分词器（需要带 ICU 的 SQLite 构建）或自带词典，那是另一件事。
 ///
 /// Returns (chunk_id, bm25_score) pairs. FTS5's rank is negative (more negative = better),
 /// so we negate it for consistency.
@@ -571,18 +573,17 @@ pub fn bm25_search(
         .replace("NOT", "");
 
     let scope = knowledge_base_ids.filter(|ids| !ids.is_empty());
-    // The id comes from `kb_chunks` via rowid, never from the FTS table. See the
-    // doc comment above: selecting `chunk_id` off an external-content FTS5 table
-    // whose content table calls that column `id` fails on every row.
-    let mut sql = String::from(
-        "SELECT c.id, f.rank AS bm25_score FROM kb_chunks_fts f
-         JOIN kb_chunks c ON c.rowid = f.rowid",
-    );
+    // `chunk_id` 现在是 fts 表自己的 UNINDEXED 列，直接取，不再回源表。
+    let mut sql = String::from("SELECT f.chunk_id, f.rank AS bm25_score FROM kb_chunks_fts f");
     if scope.is_some() {
-        sql.push_str(" JOIN kb_documents d ON d.id = c.document_id");
+        sql.push_str(
+            " JOIN kb_chunks c ON c.id = f.chunk_id
+              JOIN kb_documents d ON d.id = c.document_id",
+        );
     }
     sql.push_str(" WHERE kb_chunks_fts MATCH ?");
-    let mut args: Vec<rusqlite::types::Value> = vec![safe_query.into()];
+    // 查询要按索引时同样的规则切，否则中文永远对不上。
+    let mut args: Vec<rusqlite::types::Value> = vec![segment_for_index(&safe_query).into()];
     if let Some(ids) = scope {
         sql.push_str(&format!(" AND d.knowledge_base_id IN ({})", sql_placeholders(ids.len())));
         args.extend(ids.iter().map(|id| rusqlite::types::Value::from(id.clone())));
@@ -602,6 +603,82 @@ pub fn bm25_search(
         .map_err(|e| e.to_string())?;
 
     Ok(results)
+}
+
+/// 判断一个字符是否属于「连写不分词」的东亚文字（中日韩）。
+fn is_cjk(c: char) -> bool {
+    matches!(c as u32,
+        0x3400..=0x4DBF      // CJK 扩展 A
+        | 0x4E00..=0x9FFF    // CJK 基本区
+        | 0xF900..=0xFAFF    // 兼容表意文字
+        | 0x3040..=0x30FF    // 日文假名
+        | 0xAC00..=0xD7AF    // 韩文音节
+        | 0x20000..=0x2FA1F  // CJK 扩展 B~F
+    )
+}
+
+/// 把文本切成 FTS5 能索引的形式：**CJK 连写段落改成二元组**，其余原样。
+///
+/// FTS5 内置的 `unicode61` 把一整段中文当成**一个** token，于是「量子计算」
+/// 匹配不到「量子计算的进展很快」——只有整段一模一样才命中。内置分词器里没有
+/// 能用的替代：`trigram` 要三字以上，而中文里最常见的恰恰是两字词。
+///
+/// 二元切分是 CJK 无分词器时的经典做法：
+/// 「量子计算」→「量子 子计 计算」。查询按同样规则切，于是
+/// 「量子计算」的三个二元组都能在正文里找到，两字词「量子」也能命中。
+/// 代价是精度略降（相邻二元组可能跨词），但 BM25 只是混合检索的一路，
+/// RRF 融合和向量那一路会把它拉回来。
+///
+/// 英文不动：仍然走 `unicode61 + porter`，保留词干还原。
+pub fn segment_for_index(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() * 2);
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if is_cjk(chars[i]) {
+            let start = i;
+            while i < chars.len() && is_cjk(chars[i]) {
+                i += 1;
+            }
+            let run = &chars[start..i];
+            if run.len() == 1 {
+                // 单字成段（如「书」）：没有二元组可切，就索引这个字本身。
+                out.push(run[0]);
+                out.push(' ');
+            } else {
+                for pair in run.windows(2) {
+                    out.push(pair[0]);
+                    out.push(pair[1]);
+                    out.push(' ');
+                }
+            }
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// 把一个 chunk 写进全文索引。**所有 `kb_chunks` 插入点都要调它**——
+/// 索引不再靠 SQL 触发器同步（触发器调不到 Rust 的分词），所以漏调一处就等于
+/// 那批内容搜不到。
+pub fn index_chunk(conn: &rusqlite::Connection, chunk_id: &str, content: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO kb_chunks_fts (chunk_id, content) VALUES (?1, ?2)",
+        params![chunk_id, segment_for_index(content)],
+    )?;
+    Ok(())
+}
+
+/// 删掉一篇文档所有 chunk 的索引项。删 `kb_chunks` 时同步调用。
+pub fn unindex_document(conn: &rusqlite::Connection, document_id: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "DELETE FROM kb_chunks_fts
+         WHERE chunk_id IN (SELECT id FROM kb_chunks WHERE document_id = ?1)",
+        params![document_id],
+    )?;
+    Ok(())
 }
 
 /// `?,?,?` for an `IN (...)` clause.
@@ -1210,6 +1287,8 @@ mod search_scoping_tests {
                 params![id, doc, i as i64, text],
             )
             .unwrap();
+            // 全文索引不再由触发器同步——夹具也得走和生产同一条路。
+            index_chunk(&conn, id, text).unwrap();
             if !model.is_empty() {
                 conn.execute(
                     "INSERT INTO kb_embeddings (chunk_id, embedding, model, dimensions)
@@ -1325,20 +1404,108 @@ mod search_scoping_tests {
         assert_eq!(all.len(), 2);
     }
 
-    /// Pins the Chinese limitation described on `bm25_search` to a measurement
-    /// rather than a belief. `unicode61` makes one token out of a whole run of
-    /// Chinese, so only an exact whole-run query matches. If someone swaps in a
-    /// segmenting tokenizer, this test fails and the doc comment gets revisited.
+    /// 中文现在真的能搜了。
+    ///
+    /// 这条测试的上一版断言的是**坏掉的行为**：四字词 0 条、两字词 0 条、
+    /// 只有整段一模一样才命中 1 条——因为 `unicode61` 把一整段中文当成一个
+    /// token。二元切分之后三种都该命中。
     #[test]
-    fn bm25_chinese_matches_only_the_whole_run() {
+    fn bm25_chinese_matches_words_not_just_whole_runs() {
         let db = test_db("zh");
         seed(&db, "b1", &[("zh", "量子计算的进展很快", "", &[])]);
-        assert_eq!(bm25_search(&db, "量子计算", None, 10).unwrap().len(), 0);
-        assert_eq!(bm25_search(&db, "量子", None, 10).unwrap().len(), 0);
+        assert_eq!(bm25_search(&db, "量子计算", None, 10).unwrap().len(), 1, "四字词");
+        assert_eq!(bm25_search(&db, "量子", None, 10).unwrap().len(), 1, "两字词");
+        assert_eq!(bm25_search(&db, "进展", None, 10).unwrap().len(), 1, "词在句中");
         assert_eq!(
             bm25_search(&db, "量子计算的进展很快", None, 10).unwrap().len(),
-            1
+            1,
+            "整段"
         );
+    }
+
+    /// 不相干的词不该命中——二元切分换来的召回不能以「什么都能搜到」为代价。
+    #[test]
+    fn bm25_chinese_does_not_match_unrelated_words() {
+        let db = test_db("zh2");
+        seed(&db, "b1", &[("zh", "量子计算的进展很快", "", &[])]);
+        assert_eq!(bm25_search(&db, "红烧肉", None, 10).unwrap().len(), 0);
+        assert_eq!(bm25_search(&db, "光刻机", None, 10).unwrap().len(), 0);
+    }
+
+    /// 老库升级：外部内容表 + 触发器那一套要能就地换掉，且**已有内容立刻可搜**。
+    ///
+    /// 这条很重要——旧索引从来没查出过结果，所以迁移不是「保持现状」，而是
+    /// 第一次真的把索引建起来。如果只换表不回灌，老用户的知识库会从
+    /// 「搜不到（因为坏）」变成「搜不到（因为空）」，从外面看一模一样。
+    #[test]
+    fn legacy_fts_is_rebuilt_and_becomes_searchable() {
+        let db = test_db("migrate");
+        {
+            let conn = db.get_connection().unwrap();
+            // 退回旧结构：外部内容表 + 三个触发器
+            conn.execute("DROP TABLE IF EXISTS kb_chunks_fts", []).unwrap();
+            conn.execute(
+                "CREATE VIRTUAL TABLE kb_chunks_fts USING fts5(
+                    chunk_id, content, content='kb_chunks', content_rowid=rowid,
+                    tokenize='porter unicode61')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "CREATE TRIGGER kb_chunks_ai AFTER INSERT ON kb_chunks BEGIN
+                    INSERT INTO kb_chunks_fts(rowid, chunk_id, content)
+                    VALUES (new.rowid, new.id, new.content);
+                 END",
+                [],
+            )
+            .unwrap();
+            // 旧库里已有内容
+            conn.execute(
+                "INSERT OR IGNORE INTO knowledge_bases (id, name) VALUES ('old', 'old')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO kb_documents (id, knowledge_base_id, title, source_path)
+                 VALUES ('d', 'old', 'd', '')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO kb_chunks (id, document_id, chunk_index, content)
+                 VALUES ('old-chunk', 'd', 0, '量子计算的进展很快')",
+                [],
+            )
+            .unwrap();
+        }
+
+        // 再跑一次 init_schema = 应用升级后第一次启动
+        db.init_schema().expect("迁移");
+
+        let sql: String = db
+            .get_connection()
+            .unwrap()
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='kb_chunks_fts'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(!sql.contains("content='kb_chunks'"), "旧的外部内容表应已换掉：{sql}");
+
+        let hits = bm25_search(&db, "量子计算", None, 10).unwrap();
+        assert_eq!(ids(&hits), vec!["old-chunk"], "老内容迁移后必须立刻可搜");
+    }
+
+    #[test]
+    fn segment_for_index_makes_bigrams_of_cjk_only() {
+        assert_eq!(segment_for_index("量子计算"), "量子 子计 计算 ");
+        assert_eq!(segment_for_index("书"), "书 ", "单字成段时索引这个字本身");
+        // 英文原样，仍然交给 unicode61 + porter
+        assert_eq!(segment_for_index("quantum computing"), "quantum computing");
+        // 中英混排：CJK 段尾补的空格会和原文的空格叠成两个。对 FTS 没有影响
+        // （分词器折叠空白），断言就照实写，不为了好看去 trim。
+        assert_eq!(segment_for_index("量子 computing"), "量子  computing");
     }
 
     /// English is the control: it proves the half works now. It did not before —

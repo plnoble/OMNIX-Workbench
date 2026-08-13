@@ -673,6 +673,8 @@ pub async fn kb_import_document(
             params![chunk_id, doc_id, chunk.index as i32, chunk.content, chunk.char_start as i32, chunk.char_end as i32, metadata_str],
         )
         .map_err(|e| e.to_string())?;
+        // 全文索引不再由触发器同步——写 chunk 的地方必须自己写索引。
+        knowledge::index_chunk(&conn, &chunk_id, &chunk.content).map_err(|e| e.to_string())?;
     }
 
     // Read back the document
@@ -714,12 +716,8 @@ pub fn kb_delete_document(
     )
     .map_err(|e| e.to_string())?;
 
-    // Delete FTS entries (trigger handles it, but be explicit for external content)
-    conn.execute(
-        "DELETE FROM kb_chunks_fts WHERE chunk_id IN (SELECT id FROM kb_chunks WHERE document_id = ?1)",
-        params![document_id],
-    )
-    .map_err(|e| e.to_string())?;
+    // 删索引必须在删 chunk **之前**——它靠 chunk 行才能找到要删哪些 id。
+    knowledge::unindex_document(&conn, &document_id).map_err(|e| e.to_string())?;
 
     // Delete chunks (trigger handles FTS cleanup too)
     conn.execute(

@@ -2,7 +2,7 @@
 //! Split out of db.rs — this is a second `impl DbManager` block, so callers
 //! and method signatures are unchanged.
 
-use rusqlite::{params, Connection, Result};
+use rusqlite::{params, Connection, OptionalExtension, Result};
 use std::fs;
 
 use crate::db::DbManager;
@@ -737,38 +737,77 @@ impl DbManager {
             [],
         )?;
 
-        // 13. FTS5 Full-Text Index on chunks (external content mode)
+        // 13. FTS5 全文索引（独立表，不是外部内容表）
+        //
+        // 两处和以前不一样，都是被真实 bug 逼出来的：
+        //
+        // 1. **不再用 `content='kb_chunks'`。** 外部内容表取列值要回源表按 rowid
+        //    查同名列，而 fts 的列叫 `chunk_id`、`kb_chunks` 的主键叫 `id`，于是
+        //    `SELECT chunk_id FROM kb_chunks_fts` 每一行都报
+        //    `no such column: T.chunk_id`——**任何语言都查不出结果**，而调用方一个
+        //    `unwrap_or_default()` 把它吞成了「没有关键词命中」。现在 chunk_id 作为
+        //    UNINDEXED 列直接存在 fts 表里，取值不再回源。
+        //
+        // 2. **索引的是二元切分后的文本**（`knowledge::segment_for_index`）。
+        //    `unicode61` 把一整段中文当一个 token，「量子计算」匹配不到
+        //    「量子计算的进展很快」。所以写入前把 CJK 连写段切成二元组，查询按
+        //    同样规则切。英文原样，仍走 porter 词干还原。
+        //
+        // 因为要写切分后的文本，同步不能再靠 SQL 触发器（触发器调不到 Rust）。
+        // 维护集中在 `knowledge::index_chunk` / `unindex_document` 两个函数里，
+        // 三个写入点各调一次——比把切分逻辑散进触发器可控。
         conn.execute(
             "CREATE VIRTUAL TABLE IF NOT EXISTS kb_chunks_fts USING fts5(
-                chunk_id,
+                chunk_id UNINDEXED,
                 content,
-                content='kb_chunks',
-                content_rowid=rowid,
                 tokenize='porter unicode61'
             )",
             [],
         )?;
 
-        // FTS5 sync triggers
-        conn.execute(
-            "CREATE TRIGGER IF NOT EXISTS kb_chunks_ai AFTER INSERT ON kb_chunks BEGIN
-                INSERT INTO kb_chunks_fts(rowid, chunk_id, content) VALUES (new.rowid, new.id, new.content);
-            END",
-            [],
-        )?;
-        conn.execute(
-            "CREATE TRIGGER IF NOT EXISTS kb_chunks_ad AFTER DELETE ON kb_chunks BEGIN
-                INSERT INTO kb_chunks_fts(kb_chunks_fts, rowid, chunk_id, content) VALUES('delete', old.rowid, old.id, old.content);
-            END",
-            [],
-        )?;
-        conn.execute(
-            "CREATE TRIGGER IF NOT EXISTS kb_chunks_au AFTER UPDATE ON kb_chunks BEGIN
-                INSERT INTO kb_chunks_fts(kb_chunks_fts, rowid, chunk_id, content) VALUES('delete', old.rowid, old.id, old.content);
-                INSERT INTO kb_chunks_fts(rowid, chunk_id, content) VALUES (new.rowid, new.id, new.content);
-            END",
-            [],
-        )?;
+        // 老库迁移：外部内容表 + 触发器那一套整个换掉。索引是派生数据，
+        // 直接重建，不会丢任何用户内容。
+        let legacy_fts: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='kb_chunks_fts'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if legacy_fts
+            .as_deref()
+            .is_some_and(|sql| sql.contains("content='kb_chunks'") || sql.contains("content=kb_chunks"))
+        {
+            for stmt in [
+                "DROP TRIGGER IF EXISTS kb_chunks_ai",
+                "DROP TRIGGER IF EXISTS kb_chunks_ad",
+                "DROP TRIGGER IF EXISTS kb_chunks_au",
+                "DROP TABLE IF EXISTS kb_chunks_fts",
+            ] {
+                conn.execute(stmt, [])?;
+            }
+            conn.execute(
+                "CREATE VIRTUAL TABLE kb_chunks_fts USING fts5(
+                    chunk_id UNINDEXED,
+                    content,
+                    tokenize='porter unicode61'
+                )",
+                [],
+            )?;
+            // 重新灌一遍。之前那套索引从来没查出过结果，所以这里等于第一次真的建起来。
+            let mut stmt = conn.prepare("SELECT id, content FROM kb_chunks")?;
+            let rows: Vec<(String, String)> = stmt
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .filter_map(|r| r.ok())
+                .collect();
+            drop(stmt);
+            for (id, content) in rows {
+                conn.execute(
+                    "INSERT INTO kb_chunks_fts (chunk_id, content) VALUES (?1, ?2)",
+                    params![id, crate::knowledge::segment_for_index(&content)],
+                )?;
+            }
+        }
 
         // 21. Development Checklist Table
         conn.execute(
