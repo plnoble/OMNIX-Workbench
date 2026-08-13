@@ -296,12 +296,6 @@ export const eventBusApi = {
   }>>("get_event_triggers"),
 };
 
-// Encryption
-export const encryptionApi = {
-  encrypt: (plaintext: string) => invoke<string>("encrypt_value", { plaintext }),
-  decrypt: (encrypted: string) => invoke<string>("decrypt_value", { encrypted }),
-};
-
 // Desktop Notifications
 export const notificationApi = {
   send: (title: string, body: string) =>

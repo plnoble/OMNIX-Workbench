@@ -7,7 +7,6 @@ mod commands;
 mod crypto;
 mod db;
 mod db_schema;
-mod event_bus;
 mod hash;
 mod input_validation;
 mod knowledge;
@@ -41,7 +40,6 @@ mod slides_lint;
 mod storage;
 mod sync_engine;
 mod team_board;
-mod token_economy;
 mod tool_adapters;
 mod tool_translate;
 mod usage_meter;
@@ -433,7 +431,6 @@ pub fn run() {
             commands::consolidate_memories,
             commands::get_all_conversations,
             commands::get_conversation_tasks,
-            commands::get_mailbox_messages,
             commands::get_remote_access_info,
             commands::set_remote_access,
             commands::rotate_remote_token,
@@ -657,10 +654,6 @@ pub fn run() {
             commands::estimate_tokens,
             commands::get_context_budget,
             commands::run_skill_audit,
-            commands::register_event_trigger,
-            commands::get_event_triggers,
-            commands::encrypt_value,
-            commands::decrypt_value,
             commands::send_desktop_notification,
             commands::send_ntfy_notification,
             commands::compact_conversation_context,
@@ -741,11 +734,6 @@ pub fn run() {
             commands::import_market_skill,
             commands::distill_from_project,
             // Session control features
-            commands::compress_tool_result,
-            commands::push_steering_message,
-            commands::get_steering_messages,
-            commands::consume_steering_messages,
-            commands::detect_file_change,
             // Agent-Platform Bindings
             commands::get_agent_bindings,
             commands::set_agent_binding,
@@ -763,9 +751,6 @@ pub fn run() {
             commands::add_skill_edge,
             commands::remove_skill_edge,
             // Async Agent Mailbox
-            commands::send_mail,
-            commands::get_mail,
-            commands::mark_mail_read,
             // Enhanced Task Dependencies
             commands::set_task_blocks,
             commands::auto_unblock_tasks,

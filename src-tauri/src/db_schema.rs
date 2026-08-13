@@ -1607,6 +1607,9 @@ mod single_source_of_truth {
     /// 这条是冲着已经发生过的那次事故写的：`agent_mailbox` 库里是 `is_read`、
     /// 命令按 `read` 查了不知道多久。列名对不上时 SQLite 只在**执行**时报错，
     /// 而那两处都写成 `let _ =`，于是一声不吭。
+    ///
+    /// 信箱和 steering 那两组命令后来整组删除了（没有任何生产方），断言也随之
+    /// 移除——守卫要守的是**还活着的命令**，对着不存在的命令断言只是装饰。
     #[test]
     fn the_columns_the_commands_query_actually_exist() {
         let path = std::env::temp_dir().join(format!(
@@ -1618,11 +1621,8 @@ mod single_source_of_truth {
         db.init_schema().expect("init_schema");
         let conn = db.get_connection().expect("连接");
         for sql in [
-            "SELECT id, from_agent, to_agent, subject, body, is_read, created_at FROM agent_mailbox",
-            "UPDATE agent_mailbox SET is_read = 1 WHERE id = ''",
             "INSERT INTO task_dependencies (task_id, blocks_id) VALUES ('a', 'b')",
             "SELECT task_id FROM task_dependencies WHERE blocks_id = ''",
-            "SELECT id, content, created_at FROM steering_queue WHERE session_id = '' AND consumed = 0",
         ] {
             conn.execute(sql, []).unwrap_or_else(|e| panic!("{sql}\n  → {e}"));
         }

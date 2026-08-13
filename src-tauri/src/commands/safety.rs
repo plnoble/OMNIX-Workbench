@@ -273,27 +273,10 @@ pub fn run_skill_audit(db: State<'_, Arc<DbManager>>) -> Result<Vec<SkillAuditRe
 
 // ── Event Bus ─────────────────────────────────────
 
-#[tauri::command]
-pub fn register_event_trigger(event_type: String, threshold: u32, task_id: String, db: State<'_, Arc<DbManager>>) -> Result<String, String> {
-    crate::event_bus::register_trigger(&db, &event_type, threshold, &task_id)
-}
-
-#[tauri::command]
-pub fn get_event_triggers(db: State<'_, Arc<DbManager>>) -> Vec<crate::event_bus::EventTrigger> {
-    crate::event_bus::list_triggers(&db)
-}
-
-// ── Encryption ────────────────────────────────────
-
-#[tauri::command]
-pub fn encrypt_value(plaintext: String) -> String {
-    crate::crypto::encrypt(&plaintext)
-}
-
-#[tauri::command]
-pub fn decrypt_value(encrypted: String) -> String {
-    crate::crypto::decrypt(&encrypted)
-}
+// 这里曾经把 `encrypt_value` / `decrypt_value` 两个命令暴露给前端，零消费方。
+// 删掉不是因为它没人用，是因为**它不该存在**：渲染进程一旦被注入脚本，就能
+// 逐个解出库里所有密文。v0.28.0 刚把加密密钥绑到 Windows 账号（DPAPI），
+// 再从前端开一个万能解密口子方向正好相反。需要密文的地方都在后端自己解。
 
 // ── Desktop Notification ──────────────────────────
 

@@ -322,6 +322,26 @@ function MainAppShell() {
     return () => { unlisten.then((fn) => fn()); };
   }, []);
 
+  // `omnix-notification` 的**落地端**。此前它有两个发送方却没有任何监听方：
+  // `hooks.rs` 的 notify 动作（钩子面板里「桌面通知」还是默认动作，跑完还会往
+  // 运行记录里写「已发送通知」）和 `send_desktop_notification` 命令。也就是说
+  // 用户配了通知钩子、看见「已发送通知」，屏幕上什么都不会出现。
+  //
+  // 这里用应用内 toast 落地——OMNIX 没装 tauri-plugin-notification，为这个加一个
+  // 系统级依赖不值当；真正缺的是「让它出现」。
+  useEffect(() => {
+    const unlisten = listen<{ title?: string; body?: string }>("omnix-notification", (event) => {
+      const { title, body } = event.payload ?? {};
+      const text = title?.trim() || "通知";
+      if (body?.trim()) {
+        toast.message(text, { description: body });
+      } else {
+        toast.message(text);
+      }
+    });
+    return () => { unlisten.then((fn) => fn()); };
+  }, []);
+
   // ── Save handlers with user feedback ──────────────
 
   const handleSavePlatform = async () => {

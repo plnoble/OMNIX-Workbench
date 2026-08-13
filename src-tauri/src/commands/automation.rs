@@ -3,7 +3,6 @@ use std::sync::Arc;
 use rusqlite::params;
 use crate::db::DbManager;
 use crate::skill_dag::{SkillGraph, SkillEdge, EdgeType, SkillSearchResult, SetValidation};
-use super::*;
 
 // ══════════════════════════════════════════════════
 // Skill DAG
@@ -144,83 +143,6 @@ fn persist_edge_to_db(db: &DbManager, source: &str, target: &str, edge_type: &st
 // Async Agent Mailbox
 // ══════════════════════════════════════════════════
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MailMessage {
-    pub id: String,
-    pub from_agent: String,
-    pub to_agent: String,
-    pub subject: String,
-    pub body: String,
-    pub read: bool,
-    pub created_at: String,
-}
-
-/// Send a message to another agent's mailbox
-#[tauri::command]
-pub fn send_mail(
-    from_agent: String,
-    to_agent: String,
-    subject: String,
-    body: String,
-    db: State<'_, Arc<DbManager>>,
-) -> Result<String, String> {
-    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
-    let id = format!("mail_{}", chrono::Utc::now().timestamp_millis());
-    conn.execute(
-        "INSERT INTO agent_mailbox (id, from_agent, to_agent, subject, body) VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![id, from_agent, to_agent, subject, body],
-    ).map_err(|e: rusqlite::Error| e.to_string())?;
-    Ok(id)
-}
-
-/// Get unread messages for an agent
-#[tauri::command]
-pub fn get_mail(
-    agent_name: String,
-    include_read: Option<bool>,
-    db: State<'_, Arc<DbManager>>,
-) -> Result<Vec<MailMessage>, String> {
-    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
-
-    let sql = if include_read.unwrap_or(false) {
-        "SELECT id, from_agent, to_agent, subject, body, is_read, created_at FROM agent_mailbox WHERE to_agent = ?1 ORDER BY created_at DESC"
-    } else {
-        "SELECT id, from_agent, to_agent, subject, body, is_read, created_at FROM agent_mailbox WHERE to_agent = ?1 AND is_read = 0 ORDER BY created_at DESC"
-    };
-
-    let mut stmt = conn.prepare(sql).map_err(|e: rusqlite::Error| e.to_string())?;
-    let rows = stmt.query_map(params![agent_name], |row| {
-        Ok(MailMessage {
-            id: row.get(0)?,
-            from_agent: row.get(1)?,
-            to_agent: row.get(2)?,
-            subject: row.get(3)?,
-            body: row.get(4)?,
-            read: row.get::<_, i32>(5)? != 0,
-            created_at: row.get(6)?,
-        })
-    }).map_err(|e: rusqlite::Error| e.to_string())?;
-    Ok(rows.flatten().collect())
-}
-
-/// Mark messages as read
-#[tauri::command]
-pub fn mark_mail_read(
-    message_ids: Vec<String>,
-    db: State<'_, Arc<DbManager>>,
-) -> Result<(), String> {
-    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
-    for id in &message_ids {
-        let _ = conn.execute("UPDATE agent_mailbox SET is_read = 1 WHERE id = ?1", params![id]);
-    }
-    Ok(())
-}
-
-// ══════════════════════════════════════════════════
-// Enhanced Task Board with Dependency Tracking
-// ══════════════════════════════════════════════════
-
-/// Update task with blocks dependency (reverse of blocked_by)
 #[tauri::command]
 pub fn set_task_blocks(
     task_id: String,

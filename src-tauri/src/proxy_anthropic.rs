@@ -409,12 +409,10 @@ pub(super) async fn handle_messages_impl(
             return (status, err_body).into_response();
         }
 
-        // 事件总线只关心「发生过一次请求」，跟 token 无关，可以立刻发。
+        // 这里曾经给「事件总线」计数。那套机制到阈值只会把计数清零并返回一串
+        // 待触发的 task_id，而**唯一的调用方（就是这里）把返回值丢了**——
+        // 也就是说它只是个自己清零的计数器，补 UI 也不会有任何事发生。已删除。
         // 日志则必须等到读得到 usage 之后才写——见下面两个分支。
-        let evt_db = state.db.clone();
-        tokio::task::spawn_blocking(move || {
-            crate::event_bus::emit_event(&evt_db, crate::event_bus::EventType::MessageSent);
-        });
         let log_db = (*state.db).clone();
         let log_model = resolved_model.clone();
         let log_status = status.as_u16() as i32;

@@ -2,7 +2,6 @@ use super::*;
 use crate::db::DbManager;
 use crate::input_validation;
 use rusqlite::params;
-use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::State;
 
@@ -261,66 +260,6 @@ pub fn get_conversation_tasks(
         }
     }
     Ok(result)
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MailboxMessage {
-    pub filename: String,
-    pub sender: String,
-    pub receiver: String,
-    pub command: String,
-    pub params: serde_json::Value,
-    pub status: String,
-    pub timestamp: String,
-}
-
-#[tauri::command]
-pub fn get_mailbox_messages() -> Result<Vec<MailboxMessage>, String> {
-    let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("C:\\Users\\87953"));
-    let mut mailbox_dir = home_dir.clone();
-    mailbox_dir.push(".omnix");
-    mailbox_dir.push("mailbox");
-
-    if !mailbox_dir.exists() {
-        return Ok(Vec::new());
-    }
-
-    let mut msgs = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(mailbox_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_file() && path.extension().map_or(false, |ext| ext == "json") {
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&content) {
-                        let filename = path
-                            .file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .to_string();
-                        let sender = msg["sender"].as_str().unwrap_or("Unknown").to_string();
-                        let receiver = msg["receiver"].as_str().unwrap_or("Unknown").to_string();
-                        let command = msg["command"].as_str().unwrap_or("Unknown").to_string();
-                        let params = msg["params"].clone();
-                        let status = msg["status"].as_str().unwrap_or("pending").to_string();
-                        let timestamp = msg["timestamp"].as_str().unwrap_or("").to_string();
-
-                        msgs.push(MailboxMessage {
-                            filename,
-                            sender,
-                            receiver,
-                            command,
-                            params,
-                            status,
-                            timestamp,
-                        });
-                    }
-                }
-            }
-        }
-    }
-
-    msgs.sort_by(|a, b| b.filename.cmp(&a.filename));
-    Ok(msgs)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
