@@ -630,6 +630,74 @@ fn resolve_model_upstream_for_agent(
 /// 模型中心用同一个函数显示「当前会走哪个平台」——以前这段逻辑只活在路由里，
 /// 界面完全看不见，用户配了两个同名模型也不知道会走哪个，挑中不支持的那个
 /// 就是一句没头没脑的 `Model does not exist`。
+/// Auto 路由的一个候选模型。
+pub(crate) struct AutoCandidate {
+    pub model_name: String,
+    pub platform_id: String,
+    pub has_vision: bool,
+    pub has_reasoning: bool,
+    pub has_coding: bool,
+    pub has_speedy: bool,
+    pub has_tool_use: bool,
+    pub api_type: String,
+    /// 这个平台有没有一把**能用的** Key。
+    pub has_key: bool,
+}
+
+/// Auto 路由的候选池。anthropic 和 openai 两侧共用。
+///
+/// 合成一处是因为它们分开写的时候各自漏了同一件事：判断「有没有 Key」时只看
+/// `model_platforms.api_key`。而 `migrate_legacy_plaintext_keys` 在**启动时**就把
+/// 那一列清空（Key 搬进了 `platform_api_keys`），于是升级用户一开机，
+/// 每个平台都被当成「没有 Key」跳过——Auto 一个模型都选不出来，而模型中心里
+/// Key 明明是齐的。健康检查那边早就改读新表了，这两条路没跟上。
+///
+/// `has_key` 现在两张表都看：新表有任意一条，或旧列非空（还没迁的老配置）。
+pub(crate) fn auto_route_candidates(db: &DbManager) -> Vec<AutoCandidate> {
+    let Ok(conn) = db.get_connection() else {
+        return Vec::new();
+    };
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT pm.model_name, pm.platform_id, pm.has_vision, pm.has_reasoning,
+                pm.has_coding, pm.has_speedy, pm.has_tool_use, mp.api_type,
+                (TRIM(COALESCE(mp.api_key, '')) != ''
+                 OR EXISTS (SELECT 1 FROM platform_api_keys k
+                            WHERE k.platform_id = mp.id
+                              AND TRIM(COALESCE(k.encrypted_key, '')) != '')) AS has_key
+         FROM platform_models pm
+         JOIN model_platforms mp ON pm.platform_id = mp.id
+         WHERE pm.is_enabled = 1 AND mp.is_enabled = 1
+           AND (mp.is_healthy = 1 OR mp.circuit_opened_at <= datetime('now', '-60 seconds'))
+           -- 嵌入 / 重排 / 语音模型不会聊天。它们以前也在候选池里，而当请求没有
+           -- 明显能力信号时所有模型都是 0 分、严格大于比不过去，于是「数据库返回
+           -- 的第一条」直接获胜——熔炼炉那次 400 就是这么挑中了一个不能对话的模型。
+           AND COALESCE(pm.has_embedding, 0) = 0
+           AND COALESCE(pm.has_audio, 0) = 0
+         -- 平局时按优先级和名字定，别让物理行序决定路由。
+         ORDER BY mp.priority DESC, mp.weight DESC, pm.model_name",
+    ) else {
+        return Vec::new();
+    };
+    let rows = stmt.query_map([], |row| {
+        Ok(AutoCandidate {
+            model_name: row.get(0)?,
+            platform_id: row.get(1)?,
+            has_vision: row.get::<_, i32>(2).unwrap_or(0) != 0,
+            has_reasoning: row.get::<_, i32>(3).unwrap_or(0) != 0,
+            has_coding: row.get::<_, i32>(4).unwrap_or(0) != 0,
+            has_speedy: row.get::<_, i32>(5).unwrap_or(0) != 0,
+            // 缺列时默认「支持工具」，和改造前一致。
+            has_tool_use: row.get::<_, i32>(6).unwrap_or(1) != 0,
+            api_type: row.get(7)?,
+            has_key: row.get::<_, i32>(8).unwrap_or(0) != 0,
+        })
+    });
+    match rows {
+        Ok(rows) => rows.flatten().collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
 pub(crate) fn winning_platform_for_model(db: &DbManager, model_name: &str) -> Option<String> {
     let conn = db.get_connection().ok()?;
     let mut stmt = conn
@@ -958,6 +1026,79 @@ mod usage_logging_tests {
     /// 走**真实**的建表路径（`new_with_path` 内部就会跑 `init_schema`），
     /// 而不是测试里手搓一张表——否则 schema 写错了测试反而看不出来
     /// （`log_request` 的 INSERT 是 `let _ =`，失败不出声）。
+    /// 升级后 Auto 仍然要能选到带 Key 的模型。
+    ///
+    /// 复现的是一个**已经发出去的回归**：`migrate_legacy_plaintext_keys` 在启动时
+    /// 把 Key 搬进 `platform_api_keys` 并**清空** `model_platforms.api_key`；
+    /// 而两侧 Auto 路由都按那一列判断「有没有 Key」，于是升级用户一开机每个平台
+    /// 都被跳过，Auto 一个模型都选不出来，界面上 Key 却是齐的。
+    #[test]
+    fn auto_routing_still_sees_a_key_after_migration() {
+        let (db, path) = temp_db("automigrate");
+        {
+            let conn = db.get_connection().unwrap();
+            conn.execute("DELETE FROM platform_models", []).unwrap();
+            conn.execute("DELETE FROM model_platforms", []).unwrap();
+            // 迁移之后的状态：旧列空了，Key 在新表里。
+            conn.execute(
+                "INSERT INTO model_platforms (id, name, api_type, api_address, api_key, is_enabled)
+                 VALUES ('p1', 'P1', 'openai', 'https://x', '', 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO platform_api_keys (id, platform_id, encrypted_key, label, is_active)
+                 VALUES ('k1', 'p1', 'ENC:whatever', '迁移自旧配置', 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO platform_models (id, platform_id, model_name, is_enabled)
+                 VALUES ('m1', 'p1', 'gpt-x', 1)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let candidates = super::auto_route_candidates(&db);
+        let found = candidates
+            .iter()
+            .find(|c| c.model_name == "gpt-x")
+            .expect("模型应该出现在候选池里");
+        assert!(
+            found.has_key,
+            "Key 已经迁进 platform_api_keys，这个平台不该被当成「没有 Key」"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 真的一把 Key 都没有时，仍然要判成没有——否则会挑中一个打不通的平台。
+    #[test]
+    fn auto_routing_reports_no_key_when_there_is_none() {
+        let (db, path) = temp_db("autonokey");
+        {
+            let conn = db.get_connection().unwrap();
+            conn.execute("DELETE FROM platform_models", []).unwrap();
+            conn.execute("DELETE FROM model_platforms", []).unwrap();
+            conn.execute(
+                "INSERT INTO model_platforms (id, name, api_type, api_address, api_key, is_enabled)
+                 VALUES ('p2', 'P2', 'openai', 'https://x', '', 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO platform_models (id, platform_id, model_name, is_enabled)
+                 VALUES ('m2', 'p2', 'gpt-y', 1)",
+                [],
+            )
+            .unwrap();
+        }
+        let candidates = super::auto_route_candidates(&db);
+        let found = candidates.iter().find(|c| c.model_name == "gpt-y").expect("候选");
+        assert!(!found.has_key, "一把 Key 都没有时不该判成有");
+        let _ = std::fs::remove_file(&path);
+    }
+
     fn temp_db(tag: &str) -> (DbManager, std::path::PathBuf) {
         let path = temp_path(tag);
         (DbManager::new_with_path(path.clone()), path)

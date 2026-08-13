@@ -212,73 +212,30 @@ pub(super) async fn handle_messages_impl(
         let need_tools = payload.extra.contains_key("tools");
         println!("OMNIX Router: Classification result -> Need Vision: {}, Reasoning: {}, Coding: {}, Speedy: {}", need_vis, need_reas, need_cod, need_spd);
 
-        if let Ok(active_models) = state.db.get_connection().and_then(|conn| {
-            let mut stmt = conn.prepare(
-                "SELECT pm.model_name, pm.platform_id, pm.has_vision, pm.has_reasoning, pm.has_coding, mp.api_key, mp.api_address, mp.api_type, pm.has_speedy, pm.has_tool_use
-                 FROM platform_models pm
-                 JOIN model_platforms mp ON pm.platform_id = mp.id
-                 WHERE pm.is_enabled = 1 AND mp.is_enabled = 1
-                   AND (mp.is_healthy = 1 OR mp.circuit_opened_at <= datetime('now', '-60 seconds'))
-                   -- 嵌入 / 重排 / 语音模型不会聊天。它们以前也在候选池里，而当
-                   -- 请求没有明显能力信号时所有模型都是 0 分、严格大于比不过去，
-                   -- 于是「数据库返回的第一条」直接获胜——熔炼炉那次 400 就是这么
-                   -- 挑中了一个根本不能对话的模型。
-                   AND COALESCE(pm.has_embedding, 0) = 0
-                   AND COALESCE(pm.has_audio, 0) = 0
-                 -- 平局时按优先级和名字定，别让物理行序决定路由。
-                 ORDER BY mp.priority DESC, mp.weight DESC, pm.model_name"
-            )?;
-            let rows = stmt.query_map([], |row| {
-                let has_vis: i32 = row.get(2)?;
-                let has_reas: i32 = row.get(3)?;
-                let has_cod: i32 = row.get(4)?;
-                // has_speedy is column index 8 (guaranteed present by schema + migration).
-                let has_spd: bool = row.get::<_, i32>(8).unwrap_or(0) != 0;
-                // R0：工具支持是**硬条件**不是加分项，所以单独取出来做过滤。
-                let has_tools: bool = row.get::<_, i32>(9).unwrap_or(1) != 0;
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    has_vis != 0,
-                    has_reas != 0,
-                    has_cod != 0,
-                    has_spd,
-                    row.get::<_, String>(5)?,
-                    row.get::<_, String>(6)?,
-                    row.get::<_, String>(7)?,
-                    has_tools,
-                ))
-            })?;
-            let mut res = Vec::new();
-            for r in rows {
-                if let Ok(item) = r {
-                    res.push(item);
-                }
-            }
-            Ok(res)
-        }) {
+        // 候选池和「有没有 Key」的判断都在 proxy::auto_route_candidates 里——见 openai 侧注释。
+        {
             let mut best_model = None;
             let mut highest_score = -1;
-            for (model_name, platform_id, vis, reas, cod, spd, api_key, _api_address, api_type, tools_ok) in active_models {
-                if api_key.trim().is_empty() && api_type != "ollama" {
+            for c in crate::proxy::auto_route_candidates(&state.db) {
+                if !c.has_key && c.api_type != "ollama" {
                     continue;
                 }
                 // R0：请求声明了工具，就**只在支持工具的模型里选**。视觉/推理/编码
                 // 是偏好（打分），工具支持是资格——挑一个不会调工具的模型去跑工具
                 // 任务，产出是废的，而且失败得很隐蔽。
-                if need_tools && !tools_ok {
+                if need_tools && !c.has_tool_use {
                     continue;
                 }
                 let mut score = 0;
-                if need_vis && vis { score += 10; }
-                if need_reas && reas { score += 10; }
-                if need_cod && cod { score += 5; }
-                if need_spd && spd { score += 8; }
-                if !need_vis && !need_reas && !need_cod && !need_spd && vis { score -= 2; }
+                if need_vis && c.has_vision { score += 10; }
+                if need_reas && c.has_reasoning { score += 10; }
+                if need_cod && c.has_coding { score += 5; }
+                if need_spd && c.has_speedy { score += 8; }
+                if !need_vis && !need_reas && !need_cod && !need_spd && c.has_vision { score -= 2; }
 
                 if score > highest_score {
                     highest_score = score;
-                    best_model = Some(format!("{}:{}", platform_id, model_name));
+                    best_model = Some(format!("{}:{}", c.platform_id, c.model_name));
                 }
             }
             match best_model {
