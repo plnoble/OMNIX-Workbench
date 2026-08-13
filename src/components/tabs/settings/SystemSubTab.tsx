@@ -1,5 +1,6 @@
 /** Split from SettingsTab.tsx — pure move, no behavior change. */
 import { useEffect, useState } from "react";
+import { useSettingsStore } from "@/store/AppStore";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,7 +12,6 @@ import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/sonner";
 import { modelApi, statusDockApi } from "@/lib/tauri-api";
 import type { AvailableModel } from "@/types";
-import type { SettingsTabProps } from "./types";
 
 function StatusDockToggle() {
   const [on, setOn] = useState(false);
@@ -36,21 +36,30 @@ function StatusDockToggle() {
   );
 }
 
-export function SystemSubTab({
-  targetModel, setTargetModel,
-  gpuAcceleration, setGpuAcceleration,
-  idleTimeout, setIdleTimeout,
-  autoStart, setAutoStart,
-  startToTray, setStartToTray,
-  useWsl, setUseWsl,
-  wslDistro, setWslDistro,
-  onSaveSettings,
-  // 划词助手 / 翻译收进了宫格的「快捷助手」页，搜索配置收进了宫格的「搜索」页
-  // ——两处都是完整超集。相关 prop 仍在 `SettingsTabProps` 里（App.tsx 统一往下
-  // 传），这一页不再消费。
-  themeMode,
-  onSetThemeMode,
-}: SettingsTabProps) {
+export function SystemSubTab() {
+  const s = useSettingsStore();
+  const {
+    targetModel, setTargetModel,
+    gpuAcceleration, setGpuAcceleration,
+    idleTimeout, setIdleTimeout,
+    autoStart, setAutoStart,
+    startToTray, setStartToTray,
+    useWsl, setUseWsl,
+    wslDistro, setWslDistro,
+    themeMode,
+    setThemeMode: onSetThemeMode,
+  } = s;
+  // 这段提示原本在 App.tsx 的 `handleSaveSettings` 里。搬 store 时如果只取
+  // `s.saveSettings`，保存成功/失败的反馈就会静默消失——所以连提示一起搬过来，
+  // 放在触发它的地方。
+  const onSaveSettings = async () => {
+    try {
+      await s.saveSettings();
+      toast.success("设置保存成功！中转代理网关已热重载，外部 Agent 配置文件已同步。");
+    } catch (e) {
+      toast.error("保存设置失败：" + e);
+    }
+  };
   // ── Available models for dropdowns ────────────────────
   const [availableModels, setAvailableModels] = useState<AvailableModel[]>([]);
 

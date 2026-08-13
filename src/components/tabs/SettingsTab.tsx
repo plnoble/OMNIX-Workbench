@@ -12,7 +12,7 @@ import { SystemSubTab } from "./settings/SystemSubTab";
 import { McpSubTab } from "./settings/McpSubTab";
 import { BackupSubTab } from "./settings/BackupSubTab";
 
-export type { SettingsTabProps, PlatformSubTabProps } from "./settings/types";
+export type { SettingsTabProps } from "./settings/types";
 export { PlatformSubTab } from "./settings/PlatformSubTab";
 export { McpSubTab } from "./settings/McpSubTab";
 
@@ -50,11 +50,11 @@ export function SettingsTab(props: SettingsTabProps) {
 
       {/* Content panel */}
       <div className="flex-1 overflow-y-auto p-5">
-        {props.settingsSubTab === "platform" && <PlatformSubTab {...props} />}
-        {props.settingsSubTab === "system" && <SystemSubTab {...props} />}
+        {props.settingsSubTab === "platform" && <PlatformSubTab />}
+        {props.settingsSubTab === "system" && <SystemSubTab />}
         {props.settingsSubTab === "diagnostics" && props.diagnosticsPanel}
-        {props.settingsSubTab === "mcp" && <McpSubTab {...props} />}
-        {props.settingsSubTab === "backup" && <BackupSubTab {...props} />}
+        {props.settingsSubTab === "mcp" && <McpSubTab />}
+        {props.settingsSubTab === "backup" && <BackupSubTab />}
       </div>
     </div>
   );

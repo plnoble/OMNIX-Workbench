@@ -1,5 +1,6 @@
 /** Split from SettingsTab.tsx — pure move, no behavior change. */
 import { useState } from "react";
+import { useBackupStore } from "@/store/AppStore";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -7,20 +8,21 @@ import { Badge } from "@/components/ui/badge";
 import { Download, Upload } from "lucide-react";
 import { toast } from "@/components/ui/sonner";
 import { StorageLocationsCard } from "@/components/StorageLocationsCard";
-import type { SettingsTabProps } from "./types";
 
-export function BackupSubTab({
-  backupTableInfo,
-  backupSelectedTables,
-  isBackupExporting,
-  isBackupImporting,
-  lastImportResult,
-  onToggleBackupTable,
-  onSelectAllBackupTables,
-  onDeselectAllBackupTables,
-  onExportBackup,
-  onImportBackup,
-}: SettingsTabProps) {
+export function BackupSubTab() {
+  const backup = useBackupStore();
+  const {
+    tableInfo: backupTableInfo,
+    selectedTables: backupSelectedTables,
+    isExporting: isBackupExporting,
+    isImporting: isBackupImporting,
+    lastImportResult,
+    toggleTableSelection: onToggleBackupTable,
+    selectAllTables: onSelectAllBackupTables,
+    deselectAllTables: onDeselectAllBackupTables,
+    exportBackup: onExportBackup,
+    importBackup: onImportBackup,
+  } = backup;
   const [importJson, setImportJson] = useState("");
 
   const handleExport = async () => {

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useAccountsStore, useConversationsStore, usePlatformsStore } from "@/store/AppStore";
 import {
   Bot,
   CheckCircle2,
@@ -21,27 +22,13 @@ import { getRuntimeAgentId, isAcpAgent } from "@/lib/agentRegistry";
 import { cn } from "@/lib/utils";
 import { AgentInstallManager } from "@/components/AgentInstallManager";
 import { toast } from "@/components/ui/sonner";
-import type { AgentAccount, AgentUpdateInfo, DetectedAgent, PlatformModel, RuntimeAgentCatalogEntry } from "@/types";
+import type { AgentAccount, AgentUpdateInfo, RuntimeAgentCatalogEntry } from "@/types";
 import type { AgentPlatformBinding } from "@/lib/tauri-api";
 
 interface AgentHubTabProps {
-  detectedAgents: DetectedAgent[];
-  activeAgent: string;
-  accounts: AgentAccount[];
-  activeModels: PlatformModel[];
-  onSwitchAgent: (name: string) => void;
-  onAddAccount: () => void;
-  onEditAccount: (acc: AgentAccount) => void;
-  onDeleteAccount: (id: string) => void;
-  // 「启用哪个账号」已经由统一上游视图接管（订阅 + API Key 一起选），
-  // 不再需要单独的 api-key 切换回调。
+  /** 切到「工作」页并选中该 Agent——涉及顶层页签，仍由 App 传。 */
   onStartWork?: (name: string) => void;
-  /** Refreshes the App-level detection list — the ONE source of truth that the
-   * workspace also reads. Every install/update/refresh here must go through
-   * this, or the workspace keeps showing 「未检测到」 until an app restart. */
-  onRefreshAgents: () => Promise<void>;
-  /** 跳到「认证中心」。订阅登录（含 Grok 的设备码流程）只在那一处实现，
-   *  这里给的是直达入口——把同一套 UI 在两个页面各维护一份不划算。 */
+  /** 打开认证中心页签，同上。 */
   onOpenAuthCenter?: () => void;
 }
 
@@ -76,19 +63,18 @@ function getBindingLabel(agentName: string, binding?: AgentPlatformBinding) {
   return binding.model_name || "OMNIX 模型";
 }
 
-export function AgentHubTab({
-  detectedAgents,
-  activeAgent,
-  accounts,
-  activeModels,
-  onSwitchAgent,
-  onAddAccount,
-  onEditAccount,
-  onDeleteAccount,
-  onStartWork,
-  onRefreshAgents,
-  onOpenAuthCenter,
-}: AgentHubTabProps) {
+export function AgentHubTab({ onStartWork, onOpenAuthCenter }: AgentHubTabProps) {
+  const convs = useConversationsStore();
+  const accountsStore = useAccountsStore();
+  const platforms = usePlatformsStore();
+  const { detectedAgents, activeAgent } = convs;
+  const { accounts } = accountsStore;
+  const { activeModels } = platforms;
+  const onSwitchAgent = convs.selectAgent;
+  const onRefreshAgents = convs.detectAgents;
+  const onAddAccount = () => accountsStore.openAccountModal();
+  const onEditAccount = (acc: AgentAccount) => accountsStore.openAccountModal(acc);
+  const onDeleteAccount = accountsStore.deleteAccount;
   // No local copy of the detection list — `detectedAgents` (App-level) is the
   // single source of truth shared with the workspace. A fork here once made the
   // workspace claim an installed agent was 「未检测到」 until restart.

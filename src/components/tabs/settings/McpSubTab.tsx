@@ -1,5 +1,6 @@
 /** Split from SettingsTab.tsx — pure move, no behavior change. */
 import { useEffect, useState } from "react";
+import { useMcpServersStore } from "@/store/AppStore";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,24 +15,22 @@ import type { AgentMcpState } from "@/lib/tauri-api";
 import { DEFAULT_PROXY_PORT } from "@/lib/constants";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { McpServer } from "@/types";
-import type { SettingsTabProps } from "./types";
 
 /** OMNIX 自己的 MCP 端点。名字写死，撤销和「已挂上」的判断都靠它对齐。 */
 const SELF_MCP_NAME = "omnix";
 const SELF_MCP_URL = `http://127.0.0.1:${DEFAULT_PROXY_PORT}/mcp`;
 
-export function McpSubTab({
-  mcpServers,
-  onOpenMcpModal,
-  onDeleteMcpServer,
-  showMcpModal,
-  editingMcpServer,
-  mcpForm,
-  onCloseMcpModal,
-  onUpdateMcpForm,
-  onSaveMcpServer,
-  onReloadMcpServers,
-}: SettingsTabProps) {
+export function McpSubTab() {
+  const mcp = useMcpServersStore();
+  const {
+    mcpServers, showMcpModal, editingMcpServer, mcpForm,
+    openMcpModal: onOpenMcpModal,
+    closeMcpModal: onCloseMcpModal,
+    updateMcpForm: onUpdateMcpForm,
+    saveMcpServer: onSaveMcpServer,
+    deleteMcpServer: onDeleteMcpServer,
+    loadMcpServers: onReloadMcpServers,
+  } = mcp;
   const [agentStates, setAgentStates] = useState<AgentMcpState[]>([]);
   const [syncBusy, setSyncBusy] = useState("");
   const [importBusy, setImportBusy] = useState("");

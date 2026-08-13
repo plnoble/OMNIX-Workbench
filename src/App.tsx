@@ -328,15 +328,6 @@ function MainAppShell() {
 
   // ── Save handlers with user feedback ──────────────
 
-  const handleSaveSettings = async () => {
-    try {
-      await settings.saveSettings();
-      toast.success("设置保存成功！中转代理网关已热重载，外部 Agent 配置文件已同步。");
-    } catch (e) {
-      toast.error("保存设置失败：" + e);
-    }
-  };
-
   const handleSavePlatform = async () => {
     try {
       await platforms.savePlatform();
@@ -487,19 +478,10 @@ function MainAppShell() {
 
             {activeTab === "agents" && (
               <AgentHubTab
-                detectedAgents={convs.detectedAgents}
-                activeAgent={convs.activeAgent}
-                accounts={accounts.accounts}
-                activeModels={platforms.activeModels}
-                onSwitchAgent={convs.selectAgent}
-                onAddAccount={() => accounts.openAccountModal()}
-                onEditAccount={(acc) => accounts.openAccountModal(acc)}
-                onDeleteAccount={accounts.deleteAccount}
                 onStartWork={(name) => {
                   convs.selectAgent(name);
                   handleTabChange("work");
                 }}
-                onRefreshAgents={convs.detectAgents}
                 onOpenAuthCenter={() => setActiveTab("auth-center")}
               />
             )}
@@ -512,36 +494,7 @@ function MainAppShell() {
               <SearchResourceTab />
             )}
             {activeTab === "quick-assistant" && (
-              <QuickAssistantTab
-                captureMode={selection.captureMode}
-                showOnCapture={selection.showOnCapture}
-                preserveClipboard={selection.preserveClipboard}
-                autoCaptureEnabled={selection.autoCaptureEnabled}
-                blacklist={selection.blacklist}
-                isCapturing={selection.isCapturing}
-                lastCapture={selection.lastCapture}
-                captureError={selection.captureError}
-                history={selection.selectionHistory}
-                preferredLang={translation.preferredLang}
-                alterLang={translation.alterLang}
-                translateModel={translation.translateModel}
-                customPrompt={translation.customPrompt}
-                autoDetect={translation.autoDetect}
-                availableModels={platforms.activeModels.map((model) => `${model.platform_id}:${model.model_name}`)}
-                onSetCaptureMode={(v) => selection.saveSelectionSettings({ captureMode: v as "hybrid" | "uia_only" | "clipboard_only" })}
-                onSetShowOnCapture={(v) => selection.saveSelectionSettings({ showOnCapture: v })}
-                onSetPreserveClipboard={(v) => selection.saveSelectionSettings({ preserveClipboard: v })}
-                onSetAutoCaptureEnabled={(v) => selection.saveSelectionSettings({ autoCaptureEnabled: v })}
-                onSetBlacklist={(v) => selection.saveSelectionSettings({ blacklist: v })}
-                onTestCapture={selection.captureTextOnly}
-                onLoadHistory={selection.loadHistory}
-                onClearHistory={selection.clearHistory}
-                onSetPreferredLang={(v) => translation.saveTranslationSettings({ preferredLang: v })}
-                onSetAlterLang={(v) => translation.saveTranslationSettings({ alterLang: v })}
-                onSetTranslateModel={(v) => translation.saveTranslationSettings({ translateModel: v })}
-                onSetCustomPrompt={(v) => translation.saveTranslationSettings({ customPrompt: v })}
-                onSetAutoDetect={(v) => translation.saveTranslationSettings({ autoDetect: v })}
-              />
+              <QuickAssistantTab />
             )}
             {activeTab === "assistants" && (
               <AssistantsTab
@@ -553,97 +506,7 @@ function MainAppShell() {
               />
             )}
             {activeTab === "mcp" && (
-              <McpTab
-                settingsSubTab="mcp"
-                setSettingsSubTab={setSettingsSubTab}
-                platforms={platforms.platforms}
-                selectedPlatformId={platforms.selectedPlatformId}
-                platformModels={platforms.platformModels}
-                modelTestingState={platforms.modelTestingState}
-                fetchingModels={platforms.fetchingModels}
-                onSelectPlatform={platforms.selectPlatform}
-                onTogglePlatform={platforms.togglePlatform}
-                onAddPlatform={() => platforms.openPlatformModal()}
-                onEditPlatform={(p) => platforms.openPlatformModal(p)}
-                onDeletePlatform={platforms.deletePlatform}
-                onFetchRemoteModels={platforms.fetchRemoteModels}
-                onAddModel={platforms.openModelModal}
-                onToggleModelEnabled={platforms.toggleModelEnabled}
-                onTestModel={platforms.testModel}
-                onDeleteModel={platforms.deleteModel}
-                batchTesting={platforms.batchTesting}
-                onBatchTestModels={platforms.batchTestModels}
-                targetModel={settings.targetModel}
-                gpuAcceleration={settings.gpuAcceleration}
-                idleTimeout={settings.idleTimeout}
-                autoStart={settings.autoStart}
-                startToTray={settings.startToTray}
-                useWsl={settings.useWsl}
-                wslDistro={settings.wslDistro}
-                setTargetModel={settings.setTargetModel}
-                setGpuAcceleration={settings.setGpuAcceleration}
-                setIdleTimeout={settings.setIdleTimeout}
-                setAutoStart={settings.setAutoStart}
-                setStartToTray={settings.setStartToTray}
-                setUseWsl={settings.setUseWsl}
-                setWslDistro={settings.setWslDistro}
-                onSaveSettings={handleSaveSettings}
-                selectionCaptureMode={selection.captureMode}
-                selectionShowOnCapture={selection.showOnCapture}
-                selectionAutoCaptureEnabled={selection.autoCaptureEnabled}
-                selectionPreserveClipboard={selection.preserveClipboard}
-                isSelectionCapturing={selection.isCapturing}
-                lastSelectionCapture={selection.lastCapture}
-                selectionCaptureError={selection.captureError}
-                selectionHistory={selection.selectionHistory}
-                onSetSelectionCaptureMode={(v) => selection.saveSelectionSettings({ captureMode: v as "hybrid" | "uia_only" | "clipboard_only" })}
-                onSetSelectionShowOnCapture={(v) => selection.saveSelectionSettings({ showOnCapture: v })}
-                onSetSelectionAutoCaptureEnabled={(v) => selection.saveSelectionSettings({ autoCaptureEnabled: v })}
-                onSetSelectionPreserveClipboard={(v) => selection.saveSelectionSettings({ preserveClipboard: v })}
-                onTestSelectionCapture={selection.captureTextOnly}
-                onSaveSelectionSettings={async (updates) => {
-                  await selection.saveSelectionSettings(updates as Parameters<typeof selection.saveSelectionSettings>[0]);
-                }}
-                onLoadSelectionHistory={selection.loadHistory}
-                onDeleteSelectionHistoryItem={selection.deleteHistoryItem}
-                onClearSelectionHistory={selection.clearHistory}
-                translatePreferredLang={translation.preferredLang}
-                translateAlterLang={translation.alterLang}
-                translateModel={translation.translateModel}
-                translateAutoDetect={translation.autoDetect}
-                translateCustomPrompt={translation.customPrompt}
-                onSetTranslatePreferredLang={(v) => translation.saveTranslationSettings({ preferredLang: v })}
-                onSetTranslateAlterLang={(v) => translation.saveTranslationSettings({ alterLang: v })}
-                onSetTranslateModel={(v) => translation.saveTranslationSettings({ translateModel: v })}
-                onSetTranslateAutoDetect={(v) => translation.saveTranslationSettings({ autoDetect: v })}
-                onSetTranslateCustomPrompt={(v) => translation.saveTranslationSettings({ customPrompt: v })}
-                onSaveTranslationSettings={async (updates) => {
-                  await translation.saveTranslationSettings(updates as Parameters<typeof translation.saveTranslationSettings>[0]);
-                }}
-                themeMode={settings.themeMode}
-                onSetThemeMode={settings.setThemeMode}
-                mcpServers={mcpServers.mcpServers}
-                showMcpModal={mcpServers.showMcpModal}
-                editingMcpServer={mcpServers.editingMcpServer}
-                mcpForm={mcpServers.mcpForm}
-                onOpenMcpModal={mcpServers.openMcpModal}
-                onCloseMcpModal={mcpServers.closeMcpModal}
-                onUpdateMcpForm={mcpServers.updateMcpForm}
-                onSaveMcpServer={mcpServers.saveMcpServer}
-                onDeleteMcpServer={mcpServers.deleteMcpServer}
-                onReloadMcpServers={mcpServers.loadMcpServers}
-                backupTableInfo={backup.tableInfo}
-                backupSelectedTables={backup.selectedTables}
-                isBackupExporting={backup.isExporting}
-                isBackupImporting={backup.isImporting}
-                lastImportResult={backup.lastImportResult}
-                onLoadBackupInfo={backup.loadBackupInfo}
-                onToggleBackupTable={backup.toggleTableSelection}
-                onSelectAllBackupTables={backup.selectAllTables}
-                onDeselectAllBackupTables={backup.deselectAllTables}
-                onExportBackup={backup.exportBackup}
-                onImportBackup={backup.importBackup}
-              />
+              <McpTab />
             )}
 
             {activeTab === "team" && (
@@ -671,93 +534,6 @@ function MainAppShell() {
                     onLoadRemoteAccess={remote.loadRemoteAccess}
                   />
                 }
-                platforms={platforms.platforms}
-                selectedPlatformId={platforms.selectedPlatformId}
-                platformModels={platforms.platformModels}
-                modelTestingState={platforms.modelTestingState}
-                fetchingModels={platforms.fetchingModels}
-                onSelectPlatform={platforms.selectPlatform}
-                onTogglePlatform={platforms.togglePlatform}
-                onAddPlatform={() => platforms.openPlatformModal()}
-                onEditPlatform={(p) => platforms.openPlatformModal(p)}
-                onDeletePlatform={platforms.deletePlatform}
-                onFetchRemoteModels={platforms.fetchRemoteModels}
-                onAddModel={platforms.openModelModal}
-                onToggleModelEnabled={platforms.toggleModelEnabled}
-                onTestModel={platforms.testModel}
-                onDeleteModel={platforms.deleteModel}
-                batchTesting={platforms.batchTesting}
-                onBatchTestModels={platforms.batchTestModels}
-                targetModel={settings.targetModel}
-                gpuAcceleration={settings.gpuAcceleration}
-                idleTimeout={settings.idleTimeout}
-                autoStart={settings.autoStart}
-                startToTray={settings.startToTray}
-                useWsl={settings.useWsl}
-                wslDistro={settings.wslDistro}
-                setTargetModel={settings.setTargetModel}
-                setGpuAcceleration={settings.setGpuAcceleration}
-                setIdleTimeout={settings.setIdleTimeout}
-                setAutoStart={settings.setAutoStart}
-                setStartToTray={settings.setStartToTray}
-                setUseWsl={settings.setUseWsl}
-                setWslDistro={settings.setWslDistro}
-                onSaveSettings={handleSaveSettings}
-                selectionCaptureMode={selection.captureMode}
-                selectionShowOnCapture={selection.showOnCapture}
-                selectionAutoCaptureEnabled={selection.autoCaptureEnabled}
-                selectionPreserveClipboard={selection.preserveClipboard}
-                isSelectionCapturing={selection.isCapturing}
-                lastSelectionCapture={selection.lastCapture}
-                selectionCaptureError={selection.captureError}
-                selectionHistory={selection.selectionHistory}
-                onSetSelectionCaptureMode={(v) => selection.saveSelectionSettings({ captureMode: v as "hybrid" | "uia_only" | "clipboard_only" })}
-                onSetSelectionShowOnCapture={(v) => selection.saveSelectionSettings({ showOnCapture: v })}
-                onSetSelectionAutoCaptureEnabled={(v) => selection.saveSelectionSettings({ autoCaptureEnabled: v })}
-                onSetSelectionPreserveClipboard={(v) => selection.saveSelectionSettings({ preserveClipboard: v })}
-                onTestSelectionCapture={selection.captureTextOnly}
-                onSaveSelectionSettings={async (updates) => {
-                  await selection.saveSelectionSettings(updates as Parameters<typeof selection.saveSelectionSettings>[0]);
-                }}
-                onLoadSelectionHistory={selection.loadHistory}
-                onDeleteSelectionHistoryItem={selection.deleteHistoryItem}
-                onClearSelectionHistory={selection.clearHistory}
-                translatePreferredLang={translation.preferredLang}
-                translateAlterLang={translation.alterLang}
-                translateModel={translation.translateModel}
-                translateAutoDetect={translation.autoDetect}
-                translateCustomPrompt={translation.customPrompt}
-                onSetTranslatePreferredLang={(v) => translation.saveTranslationSettings({ preferredLang: v })}
-                onSetTranslateAlterLang={(v) => translation.saveTranslationSettings({ alterLang: v })}
-                onSetTranslateModel={(v) => translation.saveTranslationSettings({ translateModel: v })}
-                onSetTranslateAutoDetect={(v) => translation.saveTranslationSettings({ autoDetect: v })}
-                onSetTranslateCustomPrompt={(v) => translation.saveTranslationSettings({ customPrompt: v })}
-                onSaveTranslationSettings={async (updates) => {
-                  await translation.saveTranslationSettings(updates as Parameters<typeof translation.saveTranslationSettings>[0]);
-                }}
-                themeMode={settings.themeMode}
-                onSetThemeMode={settings.setThemeMode}
-                mcpServers={mcpServers.mcpServers}
-                showMcpModal={mcpServers.showMcpModal}
-                editingMcpServer={mcpServers.editingMcpServer}
-                mcpForm={mcpServers.mcpForm}
-                onOpenMcpModal={mcpServers.openMcpModal}
-                onCloseMcpModal={mcpServers.closeMcpModal}
-                onUpdateMcpForm={mcpServers.updateMcpForm}
-                onSaveMcpServer={mcpServers.saveMcpServer}
-                onDeleteMcpServer={mcpServers.deleteMcpServer}
-                onReloadMcpServers={mcpServers.loadMcpServers}
-                backupTableInfo={backup.tableInfo}
-                backupSelectedTables={backup.selectedTables}
-                isBackupExporting={backup.isExporting}
-                isBackupImporting={backup.isImporting}
-                lastImportResult={backup.lastImportResult}
-                onLoadBackupInfo={backup.loadBackupInfo}
-                onToggleBackupTable={backup.toggleTableSelection}
-                onSelectAllBackupTables={backup.selectAllTables}
-                onDeselectAllBackupTables={backup.deselectAllTables}
-                onExportBackup={backup.exportBackup}
-                onImportBackup={backup.importBackup}
               />
             )}
           </Suspense>

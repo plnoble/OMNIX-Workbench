@@ -8,6 +8,7 @@
  * 直接标出同名竞争者、当前赢家和最近一次真实失败。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { usePlatformsStore } from "@/store/AppStore";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -18,27 +19,24 @@ import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/sonner";
 import { platformApi, modelApi, settingsApi } from "@/lib/tauri-api";
 import type { ModelPlatform, ModelRouting, PlatformModel } from "@/types";
-import type { PlatformSubTabProps } from "./types";
 
-export function PlatformSubTab({
-  platforms,
-  selectedPlatformId,
-  platformModels,
-  modelTestingState,
-  fetchingModels,
-  onSelectPlatform,
-  onTogglePlatform,
-  onAddPlatform,
-  onEditPlatform,
-  onDeletePlatform,
-  onFetchRemoteModels,
-  onAddModel,
-  onToggleModelEnabled,
-  onTestModel,
-  onDeleteModel,
-  batchTesting,
-  onBatchTestModels,
-}: PlatformSubTabProps) {
+export function PlatformSubTab() {
+  const p = usePlatformsStore();
+  const {
+    platforms, selectedPlatformId, platformModels, modelTestingState,
+    fetchingModels, batchTesting,
+    selectPlatform: onSelectPlatform,
+    togglePlatform: onTogglePlatform,
+    deletePlatform: onDeletePlatform,
+    fetchRemoteModels: onFetchRemoteModels,
+    openModelModal: onAddModel,
+    toggleModelEnabled: onToggleModelEnabled,
+    testModel: onTestModel,
+    deleteModel: onDeleteModel,
+    batchTestModels: onBatchTestModels,
+  } = p;
+  const onAddPlatform = () => p.openPlatformModal();
+  const onEditPlatform = (plat: ModelPlatform) => p.openPlatformModal(plat);
   const selectedPlatform = platforms.find((p) => p.id === selectedPlatformId);
 
   // 路由说明（同名竞争者 / 当前赢家 / 最近一次真实失败）——按模型 id 索引。

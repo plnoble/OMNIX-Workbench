@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { usePlatformsStore, useSelectionStore, useTranslationStore } from "@/store/AppStore";
 import { Clipboard, Languages, MousePointerClick, ShieldOff, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -7,69 +8,35 @@ import { Textarea } from "@/components/ui/textarea";
 import { BUILTIN_LANGUAGES } from "@/lib/translate-constants";
 import { QuickActionsEditor } from "@/components/QuickActionsEditor";
 import { TranslationHistoryPanel } from "@/components/TranslationHistoryPanel";
-import type { SelectionHistoryEntry } from "@/types";
 
-interface QuickAssistantTabProps {
-  captureMode: string;
-  showOnCapture: boolean;
-  preserveClipboard: boolean;
-  autoCaptureEnabled: boolean;
-  blacklist: string[];
-  isCapturing: boolean;
-  lastCapture: string | null;
-  captureError: string | null;
-  history: SelectionHistoryEntry[];
-  preferredLang: string;
-  alterLang: string;
-  translateModel: string;
-  customPrompt: string;
-  autoDetect: boolean;
-  availableModels: string[];
-  onSetCaptureMode: (value: string) => void;
-  onSetShowOnCapture: (value: boolean) => void;
-  onSetPreserveClipboard: (value: boolean) => void;
-  onSetAutoCaptureEnabled: (value: boolean) => void;
-  onSetBlacklist: (value: string[]) => void;
-  onTestCapture: () => Promise<string | null>;
-  onLoadHistory: () => Promise<void>;
-  onClearHistory: () => Promise<void>;
-  onSetPreferredLang: (value: string) => void;
-  onSetAlterLang: (value: string) => void;
-  onSetTranslateModel: (value: string) => void;
-  onSetCustomPrompt: (value: string) => void;
-  onSetAutoDetect: (value: boolean) => void;
-}
-
-export function QuickAssistantTab({
-  captureMode,
-  showOnCapture,
-  preserveClipboard,
-  autoCaptureEnabled,
-  blacklist,
-  isCapturing,
-  lastCapture,
-  captureError,
-  history,
-  preferredLang,
-  alterLang,
-  translateModel,
-  customPrompt,
-  autoDetect,
-  availableModels,
-  onSetCaptureMode,
-  onSetShowOnCapture,
-  onSetPreserveClipboard,
-  onSetAutoCaptureEnabled,
-  onSetBlacklist,
-  onTestCapture,
-  onLoadHistory,
-  onClearHistory,
-  onSetPreferredLang,
-  onSetAlterLang,
-  onSetTranslateModel,
-  onSetCustomPrompt,
-  onSetAutoDetect,
-}: QuickAssistantTabProps) {
+export function QuickAssistantTab() {
+  // 以前是 28 个 prop 横跨 selection / translation / platforms 三个 hook。
+  const selection = useSelectionStore();
+  const translation = useTranslationStore();
+  const platforms = usePlatformsStore();
+  const {
+    captureMode, showOnCapture, preserveClipboard, autoCaptureEnabled,
+    blacklist, isCapturing, lastCapture, captureError,
+    selectionHistory: history,
+    captureTextOnly: onTestCapture,
+    loadHistory: onLoadHistory,
+    clearHistory: onClearHistory,
+  } = selection;
+  const { preferredLang, alterLang, translateModel, customPrompt, autoDetect } = translation;
+  const availableModels = platforms.activeModels.map(
+    (model) => `${model.platform_id}:${model.model_name}`,
+  );
+  const onSetCaptureMode = (value: string) =>
+    selection.saveSelectionSettings({ captureMode: value as "hybrid" | "uia_only" | "clipboard_only" });
+  const onSetShowOnCapture = (value: boolean) => selection.saveSelectionSettings({ showOnCapture: value });
+  const onSetPreserveClipboard = (value: boolean) => selection.saveSelectionSettings({ preserveClipboard: value });
+  const onSetAutoCaptureEnabled = (value: boolean) => selection.saveSelectionSettings({ autoCaptureEnabled: value });
+  const onSetBlacklist = (value: string[]) => selection.saveSelectionSettings({ blacklist: value });
+  const onSetPreferredLang = (value: string) => translation.saveTranslationSettings({ preferredLang: value });
+  const onSetAlterLang = (value: string) => translation.saveTranslationSettings({ alterLang: value });
+  const onSetTranslateModel = (value: string) => translation.saveTranslationSettings({ translateModel: value });
+  const onSetCustomPrompt = (value: string) => translation.saveTranslationSettings({ customPrompt: value });
+  const onSetAutoDetect = (value: boolean) => translation.saveTranslationSettings({ autoDetect: value });
   const [testing, setTesting] = useState(false);
 
   useEffect(() => {

@@ -1,13 +1,13 @@
 import { Plug } from "lucide-react";
 
-import { McpSubTab, type SettingsTabProps } from "@/components/tabs/SettingsTab";
+import { McpSubTab } from "@/components/tabs/SettingsTab";
 
 /**
  * McpTab — a focused MCP page (mirrors ModelsTab). The title-bar "MCP" entry
  * used to render the full Settings tabbed view (System + Backup tabs visible),
  * which looked identical to opening Settings. This shows only the MCP surface.
  */
-export function McpTab(props: SettingsTabProps) {
+export function McpTab() {
   return (
     <div className="flex h-full flex-1 flex-col overflow-hidden bg-background">
       <div className="border-b border-border px-6 py-4">
@@ -20,7 +20,7 @@ export function McpTab(props: SettingsTabProps) {
         </p>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-5">
-        <McpSubTab {...props} />
+        <McpSubTab />
       </div>
     </div>
   );

@@ -1,32 +1,9 @@
 import { Database, KeyRound, RefreshCw, ShieldCheck } from "lucide-react";
 
 import { GatewayHealthCard } from "@/components/GatewayHealthCard";
-import { PlatformSubTab, type PlatformSubTabProps } from "@/components/tabs/SettingsTab";
-import { usePlatformsStore } from "@/store/AppStore";
+import { PlatformSubTab } from "@/components/tabs/SettingsTab";
 
 export function ModelsTab() {
-  // `PlatformSubTab` 是共享叶子（模型中心 + 设置页各渲染一次），它的 props 形状
-  // 由设置页那个大接口定义，所以这里不动它——只把 App.tsx 那 17 行透传收进来。
-  const platforms = usePlatformsStore();
-  const props: PlatformSubTabProps = {
-    platforms: platforms.platforms,
-    selectedPlatformId: platforms.selectedPlatformId,
-    platformModels: platforms.platformModels,
-    modelTestingState: platforms.modelTestingState,
-    fetchingModels: platforms.fetchingModels,
-    onSelectPlatform: platforms.selectPlatform,
-    onTogglePlatform: platforms.togglePlatform,
-    onAddPlatform: () => platforms.openPlatformModal(),
-    onEditPlatform: (p) => platforms.openPlatformModal(p),
-    onDeletePlatform: platforms.deletePlatform,
-    onFetchRemoteModels: platforms.fetchRemoteModels,
-    onAddModel: platforms.openModelModal,
-    onToggleModelEnabled: platforms.toggleModelEnabled,
-    onTestModel: platforms.testModel,
-    onDeleteModel: platforms.deleteModel,
-    batchTesting: platforms.batchTesting,
-    onBatchTestModels: platforms.batchTestModels,
-  };
   return (
     <div className="flex h-full flex-1 flex-col overflow-hidden bg-background">
       <div className="border-b border-border px-6 py-4">
@@ -60,7 +37,7 @@ export function ModelsTab() {
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden p-5">
         <GatewayHealthCard />
         <div className="min-h-0 flex-1 overflow-hidden">
-          <PlatformSubTab {...props} />
+          <PlatformSubTab />
         </div>
       </div>
     </div>
