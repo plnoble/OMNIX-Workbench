@@ -5,7 +5,7 @@
  */
 
 import { useState, useCallback } from "react";
-import { accountApi, settingsApi } from "@/lib/tauri-api";
+import { accountApi } from "@/lib/tauri-api";
 import type { AgentAccount, PlatformModel } from "@/types";
 
 export interface UseAccountsReturn {
@@ -19,7 +19,6 @@ export interface UseAccountsReturn {
 
   loadAccounts: () => Promise<void>;
   saveAccount: () => Promise<void>;
-  switchAccount: (id: string) => Promise<void>;
   deleteAccount: (id: string) => Promise<void>;
   openAccountModal: (acc?: AgentAccount | null) => void;
   closeAccountModal: () => void;
@@ -70,12 +69,6 @@ export function useAccounts(activeModels: PlatformModel[]): UseAccountsReturn {
     await loadAccounts();
   }, [accFormId, accFormName, accFormKey, accFormHost, accFormModel, accounts, loadAccounts]);
 
-  const switchAccount = useCallback(async (id: string) => {
-    await accountApi.switch(id);
-    await loadAccounts();
-    await settingsApi.syncExternalConfigs();
-  }, [loadAccounts]);
-
   const deleteAccount = useCallback(async (id: string) => {
     await accountApi.delete(id);
     await loadAccounts();
@@ -123,7 +116,7 @@ export function useAccounts(activeModels: PlatformModel[]): UseAccountsReturn {
   return {
     accounts, isAccountModalOpen,
     accFormId, accFormName, accFormKey, accFormHost, accFormModel,
-    loadAccounts, saveAccount, switchAccount, deleteAccount,
+    loadAccounts, saveAccount, deleteAccount,
     openAccountModal, closeAccountModal, updateAccForm,
   };
 }

@@ -418,7 +418,6 @@ pub fn run() {
             commands::update_active_agent_model,
             commands::get_agent_accounts,
             commands::save_agent_account,
-            commands::switch_agent_account,
             commands::delete_agent_account,
             commands::list_agent_upstream_accounts,
             commands::set_active_upstream_account,

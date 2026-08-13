@@ -109,7 +109,6 @@ export const apiKeyApi = {
 export const accountApi = {
   list: () => invoke<AgentAccount[]>("get_agent_accounts"),
   save: (account: AgentAccount) => invoke("save_agent_account", { account }),
-  switch: (id: string) => invoke("switch_agent_account", { id }),
   delete: (id: string) => invoke("delete_agent_account", { id }),
 };
 

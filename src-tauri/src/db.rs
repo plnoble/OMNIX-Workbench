@@ -402,10 +402,37 @@ impl DbManager {
         }
     }
 
+    /// 网关在「没有会话上游、也没有 `x-omnix-account-id` 头」时用它挑账号。
+    ///
+    /// 用户在智能体页点「启用」，写的是 `settings.active_upstream_<agent>`
+    /// （`set_active_upstream_account`）——**从不碰 `agent_accounts.is_active`**。
+    /// 这里以前只查 `is_active = 1`，于是换了账号网关照旧用老的那把 key，界面上
+    /// 却显示已经切过去了。唯一会维护 `is_active` 的 `switch_agent_account`
+    /// 没有任何 UI 入口，两套状态没有任何东西让它们保持一致（那条命令连同它的
+    /// TS 包装已随本次改动一起删掉——设置才是用户唯一写得到的地方）。
+    ///
+    /// 现在先问用户真正选过的那个。`is_active` 只在用户从没选过时兜底（老库里
+    /// 装好就能用，不至于因为这次改动突然掉回平台默认）。
     pub fn get_active_account_for_agent(
         &self,
         agent_name: &str,
     ) -> Result<Option<ActiveAccountInfo>> {
+        let chosen = self
+            .get_setting(&crate::commands::active_upstream_setting_key(agent_name))
+            .ok()
+            .flatten();
+        // OAuth 订阅（`oauth:<id>`）不是 `agent_accounts` 里的行，由
+        // `proxy::active_account_override` 那条路负责，这里只认 api-key 账号。
+        if let Some(id) = chosen
+            .as_deref()
+            .and_then(|value| value.trim().strip_prefix("apikey:"))
+            .filter(|id| !id.is_empty())
+        {
+            if let Some(account) = self.get_account_by_id(id)? {
+                return Ok(Some(account));
+            }
+        }
+
         let conn = self.get_connection()?;
         let mut stmt = conn.prepare("SELECT id, account_name, api_key, api_host, target_model FROM agent_accounts WHERE agent_name = ?1 AND is_active = 1 LIMIT 1")?;
         let mut rows = stmt.query(params![agent_name])?;
@@ -1352,6 +1379,88 @@ pub struct ActiveAccountInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn upstream_test_db(tag: &str) -> DbManager {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "omnix_upstream_{tag}_{}_{}.db",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_file(&path);
+        DbManager::new_with_path(path)
+    }
+
+    fn seed_two_accounts(db: &DbManager, agent: &str) {
+        let conn = db.get_connection().unwrap();
+        conn.execute("DELETE FROM agent_accounts", []).unwrap();
+        // 「旧的」是 is_active = 1 的那一个，「新的」是用户后来在界面上选的。
+        conn.execute(
+            "INSERT INTO agent_accounts (id, account_name, api_key, api_host, target_model, agent_name, is_active)
+             VALUES ('acc_old', '旧账号', 'k-old', 'https://old.example', 'm-old', ?1, 1),
+                    ('acc_new', '新账号', 'k-new', 'https://new.example', 'm-new', ?1, 0)",
+            params![agent],
+        )
+        .unwrap();
+    }
+
+    /// 界面上的「启用」写的是 settings.active_upstream_<agent>，从不碰 is_active。
+    /// 网关这条兜底路以前只查 is_active——换了账号仍然发旧的那把 key，而界面
+    /// 显示已经切过去了。
+    #[test]
+    fn gateway_follows_the_account_the_user_picked() {
+        let db = upstream_test_db("picked");
+        seed_two_accounts(&db, "Claude Code");
+        db.set_setting(
+            &crate::commands::active_upstream_setting_key("Claude Code"),
+            "apikey:acc_new",
+        )
+        .unwrap();
+
+        let acc = db.get_active_account_for_agent("Claude Code").unwrap().unwrap();
+        assert_eq!(acc.id, "acc_new", "网关必须用界面上选中的那个账号");
+    }
+
+    /// 用户从没选过时保持老行为，别让老库突然掉回平台默认。
+    #[test]
+    fn falls_back_to_is_active_when_never_chosen() {
+        let db = upstream_test_db("never");
+        seed_two_accounts(&db, "Claude Code");
+        let acc = db.get_active_account_for_agent("Claude Code").unwrap().unwrap();
+        assert_eq!(acc.id, "acc_old");
+    }
+
+    /// OAuth 订阅不是 agent_accounts 里的行，这条路不该硬认它。
+    ///
+    /// 故意让 oauth 的 id 和一个真实账号撞上——只有真正校验前缀的实现才会
+    /// 忽略它；任何「把 ref 当成账号 id 用」的写法都会错认成 acc_new。
+    #[test]
+    fn oauth_ref_is_not_mistaken_for_an_api_key_account() {
+        let db = upstream_test_db("oauth");
+        seed_two_accounts(&db, "Claude Code");
+        db.set_setting(
+            &crate::commands::active_upstream_setting_key("Claude Code"),
+            "oauth:acc_new",
+        )
+        .unwrap();
+        let acc = db.get_active_account_for_agent("Claude Code").unwrap().unwrap();
+        assert_eq!(acc.id, "acc_old", "oauth ref 应交给 proxy 那条路，这里走兜底");
+    }
+
+    /// 选中的账号被删掉后不能整个查询失败，退回兜底即可。
+    #[test]
+    fn stale_ref_falls_back_instead_of_failing() {
+        let db = upstream_test_db("stale");
+        seed_two_accounts(&db, "Claude Code");
+        db.set_setting(
+            &crate::commands::active_upstream_setting_key("Claude Code"),
+            "apikey:acc_deleted",
+        )
+        .unwrap();
+        let acc = db.get_active_account_for_agent("Claude Code").unwrap().unwrap();
+        assert_eq!(acc.id, "acc_old");
+    }
 
     /// Covers the full seed path + active-account switch. Formerly `#[ignore]`d
     /// as "too slow"; the whole seed now runs in well under a second, so it

@@ -64,34 +64,6 @@ pub fn save_agent_account(
 }
 
 #[tauri::command]
-pub fn switch_agent_account(
-    id: String,
-    db: State<'_, Arc<DbManager>>,
-) -> Result<(), String> {
-    input_validation::validate_id(&id, "id")?;
-    let conn = db.get_connection().map_err(|e| e.to_string())?;
-    // Find the agent_name for this account
-    let agent_name: String = conn.query_row(
-        "SELECT agent_name FROM agent_accounts WHERE id = ?1",
-        params![id],
-        |r| r.get(0),
-    ).map_err(|e| format!("Account not found: {}", e))?;
-
-    // Deactivate all accounts for this agent
-    conn.execute(
-        "UPDATE agent_accounts SET is_active = 0 WHERE agent_name = ?1",
-        params![agent_name],
-    ).map_err(|e| e.to_string())?;
-
-    // Activate this account
-    conn.execute(
-        "UPDATE agent_accounts SET is_active = 1 WHERE id = ?1",
-        params![id],
-    ).map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
 pub fn delete_agent_account(
     id: String,
     db: State<'_, Arc<DbManager>>,
