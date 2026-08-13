@@ -145,6 +145,7 @@ pub fn render_body(slide: &Slide) -> Option<String> {
     let p = &slide.params;
     Some(match lay {
         "metrics" => metrics(slide, p),
+        "bento" => bento(slide, p),
         "process" => process(slide, p),
         "compare-table" => compare_table(slide, p),
         "timeline" => timeline(slide, p),
@@ -254,6 +255,49 @@ fn metrics(slide: &Slide, p: &Params) -> String {
         })
         .collect();
     format!("<div class=\"metrics\" style=\"grid-template-columns:repeat({cols},1fr)\">{cards}</div>")
+}
+
+/// 便当格：大小不一的卡片铺满一屏，第一张放大。
+///
+/// 和 `metrics` 的区别是意图不同——指标卡是「几个并列的数字」，等大等宽；
+/// 便当格是「一屏里互不隶属的几件事」，靠**不对称**告诉观众先看哪一个。
+/// 所以这里不追求整齐，反而要有一张显著更大的。
+///
+/// 卡片数不总能把 4 列的网格填满（首卡占 2×2 时，恰好填满只在 5、9 张时成立）。
+/// 与其为此限制卡片数，不如让 CSS 的 `grid-auto-flow:dense` 去补洞——后面的小卡
+/// 会自动填进前面留下的空格。
+fn bento(slide: &Slide, p: &Params) -> String {
+    let mut items = items_of(slide);
+    items.truncate(param_int(p, "bento", "card_count").max(1) as usize);
+    if items.is_empty() {
+        return String::new();
+    }
+    // 只有一张卡时放大没有意义——没有对比对象，只会得到一张占满屏的巨卡。
+    let feature = param_bool(p, "bento", "feature_first") && items.len() > 1;
+    let show_value = param_bool(p, "bento", "show_value");
+    let cards: String = items
+        .iter()
+        .enumerate()
+        .map(|(i, it)| {
+            // value 缺省是 0.0，模型只给标题时不该显示一个凭空的「0」。
+            let val = if show_value && it.value != 0.0 {
+                format!("<div class=\"bval\">{}</div>", esc(&num(it.value)))
+            } else {
+                String::new()
+            };
+            let detail = if it.detail.trim().is_empty() {
+                String::new()
+            } else {
+                format!("<div class=\"bdet\">{}</div>", inline(&it.detail))
+            };
+            let cls = if feature && i == 0 { "bcard feature" } else { "bcard" };
+            format!(
+                "<div class=\"{cls}\">{val}<div class=\"blab\">{}</div>{detail}</div>",
+                inline(&it.label)
+            )
+        })
+        .collect();
+    format!("<div class=\"bento\">{cards}</div>")
 }
 
 fn process(slide: &Slide, p: &Params) -> String {
@@ -1242,6 +1286,77 @@ mod tests {
         s
     }
 
+    /// 便当格的卡片。`fill_default_params` 会带上目录里的默认控件值。
+    fn bento_slide(items: &[(&str, f64, &str)]) -> Slide {
+        let mut s = Slide {
+            layout: "bento".into(),
+            title: "标题".into(),
+            items: items
+                .iter()
+                .map(|(l, v, d)| SlideItem {
+                    label: (*l).into(),
+                    value: *v,
+                    span: 0.0,
+                    detail: (*d).into(),
+                    group: String::new(),
+                })
+                .collect(),
+            ..Default::default()
+        };
+        s.fill_default_params();
+        s
+    }
+
+    /// 便当格的意义全在「不对称」——首卡不放大就退化成了指标卡。
+    #[test]
+    fn bento_features_the_first_card() {
+        let s = bento_slide(&[("主线", 92.0, "本季重点"), ("其二", 0.0, ""), ("其三", 0.0, "")]);
+        let html = render_body(&s).expect("bento 应该有结构化内容");
+        assert_eq!(html.matches("class=\"bcard").count(), 3, "三项应出三张卡");
+        assert_eq!(html.matches("bcard feature").count(), 1, "有且只有一张放大卡");
+        // 放大的必须是第一张，不是随便一张
+        let first = html.find("bcard feature").unwrap();
+        let plain = html.find("class=\"bcard\"").unwrap_or(usize::MAX);
+        assert!(first < plain, "放大的应当是第一张卡");
+    }
+
+    /// 只有一张卡时放大没有对比对象，只会得到一张占满屏的巨卡。
+    #[test]
+    fn bento_does_not_feature_a_lone_card() {
+        let s = bento_slide(&[("独苗", 1.0, "")]);
+        let html = render_body(&s).unwrap();
+        assert!(!html.contains("bcard feature"), "只有一张卡时不该放大");
+    }
+
+    #[test]
+    fn bento_truncates_to_card_count() {
+        let mut s = bento_slide(&[
+            ("a", 1.0, ""), ("b", 2.0, ""), ("c", 3.0, ""),
+            ("d", 4.0, ""), ("e", 5.0, ""), ("f", 6.0, ""),
+        ]);
+        s.params.insert("card_count".into(), serde_json::json!(3));
+        let html = render_body(&s).unwrap();
+        assert_eq!(html.matches("class=\"bcard").count(), 3, "超出卡片数的应被截掉");
+    }
+
+    /// value 缺省是 0.0——模型只给标题时不该在卡上印一个凭空的「0」。
+    #[test]
+    fn bento_hides_a_missing_value() {
+        let s = bento_slide(&[("只有标题", 0.0, "说明"), ("有数", 42.0, "")]);
+        let html = render_body(&s).unwrap();
+        assert_eq!(html.matches("class=\"bval\"").count(), 1, "只有真给了数值的卡才显示大字");
+        assert!(html.contains("42"));
+    }
+
+    #[test]
+    fn bento_respects_show_value_off() {
+        let mut s = bento_slide(&[("甲", 1.0, ""), ("乙", 2.0, "")]);
+        s.params.insert("show_value".into(), serde_json::json!(false));
+        let html = render_body(&s).unwrap();
+        assert!(!html.contains("bval"), "关掉数值开关后不该还有大字");
+        assert!(html.contains("甲"), "标题仍然要在");
+    }
+
     #[test]
     fn bullets_parse_into_items() {
         let it = parse_bullet("营收：1,200 万");
@@ -1528,6 +1643,19 @@ mod tests {
             s.params.insert("chart_kind".into(), serde_json::json!(kind));
             slides.push(s);
         }
+        slides.push(Slide {
+            layout: "bento".into(),
+            title: "便当格 · 首卡放大".into(),
+            subtitle: "一屏铺开互不隶属的几件事".into(),
+            items: data(&[
+                ("本季主线", 92.0, "完成度，重点投入在网关稳定性", ""),
+                ("新增知识库", 14.0, "覆盖 6 个团队", ""),
+                ("平均响应", 1.8, "秒，较上季 -0.6", ""),
+                ("在跑智能体", 5.0, "Claude / Codex / Gemini", ""),
+                ("待办风险", 0.0, "无阻塞项", ""),
+            ]),
+            ..Default::default()
+        });
         for s in slides.iter_mut() {
             s.fill_default_params();
         }

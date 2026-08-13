@@ -895,7 +895,7 @@ body{font-family:'Inter','PingFang SC','Microsoft YaHei',system-ui,sans-serif;ba
 .box.block>.s-title{font-size:44px}
 .box.block .metrics,.box.block .steps,.box.block .quad,.box.block .porter,
 .box.block .pest,.box.block .canvas,.box.block .chart,.box.block .quadwrap,
-.box.block .risks,.box.block .tline{flex:1;min-height:0}
+.box.block .risks,.box.block .tline,.box.block .bento{flex:1;min-height:0}
 /* table 不吃 flex:1，用 auto 外边距把它在纵向居中 */
 .box.block .ctable{margin:auto 0}
 .metrics{display:grid;gap:28px;align-content:center}
@@ -903,6 +903,17 @@ body{font-family:'Inter','PingFang SC','Microsoft YaHei',system-ui,sans-serif;ba
 .mval{font-size:64px;font-weight:800;line-height:1;color:var(--acc)}
 .mlab{font-size:24px;font-weight:600}
 .mdelta{font-size:19px;opacity:.7}
+/* 便当格：4 列网格 + 首卡 2×2。dense 让后面的小卡回填首卡留下的空格，
+   所以卡片数不必凑成能整除的那几个值。 */
+.bento{display:grid;grid-template-columns:repeat(4,1fr);grid-auto-rows:minmax(0,1fr);grid-auto-flow:dense;gap:18px;align-content:center}
+.bcard{background:var(--surface);border-radius:18px;padding:22px 24px;display:flex;flex-direction:column;gap:6px;justify-content:center;min-width:0}
+.bcard.feature{grid-column:span 2;grid-row:span 2}
+.bval{font-size:40px;font-weight:800;line-height:1;color:var(--acc)}
+.bcard.feature .bval{font-size:68px}
+.blab{font-size:21px;font-weight:600;line-height:1.25}
+.bcard.feature .blab{font-size:28px}
+.bdet{font-size:17px;line-height:1.45;opacity:.72}
+.bcard.feature .bdet{font-size:20px}
 /* 步骤卡按内容高度收缩再整体居中——拉满高度会得到一排空荡荡的长条 */
 .steps{display:flex;align-items:center;gap:12px}
 .steps.horiz{flex-direction:row}

@@ -31,7 +31,7 @@ pub const PAGE_ROLES: &[PageRole] = &[
     PageRole { key: "cover", label: "封面", layouts: &["cover"], intent: "开场：主题、副标题、场合" },
     PageRole { key: "agenda", label: "目录", layouts: &["bullets", "two-column"], intent: "全篇脉络，让听众知道要走哪几步" },
     PageRole { key: "section", label: "章节页", layouts: &["section"], intent: "换章过渡，只有章节名和一句引子" },
-    PageRole { key: "background", label: "背景", layouts: &["content", "bullets"], intent: "问题从哪来、为什么现在谈" },
+    PageRole { key: "background", label: "背景", layouts: &["content", "bullets", "bento"], intent: "问题从哪来、为什么现在谈" },
     PageRole { key: "metric", label: "关键指标", layouts: &["metrics", "bullets"], intent: "少数几个数字说明现状或成果" },
     PageRole { key: "trend", label: "趋势", layouts: &["chart", "content"], intent: "随时间变化，强调方向而非精确值" },
     PageRole { key: "compare", label: "对比", layouts: &["two-column", "compare-table"], intent: "两个及以上方案/时期的并列比较" },
@@ -42,7 +42,7 @@ pub const PAGE_ROLES: &[PageRole] = &[
     PageRole { key: "case", label: "案例", layouts: &["image-left", "content"], intent: "具体例子佐证观点" },
     PageRole { key: "quote", label: "引述", layouts: &["quote"], intent: "一句有分量的话，配出处" },
     PageRole { key: "image", label: "图片页", layouts: &["image", "image-left"], intent: "以视觉为主，文字只作注解" },
-    PageRole { key: "summary", label: "小结", layouts: &["bullets", "metrics"], intent: "收敛已讲内容，回扣主线" },
+    PageRole { key: "summary", label: "小结", layouts: &["bullets", "metrics", "bento"], intent: "收敛已讲内容，回扣主线" },
     PageRole { key: "action", label: "行动项", layouts: &["process", "bullets"], intent: "谁、做什么、什么时候之前" },
     PageRole { key: "closing", label: "结尾", layouts: &["section", "cover"], intent: "致谢/联系方式/下一步" },
 ];
@@ -53,7 +53,7 @@ pub const ALL_LAYOUTS: &[&str] = &[
     // 文字类
     "cover", "section", "bullets", "content", "two-column", "quote", "image", "image-left",
     // 数据类（读 Slide.items）
-    "metrics", "chart", "process", "timeline", "gantt", "risk", "compare-table",
+    "metrics", "chart", "process", "timeline", "gantt", "risk", "compare-table", "bento",
     // 分析模型（读 Slide.columns）
     "swot", "matrix-2x2", "porter", "pest", "bmc",
 ];
@@ -70,6 +70,7 @@ pub fn layout_label(layout: &str) -> &'static str {
         "image" => "图片",
         "image-left" => "左图右文",
         "metrics" => "指标卡",
+        "bento" => "便当格",
         "chart" => "图表",
         "process" => "流程",
         "timeline" => "时间线",
@@ -266,6 +267,11 @@ pub fn controls_for(layout: &str) -> Vec<Control> {
             range("metric_count", "指标数", 2, 6, 3, "展示几个关键数字"),
             toggle("show_delta", "显示同比/环比", true, "数字下方的变化幅度"),
         ],
+        "bento" => vec![
+            range("card_count", "卡片数", 3, 8, 5, "一屏铺几张卡"),
+            toggle("feature_first", "首卡放大", true, "第一张占两倍宽高——便当格的重点就在这个不对称"),
+            toggle("show_value", "显示数值", true, "卡片上的大字数字（items.value；为 0 时自动不显示）"),
+        ],
         "process" => vec![
             range("step_count", "步骤数", 3, 7, 4, "流程分几步"),
             select("direction", "方向", &[("horizontal", "横向"), ("vertical", "纵向")], "horizontal", "流程排列方向"),
@@ -319,6 +325,7 @@ pub fn controls_for(layout: &str) -> Vec<Control> {
 pub fn fields_hint_for(layout: &str) -> &'static str {
     match layout {
         "metrics" => "用 items：每项 label=指标名、value=数字、detail=同比/环比说明。",
+        "bento" => "用 items：label=卡片标题、value=可选的数字、detail=一句说明。                    **第一项占最大的一格**，把最重要的那条放第一个。                    适合把一屏内互不隶属的几件事平铺出来，而不是硬编成有序列表。",
         "chart" => "用 items：label=横轴标签、value=数值、group=系列名（单系列可省）。\
                     并在 params.chart_kind 选 bar/line/area/radar/funnel/waterfall/treemap/heatmap。\
                     瀑布图用 value 表示增减量，合计那一项写 group:\"total\"。\
