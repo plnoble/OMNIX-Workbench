@@ -10,6 +10,7 @@ mod db_schema;
 mod hash;
 mod input_validation;
 mod knowledge;
+mod mistake_detect;
 mod media;
 mod memory_recall;
 mod model_knowledge;

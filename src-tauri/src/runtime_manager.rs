@@ -1412,7 +1412,18 @@ async fn persist_runtime_event(
     let persisted_event = event.clone();
     let persisted_session_id = session_id.to_string();
     let persisted = tokio::task::spawn_blocking(move || {
-        record_runtime_event(&db, &persisted_session_id, &persisted_event)
+        let outcome = record_runtime_event(&db, &persisted_session_id, &persisted_event);
+        // 失误检测挂在这里：一条命令跑完的输出，有边界、不含对话文本。
+        //
+        // 它以前挂在 PTY 的 `agent-output` 上，而 PTY 会话根本建不出来，所以
+        // **整段从没运行过**。放在这条落库路径上还顺带解决了原来的另一个毛病：
+        // 原版只有主窗口在渲染时才检测，agent 在后台跑一夜什么都不会记下。
+        if persisted_event.kind == RuntimeEventKind::ToolCompleted {
+            if let Some(text) = persisted_event.text.as_deref() {
+                crate::mistake_detect::detect_and_log(&db, &persisted_session_id, text);
+            }
+        }
+        outcome
     })
     .await;
     if !matches!(persisted, Ok(Ok(()))) {
