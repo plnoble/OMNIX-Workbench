@@ -116,6 +116,17 @@ impl RuntimeManager {
             std::process::id()
         );
         create_agent_session_record(&self.db, &session_id, &config)?;
+        // 记忆库回注。以前挂在 `AgentManager::spawn_agent` 上——那条 PTY 路早已
+        // 不可达，所以这个功能静默停摆了很久：`build_memory_block` 一直是好的，
+        // 只是没有任何东西再调用写入端。runtime 会话就是当年 spawn 的对应位置。
+        // 失败不阻断开会话（工作区可能是 `direct`、只读、或者根本没有经验条目）。
+        if let Err(error) = crate::agent::inject_workspace_memories(
+            &self.db,
+            &config.workspace_path,
+            config.agent.display_name(),
+        ) {
+            log::warn!("记忆回注失败（不影响本次会话）：{error}");
+        }
         self.launch_session(&session_id, config, None).await?;
         self.get_session(&session_id)
     }

@@ -152,7 +152,6 @@ impl ProxyServer {
                 post(handle_responses_for_session),
             )
             .route("/remote", axum::routing::get(serve_remote_html))
-            .route("/api/remote/status", axum::routing::get(get_remote_status))
             .route("/api/remote/conversations", axum::routing::get(get_remote_conversations))
             .route("/api/remote/messages", axum::routing::get(get_remote_messages))
             .route("/api/remote/chat", axum::routing::post(post_remote_chat))
@@ -161,11 +160,6 @@ impl ProxyServer {
             .route("/api/remote/new", axum::routing::post(post_remote_new))
             .route("/api/remote/pending", axum::routing::get(get_remote_pending))
             .route("/api/remote/respond", axum::routing::post(post_remote_respond))
-            .route(
-                "/api/remote/approve",
-                axum::routing::post(post_remote_approve),
-            )
-            .route("/api/remote/send", axum::routing::post(post_remote_send))
             .route(
                 "/api/remote/cron_trigger",
                 axum::routing::post(post_remote_cron_trigger),

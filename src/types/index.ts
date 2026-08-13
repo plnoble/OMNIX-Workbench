@@ -529,9 +529,6 @@ export interface StatusChangeEvent {
   text: string;
 }
 
-/** PTY interactive prompt type detected from terminal output */
-export type PromptType = "none" | "trust" | "update" | "menu" | "editor";
-
 /** Preview file content type */
 export type PreviewType = "html" | "markdown" | "image" | "diff";
 

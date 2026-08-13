@@ -114,16 +114,6 @@ pub struct Memory {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DbTask {
-    pub id: String,
-    pub conversation_id: String,
-    pub title: String,
-    pub status: String,
-    pub order_num: i32,
-    pub dependencies: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelMetadata {
     pub name: String,
     pub source: String,

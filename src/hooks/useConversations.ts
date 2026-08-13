@@ -1,22 +1,22 @@
 /**
- * useConversations — Conversation, PTY session, and chat management
+ * useConversations — Conversation, runtime session, and chat management
  *
  * This is the most complex hook, managing:
  * - Conversation list and CRUD
  * - Active agent selection and detection
  * - Chat message state and sending
- * - PTY session lifecycle (start/stop/stdin)
- * - Terminal stream processing and interactive prompt detection
- * - Collab logs for Team tab
+ * - Runtime session lifecycle and its event stream (`agent-session-event`)
+ * - Terminal log buffer fed by runtime `raw_log` events
+ *
+ * PTY（「兼容终端」）那条链已整体删除：它的入口 `start_agent_session` 没有任何
+ * 调用方，所以 PTY 会话根本建不出来，`agent-output` 事件也就永远不会发。
  */
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { toast } from "sonner";
 import { listen, emit } from "@tauri-apps/api/event";
-import { invoke } from "@tauri-apps/api/core";
-import { conversationApi, ptyApi, agentApi, runtimeApi, checkpointApi, modelApi, distillationApi, type ConversationGoal, type ConversationGoalStatus } from "@/lib/tauri-api";
+import { conversationApi, agentApi, runtimeApi, checkpointApi, modelApi, distillationApi, type ConversationGoal, type ConversationGoalStatus } from "@/lib/tauri-api";
 import { getRuntimeAgentId, loadAgentRegistry } from "@/lib/agentRegistry";
-import { processTerminalStream, detectInteractivePrompts, detectMistakes } from "@/lib/terminal";
 import { parseGoalCommand, parseBtwCommand, parseProposalCommand, type GoalCommand } from "@/lib/slashCommands";
 import { buildProposalPrompt } from "@/lib/decisionBlock";
 import { AGENT_NAMES } from "@/lib/constants";
@@ -27,7 +27,6 @@ import type {
   ConversationMessage,
   DetectedAgent,
   DevStatus,
-  PromptType,
   GatewayStatus,
   StatusChangeEvent,
   RuntimeAgentId,
@@ -145,7 +144,6 @@ export interface UseConversationsReturn {
   detectedAgents: DetectedAgent[];
   activeAgent: string;
   activeSessions: string[];
-  promptType: PromptType;
   collabLogs: string;
   collabStdin: string;
   pendingApproval: RuntimeApprovalRequest | null;
@@ -204,9 +202,7 @@ export function useConversations(
   const [chatWorkspace, setChatWorkspace] = useState("direct");
   const [detectedAgents, setDetectedAgents] = useState<DetectedAgent[]>([]);
   const [activeAgent, setActiveAgent] = useState<string>(AGENT_NAMES[0]);
-  const [ptySessions, setPtySessions] = useState<string[]>([]);
   const [runtimeActiveConversations, setRuntimeActiveConversations] = useState<string[]>([]);
-  const [promptType, setPromptType] = useState<PromptType>("none");
   const [collabLogs, setCollabLogs] = useState("");
   const [collabStdin, setCollabStdin] = useState("");
   const [pendingApproval, setPendingApproval] = useState<RuntimeApprovalRequest | null>(null);
@@ -215,7 +211,9 @@ export function useConversations(
   // by conversation id so the composer can show a model picker for that agent.
   const [acpModelOptions, setAcpModelOptions] = useState<Record<string, AcpModelOption>>({});
   const [currentSurface, setCurrentSurface] = useState<"chat" | "work">("chat");
-  const activeSessions = Array.from(new Set([...ptySessions, ...runtimeActiveConversations]));
+  // PTY 那一半没了：`ptySessions` 由一个从来没有发送方的 `active-sessions-update`
+  // 事件喂养，恒为空数组。现在只剩 runtime 会话这一个真实来源。
+  const activeSessions = Array.from(new Set(runtimeActiveConversations));
 
   // Workspace modal
   const [isWorkspaceModalOpen, setIsWorkspaceModalOpen] = useState(false);
@@ -227,7 +225,6 @@ export function useConversations(
   // enterSurface 的去重依据。用 ref 不用 state：它要在同一轮事件里立刻反映
   // 最新值，而 setCurrentSurface 要等下一次渲染。
   const currentSurfaceRef = useRef<"chat" | "work">("chat");
-  const loggedMistakesRef = useRef<Set<string>>(new Set()); // dedup per raw_line
   const runtimeSessionByConversationRef = useRef<Record<string, string>>({});
   const conversationByRuntimeSessionRef = useRef<Record<string, string>>({});
   const activeRuntimeConversationsRef = useRef(runtimeActiveConversations);
@@ -237,82 +234,6 @@ export function useConversations(
   // ── Agent registry (backend-driven, mount once) ────
   useEffect(() => {
     void loadAgentRegistry();
-  }, []);
-
-  // ── PTY Event Listener (mount once) ────────────────
-
-  useEffect(() => {
-    const unlistenOutput = listen<{
-      session_id: string;
-      stream_type: string;
-      text: string;
-    }>("agent-output", (event) => {
-      const { session_id, text } = event.payload;
-      const cleanText = processTerminalStream(text);
-      if (!cleanText) return;
-
-      // Update terminal logs ref (capped so a long session can't grow unbounded)
-      const currentLogs = terminalLogsRef.current[session_id] || "";
-      const updatedLogs = capLog(currentLogs + cleanText);
-      terminalLogsRef.current[session_id] = updatedLogs;
-
-      // Detect interactive prompts
-      const detected = detectInteractivePrompts(updatedLogs);
-      setPromptType(detected);
-
-      // Detect development mistakes and log to activity_log
-      const mistakes = detectMistakes(updatedLogs);
-      if (mistakes.length > 0) {
-        const newMistakes = mistakes.filter(m => !loggedMistakesRef.current.has(m.raw_line));
-        if (newMistakes.length > 0) {
-          newMistakes.forEach(m => loggedMistakesRef.current.add(m.raw_line));
-          invoke("log_activity", {
-            action: "mistake_detected",
-            target: session_id,
-            details: JSON.stringify(newMistakes),
-          }).catch(() => {});
-        }
-      }
-
-      // If this is the active conversation, update UI state
-      if (session_id === currentConvIdRef.current) {
-        setCollabLogs((prev) => prev + cleanText);
-        setMessages((prev) => {
-          if (prev.length === 0) return prev;
-          const last = prev[prev.length - 1];
-          if (last.role === "assistant") {
-            const updated = [...prev];
-            updated[updated.length - 1] = {
-              ...last,
-              content: last.content + cleanText,
-            };
-            return updated;
-          }
-          return [
-            ...prev,
-            {
-              id: `msg_pt_${Date.now()}`,
-              conversation_id: session_id,
-              role: "assistant" as const,
-              content: cleanText,
-              timestamp: new Date().toISOString(),
-            },
-          ];
-        });
-      }
-    });
-
-    const unlistenActiveSessions = listen<string[]>(
-      "active-sessions-update",
-      (event) => {
-        setPtySessions(event.payload);
-      }
-    );
-
-    return () => {
-      unlistenOutput.then((fn) => fn());
-      unlistenActiveSessions.then((fn) => fn());
-    };
   }, []);
 
   useEffect(() => {
@@ -499,7 +420,6 @@ export function useConversations(
 
   const selectConversation = useCallback(async (id: string) => {
     setCurrentConvId(id);
-    setPromptType("none");
     try {
       const msgs = await conversationApi.getMessages(id);
       setMessages(msgs);
@@ -542,7 +462,6 @@ export function useConversations(
     setMessages([]);
     setActiveGoal(null);
     setChatInput("");
-    setPromptType("none");
     setPendingApproval(null);
     // A fresh conversation is unbound; the 工作 surface will then prompt for a workspace.
     setChatWorkspace("direct");
@@ -568,7 +487,6 @@ export function useConversations(
     setCurrentConvId("");
     setMessages([]);
     setChatInput("");
-    setPromptType("none");
     setPendingApproval(null);
     setChatWorkspace("direct");
   }, [conversations, selectConversation]);
@@ -1043,9 +961,6 @@ export function useConversations(
         setPendingApproval((current) =>
           current?.session_id === runtimeSessionId ? null : current
         );
-      } else {
-        await ptyApi.stop(sessionId);
-        setCollabLogs((prev) => prev + "\n--- 兼容终端进程已被手动终止 ---\n");
       }
     } catch (e) {
       console.error("[useConversations] Failed to stop session:", e);
@@ -1074,7 +989,7 @@ export function useConversations(
 
   return {
     conversations, currentConvId, messages, chatInput, chatWorkspace,
-    detectedAgents, activeAgent, activeSessions, promptType,
+    detectedAgents, activeAgent, activeSessions,
     collabLogs, collabStdin, pendingApproval, startingConversations,
     enterSurface,
     isWorkspaceModalOpen, workspaceFormPath,

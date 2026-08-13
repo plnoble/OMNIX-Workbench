@@ -62,14 +62,6 @@ export const conversationApi = {
 
 // ── PTY Sessions ──────────────────────────────────────
 
-export const ptyApi = {
-  start: (params: { sessionId: string; agentName: string; exePath: string; args: string[]; workspaceDir: string }) =>
-    invoke("start_agent_session", params),
-  sendStdin: (params: { sessionId: string; input: string }) =>
-    invoke("send_agent_stdin", params),
-  stop: (sessionId: string) => invoke("stop_agent_session", { sessionId }),
-};
-
 export const runtimeApi = {
   getAgentCatalog: () => invoke<RuntimeAgentCatalogEntry[]>("runtime_get_agent_catalog"),
   getModelOptions: (agent: RuntimeAgentId) =>

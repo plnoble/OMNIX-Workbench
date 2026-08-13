@@ -1,27 +1,18 @@
 use chrono::{DateTime, Datelike, Local, TimeZone, Timelike};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use crate::proc::NoWindow;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
-use tokio::sync::mpsc;
 
 use crate::db::DbManager;
 use crate::runtime::{managed_install_command, AgentId};
 
-fn current_time_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}
 
 fn resolve_sandbox_path(path_str: &str) -> PathBuf {
     let normalized = path_str.replace('\\', "/");
@@ -294,44 +285,8 @@ pub fn semver_is_older(current: &str, latest: &str) -> bool {
     parts(current) < parts(latest)
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct AcpTask {
-    pub id: String,
-    pub title: String,
-    pub status: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct AcpParams {
-    pub tasks: Vec<AcpTask>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct AcpRequest {
-    pub jsonrpc: String,
-    pub method: String,
-    pub params: AcpParams,
-}
-
-pub enum AgentChild {
-    Standard(tokio::process::Child),
-    Pty {
-        child: Box<dyn portable_pty::Child + Send + Sync>,
-        #[allow(dead_code)]
-        pty_pair: portable_pty::PtyPair,
-    },
-}
-
-// Track active subprocesses and their last activity timestamp
-struct ActiveProcess {
-    child: Arc<tokio::sync::Mutex<AgentChild>>,
-    last_activity: Arc<AtomicU64>,
-    stdin_tx: mpsc::Sender<String>,
-}
-
 pub struct AgentManager {
     db: Arc<DbManager>,
-    active_processes: Arc<Mutex<HashMap<String, ActiveProcess>>>,
 }
 
 /// Where the injected lessons are written, relative to the workspace.
@@ -383,12 +338,12 @@ impl AgentManager {
     pub fn new(db: Arc<DbManager>) -> Self {
         Self {
             db,
-            active_processes: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     pub fn start_services(&self) {
-        self.start_idle_reaper();
+        // 这里以前还有一个 `start_idle_reaper()`——它回收的是 PTY 子进程，
+        // 随「兼容终端」那条链一起删了。runtime 会话有自己的生命周期管理。
         self.start_cron_scheduler();
         self.start_autopilot_scheduler();
     }
@@ -537,576 +492,7 @@ impl AgentManager {
     }
 }
 
-fn generate_uuid_from_seed(seed: &str) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    let mut h1 = DefaultHasher::new();
-    seed.hash(&mut h1);
-    let v1 = h1.finish();
-
-    let mut h2 = DefaultHasher::new();
-    (seed.to_string() + "_extra").hash(&mut h2);
-    let v2 = h2.finish();
-
-    let b1 = (v1 >> 32) as u32;
-    let b2 = (v1 & 0xffff_ffff) as u32;
-    let b3 = (v2 >> 32) as u32;
-    let b4 = (v2 & 0xffff_ffff) as u32;
-
-    let s = format!("{:08x}{:08x}{:08x}{:08x}", b1, b2, b3, b4);
-
-    format!(
-        "{}-{}-{}-8{}-{}",
-        &s[0..8],
-        &s[8..12],
-        "435a",
-        &s[17..20],
-        &s[20..32]
-    )
-}
-
 impl AgentManager {
-    // --- 3. Run and execute subprocesses ---
-    pub fn spawn_agent(
-        &self,
-        session_id: String,
-        agent_name: String,
-        exe_path: String,
-        args: Vec<String>,
-        workspace_dir: String,
-        stdout_tx: mpsc::Sender<String>,
-    ) -> Result<mpsc::Sender<String>, String> {
-        let exe_path = if cfg!(windows) {
-            exe_path.replace('/', "\\")
-        } else {
-            exe_path
-        };
-        let mut args = args;
-        if exe_path.contains("claude") {
-            if !args.iter().any(|arg| arg == "--setting-sources") {
-                args.push("--setting-sources".to_string());
-                args.push("project,local".to_string());
-            }
-
-            // Generate deterministic UUID for Claude Code session
-            let claude_uuid = generate_uuid_from_seed(&session_id);
-
-            // Check if this session has been initialized before
-            let mut session_exists = false;
-            if let Some(home_dir) = dirs::home_dir() {
-                let mut projects_dir = home_dir;
-                projects_dir.push(".claude");
-                projects_dir.push("projects");
-
-                if projects_dir.exists() {
-                    if let Ok(entries) = fs::read_dir(&projects_dir) {
-                        for entry in entries.flatten() {
-                            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                                let mut session_file = entry.path();
-                                session_file.push(format!("{}.jsonl", claude_uuid));
-                                if session_file.exists() {
-                                    session_exists = true;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            if session_exists {
-                args.push("--resume".to_string());
-                args.push(claude_uuid);
-            } else {
-                args.push("--session-id".to_string());
-                args.push(claude_uuid);
-            }
-        }
-
-        let resolved_workspace = if workspace_dir == "direct" || workspace_dir.trim().is_empty() {
-            dirs::home_dir()
-                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
-        } else {
-            resolve_sandbox_path(&workspace_dir)
-        };
-        let resolved_workspace_str = resolved_workspace.to_string_lossy().to_string();
-
-        log::warn!("OMNIX spawn_agent: session_id={}, agent_name={}, exe_path={}, workspace_dir={}, resolved={}",
-                 session_id, agent_name, exe_path, workspace_dir, resolved_workspace_str);
-
-        // Auto-create workspace directory if it doesn't exist to prevent os error 267 (directory invalid)
-        if !resolved_workspace_str.trim().is_empty() && workspace_dir != "direct" {
-            if !resolved_workspace.exists() {
-                if let Err(e) = fs::create_dir_all(&resolved_workspace) {
-                    return Err(format!("工作区目录不存在且自动创建失败: {}", e));
-                }
-            }
-        }
-
-        // Pre-initialization check for Claude Code
-        if exe_path.contains("claude") {
-            self.bootstrap_claude_code();
-        }
-
-        // Inject long-term memory anti-failure files into the workspace directory
-        let _ = self.inject_workspace_memories(&resolved_workspace_str, &agent_name);
-
-        // Configure environment variables (supporting WSL cross-boundary translation or local loopback)
-        let use_wsl = self
-            .db
-            .get_setting("use_wsl")
-            .unwrap_or(None)
-            .unwrap_or_else(|| "false".to_string())
-            == "true";
-        let wsl_distro = self
-            .db
-            .get_setting("wsl_distro")
-            .unwrap_or(None)
-            .unwrap_or_else(|| "Ubuntu".to_string());
-        let proxy_port = self
-            .db
-            .get_setting("proxy_port")
-            .unwrap_or(None)
-            .unwrap_or_else(|| "1421".to_string());
-
-        // Try using PTY system
-        let pty_system = std::panic::catch_unwind(|| portable_pty::native_pty_system())
-            .map_err(|_| "PTY 系统在初始化时崩溃".to_string())?;
-
-        let pty_pair = pty_system
-            .openpty(portable_pty::PtySize {
-                rows: 24,
-                cols: 80,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(|e| format!("无法创建虚拟终端 (PTY) 会话: {}", e))?;
-
-        let cmd_builder = if use_wsl {
-            let mut c = portable_pty::CommandBuilder::new("wsl.exe");
-            let args_escaped: Vec<String> = args
-                .iter()
-                .map(|a| {
-                    if a.contains(' ') || a.contains('"') || a.contains('\'') {
-                        format!("'{}'", a.replace("'", "'\\''"))
-                    } else {
-                        a.clone()
-                    }
-                })
-                .collect();
-            let command_str = format!("{} {}", exe_path, args_escaped.join(" "));
-            let sh_command = format!(
-                "HOST_IP=$(ip route | grep default | awk '{{print $3}}'); \
-                 export ANTHROPIC_BASE_URL=http://$HOST_IP:{}/agent/{}; \
-                 export CLAUDE_CODE_HEADLESS=0; \
-                 export ANTHROPIC_API_KEY=dummy-key-for-omnix; \
-                 export DISABLE_UPDATES=1; \
-                 export DISABLE_AUTOUPDATER=1; \
-                 {}",
-                proxy_port,
-                agent_name.replace(' ', "_"),
-                command_str
-            );
-            c.args(&["-d", &wsl_distro, "--", "sh", "-c", &sh_command]);
-            c
-        } else {
-            let local_proxy_url = format!(
-                "http://localhost:{}/agent/{}",
-                proxy_port,
-                agent_name.replace(' ', "_")
-            );
-
-            // On Windows, non-.exe files (like .cmd, .bat, or script wrappers without extension)
-            // cannot be executed directly by CreateProcess via portable-pty. They must be wrapped in cmd.exe /c.
-            let mut is_script = false;
-            if cfg!(windows) {
-                let path_lower = exe_path.to_lowercase();
-                if path_lower.ends_with(".cmd")
-                    || path_lower.ends_with(".bat")
-                    || !path_lower.ends_with(".exe")
-                {
-                    is_script = true;
-                }
-            }
-
-            let mut c = if is_script {
-                let mut builder = portable_pty::CommandBuilder::new("cmd.exe");
-                builder.arg("/c");
-                builder.arg(&exe_path);
-                builder.args(&args);
-                builder
-            } else {
-                let mut builder = portable_pty::CommandBuilder::new(&exe_path);
-                builder.args(&args);
-                builder
-            };
-            c.env("ANTHROPIC_BASE_URL", &local_proxy_url);
-            c.env("CLAUDE_CODE_HEADLESS", "0");
-            c.env("ANTHROPIC_API_KEY", "dummy-key-for-omnix");
-            c.env("DISABLE_UPDATES", "1");
-            c.env("DISABLE_AUTOUPDATER", "1");
-            c
-        };
-
-        let mut cmd_builder = cmd_builder;
-        cmd_builder.cwd(&resolved_workspace);
-
-        let child = pty_pair.slave.spawn_command(cmd_builder).map_err(|e| {
-            format!(
-                "虚拟终端运行智能体失败: {}。智能体可执行路径: '{}'，参数: {:?}",
-                e, exe_path, args
-            )
-        })?;
-
-        let spawned_pty = Some((pty_pair, child));
-
-        let (stdin_tx, mut stdin_rx) = mpsc::channel::<String>(100);
-        let last_activity = Arc::new(AtomicU64::new(current_time_ms()));
-
-        let child_shared = if let Some((pty_pair, child)) = spawned_pty {
-            let writer = pty_pair
-                .master
-                .take_writer()
-                .map_err(|e| format!("Failed to get pty master writer: {}", e))?;
-            let reader = pty_pair
-                .master
-                .try_clone_reader()
-                .map_err(|e| format!("Failed to clone pty master reader: {}", e))?;
-
-            // 1. Thread for handling writing to PTY stdin
-            let last_activity_stdin = Arc::clone(&last_activity);
-            let session_id_stdin = session_id.clone();
-            tauri::async_runtime::spawn(async move {
-                let mut writer = writer;
-                while let Some(msg) = stdin_rx.recv().await {
-                    // In a PTY, a line submission is triggered by a carriage return ('\r').
-                    // A line feed ('\n') is interpreted as a newline insert in interactive prompts like Claude Code,
-                    // which causes it to enter multi-line edit mode instead of executing the command.
-                    // We normalize all newlines in PTY stdin to Carriage Returns ('\r') to ensure execution.
-                    let normalized_msg = msg.replace("\r\n", "\r").replace('\n', "\r");
-                    println!(
-                        "OMNIX PTY (Session {}): Writing stdin -> {:?}",
-                        session_id_stdin, normalized_msg
-                    );
-                    last_activity_stdin.store(current_time_ms(), Ordering::Relaxed);
-                    let res = tokio::task::spawn_blocking(move || {
-                        writer
-                            .write_all(normalized_msg.as_bytes())
-                            .and_then(|_| writer.flush())
-                            .map(|_| writer)
-                    })
-                    .await;
-                    match res {
-                        Ok(Ok(w)) => {
-                            writer = w;
-                        }
-                        _ => {
-                            log::warn!("OMNIX spawn_agent (PTY): Failed to write to stdin");
-                            break;
-                        }
-                    }
-                }
-            });
-
-            // 2. Thread for reading PTY stdout/stderr (mixed)
-            let (pty_out_tx, mut pty_out_rx) = mpsc::channel::<Vec<u8>>(100);
-            std::thread::spawn(move || {
-                let mut reader = reader;
-                let mut buf = vec![0; 4096];
-                while let Ok(n) = reader.read(&mut buf) {
-                    if n == 0 {
-                        break;
-                    }
-                    if pty_out_tx.blocking_send(buf[..n].to_vec()).is_err() {
-                        break;
-                    }
-                }
-            });
-
-            let stdout_tx_clone = stdout_tx.clone();
-            let last_activity_stdout = Arc::clone(&last_activity);
-            let session_id_for_stdout = session_id.clone();
-            let db_clone = Arc::clone(&self.db);
-            tauri::async_runtime::spawn(async move {
-                let mut line_accumulator = String::new();
-                while let Some(bytes) = pty_out_rx.recv().await {
-                    last_activity_stdout.store(current_time_ms(), Ordering::Relaxed);
-
-                    // Strip ANSI escape codes
-                    let clean_bytes = strip_ansi_escapes::strip(&bytes);
-                    let clean_str = String::from_utf8_lossy(&clean_bytes);
-                    println!(
-                        "OMNIX PTY (Session {}): Read stdout -> {:?}",
-                        session_id_for_stdout, clean_str
-                    );
-                    let _ = stdout_tx_clone.send(format!("STDOUT: {}", clean_str)).await;
-
-                    line_accumulator.push_str(&clean_str);
-                    while let Some(pos) = line_accumulator.find('\n') {
-                        let line = line_accumulator[..pos].to_string();
-                        line_accumulator = line_accumulator[pos + 1..].to_string();
-
-                        let trimmed = line.trim();
-                        if trimmed.starts_with('{') && trimmed.ends_with('}') {
-                            if let Ok(req) = serde_json::from_str::<AcpRequest>(trimmed) {
-                                if req.method == "task/plan" {
-                                    let conn = db_clone.get_connection();
-                                    if let Ok(conn) = conn {
-                                        let _ = conn.execute(
-                                            "DELETE FROM tasks WHERE conversation_id = ?1",
-                                            params![session_id_for_stdout],
-                                        );
-                                        for (i, t) in req.params.tasks.iter().enumerate() {
-                                            let _ = conn.execute(
-                                                "INSERT INTO tasks (id, conversation_id, title, status, order_num)
-                                                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                                                params![t.id, session_id_for_stdout, t.title, t.status, i as i32],
-                                            );
-                                        }
-                                    }
-                                    let _ =
-                                        stdout_tx_clone.send(format!("ACP: {}\n", trimmed)).await;
-                                }
-                            }
-                        }
-                    }
-                }
-            });
-
-            Arc::new(tokio::sync::Mutex::new(AgentChild::Pty { child, pty_pair }))
-        } else {
-            // Fallback: spawn command using traditional piped Stdio
-            if exe_path.contains("codex") {
-                if !args.iter().any(|arg| {
-                    arg == "exec"
-                        || arg == "e"
-                        || arg == "review"
-                        || arg == "login"
-                        || arg == "logout"
-                        || arg == "mcp"
-                        || arg == "help"
-                        || arg == "--help"
-                        || arg == "--version"
-                        || arg == "-V"
-                        || arg == "-h"
-                }) {
-                    args.insert(0, "exec".to_string());
-                }
-            }
-
-            let mut cmd = if use_wsl {
-                let mut c = Command::new("wsl.exe");
-                let args_escaped: Vec<String> = args
-                    .iter()
-                    .map(|a| {
-                        if a.contains(' ') || a.contains('"') || a.contains('\'') {
-                            format!("'{}'", a.replace("'", "'\\''"))
-                        } else {
-                            a.clone()
-                        }
-                    })
-                    .collect();
-                let command_str = format!("{} {}", exe_path, args_escaped.join(" "));
-                let sh_command = format!(
-                    "HOST_IP=$(ip route | grep default | awk '{{print $3}}'); \
-                     export ANTHROPIC_BASE_URL=http://$HOST_IP:{}/agent/{}; \
-                     export CLAUDE_CODE_HEADLESS=1; \
-                     export ANTHROPIC_API_KEY=dummy-key-for-omnix; \
-                     export DISABLE_UPDATES=1; \
-                     export DISABLE_AUTOUPDATER=1; \
-                     {}",
-                    proxy_port,
-                    agent_name.replace(' ', "_"),
-                    command_str
-                );
-                c.args(&["-d", &wsl_distro, "--", "sh", "-c", &sh_command]);
-                c
-            } else {
-                let local_proxy_url = format!(
-                    "http://localhost:{}/agent/{}",
-                    proxy_port,
-                    agent_name.replace(' ', "_")
-                );
-                let mut c = Command::new(&exe_path);
-                c.args(args)
-                    .env("ANTHROPIC_BASE_URL", &local_proxy_url)
-                    .env("CLAUDE_CODE_HEADLESS", "1")
-                    .env("ANTHROPIC_API_KEY", "dummy-key-for-omnix")
-                    .env("DISABLE_UPDATES", "1")
-                    .env("DISABLE_AUTOUPDATER", "1");
-                c
-            };
-
-            cmd.current_dir(resolved_workspace)
-                .no_window()
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
-
-            let mut child = match cmd.spawn() {
-                Ok(c) => {
-                    log::warn!(
-                        "OMNIX spawn_agent: Successfully spawned fallback process with PID {:?}",
-                        c.id()
-                    );
-                    c
-                }
-                Err(e) => {
-                    log::warn!("OMNIX spawn_agent: Failed to spawn fallback process: {}", e);
-                    return Err(format!("Failed to launch agent fallback process: {}", e));
-                }
-            };
-
-            let stdin = child
-                .stdin
-                .take()
-                .ok_or_else(|| "Failed to open stdin stream".to_string())?;
-            let stdout = child
-                .stdout
-                .take()
-                .ok_or_else(|| "Failed to open stdout stream".to_string())?;
-            let stderr = child
-                .stderr
-                .take()
-                .ok_or_else(|| "Failed to open stderr stream".to_string())?;
-
-            let last_activity_stdin = Arc::clone(&last_activity);
-            tauri::async_runtime::spawn(async move {
-                let mut writer = stdin;
-                while let Some(msg) = stdin_rx.recv().await {
-                    last_activity_stdin.store(current_time_ms(), Ordering::Relaxed);
-                    if let Err(e) = writer.write_all(msg.as_bytes()).await {
-                        log::warn!(
-                            "OMNIX spawn_agent: Failed to write to fallback stdin: {}",
-                            e
-                        );
-                        break;
-                    }
-                    if let Err(e) = writer.flush().await {
-                        log::warn!("OMNIX spawn_agent: Failed to flush fallback stdin: {}", e);
-                        break;
-                    }
-                }
-            });
-
-            let stdout_tx_clone = stdout_tx.clone();
-            let last_activity_stdout = Arc::clone(&last_activity);
-            let session_id_for_stdout = session_id.clone();
-            let db_clone = Arc::clone(&self.db);
-            tauri::async_runtime::spawn(async move {
-                let mut reader = stdout;
-                let mut buf = vec![0; 4096];
-                let mut line_accumulator = String::new();
-                while let Ok(n) = reader.read(&mut buf).await {
-                    if n == 0 {
-                        break;
-                    }
-                    last_activity_stdout.store(current_time_ms(), Ordering::Relaxed);
-                    let chunk_str = String::from_utf8_lossy(&buf[..n]);
-                    let _ = stdout_tx_clone.send(format!("STDOUT: {}", chunk_str)).await;
-
-                    line_accumulator.push_str(&chunk_str);
-                    while let Some(pos) = line_accumulator.find('\n') {
-                        let line = line_accumulator[..pos].to_string();
-                        line_accumulator = line_accumulator[pos + 1..].to_string();
-
-                        let trimmed = line.trim();
-                        if trimmed.starts_with('{') && trimmed.ends_with('}') {
-                            if let Ok(req) = serde_json::from_str::<AcpRequest>(trimmed) {
-                                if req.method == "task/plan" {
-                                    let conn = db_clone.get_connection();
-                                    if let Ok(conn) = conn {
-                                        let _ = conn.execute(
-                                            "DELETE FROM tasks WHERE conversation_id = ?1",
-                                            params![session_id_for_stdout],
-                                        );
-                                        for (i, t) in req.params.tasks.iter().enumerate() {
-                                            let _ = conn.execute(
-                                                "INSERT INTO tasks (id, conversation_id, title, status, order_num)
-                                                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                                                params![t.id, session_id_for_stdout, t.title, t.status, i as i32],
-                                            );
-                                        }
-                                    }
-                                    let _ =
-                                        stdout_tx_clone.send(format!("ACP: {}\n", trimmed)).await;
-                                }
-                            }
-                        }
-                    }
-                }
-            });
-
-            let stderr_tx_clone = stdout_tx.clone();
-            let last_activity_stderr = Arc::clone(&last_activity);
-            tauri::async_runtime::spawn(async move {
-                let mut reader = stderr;
-                let mut buf = vec![0; 4096];
-                while let Ok(n) = reader.read(&mut buf).await {
-                    if n == 0 {
-                        break;
-                    }
-                    last_activity_stderr.store(current_time_ms(), Ordering::Relaxed);
-                    let chunk_str = String::from_utf8_lossy(&buf[..n]);
-                    let _ = stderr_tx_clone.send(format!("STDERR: {}", chunk_str)).await;
-                }
-            });
-
-            Arc::new(tokio::sync::Mutex::new(AgentChild::Standard(child)))
-        };
-
-        let child_shared = child_shared;
-
-        let proc = ActiveProcess {
-            child: Arc::clone(&child_shared),
-            last_activity: Arc::clone(&last_activity),
-            stdin_tx: stdin_tx.clone(),
-        };
-
-        let session_id_for_wait = session_id.clone();
-
-        if let Ok(mut procs) = self.active_processes.lock() {
-            procs.insert(session_id, proc);
-        }
-
-        // 4. Thread for awaiting process termination asynchronously without holding the map lock via polling try_wait
-        let active_processes_for_wait = Arc::clone(&self.active_processes);
-        let child_for_wait = Arc::clone(&child_shared);
-        tauri::async_runtime::spawn(async move {
-            loop {
-                tokio::time::sleep(Duration::from_millis(500)).await;
-                let mut child_lock = child_for_wait.lock().await;
-                match &mut *child_lock {
-                    AgentChild::Standard(c) => {
-                        if let Ok(Some(status)) = c.try_wait() {
-                            println!(
-                                "Subprocess for session {} exited with status {:?}",
-                                session_id_for_wait, status
-                            );
-                            break;
-                        }
-                    }
-                    AgentChild::Pty { child, .. } => {
-                        if let Ok(Some(status)) = child.try_wait() {
-                            println!(
-                                "PTY Subprocess for session {} exited with status {:?}",
-                                session_id_for_wait, status
-                            );
-                            break;
-                        }
-                    }
-                }
-            }
-            // Clean up registry map on process exit
-            if let Ok(mut procs) = active_processes_for_wait.lock() {
-                procs.remove(&session_id_for_wait);
-            }
-        });
-
-        Ok(stdin_tx)
-    }
-
     pub async fn install_agent(&self, agent_name: &str) -> Result<(), String> {
         if agent_name == "Qwen Code" {
             return Err("Qwen Code managed installation is not supported yet; OMNIX will not create a mock CLI".into());
@@ -1383,187 +769,100 @@ impl AgentManager {
     }
 
 
-    pub fn get_active_session_ids(&self) -> Vec<String> {
-        if let Ok(procs) = self.active_processes.lock() {
-            procs.keys().cloned().collect()
+}
+
+/// 把记忆库回注进工作区的 CLAUDE.md / AGENTS.md / GEMINI.md（外加 `.omnix/memory.md`
+/// sidecar）。
+///
+/// 以前它是 `spawn_agent` 里的一行——也就是说只有**启动 PTY 会话**时才会回注。
+/// PTY 那条路早已不可达（`start_agent_session` 没有任何调用方），所以这个功能跟着
+/// 静默停摆了：`build_memory_block` 一直好好的、`evolution.rs` 的文档也一直说
+/// 「回注由 inject_workspace_memories 负责」，但没有任何东西再调用它。
+///
+/// 现在挂在 `RuntimeManager::start_session` 上——runtime 会话就是当年 spawn_agent
+/// 的对应位置。它只用到 `db`，本来就不需要 AgentManager。
+pub(crate) fn inject_workspace_memories(
+    db: &DbManager,
+    workspace_dir: &str,
+    agent_name: &str,
+) -> Result<(), String> {
+    // Build the managed memory block (relevance-ranked; shared with the
+    // evolution preview command). None when there are no experience memories.
+    let memories_md = match crate::commands::build_memory_block(db, workspace_dir)? {
+        Some(block) => block,
+        None => return Ok(()),
+    };
+
+    let workspace_path = PathBuf::from(workspace_dir);
+    if !workspace_path.exists() {
+        return Ok(());
+    }
+
+    // Determine which context files to write based on agent type.
+    // Each AI agent reads its own project-level instruction file.
+    let context_files: Vec<&str> =
+        if agent_name.contains("Claude") || agent_name.contains("claude") {
+            vec!["CLAUDE.md"]
+        } else if agent_name.contains("Gemini") || agent_name.contains("gemini") {
+            vec!["GEMINI.md"]
+        } else if agent_name.contains("Codex") || agent_name.contains("codex") {
+            vec!["AGENTS.md"]
+        } else if agent_name.contains("Copilot") || agent_name.contains("copilot") {
+            vec![".github/copilot-instructions.md"]
         } else {
-            Vec::new()
-        }
-    }
-
-    pub fn terminate_agent(&self, session_id: &str) {
-        if let Ok(mut procs) = self.active_processes.lock() {
-            if let Some(proc) = procs.remove(session_id) {
-                // Kill asynchronously to prevent blocking the registry lock
-                tauri::async_runtime::spawn(async move {
-                    let mut child = proc.child.lock().await;
-                    match &mut *child {
-                        AgentChild::Standard(c) => {
-                            let _ = c.start_kill();
-                        }
-                        AgentChild::Pty { child, .. } => {
-                            let _ = child.kill();
-                        }
-                    }
-                });
-                println!(
-                    "Forcefully terminated agent process for session: {}",
-                    session_id
-                );
-            }
-        }
-    }
-
-    pub fn send_stdin(&self, session_id: &str, text: String) -> Result<(), String> {
-        let procs = self
-            .active_processes
-            .lock()
-            .map_err(|_| "Failed to lock active processes map".to_string())?;
-        if let Some(proc) = procs.get(session_id) {
-            let tx = proc.stdin_tx.clone();
-            tauri::async_runtime::spawn(async move {
-                let _ = tx.send(text).await;
-            });
-            Ok(())
-        } else {
-            Err(format!(
-                "No active agent session found with ID {}",
-                session_id
-            ))
-        }
-    }
-
-    // --- 4. Idle Reaper Watchdog thread ---
-    fn start_idle_reaper(&self) {
-        let active_processes_clone = Arc::clone(&self.active_processes);
-        let db_clone = Arc::clone(&self.db);
-
-        tauri::async_runtime::handle().spawn(async move {
-            loop {
-                // Check every 30 seconds
-                tokio::time::sleep(Duration::from_secs(30)).await;
-
-                // Load threshold from DB config
-                let timeout_min_str = db_clone.get_setting("idle_timeout_min").unwrap_or(None).unwrap_or_else(|| "15".to_string());
-                let timeout_min = timeout_min_str.parse::<u64>().unwrap_or(15);
-                let timeout_duration = Duration::from_secs(timeout_min * 60);
-
-                let mut to_reap = Vec::new();
-
-                if let Ok(procs) = active_processes_clone.lock() {
-                    for (session_id, proc) in procs.iter() {
-                        let last_act = proc.last_activity.load(Ordering::Relaxed);
-                        let elapsed_ms = current_time_ms().saturating_sub(last_act);
-                        if elapsed_ms > timeout_duration.as_millis() as u64 {
-                            to_reap.push(session_id.clone());
-                        }
-                    }
-                }
-
-                // Terminate reaped processes
-                for session_id in to_reap {
-                    println!("Idle Reaper: Session {} exceeded idle threshold of {} minutes. Killing subprocess...", session_id, timeout_min);
-                    if let Ok(mut procs_lock) = active_processes_clone.lock() {
-                        if let Some(proc) = procs_lock.remove(&session_id) {
-                            tauri::async_runtime::spawn(async move {
-                                let mut child = proc.child.lock().await;
-                                match &mut *child {
-                                    AgentChild::Standard(c) => {
-                                        let _ = c.start_kill();
-                                    }
-                                    AgentChild::Pty { child, .. } => {
-                                        let _ = child.kill();
-                                    }
-                                }
-                            });
-                        }
-                    }
-                }
-            }
-        });
-    }
-
-    fn inject_workspace_memories(
-        &self,
-        workspace_dir: &str,
-        agent_name: &str,
-    ) -> Result<(), String> {
-        // Build the managed memory block (relevance-ranked; shared with the
-        // evolution preview command). None when there are no experience memories.
-        let memories_md = match crate::commands::build_memory_block(&self.db, workspace_dir)? {
-            Some(block) => block,
-            None => return Ok(()),
+            vec!["CLAUDE.md", "GEMINI.md", "AGENTS.md"]
         };
 
-        let workspace_path = PathBuf::from(workspace_dir);
-        if !workspace_path.exists() {
-            return Ok(());
+    // The lessons themselves live in a gitignored sidecar, never in the
+    // agent context file. Those files (CLAUDE.md / AGENTS.md / GEMINI.md) are
+    // normally committed and shared, while the memory bank records what THIS
+    // user hit on THIS machine — personal data that must not ride along with
+    // a repo. The context file only gets a neutral pointer, which is safe to
+    // commit and still routes every agent to the lessons.
+    let sidecar_rel = format!("{MEMORY_SIDECAR_DIR}/{MEMORY_SIDECAR_FILE}");
+    let sidecar_dir = workspace_path.join(MEMORY_SIDECAR_DIR);
+    let _ = fs::create_dir_all(&sidecar_dir);
+    let _ = fs::write(sidecar_dir.join(MEMORY_SIDECAR_FILE), &memories_md);
+    ensure_sidecar_ignored(&workspace_path);
+
+    let pointer = memory_pointer_block(&sidecar_rel);
+    for filename in &context_files {
+        let file_path = workspace_path.join(filename);
+
+        // Create parent directory if needed (e.g. .github/)
+        if let Some(parent) = file_path.parent() {
+            let _ = fs::create_dir_all(parent);
         }
 
-        // Determine which context files to write based on agent type.
-        // Each AI agent reads its own project-level instruction file.
-        let context_files: Vec<&str> =
-            if agent_name.contains("Claude") || agent_name.contains("claude") {
-                vec!["CLAUDE.md"]
-            } else if agent_name.contains("Gemini") || agent_name.contains("gemini") {
-                vec!["GEMINI.md"]
-            } else if agent_name.contains("Codex") || agent_name.contains("codex") {
-                vec!["AGENTS.md"]
-            } else if agent_name.contains("Copilot") || agent_name.contains("copilot") {
-                vec![".github/copilot-instructions.md"]
-            } else {
-                vec!["CLAUDE.md", "GEMINI.md", "AGENTS.md"]
-            };
-
-        // The lessons themselves live in a gitignored sidecar, never in the
-        // agent context file. Those files (CLAUDE.md / AGENTS.md / GEMINI.md) are
-        // normally committed and shared, while the memory bank records what THIS
-        // user hit on THIS machine — personal data that must not ride along with
-        // a repo. The context file only gets a neutral pointer, which is safe to
-        // commit and still routes every agent to the lessons.
-        let sidecar_rel = format!("{MEMORY_SIDECAR_DIR}/{MEMORY_SIDECAR_FILE}");
-        let sidecar_dir = workspace_path.join(MEMORY_SIDECAR_DIR);
-        let _ = fs::create_dir_all(&sidecar_dir);
-        let _ = fs::write(sidecar_dir.join(MEMORY_SIDECAR_FILE), &memories_md);
-        ensure_sidecar_ignored(&workspace_path);
-
-        let pointer = memory_pointer_block(&sidecar_rel);
-        for filename in &context_files {
-            let file_path = workspace_path.join(filename);
-
-            // Create parent directory if needed (e.g. .github/)
-            if let Some(parent) = file_path.parent() {
-                let _ = fs::create_dir_all(parent);
-            }
-
-            if file_path.exists() {
-                if let Ok(mut content) = fs::read_to_string(&file_path) {
-                    if let (Some(start_idx), Some(end_idx)) = (
-                        content.find("<!--- OMNIX MEMORY START --->"),
-                        content.find("<!--- OMNIX MEMORY END --->"),
-                    ) {
-                        let end_block_len = "<!--- OMNIX MEMORY END --->\n".len();
-                        let actual_end = if end_idx + end_block_len <= content.len() {
-                            end_idx + end_block_len
-                        } else {
-                            end_idx
-                        };
-                        // Replaces any previously inlined lessons too, so upgrading
-                        // scrubs personal content out of an already-written file.
-                        content.replace_range(start_idx..actual_end, &pointer);
+        if file_path.exists() {
+            if let Ok(mut content) = fs::read_to_string(&file_path) {
+                if let (Some(start_idx), Some(end_idx)) = (
+                    content.find("<!--- OMNIX MEMORY START --->"),
+                    content.find("<!--- OMNIX MEMORY END --->"),
+                ) {
+                    let end_block_len = "<!--- OMNIX MEMORY END --->\n".len();
+                    let actual_end = if end_idx + end_block_len <= content.len() {
+                        end_idx + end_block_len
                     } else {
-                        content.push_str(&pointer);
-                    }
-                    let _ = fs::write(&file_path, content);
+                        end_idx
+                    };
+                    // Replaces any previously inlined lessons too, so upgrading
+                    // scrubs personal content out of an already-written file.
+                    content.replace_range(start_idx..actual_end, &pointer);
+                } else {
+                    content.push_str(&pointer);
                 }
-            } else {
-                let _ = fs::write(&file_path, &pointer);
+                let _ = fs::write(&file_path, content);
             }
+        } else {
+            let _ = fs::write(&file_path, &pointer);
         }
-
-        Ok(())
     }
 
+Ok(())
+}
+
+impl AgentManager {
     pub fn find_agent_path(&self, display_name: &str) -> Option<String> {
         Self::find_agent_path_static(display_name, Some(&self.db))
     }
@@ -2163,8 +1462,7 @@ mod tests {
         fs::create_dir_all(&test_workspace).unwrap();
 
         // Run injection
-        manager
-            .inject_workspace_memories(&test_workspace.to_string_lossy(), "Claude Code")
+        inject_workspace_memories(&manager.db, &test_workspace.to_string_lossy(), "Claude Code")
             .unwrap();
 
         // "Claude Code" gets CLAUDE.md only — injection writes the context file
@@ -2231,8 +1529,7 @@ mod tests {
         )
         .unwrap();
 
-        manager
-            .inject_workspace_memories(&ws.to_string_lossy(), "Claude Code")
+        inject_workspace_memories(&manager.db, &ws.to_string_lossy(), "Claude Code")
             .unwrap();
 
         let content = fs::read_to_string(ws.join("CLAUDE.md")).unwrap();
@@ -2246,8 +1543,7 @@ mod tests {
         assert!(gitignore.contains(".omnix/"), "旁挂目录必须被忽略:\n{gitignore}");
 
         // Idempotent: a second run must not append a duplicate entry.
-        manager
-            .inject_workspace_memories(&ws.to_string_lossy(), "Claude Code")
+        inject_workspace_memories(&manager.db, &ws.to_string_lossy(), "Claude Code")
             .unwrap();
         let again = fs::read_to_string(ws.join(".gitignore")).unwrap();
         assert_eq!(
@@ -2506,6 +1802,38 @@ async fn summarize_run(db: &DbManager, run_id: &str, agent: &str, started_at: &s
                 .map(|a| a.detail.as_str())
                 .collect::<Vec<_>>()
                 .join(" / ")
+        );
+    }
+}
+
+#[cfg(test)]
+mod memory_injection_wiring {
+    /// 记忆回注必须有一个真实的调用方。
+    ///
+    /// 这条守的是它自己犯过的错：`inject_workspace_memories` 原本挂在
+    /// `AgentManager::spawn_agent` 里，而 spawn 的唯一入口 `start_agent_session`
+    /// 没有任何调用方——于是「把记忆库写进工作区 CLAUDE.md / AGENTS.md」这个功能
+    /// 静默停摆了。`build_memory_block` 一直是好的、`evolution.rs` 的文档也一直说
+    /// 「回注由 inject_workspace_memories 负责」，测试全绿，只是没有任何东西再调它。
+    ///
+    /// 单元测试测的是这个函数本身写得对不对，测不出「没人调它」。所以在这里扫源码。
+    #[test]
+    fn inject_workspace_memories_has_a_live_caller() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut callers = Vec::new();
+        for name in ["runtime_manager.rs", "runtime.rs", "lib.rs"] {
+            let path = src.join(name);
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            if text.contains("inject_workspace_memories(") {
+                callers.push(name);
+            }
+        }
+        assert!(
+            !callers.is_empty(),
+            "没有任何运行时入口调用 inject_workspace_memories——记忆回注又断了。
+             它应该挂在会话启动路径上（当前是 RuntimeManager::start_session）。"
         );
     }
 }
