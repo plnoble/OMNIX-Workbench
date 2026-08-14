@@ -46,14 +46,20 @@ const KNOWN_ORPHANS = [
 ];
 
 function readAll(dir: string, exts: string[]): string {
-  let out = "";
+  return readFiles(dir, exts)
+    .map((f) => fs.readFileSync(f, "utf8"))
+    .join("\n");
+}
+
+function readFiles(dir: string, exts: string[]): string[] {
+  const out: string[] = [];
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       if (entry.name === "node_modules" || entry.name === "target") continue;
-      out += readAll(full, exts);
+      out.push(...readFiles(full, exts));
     } else if (exts.some((e) => entry.name.endsWith(e))) {
-      out += fs.readFileSync(full, "utf8") + "\n";
+      out.push(full);
     }
   }
   return out;
@@ -109,6 +115,94 @@ describe("Tauri 命令接线", () => {
     expect(
       stale,
       `KNOWN_ORPHANS 里这些条目已经不成立（命令没了，或已经有调用方），请删掉：${stale.join(", ")}`,
+    ).toEqual([]);
+  });
+});
+
+/**
+ * 第二道接缝：API 包装对象必须有组件在用。
+ *
+ * 上面那道只查「Rust 命令 → 有没有 `invoke`」。可是 `invoke` 就写在
+ * `src/lib/api/*.ts` 的包装里，所以只要包装还在，命令就永远算「有人调」——哪怕
+ * 从没有任何组件 import 过那个包装。整条链是死的，上面那道一个都抓不到。
+ *
+ * 这不是假设：`skillCompoundApi`（技能复利）当初就是这么躺着的，靠手工翻才发现；
+ * `skillDagApi` 同样如此，它甚至通过了第一版守卫。量下来 85 个包装里有 21 个是
+ * 这个状态，背后拖着 62 条 Rust 命令。
+ */
+const API_DIR = path.join(ROOT, "src", "lib", "api");
+const BARREL = path.join(ROOT, "src", "lib", "tauri-api.ts");
+
+/**
+ * 已知没有组件调用方的包装。**只允许变短。**
+ *
+ * 和 KNOWN_ORPHANS 一样，这是待定夺的债，不是豁免：每一条要么接上界面、要么连同
+ * 它背后的 Rust 命令一起删。新写的包装不许进这里——没有组件要用，就先别写。
+ */
+const KNOWN_UNUSED_APIS = [
+  "activityApi",
+  "agentExecApi",
+  "apiPresetApi",
+  "checklistApi",
+  "codeAnalysisApi",
+  "configBackupApi",
+  "eventBusApi",
+  "healthCheckApi",
+  "mailboxApi",
+  "modelSyncApi",
+  "notificationApi",
+  "persistentCronApi",
+  "platformHealthApi",
+  "promptApi",
+  "skillDagApi",
+  "skillLockApi",
+  "taskDependencyApi",
+  "taskLifecycleApi",
+  "tokenEconomyApi",
+  "workspaceGcApi",
+  "yoloApi",
+];
+
+describe("API 包装接线", () => {
+  const exported = new Set<string>();
+  for (const file of readFiles(API_DIR, [".ts"])) {
+    const src = fs.readFileSync(file, "utf8");
+    for (const m of src.matchAll(/^export const ([a-zA-Z0-9_]+Api)\s*=/gm)) exported.add(m[1]);
+  }
+
+  // 消费方 = 除了 api/ 目录、桶文件、以及**测试文件**之外的所有前端源码。
+  //
+  // 桶只是 `export *` 转发，出现一次不代表有人用。测试文件更要排除，否则第一次跑
+  // 就会被自己坑到：下面那份 KNOWN_UNUSED_APIS 清单本身就写在 `src/` 下的一个
+  // `.ts` 里，21 个名字全在，于是每一个都被判成「有人用」——守卫把自己的豁免清单
+  // 当成了调用方。只被测试用到的包装同样是死的。
+  const consumers = readFiles(path.join(ROOT, "src"), [".ts", ".tsx"])
+    .filter((f) => !f.startsWith(API_DIR) && f !== BARREL && !/\.test\.tsx?$/.test(f))
+    .map((f) => fs.readFileSync(f, "utf8"))
+    .join("\n");
+
+  const isUsed = (name: string) => new RegExp(`\\b${name}\\b`).test(consumers);
+
+  it("每个 API 包装都有组件在用", () => {
+    expect(exported.size).toBeGreaterThan(50);
+
+    const unused = [...exported]
+      .filter((name) => !isUsed(name) && !KNOWN_UNUSED_APIS.includes(name))
+      .sort();
+    expect(
+      unused,
+      `这些 API 包装没有任何组件在用：${unused.join(", ")}\n` +
+        `要么接上界面，要么连同背后的 Rust 命令一起删。不要加进 KNOWN_UNUSED_APIS。`,
+    ).toEqual([]);
+  });
+
+  it("存量未用包装清单里没有过期条目", () => {
+    const stale = KNOWN_UNUSED_APIS.filter(
+      (name) => !exported.has(name) || isUsed(name),
+    ).sort();
+    expect(
+      stale,
+      `KNOWN_UNUSED_APIS 里这些条目已经不成立（包装没了，或已经有人用），请删掉：${stale.join(", ")}`,
     ).toEqual([]);
   });
 });
