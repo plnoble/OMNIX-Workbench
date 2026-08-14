@@ -1,10 +1,8 @@
-use tauri::State;
-use std::sync::Arc;
-use crate::db::DbManager;
 use crate::agent::{AgentManager, DetectedAgent};
 use crate::input_validation;
 use crate::proc::NoWindow;
-use rusqlite::params;
+use std::sync::Arc;
+use tauri::State;
 
 #[tauri::command]
 pub fn detect_installed_agents(
@@ -30,32 +28,11 @@ pub async fn install_agent_cli(
 pub async fn check_agent_updates(
     agent_manager: State<'_, Arc<AgentManager>>,
 ) -> Result<Vec<crate::agent::AgentUpdateInfo>, String> {
-    use crate::agent::{extract_semver, npm_package_for_agent, semver_is_older, AgentUpdateInfo};
-
-    let installed: Vec<(String, String, &'static str)> = agent_manager
-        .detect_agents()
-        .into_iter()
-        .filter(|agent| agent.status == "installed")
-        .filter_map(|agent| {
-            npm_package_for_agent(&agent.name).map(|package| (agent.name, agent.version, package))
-        })
-        .collect();
-
     let mut handles = Vec::new();
-    for (name, version, package) in installed {
+    for (name, version, package) in agents_worth_checking(agent_manager.detect_agents()) {
         handles.push(tokio::task::spawn_blocking(move || {
-            let current = extract_semver(&version).unwrap_or(version);
             let latest = npm_latest_version(package);
-            let has_update = latest
-                .as_deref()
-                .is_some_and(|latest| semver_is_older(&current, latest));
-            AgentUpdateInfo {
-                name,
-                current,
-                latest,
-                has_update,
-                package: Some(package.to_string()),
-            }
+            update_info(name, version, package, latest)
         }));
     }
 
@@ -66,6 +43,47 @@ pub async fn check_agent_updates(
         }
     }
     Ok(results)
+}
+
+/// 哪些 agent 值得去 npm 问一句版本：**装上了的**，且**确实由 npm 发布**。
+///
+/// 抽出来是为了能测——`detect_agents` 要摸真实文件系统，命令本身测不到。
+fn agents_worth_checking(
+    detected: Vec<DetectedAgent>,
+) -> Vec<(String, String, &'static str)> {
+    use crate::agent::npm_package_for_agent;
+    detected
+        .into_iter()
+        .filter(|agent| agent.status == "installed")
+        .filter_map(|agent| {
+            npm_package_for_agent(&agent.name).map(|package| (agent.name, agent.version, package))
+        })
+        .collect()
+}
+
+/// 由「本地版本」和「npm 上最新版本」得出要不要提示更新。
+///
+/// `latest` 为 `None` 表示那次查询没成功（离线、私有包、超时）。这时必须给出
+/// `has_update: false`——**查不到不等于有新版**，否则一断网整排 agent 都会挂上
+/// 「有更新」的红点。
+fn update_info(
+    name: String,
+    version: String,
+    package: &'static str,
+    latest: Option<String>,
+) -> crate::agent::AgentUpdateInfo {
+    use crate::agent::{extract_semver, semver_is_older, AgentUpdateInfo};
+    let current = extract_semver(&version).unwrap_or(version);
+    let has_update = latest
+        .as_deref()
+        .is_some_and(|latest| semver_is_older(&current, latest));
+    AgentUpdateInfo {
+        name,
+        current,
+        latest,
+        has_update,
+        package: Some(package.to_string()),
+    }
 }
 
 /// Returns the latest published version of an npm package via `npm view`, or
@@ -113,50 +131,89 @@ pub fn sync_external_agent_configs(
     agent_manager.sync_agent_configs()
 }
 
-#[tauri::command]
-pub fn get_active_agent_model(
-    agent_name: String,
-    db: State<'_, Arc<DbManager>>,
-) -> Result<String, String> {
-    let conn = db.get_connection().map_err(|e| e.to_string())?;
-    let model_res: Result<String, _> = conn.query_row(
-        "SELECT target_model FROM agent_accounts WHERE agent_name = ?1 AND is_active = 1 LIMIT 1",
-        params![agent_name],
-        |row| row.get(0),
-    );
-    match model_res {
-        Ok(m) => Ok(m),
-        Err(_) => {
-            let global = db.get_setting("target_model").unwrap_or(None).unwrap_or_else(|| "Auto".to_string());
-            Ok(global)
+// `get_active_agent_model` / `update_active_agent_model` 已删除：**全项目零调用方**，
+// 只在 lib.rs 里注册着开在 IPC 上。而后者不是无害的死代码——它在找不到账号时会
+// 凭空造一个 `is_active = 1` 的账号，api_key 取自 `settings.api_key`，那个键从
+// 安装起就是空字符串、没有任何地方写过它。造出来的空 Key 账号会**挡住**
+// `get_active_account_for_agent` 原本的兜底（改agent专属→任意活跃账号），于是
+// 「给某个 agent 换个模型」能把这个 agent 的鉴权弄坏。顺带它还是唯一一条绕开
+// `crypto::encrypt` 明文写 api_key 的路。
+//
+// 模型选择本来就走 `agent_accounts` 的正规保存路径（`save_agent_account_core`），
+// 不需要这两条。
+
+#[cfg(test)]
+mod tests {
+    use super::{agents_worth_checking, update_info};
+    use crate::agent::DetectedAgent;
+
+    fn agent(name: &str, version: &str, status: &str) -> DetectedAgent {
+        DetectedAgent {
+            name: name.to_string(),
+            path: "/x".to_string(),
+            version: version.to_string(),
+            status: status.to_string(),
         }
     }
-}
 
-#[tauri::command]
-pub fn update_active_agent_model(
-    agent_name: String,
-    model: String,
-    db: State<'_, Arc<DbManager>>,
-) -> Result<(), String> {
-    let conn = db.get_connection().map_err(|e| e.to_string())?;
-    let rows_affected = conn.execute(
-        "UPDATE agent_accounts SET target_model = ?1 WHERE agent_name = ?2 AND is_active = 1",
-        params![model, agent_name],
-    ).map_err(|e| e.to_string())?;
-
-    if rows_affected == 0 {
-        let id = format!("{}_default", agent_name.to_lowercase().replace(' ', "_"));
-        let name = format!("{} 默认账户", agent_name);
-
-        let api_key = db.get_setting("api_key").unwrap_or(None).unwrap_or_default();
-        let api_host = db.get_setting("api_host").unwrap_or(None).unwrap_or_else(|| "https://api.openai.com/v1".to_string());
-
-        let _ = conn.execute(
-            "INSERT INTO agent_accounts (id, account_name, api_key, api_host, target_model, agent_name, is_active)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1)",
-            params![id, name, api_key, api_host, model, agent_name],
+    /// 只问装上了的、且确实发在 npm 上的。
+    ///
+    /// 没装的去问一遍纯属浪费一次网络往返；不是 npm 分发的（本地构建、自带
+    /// 二进制）根本没有「npm 上的最新版」这回事，问出来的结果没有意义。
+    #[test]
+    fn only_installed_npm_agents_get_queried() {
+        let checked = agents_worth_checking(vec![
+            agent("Claude Code", "1.0.0", "installed"),
+            agent("Codex", "0.9.1", "not_installed"),
+            agent("Gemini CLI", "0.3.0", "broken"),
+            agent("某个本地 Agent", "1.0.0", "installed"), // 不在 npm 映射里
+        ]);
+        assert_eq!(
+            checked
+                .iter()
+                .map(|(name, _, package)| (name.as_str(), *package))
+                .collect::<Vec<_>>(),
+            vec![("Claude Code", "@anthropic-ai/claude-code")]
         );
     }
-    Ok(())
+
+    /// **查不到最新版 ≠ 有新版。**
+    ///
+    /// 离线、私有包、超时都会让 npm 查询失败。这时挂上「有更新」的红点是纯粹的
+    /// 误报，而且是断一次网整排都亮——所以必须是 false。
+    #[test]
+    fn a_failed_npm_query_never_claims_an_update() {
+        let info = update_info(
+            "Claude Code".into(),
+            "1.0.0".into(),
+            "@anthropic-ai/claude-code",
+            None,
+        );
+        assert!(!info.has_update);
+        assert_eq!(info.latest, None);
+        assert_eq!(info.current, "1.0.0");
+    }
+
+    /// 版本号从带杂音的 `--version` 输出里取，比较按 semver 而不是字符串。
+    #[test]
+    fn update_is_flagged_only_when_the_local_build_is_actually_older() {
+        let cases = [
+            ("codex-cli 0.9.1 (rust)", "0.10.0", true, "0.9.1"),
+            ("1.0.0", "1.0.0", false, "1.0.0"),
+            // 本地比线上新（自己构建的）不该提示回退
+            ("1.2.0", "1.1.9", false, "1.2.0"),
+            // 字符串比较会把 "0.9.1" 判成大于 "0.10.0"
+            ("0.9.1", "0.10.0", true, "0.9.1"),
+        ];
+        for (raw, latest, expected, expected_current) in cases {
+            let info = update_info(
+                "Codex".into(),
+                raw.into(),
+                "@openai/codex",
+                Some(latest.to_string()),
+            );
+            assert_eq!(info.has_update, expected, "{raw} vs {latest}");
+            assert_eq!(info.current, expected_current, "{raw} 的版本号没提干净");
+        }
+    }
 }

@@ -1594,7 +1594,15 @@ mod single_source_of_truth {
                 .split_once("#[cfg(test)]")
                 .map(|(before, _)| before)
                 .unwrap_or(&source);
-            if production.contains("CREATE TABLE") {
+            // 注释里**说到**建表不算建表。原来是整段扫，于是一条解释「为什么不能
+            // 依赖 CREATE TABLE IF NOT EXISTS」的注释就能把这条守卫点红——守卫
+            // 看的应该是代码，不是散文。
+            let code: String = production
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            if code.contains("CREATE TABLE") {
                 offenders.push(path.file_name().unwrap().to_string_lossy().to_string());
             }
         }

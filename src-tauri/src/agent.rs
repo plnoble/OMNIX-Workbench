@@ -1024,6 +1024,135 @@ mod agent_path_tests {
     }
 }
 
+/// 一条**认得出来**的定时表达式。
+///
+/// 抽出来是因为它有两个用途：调度器判断「现在该不该跑」，保存时判断「这串东西
+/// 到底认不认得」。以前只有前者，语法藏在 `match_schedule` 里；于是一条拼错的
+/// 表达式能存进库、界面上显示为「已启用」，然后**永远不触发，也没有任何报错**。
+/// 两边共用这一份解析，语法就不会漂开。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Schedule {
+    EveryMinutes(i64),
+    EveryHours(i64),
+    /// 每天的固定时刻（时, 分）。
+    DailyAt(u32, u32),
+    /// 五字段 cron：分 时 日 月 周。
+    Cron(Vec<CronField>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CronField {
+    Any,
+    Step(u32),
+    Exact(u32),
+}
+
+impl CronField {
+    fn parse(field: &str) -> Option<Self> {
+        if field == "*" {
+            return Some(CronField::Any);
+        }
+        if let Some(step) = field.strip_prefix("*/") {
+            // `*/0` 会在取模时除零，不认。
+            return step
+                .parse::<u32>()
+                .ok()
+                .filter(|s| *s > 0)
+                .map(CronField::Step);
+        }
+        field.parse::<u32>().ok().map(CronField::Exact)
+    }
+
+    fn matches(&self, current: u32) -> bool {
+        match self {
+            CronField::Any => true,
+            CronField::Step(step) => current % step == 0,
+            CronField::Exact(value) => *value == current,
+        }
+    }
+}
+
+/// 人给的这串东西认不认得。认不出来返回 `None`——调度器当作「不该跑」，保存
+/// 那一步当作「拒绝」。
+///
+/// **不支持** cron 的区间和列表（`1-5`、`1,3,5`）：`CronField` 只认 `*`、`*/N`、
+/// 纯数字。以前这类表达式会被存下来然后静默不跑，现在保存就会拒。
+pub(crate) fn parse_schedule(schedule: &str) -> Option<Schedule> {
+    let schedule = schedule.trim().to_lowercase();
+
+    if let Some(rest) = schedule
+        .strip_prefix("every ")
+        .and_then(|s| s.strip_suffix(" minutes"))
+    {
+        return rest.trim().parse::<i64>().ok().map(Schedule::EveryMinutes);
+    }
+    if let Some(rest) = schedule
+        .strip_prefix("every ")
+        .and_then(|s| s.strip_suffix(" hours"))
+    {
+        return rest.trim().parse::<i64>().ok().map(Schedule::EveryHours);
+    }
+    if let Some(time_str) = schedule.strip_prefix("daily at ") {
+        let parts: Vec<&str> = time_str.trim().split(':').collect();
+        if parts.len() == 2 {
+            if let (Ok(h), Ok(m)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
+                if h < 24 && m < 60 {
+                    return Some(Schedule::DailyAt(h, m));
+                }
+            }
+        }
+        // `daily at` 开头但时刻不合法，不再往下当 cron 解析。
+        return None;
+    }
+
+    let fields: Vec<&str> = schedule.split_whitespace().collect();
+    if fields.len() == 5 {
+        let parsed: Option<Vec<CronField>> = fields.iter().map(|f| CronField::parse(f)).collect();
+        return parsed.map(Schedule::Cron);
+    }
+    None
+}
+
+/// 人能读的支持形式说明，保存被拒时原样回给界面。
+pub(crate) const SCHEDULE_HELP: &str = "支持 `every N minutes`、`every N hours`、`daily at HH:MM`，或五字段 cron（分 时 日 月 周，每段只能是 *、*/N 或数字；不支持 1-5、1,3,5 这类区间和列表）";
+
+impl Schedule {
+    fn is_due(&self, now: DateTime<Local>, last_run: Option<DateTime<Local>>) -> bool {
+        match self {
+            Schedule::EveryMinutes(minutes) => match last_run {
+                Some(lr) => (now - lr).num_minutes() >= *minutes,
+                None => true,
+            },
+            Schedule::EveryHours(hours) => match last_run {
+                Some(lr) => (now - lr).num_hours() >= *hours,
+                None => true,
+            },
+            Schedule::DailyAt(hour, minute) => {
+                if now.hour() != *hour || now.minute() != *minute {
+                    return false;
+                }
+                match last_run {
+                    Some(lr) => lr.date_naive() != now.date_naive(),
+                    None => true,
+                }
+            }
+            Schedule::Cron(fields) => {
+                let current = [
+                    now.minute(),
+                    now.hour(),
+                    now.day(),
+                    now.month(),
+                    now.weekday().num_days_from_sunday(), // 0 (Sun) - 6 (Sat)
+                ];
+                fields
+                    .iter()
+                    .zip(current)
+                    .all(|(field, value)| field.matches(value))
+            }
+        }
+    }
+}
+
 fn match_schedule(schedule: &str, last_run: Option<DateTime<Local>>) -> bool {
     let now = Local::now();
 
@@ -1033,93 +1162,7 @@ fn match_schedule(schedule: &str, last_run: Option<DateTime<Local>>) -> bool {
         }
     }
 
-    let schedule = schedule.trim().to_lowercase();
-
-    // 1. Natural Language: "every X minutes"
-    if schedule.starts_with("every ") && schedule.ends_with(" minutes") {
-        if let Some(num_str) = schedule
-            .strip_prefix("every ")
-            .and_then(|s| s.strip_suffix(" minutes"))
-        {
-            if let Ok(minutes) = num_str.trim().parse::<i64>() {
-                if let Some(lr) = last_run {
-                    return (now - lr).num_minutes() >= minutes;
-                } else {
-                    return true;
-                }
-            }
-        }
-    }
-
-    // 2. Natural Language: "every X hours"
-    if schedule.starts_with("every ") && schedule.ends_with(" hours") {
-        if let Some(num_str) = schedule
-            .strip_prefix("every ")
-            .and_then(|s| s.strip_suffix(" hours"))
-        {
-            if let Ok(hours) = num_str.trim().parse::<i64>() {
-                if let Some(lr) = last_run {
-                    return (now - lr).num_hours() >= hours;
-                } else {
-                    return true;
-                }
-            }
-        }
-    }
-
-    // 3. Natural Language: "daily at HH:MM"
-    if schedule.starts_with("daily at ") {
-        if let Some(time_str) = schedule.strip_prefix("daily at ") {
-            let parts: Vec<&str> = time_str.trim().split(':').collect();
-            if parts.len() == 2 {
-                if let (Ok(h), Ok(m)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
-                    let current_h = now.hour();
-                    let current_m = now.minute();
-                    if current_h == h && current_m == m {
-                        if let Some(lr) = last_run {
-                            return lr.date_naive() != now.date_naive();
-                        } else {
-                            return true;
-                        }
-                    }
-                }
-            }
-        }
-        return false;
-    }
-
-    // 4. Standard Cron: minute, hour, day, month, day_of_week
-    let fields: Vec<&str> = schedule.split_whitespace().collect();
-    if fields.len() == 5 {
-        let current_min = now.minute();
-        let current_hour = now.hour();
-        let current_day = now.day();
-        let current_month = now.month();
-        let current_wday = now.weekday().num_days_from_sunday(); // 0 (Sun) - 6 (Sat)
-
-        let match_field = |field: &str, current_val: u32| -> bool {
-            if field == "*" {
-                return true;
-            }
-            if field.starts_with("*/") {
-                if let Ok(step) = field[2..].parse::<u32>() {
-                    return current_val % step == 0;
-                }
-            }
-            if let Ok(val) = field.parse::<u32>() {
-                return val == current_val;
-            }
-            false
-        };
-
-        return match_field(fields[0], current_min)
-            && match_field(fields[1], current_hour)
-            && match_field(fields[2], current_day)
-            && match_field(fields[3], current_month)
-            && match_field(fields[4], current_wday);
-    }
-
-    false
+    parse_schedule(schedule).is_some_and(|parsed| parsed.is_due(now, last_run))
 }
 
 pub(crate) async fn run_cron_task(
@@ -1738,6 +1781,94 @@ mod cron_guard_tests {
             )
             .unwrap();
         assert_eq!(skipped, 1, "跳过要记一条 skipped");
+    }
+}
+
+#[cfg(test)]
+mod schedule_tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn at(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> DateTime<Local> {
+        Local.with_ymd_and_hms(y, mo, d, h, mi, 0).unwrap()
+    }
+
+    /// `*/0` 会走到 `current % 0`——**整数除零，直接 panic**。这串东西以前存得
+    /// 进库，然后每分钟把调度线程炸一次。现在解析阶段就不认它。
+    #[test]
+    fn a_zero_step_is_not_a_schedule() {
+        assert_eq!(parse_schedule("*/0 * * * *"), None);
+        // 真跑一遍：认得出来的那些一个都不能在求值时 panic。
+        for good in ["*/15 * * * *", "* * * * *", "0 0 1 1 0"] {
+            let parsed = parse_schedule(good).expect(good);
+            let _ = parsed.is_due(at(2026, 8, 1, 9, 30), None);
+        }
+    }
+
+    /// 标准 cron 的区间和列表这里**不支持**，必须认不出来而不是当成能跑。
+    #[test]
+    fn ranges_and_lists_are_not_silently_accepted() {
+        for unsupported in ["0 9 * * 1-5", "0 9 * * 1,3,5", "0-30 * * * *"] {
+            assert_eq!(parse_schedule(unsupported), None, "{unsupported}");
+        }
+    }
+
+    /// 四种支持的写法各解析成什么。
+    #[test]
+    fn the_four_supported_forms_parse() {
+        assert_eq!(parse_schedule("every 30 minutes"), Some(Schedule::EveryMinutes(30)));
+        assert_eq!(parse_schedule("every 2 hours"), Some(Schedule::EveryHours(2)));
+        assert_eq!(parse_schedule("Daily At 09:05"), Some(Schedule::DailyAt(9, 5)));
+        assert_eq!(
+            parse_schedule("*/15 * * * *"),
+            Some(Schedule::Cron(vec![
+                CronField::Step(15),
+                CronField::Any,
+                CronField::Any,
+                CronField::Any,
+                CronField::Any,
+            ]))
+        );
+        // 时刻不合法的 `daily at` 不能掉下去当 cron 解析。
+        assert_eq!(parse_schedule("daily at 25:00"), None);
+        assert_eq!(parse_schedule("daily at 09:61"), None);
+    }
+
+    /// `daily at HH:MM` 一天只能触发一次：同一天已经跑过就不再跑，隔天才放行。
+    #[test]
+    fn daily_fires_once_a_day_at_the_stated_minute() {
+        let s = parse_schedule("daily at 09:30").unwrap();
+        let today = at(2026, 8, 1, 9, 30);
+        assert!(s.is_due(today, None), "没跑过就该跑");
+        assert!(!s.is_due(today, Some(at(2026, 8, 1, 9, 30))), "今天跑过了");
+        assert!(s.is_due(today, Some(at(2026, 7, 31, 9, 30))), "昨天跑的，今天该跑");
+        assert!(!s.is_due(at(2026, 8, 1, 9, 31), None), "差一分钟就不该跑");
+    }
+
+    /// `every N minutes` 要等够 N 分钟。
+    #[test]
+    fn interval_schedules_wait_out_the_interval() {
+        let s = parse_schedule("every 30 minutes").unwrap();
+        let now = at(2026, 8, 1, 12, 0);
+        assert!(s.is_due(now, None));
+        assert!(!s.is_due(now, Some(at(2026, 8, 1, 11, 45))), "只过了 15 分钟");
+        assert!(s.is_due(now, Some(at(2026, 8, 1, 11, 30))));
+
+        let h = parse_schedule("every 2 hours").unwrap();
+        assert!(!h.is_due(now, Some(at(2026, 8, 1, 11, 0))));
+        assert!(h.is_due(now, Some(at(2026, 8, 1, 10, 0))));
+    }
+
+    /// 五个字段各自对上自己那一位，不能串位。
+    #[test]
+    fn cron_fields_line_up_with_the_right_time_unit() {
+        // 分 时 日 月 周 —— 2026-08-01 是星期六（num_days_from_sunday = 6）
+        let s = parse_schedule("30 9 1 8 6").unwrap();
+        assert!(s.is_due(at(2026, 8, 1, 9, 30), None));
+        assert!(!s.is_due(at(2026, 8, 1, 9, 31), None), "分不对");
+        assert!(!s.is_due(at(2026, 8, 1, 10, 30), None), "时不对");
+        assert!(!s.is_due(at(2026, 8, 2, 9, 30), None), "日不对");
+        assert!(!s.is_due(at(2026, 9, 1, 9, 30), None), "月不对");
     }
 }
 

@@ -125,6 +125,13 @@ impl DbManager {
             conn.busy_timeout(std::time::Duration::from_secs(5))?;
             // Enable WAL mode for better concurrent read performance
             conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
+            // 外键必须显式打开。schema 里有十几处 `ON DELETE CASCADE`（会话删掉时
+            // 带走 agent_sessions / conversation_goals / chat_knowledge_bindings…），
+            // 而 SQLite 的编译期默认是**关**的。这里之所以一直能生效，是因为
+            // `libsqlite3-sys` 的 bundled 构建带了 `-DSQLITE_DEFAULT_FOREIGN_KEYS=1`
+            // ——一个依赖的编译开关，不是本项目的选择。哪天换掉 bundled 或它改了
+            // 默认值，所有级联会**静默**失效。所以自己写一遍。
+            conn.execute_batch("PRAGMA foreign_keys=ON;")?;
             Ok(())
         });
 

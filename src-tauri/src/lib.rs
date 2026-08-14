@@ -418,8 +418,6 @@ pub fn run() {
             commands::toggle_skill_active,
             commands::update_skill_profile,
             commands::create_skill,
-            commands::get_active_agent_model,
-            commands::update_active_agent_model,
             commands::get_agent_accounts,
             commands::save_agent_account,
             commands::delete_agent_account,
