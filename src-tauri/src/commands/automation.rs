@@ -143,47 +143,6 @@ fn persist_edge_to_db(db: &DbManager, source: &str, target: &str, edge_type: &st
 // Async Agent Mailbox
 // ══════════════════════════════════════════════════
 
-#[tauri::command]
-pub fn set_task_blocks(
-    task_id: String,
-    blocks_ids: Vec<String>,
-    db: State<'_, Arc<DbManager>>,
-) -> Result<(), String> {
-    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
-    // Clear existing
-    let _ = conn.execute("DELETE FROM task_dependencies WHERE task_id = ?1", params![task_id]);
-    // Add new
-    for dep in &blocks_ids {
-        let _ = conn.execute(
-            "INSERT INTO task_dependencies (task_id, blocks_id) VALUES (?1, ?2)",
-            params![task_id, dep],
-        );
-    }
-    Ok(())
-}
-
-/// Auto-unblock tasks when a blocking task completes
-#[tauri::command]
-pub fn auto_unblock_tasks(
-    completed_task_id: String,
-    db: State<'_, Arc<DbManager>>,
-) -> Result<Vec<String>, String> {
-    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
-    // Find tasks blocked by this completed task
-    let mut stmt = conn.prepare(
-        "SELECT task_id FROM task_dependencies WHERE blocks_id = ?1"
-    ).map_err(|e: rusqlite::Error| e.to_string())?;
-    let blocked: Vec<String> = stmt.query_map(params![completed_task_id], |r| r.get(0))
-        .map_err(|e: rusqlite::Error| e.to_string())?
-        .flatten()
-        .collect();
-
-    // Remove the dependency
-    let _ = conn.execute("DELETE FROM task_dependencies WHERE blocks_id = ?1", params![completed_task_id]);
-
-    Ok(blocked)
-}
-
 // ══════════════════════════════════════════════════
 // YOLO Full-Auto Mode
 // ══════════════════════════════════════════════════

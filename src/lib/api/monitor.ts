@@ -155,55 +155,6 @@ export const healthCheckApi = {
 
 // ── Agent Task Lifecycle ──────────
 
-export interface TaskInfo {
-  id: string;
-  title: string;
-  active_agent: string;
-  workspace_path: string;
-  task_status: "pending" | "running" | "completed" | "failed";
-  task_started_at: string | null;
-  task_completed_at: string | null;
-  task_duration_ms: number | null;
-  task_summary: string | null;
-  task_files_changed: number;
-  task_exit_code: number | null;
-  is_archived: boolean;
-  created_at: string;
-}
-
-export interface TaskStats {
-  total: number;
-  running: number;
-  completed: number;
-  failed: number;
-  avg_duration_ms: number;
-}
-
-export const taskLifecycleApi = {
-  /** Get all tasks with lifecycle info */
-  getList: (includeArchived?: boolean) =>
-    invoke<TaskInfo[]>("get_task_list", { includeArchived: includeArchived ?? false }),
-
-  /** Transition task to running */
-  start: (conversationId: string) =>
-    invoke("task_start", { conversationId }),
-
-  /** Transition task to completed */
-  complete: (conversationId: string, summary?: string, filesChanged?: number) =>
-    invoke("task_complete", { conversationId, summary, filesChanged }),
-
-  /** Transition task to failed */
-  fail: (conversationId: string, exitCode?: number, errorSummary?: string) =>
-    invoke("task_fail", { conversationId, exitCode, errorSummary }),
-
-  /** Archive a task */
-  archive: (conversationId: string) =>
-    invoke("task_archive", { conversationId }),
-
-  /** Get task statistics */
-  getStats: () =>
-    invoke<TaskStats>("get_task_stats"),
-};
 
 // ── Security & safety APIs ────────────────────────────
 
@@ -213,28 +164,6 @@ export const promptGuardApi = {
     invoke<string>("wrap_untrusted_content", { content, source }),
 };
 
-// Development Checklist
-export interface ChecklistItem {
-  id: string;
-  session_id: string;
-  title: string;
-  status: "pending" | "in_progress" | "done";
-  priority: number;
-  source: string;
-  created_at: string;
-  completed_at: string | null;
-}
-
-export const checklistApi = {
-  add: (sessionId: string, title: string, priority?: number, source?: string) =>
-    invoke<ChecklistItem>("checklist_add", { sessionId, title, priority, source }),
-  update: (itemId: string, status: string) =>
-    invoke("checklist_update", { itemId, status }),
-  get: (sessionId?: string, includeDone?: boolean) =>
-    invoke<ChecklistItem[]>("checklist_get", { sessionId, includeDone }),
-  summary: (sessionId: string) =>
-    invoke<string>("checklist_summary", { sessionId }),
-};
 
 // Context Budget
 export interface ContextBudget {
@@ -266,15 +195,6 @@ export const skillAuditApi = {
   run: () => invoke<SkillAuditResult[]>("run_skill_audit"),
 };
 
-// Event Bus
-export const eventBusApi = {
-  register: (eventType: string, threshold: number, taskId: string) =>
-    invoke<string>("register_event_trigger", { eventType, threshold, taskId }),
-  list: () => invoke<Array<{
-    id: string; event_type: string; threshold: number;
-    task_id: string; current_count: number; enabled: boolean;
-  }>>("get_event_triggers"),
-};
 
 // Desktop Notifications
 export const notificationApi = {
@@ -300,18 +220,6 @@ export interface FileChange {
   old_content: string | null; new_content: string | null;
   diff_summary: string; timestamp: number;
 }
-export const tokenEconomyApi = {
-  compressToolResult: (content: string, maxLines?: number, maxBytes?: number) =>
-    invoke<string>("compress_tool_result", { content, maxLines, maxBytes }),
-  pushSteering: (sessionId: string, content: string) =>
-    invoke<string>("push_steering_message", { sessionId, content }),
-  getSteeringMessages: (sessionId: string) =>
-    invoke<Array<{ id: string; content: string; created_at: string }>>("get_steering_messages", { sessionId }),
-  consumeSteering: (sessionId: string) =>
-    invoke("consume_steering_messages", { sessionId }),
-  detectFileChange: (filePath: string, oldContent?: string, newContent?: string) =>
-    invoke<FileChange>("detect_file_change", { filePath, oldContent, newContent }),
-};
 
 // Agent-Platform Bindings
 

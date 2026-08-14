@@ -567,9 +567,6 @@ pub fn run() {
             commands::export_backup,
             commands::import_backup,
             // Prompt Library
-            commands::get_prompt_library,
-            commands::save_prompt_entry,
-            commands::delete_prompt_entry,
             // Activity Log
             commands::log_activity,
             commands::get_activity_log,
@@ -638,22 +635,12 @@ pub fn run() {
             // Platform Health Check
             commands::check_all_platform_health,
             // Agent Task Lifecycle
-            commands::get_task_list,
-            commands::task_start,
-            commands::task_complete,
-            commands::task_fail,
-            commands::task_archive,
-            commands::get_task_stats,
             // Autopilot Enhancement
             // Security & safety features
             commands::wrap_untrusted_content,
             commands::scan_prompt_injection,
             // Selection Auto-Capture
             commands::toggle_selection_auto_capture,
-            commands::checklist_add,
-            commands::checklist_update,
-            commands::checklist_get,
-            commands::checklist_summary,
             commands::estimate_tokens,
             commands::get_context_budget,
             commands::run_skill_audit,
@@ -755,8 +742,6 @@ pub fn run() {
             commands::remove_skill_edge,
             // Async Agent Mailbox
             // Enhanced Task Dependencies
-            commands::set_task_blocks,
-            commands::auto_unblock_tasks,
             // YOLO Mode
             commands::get_yolo_mode,
             commands::set_yolo_mode,

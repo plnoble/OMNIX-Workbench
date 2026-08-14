@@ -44,12 +44,6 @@ const KNOWN_ORPHANS = [
   "update_skill_profile",
 ];
 
-function readAll(dir: string, exts: string[]): string {
-  return readFiles(dir, exts)
-    .map((f) => fs.readFileSync(f, "utf8"))
-    .join("\n");
-}
-
 function readFiles(dir: string, exts: string[]): string[] {
   const out: string[] = [];
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -86,7 +80,12 @@ function invokedCommands(ts: string): Set<string> {
 
 describe("Tauri 命令接线", () => {
   const libRs = fs.readFileSync(path.join(ROOT, "src-tauri", "src", "lib.rs"), "utf8");
-  const ts = readAll(path.join(ROOT, "src"), [".ts", ".tsx"]);
+  // 排除测试文件：只被测试调到的命令不算「接上了」，而且本文件的注释里就写着
+  // `invoke("name")` 这样的示例——扫进来会被下面「幽灵调用」那条当成真调用。
+  const ts = readFiles(path.join(ROOT, "src"), [".ts", ".tsx"])
+    .filter((f) => !/\.test\.tsx?$/.test(f))
+    .map((f) => fs.readFileSync(f, "utf8"))
+    .join("\n");
   const registered = registeredCommands(libRs);
   const invoked = invokedCommands(ts);
 
@@ -102,6 +101,27 @@ describe("Tauri 命令接线", () => {
       orphans,
       `这些命令注册了但前端没人调：${orphans.join(", ")}\n` +
         `要么接上界面，要么从 generate_handler! 里删掉。不要加进 KNOWN_ORPHANS。`,
+    ).toEqual([]);
+  });
+
+  /**
+   * 反方向：`invoke` 的命令必须真的注册过。
+   *
+   * 前两条守的都是「后端有、前端没人用」——那只是死代码。这条守的是
+   * **前端在调一个根本不存在的命令**，性质完全不同：**调到就是运行时报错**
+   * （Tauri 抛 "command not found"），而 TypeScript 一个字都不会说，因为命令名
+   * 只是个字符串。
+   *
+   * 不是假设：删掉文件版信箱那一轮只删了 Rust，`mailboxApi` 的三条 invoke 留在
+   * 前端；`tokenEconomyApi` 五条、`eventBusApi` 两条同样如此。十条幽灵调用，
+   * 前两道守卫一条都抓不到——因为它们只从「注册表」这一侧出发。
+   */
+  it("前端调用的每个命令都真的注册过", () => {
+    const phantoms = [...invoked].filter((name) => !registered.has(name)).sort();
+    expect(
+      phantoms,
+      `前端在调这些不存在的命令，调到就会运行时报错：${phantoms.join(", ")}\n` +
+        `要么后端补上，要么把前端这段删掉。`,
     ).toEqual([]);
   });
 
@@ -142,21 +162,14 @@ const KNOWN_UNUSED_APIS = [
   "activityApi",
   "agentExecApi",
   "apiPresetApi",
-  "checklistApi",
   "codeAnalysisApi",
   "configBackupApi",
-  "eventBusApi",
   "healthCheckApi",
-  "mailboxApi",
   "modelSyncApi",
   "notificationApi",
   "platformHealthApi",
-  "promptApi",
   "skillDagApi",
   "skillLockApi",
-  "taskDependencyApi",
-  "taskLifecycleApi",
-  "tokenEconomyApi",
   "workspaceGcApi",
   "yoloApi",
 ];

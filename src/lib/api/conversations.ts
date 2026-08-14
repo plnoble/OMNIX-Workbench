@@ -248,21 +248,6 @@ export interface MailMessage {
   id: string; from_agent: string; to_agent: string;
   subject: string; body: string; read: boolean; created_at: string;
 }
-export const mailboxApi = {
-  send: (fromAgent: string, toAgent: string, subject: string, body: string) =>
-    invoke<string>("send_mail", { fromAgent, toAgent, subject, body }),
-  get: (agentName: string, includeRead?: boolean) =>
-    invoke<MailMessage[]>("get_mail", { agentName, includeRead }),
-  markRead: (messageIds: string[]) =>
-    invoke("mark_mail_read", { messageIds }),
-};
 
-// Enhanced Task Dependencies
-export const taskDependencyApi = {
-  setBlocks: (taskId: string, blocksIds: string[]) =>
-    invoke("set_task_blocks", { taskId, blocksIds }),
-  autoUnblock: (completedTaskId: string) =>
-    invoke<string[]>("auto_unblock_tasks", { completedTaskId }),
-};
 
 // Tool Call Confirmation Queue

@@ -3,7 +3,6 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   BackupTableInfo,
   ImportResult,
-  PromptEntry,
   ActivityLogEntry,
 } from "@/types";
 
@@ -134,11 +133,6 @@ export const backupApi = {
 
 // ── Prompt Library ──────────────────────────────────────
 
-export const promptApi = {
-  list: () => invoke<PromptEntry[]>("get_prompt_library"),
-  save: (entry: PromptEntry) => invoke("save_prompt_entry", { entry }),
-  delete: (id: string) => invoke("delete_prompt_entry", { id }),
-};
 
 // ── Activity Log ────────────────────────────────────────
 

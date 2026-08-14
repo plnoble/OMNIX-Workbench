@@ -120,66 +120,6 @@ pub fn import_backup(
 
 // ── Prompt Library ──────────────────────────────────────
 
-/// Prompt library entry DTO
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct PromptEntry {
-    pub id: String,
-    pub title: String,
-    pub content: String,
-    pub category: String,
-    pub order_key: i32,
-    pub created_at: String,
-}
-
-/// Get all prompt library entries.
-#[tauri::command]
-pub fn get_prompt_library(db: State<'_, Arc<DbManager>>) -> Result<Vec<PromptEntry>, String> {
-    let conn = db.get_connection().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare(
-        "SELECT id, title, content, category, order_key, created_at FROM prompt_library ORDER BY category, order_key"
-    ).map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([], |row| {
-            Ok(PromptEntry {
-                id: row.get::<_, String>(0)?,
-                title: row.get::<_, String>(1)?,
-                content: row.get::<_, String>(2)?,
-                category: row.get::<_, String>(3)?,
-                order_key: row.get::<_, i32>(4)?,
-                created_at: row.get::<_, String>(5).unwrap_or_default(),
-            })
-        })
-        .map_err(|e| e.to_string())?;
-    let mut result = Vec::new();
-    for r in rows {
-        if let Ok(item) = r {
-            result.push(item);
-        }
-    }
-    Ok(result)
-}
-
-/// Save (upsert) a prompt library entry.
-#[tauri::command]
-pub fn save_prompt_entry(entry: PromptEntry, db: State<'_, Arc<DbManager>>) -> Result<(), String> {
-    let conn = db.get_connection().map_err(|e| e.to_string())?;
-    conn.execute(
-        "INSERT INTO prompt_library (id, title, content, category, order_key) VALUES (?1, ?2, ?3, ?4, ?5)
-         ON CONFLICT(id) DO UPDATE SET title=?2, content=?3, category=?4, order_key=?5",
-        params![entry.id, entry.title, entry.content, entry.category, entry.order_key],
-    ).map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// Delete a prompt library entry.
-#[tauri::command]
-pub fn delete_prompt_entry(id: String, db: State<'_, Arc<DbManager>>) -> Result<(), String> {
-    let conn = db.get_connection().map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM prompt_library WHERE id = ?1", params![id])
-        .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
 // ── Activity Log ────────────────────────────────────────
 
 /// Activity log entry DTO
