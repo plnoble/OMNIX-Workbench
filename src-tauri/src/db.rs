@@ -14,6 +14,43 @@ pub struct DbManager {
     pool: Pool<SqliteConnectionManager>,
 }
 
+/// 备份涉及的表：**界面列表、默认导出、导出白名单共用这一份**。
+///
+/// 以前是三份手抄清单（`get_table_row_counts`、`export_backup`、
+/// `export_table_as_json` 各一份），于是它们漂开了：白名单里写的是
+/// `knowledge_documents` / `knowledge_chunks` / `autopilot_configs`——**三张不存在
+/// 的表**；而导出方要的 `kb_documents` / `kb_chunks` / `kb_embeddings` / `tasks` /
+/// `search_history` 全被白名单拒掉，调用方只 `log::warn!` 就跳过。
+/// 结果是：点「导出备份」显示成功，**整个知识库不在备份里**。
+///
+/// 表名同时还是 SQL 注入的闸（拼进 `SELECT * FROM "…"`），所以这份清单必须是
+/// 白名单而不是「运行时扫 sqlite_master」——扫出来会把 `platform_api_keys`
+/// 这类不该进备份的表也带上。`backup_tables_all_exist` 保证名字不会再写错。
+pub const BACKUP_TABLES: &[&str] = &[
+    "settings",
+    "conversations",
+    "messages",
+    "skills",
+    "memories",
+    "agent_accounts",
+    "model_platforms",
+    "platform_models",
+    "tasks",
+    "cron_tasks",
+    "cron_runs",
+    "kb_documents",
+    "kb_chunks",
+    "kb_embeddings",
+    "selection_history",
+    "translation_history",
+    "mcp_servers",
+    "search_providers",
+    "search_history",
+    "prompt_library",
+    "activity_log",
+    "request_logs",
+];
+
 impl DbManager {
     pub fn new() -> Self {
         // Resolve home directory path on Windows / Linux
@@ -467,47 +504,16 @@ impl DbManager {
         }
     }
 
-    pub(crate) fn seed_default_cron_tasks(&self, conn: &Connection) -> Result<()> {
-        // Only seed on first install — never re-seed after user deletes tasks
-        if self.get_setting("seed_cron_completed")?.is_some() {
-            return Ok(());
-        }
-
-        conn.execute(
-            "INSERT INTO cron_tasks (id, title, schedule, agent_name, args, workspace_dir, is_active)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1)",
-            params![
-                "task_backup_git",
-                "代码库每 15 分钟自动 Git 增量备份",
-                "*/15 * * * *",
-                "git_manager",
-                "[\"status\"]",
-                "d:/Agent/Project/OMNIX-Development Tools"
-            ],
-        )?;
-
-        conn.execute(
-            "INSERT INTO cron_tasks (id, title, schedule, agent_name, args, workspace_dir, is_active)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1)",
-            params![
-                "task_security_scan",
-                "每日凌晨安全代码审计扫描",
-                "daily at 02:00",
-                "code_reviewer",
-                "[]",
-                "d:/Agent/Project/OMNIX-Development Tools"
-            ],
-        )?;
-
-        // Mark seed as completed
-        conn.execute(
-            "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?1, ?2, CURRENT_TIMESTAMP)",
-            params!["seed_cron_completed", "true"],
-        )?;
-
+    /// 这里以前会给**每个新库**种两条定时任务：`task_backup_git`（每 15 分钟跑
+    /// `git_manager status`）和 `task_security_scan`，工作目录写死成
+    /// `d:/Agent/Project/OMNIX-Development Tools`——开发机上的路径，跟着安装包发给
+    /// 了所有人。两条都是 `is_active = 1`，也就是装完就在后台跑一个指向不存在目录
+    /// 的任务。
+    ///
+    /// 这不是种子数据，是开发环境泄漏，整段删除。定时任务本来就该由用户自己建。
+    pub(crate) fn seed_default_cron_tasks(&self, _conn: &Connection) -> Result<()> {
         Ok(())
     }
-
     pub(crate) fn seed_default_platforms(&self, conn: &Connection) -> Result<()> {
         let mut stmt = conn.prepare("SELECT COUNT(*) FROM model_platforms")?;
         let count: i64 = stmt.query_row([], |r| r.get(0))?;
@@ -1177,34 +1183,8 @@ impl DbManager {
     }
 
     pub fn export_table_as_json(&self, table_name: &str) -> Result<String> {
-        // SQL injection prevention: whitelist valid table names
-        const VALID_TABLES: &[&str] = &[
-            "settings",
-            "agents",
-            "conversations",
-            "messages",
-            "skills",
-            "memories",
-            "agent_accounts",
-            "custom_models",
-            "model_platforms",
-            "platform_models",
-            "cron_tasks",
-            "cron_runs",
-            "knowledge_documents",
-            "knowledge_chunks",
-            "selection_history",
-            "translation_history",
-            "mcp_servers",
-            "search_providers",
-            "prompt_library",
-            "activity_log",
-            "skill_targets",
-            "agent_configs",
-            "autopilot_configs",
-            "request_logs",
-        ];
-        if !VALID_TABLES.contains(&table_name) {
+        // 表名要拼进 SQL，必须过白名单。清单见 BACKUP_TABLES（单一来源）。
+        if !BACKUP_TABLES.contains(&table_name) {
             return Err(rusqlite::Error::InvalidParameterName(format!(
                 "Invalid table name: {}",
                 table_name
@@ -1259,34 +1239,8 @@ impl DbManager {
     }
 
     pub fn import_table_from_json(&self, table_name: &str, rows_json: &str) -> Result<usize> {
-        // SQL injection prevention: whitelist valid table names
-        const VALID_TABLES: &[&str] = &[
-            "settings",
-            "agents",
-            "conversations",
-            "messages",
-            "skills",
-            "memories",
-            "agent_accounts",
-            "custom_models",
-            "model_platforms",
-            "platform_models",
-            "cron_tasks",
-            "cron_runs",
-            "knowledge_documents",
-            "knowledge_chunks",
-            "selection_history",
-            "translation_history",
-            "mcp_servers",
-            "search_providers",
-            "prompt_library",
-            "activity_log",
-            "skill_targets",
-            "agent_configs",
-            "autopilot_configs",
-            "request_logs",
-        ];
-        if !VALID_TABLES.contains(&table_name) {
+        // 表名要拼进 SQL，必须过白名单。清单见 BACKUP_TABLES（单一来源）。
+        if !BACKUP_TABLES.contains(&table_name) {
             return Err(rusqlite::Error::InvalidParameterName(format!(
                 "Invalid table name: {}",
                 table_name
@@ -1379,6 +1333,41 @@ pub struct ActiveAccountInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `BACKUP_TABLES` 里每个名字都得是新库里真实存在的表。
+    ///
+    /// 这条冲着已经发生过的事故写：清单里曾经写着 `knowledge_documents` /
+    /// `knowledge_chunks` / `autopilot_configs`——三张**不存在的表**。导出时
+    /// 名字过不了白名单，调用方只 `log::warn!` 就跳过，用户看到「导出成功」，
+    /// 而整个知识库不在备份里。名字写错这件事本身不会报错，只能在这里查。
+    #[test]
+    fn backup_tables_all_exist() {
+        let db = upstream_test_db("backuptables");
+        let conn = db.get_connection().unwrap();
+        let real: std::collections::HashSet<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table'")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        let missing: Vec<&str> = crate::db::BACKUP_TABLES
+            .iter()
+            .copied()
+            .filter(|t| !real.contains(*t))
+            .collect();
+        assert!(missing.is_empty(), "备份清单里这些表在新库里不存在：{missing:?}");
+    }
+
+    /// 白名单和默认导出必须是同一份，否则「能导的」和「要导的」又会漂开。
+    #[test]
+    fn every_backup_table_passes_the_export_whitelist() {
+        let db = upstream_test_db("backupwhitelist");
+        for table in crate::db::BACKUP_TABLES {
+            db.export_table_as_json(table)
+                .unwrap_or_else(|e| panic!("{table} 过不了导出白名单：{e}"));
+        }
+    }
 
     fn upstream_test_db(tag: &str) -> DbManager {
         use std::sync::atomic::{AtomicU32, Ordering};

@@ -47,31 +47,8 @@ pub fn export_backup(
     tables: Option<Vec<String>>,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<String, String> {
-    let all_tables = vec![
-        "settings",
-        "agents",
-        "conversations",
-        "messages",
-        "skills",
-        "memories",
-        "agent_accounts",
-        "custom_models",
-        "model_platforms",
-        "platform_models",
-        "tasks",
-        "cron_tasks",
-        "cron_runs",
-        "kb_documents",
-        "kb_chunks",
-        "kb_embeddings",
-        "selection_history",
-        "translation_history",
-        "mcp_servers",
-        "prompt_library",
-        "search_providers",
-        "search_history",
-        "activity_log",
-    ];
+    // 单一来源：界面列表、默认导出、白名单共用 crate::db::BACKUP_TABLES。
+    let all_tables: Vec<&str> = crate::db::BACKUP_TABLES.to_vec();
     let selected: Vec<&str> = if let Some(t) = &tables {
         all_tables
             .into_iter()

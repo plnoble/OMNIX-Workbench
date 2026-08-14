@@ -196,7 +196,12 @@ pub(crate) fn create_skill_core(
     content: &str,
     overwrite: bool,
 ) -> Result<(), String> {
-    input_validation::validate_name(name, "name")?;
+    // 技能名会直接 `skills_dir().join(name)` 落成目录，所以必须按**路径段**校验：
+    // `validate_name` 只查空/长度/控制字符，不拒 `/`、`\`、`..`——`..\..\.ssh`
+    // 这种名字会写到技能库外面去，再 sync 一次还会拼进 `~/.claude/skills/`。
+    // 同仓库的 zip 导入（skill_pool）和同步（skill_sync）早就用的是这个，
+    // 只有创建这一处没跟上。
+    input_validation::validate_path_component(name, "name")?;
     let conn = db
         .get_connection()
         .map_err(|e: rusqlite::Error| e.to_string())?;
@@ -276,4 +281,57 @@ pub fn create_skill(
         &content,
         false,
     )
+}
+
+#[cfg(test)]
+mod skill_name_path_tests {
+    use crate::db::DbManager;
+
+    fn test_db(tag: &str) -> DbManager {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "omnix_skillname_{tag}_{}_{}.db",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_file(&path);
+        DbManager::new_with_path(path)
+    }
+
+    /// 技能名会直接落成 `skills_dir()/<name>` 目录，所以带路径分隔符的名字
+    /// 必须在**写盘之前**被拒。
+    ///
+    /// 这里以前用的是 `validate_name`，它只查空/长度/控制字符——`..\..\.ssh`
+    /// 一路通过，`create_dir_all` 就把目录建到技能库外面了，再 sync 一次还会
+    /// 拼进 `~/.claude/skills/`。同仓库的 zip 导入和同步早就用
+    /// `validate_path_component` 了，只有创建这一处没跟上。
+    #[test]
+    fn create_skill_rejects_names_that_escape_the_skills_dir() {
+        let db = test_db("escape");
+        for evil in [
+            "../evil",
+            r"..\evil",
+            "sub/dir",
+            r"sub\dir",
+            "..",
+            "C:evil",
+        ] {
+            let result = super::create_skill_core(&db, evil, "d", "p", &[], "c", false);
+            assert!(
+                result.is_err(),
+                "技能名 {evil:?} 能跳出技能目录，却被放行了"
+            );
+        }
+    }
+
+    /// 正常名字不能被误伤——带连字符和中文的技能名是常见写法。
+    #[test]
+    fn create_skill_still_accepts_ordinary_names() {
+        let db = test_db("ok");
+        for good in ["gstack-merged", "代码审查", "my_skill.v2"] {
+            super::create_skill_core(&db, good, "d", "p", &[], "c", true)
+                .unwrap_or_else(|e| panic!("正常技能名 {good:?} 被误拒：{e}"));
+        }
+    }
 }

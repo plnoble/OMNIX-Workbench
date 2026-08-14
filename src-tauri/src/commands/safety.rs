@@ -508,6 +508,15 @@ pub fn apply_api_preset(
     api_key: String,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<String, String> {
+    apply_api_preset_core(&db, &preset_id, &api_key)
+}
+
+/// 命令体本身。抽出来是为了能测——`State<…>` 在单测里构造不出来。
+pub(crate) fn apply_api_preset_core(
+    db: &DbManager,
+    preset_id: &str,
+    api_key: &str,
+) -> Result<String, String> {
     // Preset definitions (mirrored from frontend constants)
     let presets: Vec<(&str, &str, &str, &str, &str)> = vec![
         ("openai",        "OpenAI",              "openai",    "https://api.openai.com/v1",                       "gpt-4o"),
@@ -537,17 +546,21 @@ pub fn apply_api_preset(
         |r| r.get::<_, i64>(0),
     ).unwrap_or(0) > 0;
 
+    // Key **不写** `model_platforms.api_key`。那一列是遗留列：`platform_api_keys`
+    // 才是现在的存放处，而且存的是密文。这里以前直接把明文 UPDATE/INSERT 进旧列，
+    // 同时坏两件事——绕开加密策略；以及平台一旦已有 `platform_api_keys` 行，
+    // 运行时根本不读那一列，预设 Key「保存成功、实际没用」。
     if exists {
-        // Update existing
         conn.execute(
-            "UPDATE model_platforms SET api_key = ?1, api_address = ?2, api_type = ?3, is_enabled = 1 WHERE id = ?4",
-            params![api_key, api_address, api_type, id],
+            "UPDATE model_platforms SET api_address = ?1, api_type = ?2, is_enabled = 1 WHERE id = ?3",
+            params![api_address, api_type, id],
         ).map_err(|e: rusqlite::Error| e.to_string())?;
     } else {
-        // Insert new
+        // 旧列是 NOT NULL，必须显式给空串——省略它会直接违反约束。
+        // 它只是遗留列，真正的 Key 在下面写进 `platform_api_keys`。
         conn.execute(
-            "INSERT INTO model_platforms (id, name, api_type, api_key, api_address, is_enabled, weight, priority) VALUES (?1, ?2, ?3, ?4, ?5, 1, 1, 0)",
-            params![id, name, api_type, api_key, api_address],
+            "INSERT INTO model_platforms (id, name, api_type, api_key, api_address, is_enabled, weight, priority) VALUES (?1, ?2, ?3, '', ?4, 1, 1, 0)",
+            params![id, name, api_type, api_address],
         ).map_err(|e: rusqlite::Error| e.to_string())?;
 
         // Add default model
@@ -556,6 +569,36 @@ pub fn apply_api_preset(
             "INSERT OR IGNORE INTO platform_models (id, platform_id, model_name, is_enabled) VALUES (?1, ?2, ?3, 1)",
             params![model_id, id, default_model],
         ).map_err(|e: rusqlite::Error| e.to_string())?;
+    }
+
+    // Key 进加密表。给的是空串就只建平台不建 Key（用户可能只想先加上地址）。
+    // Key 进加密表，**不写** `model_platforms.api_key`。那一列是遗留列：
+    // 直接写明文会绕开加密策略，而且平台一旦已有 `platform_api_keys` 行，
+    // 运行时根本不读那一列——预设 Key 会「保存成功、实际没用」。
+    // ollama 这类本地平台不需要 Key，空串就不建条目。
+    let trimmed_key = api_key.trim();
+    if !trimmed_key.is_empty() {
+        let already_active: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM platform_api_keys WHERE platform_id = ?1 AND is_active = 1",
+                params![id],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        let key_id = format!("key_preset_{}_{}", id, chrono::Utc::now().timestamp_millis());
+        conn.execute(
+            "INSERT INTO platform_api_keys (id, platform_id, encrypted_key, label, is_active)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                key_id,
+                id,
+                crate::crypto::encrypt(trimmed_key),
+                "一键预设",
+                // 已经有活跃 Key 就不抢——用户在多 Key 里选过的那个应当保持生效。
+                if already_active == 0 { 1 } else { 0 }
+            ],
+        )
+        .map_err(|e: rusqlite::Error| e.to_string())?;
     }
 
     Ok(format!("{}: {}", name, if exists { "已更新" } else { "已添加" }))
@@ -721,4 +764,101 @@ pub async fn list_installed_ollama_models() -> Result<Vec<String>, String> {
         .filter(|name| !name.is_empty())
         .map(str::to_string)
         .collect())
+}
+
+#[cfg(test)]
+mod preset_key_tests {
+    use crate::db::DbManager;
+    use rusqlite::params;
+
+    fn test_db(tag: &str) -> DbManager {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "omnix_preset_{tag}_{}_{}.db",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_file(&path);
+        DbManager::new_with_path(path)
+    }
+
+    /// 一键预设的 Key 必须进加密表，而且**不能**在旧的明文列里留一份。
+    ///
+    /// 这里以前直接 `UPDATE model_platforms SET api_key = <明文>`，同时坏两件事：
+    /// 绕开加密策略；以及平台一旦已有 `platform_api_keys` 行，运行时根本不读那一
+    /// 列，预设 Key「保存成功、实际没用」。
+    #[test]
+    fn preset_key_lands_encrypted_and_leaves_no_plaintext() {
+        let db = test_db("enc");
+        {
+            let conn = db.get_connection().unwrap();
+            conn.execute("DELETE FROM model_platforms", []).unwrap();
+            conn.execute("DELETE FROM platform_api_keys", []).unwrap();
+        }
+        super::apply_api_preset_core(&db, "deepseek", "sk-preset-secret-123").expect("应用预设");
+
+        let conn = db.get_connection().unwrap();
+        let legacy: String = conn
+            .query_row(
+                "SELECT COALESCE(api_key, '') FROM model_platforms WHERE id = 'deepseek'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            !legacy.contains("sk-preset-secret-123"),
+            "明文 Key 落进了遗留列：{legacy}"
+        );
+
+        let stored: String = conn
+            .query_row(
+                "SELECT encrypted_key FROM platform_api_keys WHERE platform_id = 'deepseek'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("Key 应该进了加密表");
+        assert!(!stored.contains("sk-preset-secret-123"), "加密表里存的是明文");
+        assert_eq!(
+            crate::crypto::decrypt(&stored),
+            "sk-preset-secret-123",
+            "解出来必须还是原来那把 Key"
+        );
+    }
+
+    /// 平台已经有用户自己选的活跃 Key 时，预设不该抢占活跃位。
+    #[test]
+    fn preset_does_not_steal_the_active_slot() {
+        let db = test_db("active");
+        {
+            let conn = db.get_connection().unwrap();
+            conn.execute("DELETE FROM model_platforms", []).unwrap();
+            conn.execute("DELETE FROM platform_api_keys", []).unwrap();
+            conn.execute(
+                "INSERT INTO model_platforms (id, name, api_type, api_key, api_address, is_enabled)
+                 VALUES ('deepseek', 'DeepSeek', 'openai', '', 'https://x', 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO platform_api_keys (id, platform_id, encrypted_key, label, is_active)
+                 VALUES ('mine', 'deepseek', ?1, '我自己的', 1)",
+                params![crate::crypto::encrypt("sk-mine")],
+            )
+            .unwrap();
+        }
+        super::apply_api_preset_core(&db, "deepseek", "sk-from-preset").expect("应用预设");
+
+        let conn = db.get_connection().unwrap();
+        // 「活跃 Key 有且只有一个」本身就是不变量——只查 WHERE is_active = 1 取一行
+        // 的话，两个都活跃时也可能碰巧返回 'mine'，测不出坏状态。
+        let active: Vec<String> = conn
+            .prepare("SELECT id FROM platform_api_keys WHERE platform_id = 'deepseek' AND is_active = 1")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert_eq!(active, vec!["mine".to_string()], "活跃 Key 应当仍然只有用户自己选的那把");
+    }
 }
