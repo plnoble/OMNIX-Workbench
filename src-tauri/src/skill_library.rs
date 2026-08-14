@@ -62,7 +62,15 @@ pub fn match_skills_for_message(
     };
 
     let message_lower = message.to_lowercase();
-    let message_words: Vec<&str> = message_lower.split_whitespace().collect();
+    // 中文没有空格：`split_whitespace` 会把一整句话切成**一个** token，于是下面
+    // 每一处 `contains(word)` 都变成「整句话得是描述的子串」——永远不成立。结果
+    // 是纯中文消息只剩「技能名恰好是消息子串」那一条路能给分，其余全是死码。
+    //
+    // 复用知识库那套 CJK 二元切分（`segment_for_index`，已在 BM25 索引/查询两端
+    // 用了很久）：「看这段代码」→「看这 这段 段代 代码 …」。描述那边不用切，
+    // `contains` 本来就是子串匹配，二元组能直接命中。英文原样保留。
+    let segmented = crate::knowledge::segment_for_index(&message_lower);
+    let message_words: Vec<&str> = segmented.split_whitespace().collect();
     let mut matches = Vec::new();
 
     for (name, description, category, file_path) in skills {
@@ -81,9 +89,13 @@ pub fn match_skills_for_message(
 
         // Keyword matching against description
         for word in &message_words {
-            if word.len() < 3 {
+            // 旧写法 `word.len() < 3` 按**字节**算：任何中文 token 都 ≥3 字节，
+            // 等于对中文完全不设防；而切成二元组后又会把每个二元组都放行。
+            // 改按字符数，并且只对 ASCII 保留「跳过 1~2 个字母的虚词」这层意图。
+            let char_count = word.chars().count();
+            if char_count < 2 || (word.is_ascii() && char_count < 3) {
                 continue;
-            } // Skip short words
+            }
 
             if desc_lower.contains(word) {
                 score += 2.0;
@@ -790,4 +802,84 @@ fn count_files_recursive(dir: &PathBuf) -> usize {
         }
     }
     count
+}
+
+#[cfg(test)]
+mod injection_matching_tests {
+    use super::*;
+    use crate::db::DbManager;
+
+    fn test_db(tag: &str) -> DbManager {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "omnix_skillmatch_{tag}_{}_{}.db",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_file(&path);
+        DbManager::new_with_path(path)
+    }
+
+    fn add_skill(db: &DbManager, name: &str, description: &str, category: &str) {
+        let conn = db.get_connection().unwrap();
+        conn.execute(
+            "INSERT INTO skills (name, description, file_path, category, pool, is_active)
+             VALUES (?1, ?2, '', ?3, 'official', 1)",
+            rusqlite::params![name, description, category],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_chinese_message_matches_a_chinese_skill() {
+        let db = test_db("zh");
+        add_skill(&db, "代码审查", "审查代码质量，找出潜在缺陷和风格问题", "研发效能");
+        let hits = match_skills_for_message(&db, "帮我看看这段代码写得怎么样", true);
+        assert!(
+            !hits.is_empty(),
+            "中文消息没能命中语义完全对口的中文技能——命中数 {}",
+            hits.len()
+        );
+    }
+
+    #[test]
+    fn an_english_message_matches_an_english_skill() {
+        let db = test_db("en");
+        add_skill(&db, "code-review", "review code quality and find defects", "研发效能");
+        let hits = match_skills_for_message(&db, "please review the quality of this code", true);
+        assert!(!hits.is_empty(), "英文消息没能命中对口的英文技能");
+    }
+
+    /// 中英混写时，「把」「的」「和」这类单字会被夹在英文 token 之间单独切出来。
+    ///
+    /// 旧的 `word.len() < 3` 按**字节**算，单个汉字正好 3 字节——一个都拦不住。
+    /// 而「的」「和」几乎出现在每一条中文描述里，两个虚词就凑够 4.0 分越过 3.0
+    /// 的门槛，于是任何中英混写的消息都能命中任何技能。改按字符数才拦得住。
+    #[test]
+    fn isolated_single_chinese_characters_do_not_carry_a_match() {
+        let db = test_db("zh_single");
+        add_skill(&db, "代码审查", "审查代码的质量，找出潜在缺陷和风格问题", "研发效能");
+        // 「把 config.json 里的 port 和 host 改一下」——跟代码审查毫无关系。
+        let hits = match_skills_for_message(&db, "把 config.json 的 port 和 host 改一下", true);
+        assert!(
+            hits.is_empty(),
+            "「的」「和」这类单字不该独自撑起一次命中：{:?}",
+            hits.iter().map(|h| (&h.skill_name, h.relevance_score)).collect::<Vec<_>>()
+        );
+    }
+
+    /// 二元切分会让 token 数量涨好几倍，光证明「能召回」不够——还得证明没有
+    /// 松到什么都召回。不然修完就是从「一个都不中」滑到「个个都中」，同样没用。
+    #[test]
+    fn an_unrelated_chinese_message_does_not_match() {
+        let db = test_db("zh_neg");
+        add_skill(&db, "代码审查", "审查代码质量，找出潜在缺陷和风格问题", "研发效能");
+        let hits = match_skills_for_message(&db, "明天北京的天气怎么样", true);
+        assert!(
+            hits.is_empty(),
+            "不相干的中文消息不该命中：{:?}",
+            hits.iter().map(|h| (&h.skill_name, h.relevance_score)).collect::<Vec<_>>()
+        );
+    }
 }
