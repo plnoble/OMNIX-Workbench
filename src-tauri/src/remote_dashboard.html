@@ -170,14 +170,21 @@
         conversations = list;
         const el = document.getElementById("convList");
         if (!list.length) { el.innerHTML = '<div class="empty">电脑上还没有会话。点右下角 ＋ 新建一个。</div>'; return; }
+        // 会话 id **不拼进 onclick**。它以前是整段里唯一没过 esc 的字段，
+        // 直接落在 `openConv('…')` 的 JS 字符串里；而 `validate_id` 只拒空/超长/
+        // 控制字符，不拒引号，`create_conversation` 又是开放的 IPC 命令，能收任意 id。
+        // 改成 data 属性 + 事件委托：id 只作为数据存在，永远不被当代码解析。
         el.innerHTML = list.map((c) => `
-          <div class="conv" onclick="openConv('${c.id}')">
+          <div class="conv" data-conv-id="${esc(c.id)}">
             <div class="row">
               <span class="name">${esc(c.title || "未命名")}</span>
               <span class="badge ${c.running ? "run" : "idle"}">${c.running ? "运行中" : "空闲"}</span>
             </div>
             <div class="meta">${esc(c.agent || "")} · ${esc((c.workspace || "direct").split(/[\\/]/).pop())}</div>
           </div>`).join("");
+        el.querySelectorAll("[data-conv-id]").forEach((node) => {
+          node.addEventListener("click", () => openConv(node.dataset.convId));
+        });
       } catch (e) { setConn(false); }
     }
 
@@ -314,7 +321,13 @@
     }
 
     // ── utils ──
-    function esc(s) { return String(s == null ? "" : s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])); }
+    // 引号也必须转：这里的产物会进 `value="…"` 这类属性，只转 & < > 的话，
+    // 一个带引号的工作区路径就能破出属性。
+    function esc(s) {
+      return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+      }[c]));
+    }
     const input = document.getElementById("input");
     input.addEventListener("input", () => { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 120) + "px"; });
     input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } });
