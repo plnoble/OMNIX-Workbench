@@ -28,7 +28,6 @@ const ROOT = path.resolve(__dirname, "../..");
 const KNOWN_ORPHANS = [
   "apply_mcp_preset",
   "get_all_models_metadata",
-  "get_all_skills",
   "get_conversation_tasks",
   "get_mcp_presets",
   "get_output_style_prompt",
@@ -151,7 +150,6 @@ const KNOWN_UNUSED_APIS = [
   "mailboxApi",
   "modelSyncApi",
   "notificationApi",
-  "persistentCronApi",
   "platformHealthApi",
   "promptApi",
   "skillDagApi",

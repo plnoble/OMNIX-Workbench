@@ -412,7 +412,6 @@ pub fn run() {
             commands::uninstall_agent_cli,
             commands::repair_installed_agent,
             commands::sync_external_agent_configs,
-            commands::get_all_skills,
             commands::get_skill_content,
             commands::save_skill_content,
             commands::toggle_skill_active,
@@ -765,9 +764,6 @@ pub fn run() {
             commands::set_yolo_mode_config,
             commands::check_yolo_permission,
             // Persistent Cron
-            commands::get_persistent_cron_tasks,
-            commands::create_persistent_cron,
-            commands::delete_persistent_cron,
             // Skill Rule Generator
             // Tool Call Confirmation Queue
             // PPT / Presentation panel (结构化幻灯模型 + 网关生成/编辑)

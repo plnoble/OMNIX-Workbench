@@ -1,4 +1,3 @@
-use super::*;
 use crate::db::DbManager;
 use crate::input_validation;
 use crate::skill_frontmatter::{generate_with_frontmatter, parse_frontmatter, SkillFrontmatter};
@@ -6,68 +5,6 @@ use rusqlite::params;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::State;
-
-#[tauri::command]
-pub fn get_all_skills(db: State<'_, Arc<DbManager>>) -> Result<Vec<Skill>, String> {
-    let conn = db
-        .get_connection()
-        .map_err(|e: rusqlite::Error| e.to_string())?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT name, description, file_path, profile, is_active, dependencies, updated_at, \
-         COALESCE(source_type,'local'), source_ref, source_revision, \
-         COALESCE(central_path,''), content_hash, starred, category \
-         FROM skills",
-        )
-        .map_err(|e: rusqlite::Error| e.to_string())?;
-
-    let rows = stmt
-        .query_map([], |row: &rusqlite::Row| {
-            let name: String = row.get(0)?;
-            let description: String = row.get(1)?;
-            let file_path: String = row.get(2)?;
-            let profile: String = row.get(3)?;
-            let is_active_int: i32 = row.get(4)?;
-            let dependencies_str: String = row.get(5)?;
-            let updated_at: String = row.get(6)?;
-            let source_type: String = row.get(7)?;
-            let source_ref: Option<String> = row.get(8)?;
-            let source_revision: Option<String> = row.get(9)?;
-            let central_path: String = row.get(10)?;
-            let content_hash: Option<String> = row.get(11)?;
-            let starred_int: i32 = row.get(12)?;
-            let category: Option<String> = row.get(13)?;
-
-            let dependencies: Vec<String> =
-                serde_json::from_str(&dependencies_str).unwrap_or_default();
-
-            Ok(Skill {
-                name,
-                description,
-                file_path,
-                profile,
-                is_active: is_active_int != 0,
-                dependencies,
-                updated_at,
-                source_type,
-                source_ref,
-                source_revision,
-                central_path,
-                content_hash,
-                starred: starred_int != 0,
-                category,
-            })
-        })
-        .map_err(|e: rusqlite::Error| e.to_string())?;
-
-    let mut result = Vec::new();
-    for r in rows {
-        if let Ok(skill) = r {
-            result.push(skill);
-        }
-    }
-    Ok(result)
-}
 
 #[tauri::command]
 pub fn get_skill_content(

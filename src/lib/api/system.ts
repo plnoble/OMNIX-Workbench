@@ -211,12 +211,6 @@ export interface PersistentCronTask {
   mode: string; keep_awake: boolean; enabled: boolean;
   last_run_at: string | null; next_run_at: string | null;
 }
-export const persistentCronApi = {
-  getAll: () => invoke<PersistentCronTask[]>("get_persistent_cron_tasks"),
-  create: (name: string, schedule: string, timezone?: string, agentName?: string, promptTemplate?: string, mode?: string, keepAwake?: boolean) =>
-    invoke<string>("create_persistent_cron", { name, schedule, timezone, agentName, promptTemplate, mode, keepAwake }),
-  delete: (taskId: string) => invoke("delete_persistent_cron", { taskId }),
-};
 
 // Skill Rule Generator
 // Conversation Skills Indicator

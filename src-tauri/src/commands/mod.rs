@@ -65,23 +65,6 @@ use serde::{Deserialize, Serialize};
 
 // ── Shared DTOs ──
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Skill {
-    pub name: String,
-    pub description: String,
-    pub file_path: String,
-    pub profile: String,
-    pub is_active: bool,
-    pub dependencies: Vec<String>,
-    pub updated_at: String,
-    pub source_type: String,
-    pub source_ref: Option<String>,
-    pub source_revision: Option<String>,
-    pub central_path: String,
-    pub content_hash: Option<String>,
-    pub starred: bool,
-    pub category: Option<String>,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentAccount {
