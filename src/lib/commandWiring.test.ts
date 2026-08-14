@@ -35,10 +35,8 @@ const KNOWN_ORPHANS = [
   "get_skill_content",
   "read_file_as_base64",
   "read_file_content_utf8",
-  "relock_skill",
   "save_skill_content",
   "scan_prompt_injection",
-  "skill_lock_audit",
   "toggle_skill_active",
   "uninstall_agent_cli",
   "update_skill_profile",
@@ -169,7 +167,6 @@ const KNOWN_UNUSED_APIS = [
   "notificationApi",
   "platformHealthApi",
   "skillDagApi",
-  "skillLockApi",
   "workspaceGcApi",
   "yoloApi",
 ];

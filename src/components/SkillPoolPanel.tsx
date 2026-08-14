@@ -30,12 +30,25 @@ import {
   modelApi,
   settingsApi,
   skillPoolApi,
+  skillProvenanceApi,
   skillUpdatesApi,
   type SkillConflict,
   type SkillFusionProposal,
   type SkillPoolItem,
+  type SkillProvenance,
   type SkillReformProposal,
 } from "@/lib/tauri-api";
+
+/**
+ * 存证徽标。**只给「不一致」的状态**——`ok` 不出徽标。
+ *
+ * 一屏绿勾等于没有信息；这里要看见的是那几条对不上的。
+ */
+const LOCK_META: Record<string, { label: string; cls: string }> = {
+  drifted: { label: "内容已变", cls: "border-destructive/50 bg-destructive/10 text-destructive" },
+  unlocked: { label: "未存证", cls: "border-border bg-muted/30 text-muted-foreground" },
+  missing: { label: "文件缺失", cls: "border-warning/50 bg-warning/10 text-warning" },
+};
 
 const VERDICT_META: Record<string, { label: string; cls: string }> = {
   pass: { label: "审核通过", cls: "border-success/40 bg-success/10 text-success" },
@@ -47,6 +60,9 @@ type PoolFilter = "all" | "pending" | "official" | "unreviewed";
 
 export function SkillPoolPanel() {
   const [items, setItems] = useState<SkillPoolItem[]>([]);
+  /** 技能名 → 存证。空 Map 表示还没读到，不是「都没问题」。 */
+  const [provenance, setProvenance] = useState<Map<string, SkillProvenance>>(new Map());
+  const [relocking, setRelocking] = useState("");
   const [models, setModels] = useState<PlatformModel[]>([]);
   const [chatModel, setChatModel] = useState("");
   const [injectionOn, setInjectionOn] = useState(true);
@@ -95,7 +111,37 @@ export function SkillPoolPanel() {
     } catch (e) {
       toast.error(`读取技能失败：${e}`);
     }
+    // 存证单独一路：审计读的是磁盘上的技能文件，比列表慢，而且失败了不该连
+    // 技能列表一起看不到——那才是这个面板的主体。
+    try {
+      const rows = await skillProvenanceApi.audit();
+      setProvenance(new Map(rows.map((r) => [r.name, r])));
+    } catch {
+      /* 存证读不到就不显示徽标，不打扰 */
+    }
   }, []);
+
+  /**
+   * 重新上锁：把指纹更新到当前内容。
+   *
+   * 故意不做成「检测到变化就自动更新」——那样这个功能就白做了：内容被谁改过
+   * 都会被无声抹平。「内容变了」和「我认可这个变化」是两件事，后者必须有人按。
+   */
+  const relock = useCallback(
+    async (name: string) => {
+      setRelocking(name);
+      try {
+        await skillProvenanceApi.relock(name);
+        toast.success(`已重新上锁：${name}`);
+        await load();
+      } catch (e) {
+        toast.error(`上锁失败：${e}`);
+      } finally {
+        setRelocking("");
+      }
+    },
+    [load],
+  );
 
   useEffect(() => {
     void load();
@@ -738,6 +784,40 @@ export function SkillPoolPanel() {
                     >
                       注入 {item.usage_count}
                     </span>
+                  )}
+                  {(() => {
+                    // 只在正式池且状态不是「一致」时出现。ok 不显示徽标——
+                    // 一屏绿勾等于没有信息，真正要看见的是那几条对不上的。
+                    const prov = provenance.get(item.name);
+                    if (!prov || prov.status.state === "ok") return null;
+                    const meta = LOCK_META[prov.status.state];
+                    return (
+                      <span
+                        className={cn("rounded border px-1 py-0.5 text-[10px]", meta.cls)}
+                        title={
+                          prov.status.state === "drifted"
+                            ? `审核时的指纹 ${prov.status.approved.slice(0, 12)}，现在是 ${prov.status.current.slice(0, 12)}`
+                            : prov.status.state === "missing"
+                              ? prov.status.reason
+                              : "本功能上线前晋升的老技能，还没有存证"
+                        }
+                      >
+                        {meta.label}
+                      </span>
+                    );
+                  })()}
+                  {provenance.get(item.name)?.status.state === "drifted" && (
+                    <button
+                      className="rounded border border-border px-1 py-0.5 text-[10px] hover:bg-muted/40 disabled:opacity-50"
+                      disabled={relocking === item.name}
+                      title="确认当前内容就是想要的，把指纹更新到这一份"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void relock(item.name);
+                      }}
+                    >
+                      {relocking === item.name ? "上锁中…" : "重新上锁"}
+                    </button>
                   )}
                 </div>
               </div>

@@ -313,30 +313,42 @@ export const skillSafetyApi = {
   scanAll: () => invoke<SkillRisk[]>("scan_all_skills"),
 };
 
-// ── Skills Lock File ──────────────
+// ── 技能存证（正式池内容是否还是审核时那份） ──────────────
 
-export interface SkillLockEntry {
-  source: string;
+/**
+ * 锁状态。**「没锁」和「对不上」必须分开**——前者是本功能上线前晋升的老技能，
+ * 后者是内容真的被改过，处理方式完全不同。后端用 `#[serde(tag = "state")]`
+ * 序列化，所以这里是带判别字段的联合类型。
+ */
+export type LockStatus =
+  | { state: "ok" }
+  | { state: "drifted"; approved: string; current: string }
+  | { state: "unlocked" }
+  | { state: "missing"; reason: string };
+
+export interface SkillProvenance {
+  name: string;
+  status: LockStatus;
+  /** local / git / builtin */
   source_type: string;
-  computed_hash: string;
-  skill_path?: string;
+  /** Git URL、导入路径，或 `omnix:fusion(a+b)` */
+  source_ref: string;
+  source_revision: string;
+  approved_at: string;
 }
 
-export interface SkillLockFile {
-  version: number;
-  skills: Record<string, SkillLockEntry>;
-}
+export const skillProvenanceApi = {
+  /** 正式池每条技能的存证清单。 */
+  audit: () => invoke<SkillProvenance[]>("skill_lock_audit"),
 
-export const skillLockApi = {
-  /** Read current skills-lock.json */
-  get: () => invoke<SkillLockFile>("get_skill_lock"),
-
-  /** Update lock file from current DB state */
-  update: () => invoke<SkillLockFile>("update_skill_lock"),
-
-  /** Verify lock file against DB, returns list of issues */
-  verify: () => invoke<string[]>("verify_skill_lock"),
+  /**
+   * 重新上锁：把指纹更新到当前内容。
+   *
+   * 单独一个动作而不是自动跟随——「内容变了」和「我认可这个变化」是两件事。
+   */
+  relock: (name: string) => invoke<string>("relock_skill", { name }),
 };
+
 
 
 export interface SkillMatch {

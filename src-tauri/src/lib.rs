@@ -607,9 +607,6 @@ pub fn run() {
             commands::list_hidden_builtin_assistants,
             commands::get_agent_template,
             // Skills Lock File commands
-            commands::get_skill_lock,
-            commands::update_skill_lock,
-            commands::verify_skill_lock,
             // Agent Execution Environment commands
             commands::get_agent_exec_config,
             commands::save_agent_exec_config,
