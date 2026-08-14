@@ -6,7 +6,8 @@
  * HalfOpen after a cooldown. Healthy platforms collapse into a one-line
  * summary; only degraded/tripped ones are shown in detail, each resettable.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
+import { usePolling } from "@/hooks/usePolling";
 import { Activity, RotateCcw, ShieldAlert, ShieldCheck } from "lucide-react";
 
 import { toast } from "@/components/ui/sonner";
@@ -31,11 +32,7 @@ export function GatewayHealthCard({ className }: { className?: string }) {
     }
   }, []);
 
-  useEffect(() => {
-    void load();
-    const timer = setInterval(() => void load(), 10_000);
-    return () => clearInterval(timer);
-  }, [load]);
+  usePolling(load, 10_000);
 
   const reset = async (platformId: string) => {
     setBusy(platformId);

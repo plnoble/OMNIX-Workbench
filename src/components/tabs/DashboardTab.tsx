@@ -5,6 +5,7 @@
  */
 
 import { useEffect, useState } from "react";
+import { usePolling } from "@/hooks/usePolling";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -52,12 +53,13 @@ export function DashboardTab({
   }, []);
   // Poll recently connected devices while remote access is on.
   useEffect(() => {
-    if (!remoteEnabled) { setRemoteClients([]); return; }
-    const load = () => remoteApi.clients().then(setRemoteClients).catch(() => {});
-    load();
-    const t = setInterval(load, 15000);
-    return () => clearInterval(t);
+    if (!remoteEnabled) setRemoteClients([]);
   }, [remoteEnabled]);
+  usePolling(
+    () => remoteApi.clients().then(setRemoteClients).catch(() => {}),
+    15_000,
+    remoteEnabled,
+  );
 
   const rotateToken = async () => {
     if (!window.confirm("轮换令牌：所有已配对的手机会立刻被踢下线，需要重新扫码。确定？")) return;
@@ -81,13 +83,15 @@ export function DashboardTab({
    * 配对码会过期（5 分钟），所以屏幕上这个二维码得自己保鲜——不然用户盯着一个
    * 早就失效的码去扫，只会看到「配对已失效」。到期前 30 秒换一张。
    */
+  //
+  // 走 usePolling 还有一层意思：界面看不见时**不再继续发新码**。以前哪怕窗口
+  // 最小化在托盘里，它也每 4 分半铸一个新的一次性配对码。
   const codeTtl = remoteInfo?.code_ttl_secs ?? 300;
-  useEffect(() => {
-    if (!remoteEnabled) return;
-    const refreshMs = Math.max(30, codeTtl - 30) * 1000;
-    const t = setInterval(() => onLoadRemoteAccess(), refreshMs);
-    return () => clearInterval(t);
-  }, [remoteEnabled, codeTtl, onLoadRemoteAccess]);
+  usePolling(
+    () => onLoadRemoteAccess(),
+    Math.max(30, codeTtl - 30) * 1000,
+    remoteEnabled,
+  );
 
   const toggleRemote = async (enabled: boolean) => {
     if (enabled && !window.confirm("启用远程访问：OMNIX 会把服务绑定到局域网(0.0.0.0)，同一网络内、持有令牌的设备可访问你的会话。确定开启？")) return;

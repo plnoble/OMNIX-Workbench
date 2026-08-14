@@ -6,7 +6,8 @@
  * - Claude Code：Anthropic 不在本地回传限额百分比，所以只显示「本 5 小时块
  *   / 本周的消耗与重置时间」，绝不编造百分比。
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
+import { usePolling } from "@/hooks/usePolling";
 import { Gauge, RefreshCw } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -63,11 +64,7 @@ export function QuotaStrip() {
     }
   }, []);
 
-  useEffect(() => {
-    void load();
-    const t = setInterval(() => void load(), 60000);
-    return () => clearInterval(t);
-  }, [load]);
+  usePolling(load, 60_000);
 
   if (loaded && !claude && !codex) return null;
 

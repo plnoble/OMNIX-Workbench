@@ -938,13 +938,30 @@ pub async fn hybrid_search(
             .into_iter()
             .next()
             .ok_or("Failed to generate query embedding")?;
-        vector_search(
-            db,
-            &query_embedding,
-            embedding_model,
-            knowledge_base_ids,
-            vector_limit,
-        )
+        // 这一段搬到阻塞线程池上跑。暴力余弦的开销**随知识库大小无上限地涨**：
+        // 范围内每条嵌入都要把 blob 读出来、反序列化成 f32、算一遍点积。放在
+        // 异步线程上就是拿一个几十毫秒起步的纯计算去堵整个 runtime——同一个
+        // runtime 上还挂着网关的请求转发和会话事件。
+        //
+        // `DbManager` 的 Clone 很便宜（r2d2 连接池内部是引用计数的），它那条
+        // 注释写的就是这个用途。
+        //
+        // BM25 那半边留在原地：它走 FTS5 索引，结果集有上限，代价不随语料线性
+        // 涨。真正需要让开的是这一段。
+        let db_for_search = db.clone();
+        let model = embedding_model.to_string();
+        let scope = knowledge_base_ids.map(|ids| ids.to_vec());
+        tokio::task::spawn_blocking(move || {
+            vector_search(
+                &db_for_search,
+                &query_embedding,
+                &model,
+                scope.as_deref(),
+                vector_limit,
+            )
+        })
+        .await
+        .map_err(|e| format!("向量检索线程异常退出：{e}"))?
         .inspect_err(|e| log::error!("向量检索失败，本次只用 BM25 结果：{e}"))
         .unwrap_or_default()
     } else {

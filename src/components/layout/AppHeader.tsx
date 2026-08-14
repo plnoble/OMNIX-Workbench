@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { usePolling } from "@/hooks/usePolling";
 import {
   ChevronDown,
   ChevronLeft,
@@ -131,26 +132,16 @@ export function AppHeader({
   // 现在接真的：读熔断器状态，有平台被熔断（Open）就红，半开就黄。保存设置的
   // 反馈已经由 SystemSubTab 的 toast 承担，不需要这个点兼任。
   const [gatewayHealth, setGatewayHealth] = useState<"ok" | "degraded" | "down">("ok");
-  useEffect(() => {
-    let alive = true;
-    const poll = async () => {
-      try {
-        const rows = await circuitBreakerApi.getStatus();
-        if (!alive) return;
-        if (rows.some((r) => r.state === "Open")) setGatewayHealth("down");
-        else if (rows.some((r) => r.state === "HalfOpen")) setGatewayHealth("degraded");
-        else setGatewayHealth("ok");
-      } catch {
-        // 拿不到状态就别乱报警——保持上一次的结论。
-      }
-    };
-    void poll();
-    const timer = setInterval(() => void poll(), 30_000);
-    return () => {
-      alive = false;
-      clearInterval(timer);
-    };
-  }, []);
+  usePolling(async () => {
+    try {
+      const rows = await circuitBreakerApi.getStatus();
+      if (rows.some((r) => r.state === "Open")) setGatewayHealth("down");
+      else if (rows.some((r) => r.state === "HalfOpen")) setGatewayHealth("degraded");
+      else setGatewayHealth("ok");
+    } catch {
+      // 拿不到状态就别乱报警——保持上一次的结论。
+    }
+  }, 30_000);
 
   const statusClass = {
     ok: "bg-success",

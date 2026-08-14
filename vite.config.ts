@@ -68,11 +68,16 @@ export default defineConfig(async () => ({
     port: 1420,
     strictPort: true,
     host: host || false,
+    // HMR 走 1430，**不是 Tauri 模板给的 1421**——1421 是 OMNIX 网关自己的
+    // 默认端口（`DEFAULT_PROXY_PORT`，散布在后端十几处）。设了 TAURI_DEV_HOST
+    // 做局域网/手机调试时，两边会去抢同一个端口：谁先起来谁占住，另一个静默
+    // 起不来。网关那个端口动不了（手机配对 URL、MCP 地址、反向隧道都写着它），
+    // 所以让 dev server 让开。
     hmr: host
       ? {
           protocol: "ws",
           host,
-          port: 1421,
+          port: 1430,
         }
       : undefined,
     watch: {

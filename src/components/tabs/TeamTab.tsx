@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { usePolling } from "@/hooks/usePolling";
 import { useConversationsStore } from "@/store/AppStore";
 import {
   AlertTriangle,
@@ -119,14 +120,19 @@ export function TeamTab() {
     loadDetail(selectedRunId).catch((error) => toast.error(`读取 Team 详情失败：${error}`));
   }, [selectedRunId]);
 
-  useEffect(() => {
-    if (!detail || terminalStatuses.has(detail.run.status) || detail.run.status === "awaiting_plan_approval") return;
-    const timer = window.setInterval(() => {
+  const runIsLive =
+    !!detail &&
+    !terminalStatuses.has(detail.run.status) &&
+    detail.run.status !== "awaiting_plan_approval";
+  usePolling(
+    () => {
+      if (!detail) return;
       loadDetail(detail.run.id).catch(() => undefined);
       loadRuns().catch(() => undefined);
-    }, 1500);
-    return () => window.clearInterval(timer);
-  }, [detail?.run.id, detail?.run.status]);
+    },
+    1500,
+    runIsLive,
+  );
 
   const chooseWorkspace = async () => {
     const path = await shellApi.pickDirectory();

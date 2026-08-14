@@ -5,7 +5,8 @@
  * 汇总到一处，批/拒直接走既有的 runtime_respond_approval；停止走既有的
  * runtime_stop_session。轮询聚合接口（2s），不新造事件通道。
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useState } from "react";
+import { usePolling } from "@/hooks/usePolling";
 import { Activity, CircleStop, Loader2, MonitorCog, ShieldAlert, ShieldCheck, X } from "lucide-react";
 import { toast } from "sonner";
 
@@ -30,7 +31,6 @@ export function SupervisionConsole() {
   const [recentDone, setRecentDone] = useState<SupervisedSession[]>([]);
   const [busy, setBusy] = useState("");
   const [loadedOnce, setLoadedOnce] = useState(false);
-  const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -43,13 +43,7 @@ export function SupervisionConsole() {
     }
   }, []);
 
-  useEffect(() => {
-    void load();
-    timer.current = setInterval(() => void load(), 2000);
-    return () => {
-      if (timer.current) clearInterval(timer.current);
-    };
-  }, [load]);
+  usePolling(load, 2000);
 
   const respond = async (s: SupervisedSession, approved: boolean) => {
     if (!s.approval) return;

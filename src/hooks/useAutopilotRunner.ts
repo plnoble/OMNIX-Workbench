@@ -6,6 +6,11 @@
  * once through the real runtime — starting a session with the agent's default
  * model and sending the prompt — so the result is a normal, reviewable
  * conversation. It never steals focus; the run just appears in the list.
+ *
+ * **这条定时器故意不走 `usePolling`。** 那个 hook 在窗口看不见时会停下，对界面
+ * 刷新是对的（没人看的数据不用拉），对这里是错的：自动任务的全部意义就是
+ * 「不看着也要按时跑」，而 OMNIX 支持启动即最小化到托盘。停掉它等于把功能关了，
+ * 而且是那种不报错的关法——队列里的任务就一直排着。
  */
 import { useEffect } from "react";
 import { toast } from "sonner";
