@@ -122,10 +122,14 @@ pub(crate) fn decide_gateway_access(req: &AccessRequest<'_>) -> AccessDecision {
 
     // `/mcp` 必须在这一行里：它把技能库、联网搜索和 Office 读写交给调用方，开了
     // 手机远程访问之后网关绑的是 0.0.0.0，漏掉它等于把这些能力对局域网无鉴权敞开。
+    // `/health` 也在里面：它回的是平台数量、请求计数这类内部状态。绑 0.0.0.0 时
+    // 让局域网随便探，等于免费提供一份「这台机器上装了什么、用得多不多」的报告。
+    // 本机进程不受影响（下面那行对回环直接放行）。
     let is_gateway = req.path.starts_with("/v1/")
         || req.path.starts_with("/agent/")
         || req.path.starts_with("/session/")
-        || req.path == "/mcp";
+        || req.path == "/mcp"
+        || req.path == "/health";
     if !is_gateway || req.peer_is_loopback {
         return AccessDecision::Allow;
     }

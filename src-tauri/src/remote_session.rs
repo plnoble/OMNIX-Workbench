@@ -25,7 +25,13 @@ pub const SESSION_COOKIE: &str = "omnix_remote";
 /// 配对码有效期：够从电脑走到手机跟前扫一下，不够留给别人捡。
 const CODE_TTL_SECS: i64 = 300;
 /// 会话有效期。到期手机重新扫一次码。
-const SESSION_TTL_SECS: i64 = 30 * 24 * 3600;
+/// 面板会话有效期。
+///
+/// 曾经是 30 天。局域网上跑的是**明文 HTTP**（不能加 `Secure`，否则浏览器根本
+/// 不种这个 Cookie），所以它在同一个 Wi-Fi 上是可被中间人抓走的；30 天等于一次
+/// 抓包换一个月的访问权。缩到 1 天：手机扫码本来就很轻，重新配对的代价远小于
+/// 一张长期有效的通行证。
+const SESSION_TTL_SECS: i64 = 24 * 3600;
 /// 同时有效的配对码上限——诊断页每刷新一次就发一个，得有个盖。
 const MAX_LIVE_CODES: usize = 16;
 

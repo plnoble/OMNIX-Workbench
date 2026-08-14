@@ -482,23 +482,65 @@ fn guard_public_url(url: &reqwest::Url) -> Result<(), String> {
         return Err(format!("拒绝抓取本机地址：{host}"));
     }
     if let Ok(ip) = host.trim_matches(['[', ']']).parse::<std::net::IpAddr>() {
-        let private = match ip {
-            std::net::IpAddr::V4(v4) => {
-                v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified()
-            }
-            std::net::IpAddr::V6(v6) => {
-                // `is_unique_local` / `is_unicast_link_local` 还没稳定，手动判前缀。
-                v6.is_loopback()
-                    || v6.is_unspecified()
-                    || (v6.segments()[0] & 0xfe00) == 0xfc00
-                    || (v6.segments()[0] & 0xffc0) == 0xfe80
-            }
-        };
+        let private = is_private_ip(ip);
         if private {
             return Err(format!("拒绝抓取内网地址：{ip}"));
         }
+        // 字面 IP 已经判完，不必再解析。
+        return Ok(());
+    }
+
+    // 主机名要**解析之后**再判。只查字面量的话，一个指向 127.0.0.1 或
+    // 169.254.169.254（云元数据）的域名就能长驱直入——这是 SSRF 的标准走法，
+    // 而 `fetch_url` 是挂在 MCP 上的，等于把它交给了 agent。
+    //
+    // 残留窗口：解析和真正连接之间 DNS 可能变（rebinding）。完全堵住要接管
+    // 连接、直接连解析出来的 IP；那是另一层机器。这里先把「随便一个域名就能打
+    // 内网」这条大路封掉，窗口留在注释里，别假装它不存在。
+    let port = url.port_or_known_default().unwrap_or(80);
+    let resolved: Vec<std::net::IpAddr> = std::net::ToSocketAddrs::to_socket_addrs(&(host.as_str(), port))
+        .map_err(|e| format!("无法解析主机名 {host}：{e}"))?
+        .map(|addr| addr.ip())
+        .collect();
+    if resolved.is_empty() {
+        return Err(format!("主机名 {host} 没有解析出任何地址"));
+    }
+    reject_if_any_resolved_address_is_private(&host, &resolved)
+}
+
+/// 解析结果里只要有一个落在内网就拒绝——不能因为它同时有一个公网地址就放行
+/// （DNS 可以同时返回两条，攻击者只需要其中一条被用上）。
+///
+/// 和解析分开是为了**能离线测**：把真实 DNS 拉进单测，结果就取决于跑测试那台
+/// 机器的解析器，是个必然会飘的测试。这里只测判定。
+fn reject_if_any_resolved_address_is_private(
+    host: &str,
+    resolved: &[std::net::IpAddr],
+) -> Result<(), String> {
+    for ip in resolved {
+        if is_private_ip(*ip) {
+            return Err(format!(
+                "拒绝抓取：{host} 解析到内网地址 {ip}（域名指向内网是 SSRF 的常见走法）"
+            ));
+        }
     }
     Ok(())
+}
+
+/// 私网 / 环回 / 链路本地 / 未指定地址。
+fn is_private_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified()
+        }
+        std::net::IpAddr::V6(v6) => {
+            // `is_unique_local` / `is_unicast_link_local` 还没稳定，手动判前缀。
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || (v6.segments()[0] & 0xfe00) == 0xfc00
+                || (v6.segments()[0] & 0xffc0) == 0xfe80
+        }
+    }
 }
 
 /// 极简 HTML → 纯文本：先整块干掉 script/style，再逐字符剥标签。
@@ -623,6 +665,53 @@ mod tests {
 
     /// 这条闸挡的是「模型被搜到的内容诱导去探本机」。逐个地址列出来，是因为
     /// 少写一类前缀就是漏一个洞，而漏洞不会有编译错误提醒。
+    /// **域名解析到内网也要拒。**
+    ///
+    /// 这条闸以前只看字面主机名：URL 里写 IP 才判，写域名就直接放行。而
+    /// 解析到 127.0.0.1 / 169.254.169.254 的公共域名是现成的——拿域名绕过字面
+    /// IP 检查是 SSRF 的标准走法，而 `fetch_url` 挂在 MCP 上，等于把这条路
+    /// 交给了 agent。
+    ///
+    /// 只测判定、不测解析：把真实 DNS 拉进单测，结果就取决于跑测试那台机器的
+    /// 解析器（我第一版就是这么写的，本机 DNS 把它解析到了公网地址，测试当场
+    /// 变红——飘的是测试不是代码）。
+    #[test]
+    fn a_hostname_resolving_into_the_intranet_is_refused() {
+        use std::net::IpAddr;
+        let cases: [(&str, IpAddr); 4] = [
+            ("evil.example", "127.0.0.1".parse().unwrap()),
+            ("meta.example", "169.254.169.254".parse().unwrap()), // 云元数据
+            ("lan.example", "192.168.1.10".parse().unwrap()),
+            ("v6.example", "::1".parse().unwrap()),
+        ];
+        for (host, ip) in cases {
+            assert!(
+                super::reject_if_any_resolved_address_is_private(host, &[ip]).is_err(),
+                "{host} 解析到 {ip} 应被拒绝"
+            );
+        }
+    }
+
+    /// 一个域名同时解析出公网和内网地址时，**也要拒**——攻击者只需要内网那条
+    /// 被用上。
+    #[test]
+    fn a_mixed_resolution_is_still_refused() {
+        use std::net::IpAddr;
+        let ips: Vec<IpAddr> = vec![
+            "93.184.216.34".parse().unwrap(), // 公网
+            "10.0.0.5".parse().unwrap(),      // 内网
+        ];
+        assert!(super::reject_if_any_resolved_address_is_private("mixed.example", &ips).is_err());
+    }
+
+    /// 纯公网解析要放行——过度拦截会让联网抓取整个不能用。
+    #[test]
+    fn public_resolutions_pass() {
+        use std::net::IpAddr;
+        let ips: Vec<IpAddr> = vec!["93.184.216.34".parse().unwrap()];
+        assert!(super::reject_if_any_resolved_address_is_private("ok.example", &ips).is_ok());
+    }
+
     #[test]
     fn internal_addresses_are_refused() {
         for url in [
@@ -648,7 +737,11 @@ mod tests {
 
     #[test]
     fn public_http_urls_pass() {
-        for url in ["https://example.com/a", "http://93.184.216.34/", "https://中文.测试/x"] {
+        // 只用**字面公网 IP**：`guard` 现在会对主机名做真实 DNS 解析，放
+        // `https://example.com/` 进来就等于把这条测试绑到跑测试那台机器的网络上，
+        // 断网的 CI 会无缘无故变红。主机名那一路由
+        // `a_hostname_resolving_into_the_intranet_is_refused` 等三条离线覆盖。
+        for url in ["http://93.184.216.34/", "https://93.184.216.34/a?b=c"] {
             assert!(guard(url).is_ok(), "{url} 应放行：{:?}", guard(url));
         }
     }

@@ -371,7 +371,7 @@ async fn call_tool(db: &Arc<DbManager>, params: &Value) -> Result<String, String
         }
         OFFICE_READ_TOOL => {
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("").trim();
-            office_read(path).await
+            office_read(db, path).await
         }
         OFFICE_EDIT_TOOL => {
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("").trim();
@@ -386,6 +386,10 @@ async fn call_tool(db: &Arc<DbManager>, params: &Value) -> Result<String, String
             if !commands.is_array() || commands.as_array().is_some_and(|a| a.is_empty()) {
                 return Err("commands 必须是非空数组，每项是一条 OfficeCLI batch 命令。".into());
             }
+            // 笼子挡在**真正动文件之前**，排在所有参数校验之后：格式和 commands
+            // 形状都不碰文件系统、也不泄露任何信息，先把它们的错误报清楚，对正当
+            // 调用方更有用。
+            guard_office_path(db, path)?;
             let json = serde_json::to_string(commands).map_err(|e| e.to_string())?;
             crate::office::apply_batch(path, &json).await
         }
@@ -429,8 +433,58 @@ fn office_kind_error(path: &str) -> String {
     format!("只支持 .docx / .xlsx / .pptx（收到「{path}」）。旧的 .doc/.xls/.ppt 请先另存为新格式。")
 }
 
-async fn office_read(path: &str) -> Result<String, String> {
-    match office_kind(path)? {
+/// Office 读写的允许根目录：**OMNIX 已经知道的工作区**，外加 `~/.omnix`。
+///
+/// `office_read` / `office_edit` 之前只看扩展名，等于把「读写这台机器上任意
+/// .docx/.xlsx/.pptx」交给了 agent。agent 通常本来就有文件权限，所以这不是提权；
+/// 它挡的是**受骗的代理**——网页里一句注入让它去读用户「文档」目录下的报税表
+/// 然后「总结一下」，内容就顺着模型出去了。这正是仓库里那套「把不可信内容包
+/// 起来」想防的同一件事。
+///
+/// 边界取「用户明确指给 OMNIX 看过的目录」：对话绑过的工作区 + 写作空间。
+fn office_allowed_roots(db: &DbManager) -> Vec<std::path::PathBuf> {
+    let mut roots: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(conn) = db.get_connection() {
+        if let Ok(mut stmt) = conn.prepare(
+            "SELECT DISTINCT workspace_path FROM conversations
+             WHERE workspace_path != '' AND workspace_path != 'direct'",
+        ) {
+            if let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) {
+                roots.extend(rows.flatten().map(std::path::PathBuf::from));
+            }
+        }
+    }
+    if let Ok(Some(raw)) = db.get_setting("write_spaces") {
+        if let Ok(spaces) = serde_json::from_str::<Vec<String>>(&raw) {
+            roots.extend(spaces.into_iter().map(std::path::PathBuf::from));
+        }
+    }
+    // 导出目录：agent 生成的文档就落在这里，读回来是正当需求。
+    roots.push(crate::storage::exports_dir());
+    roots
+}
+
+/// 路径必须落在某个允许根之内，否则拒绝。
+fn guard_office_path(db: &DbManager, path: &str) -> Result<(), String> {
+    for root in &office_allowed_roots(db) {
+        if crate::input_validation::validate_contained(path, root, "path").is_ok() {
+            return Ok(());
+        }
+    }
+    Err(format!(
+        "拒绝访问「{path}」：它不在任何一个 OMNIX 工作区里。Office 读写只在你明确\
+         加进 OMNIX 的目录内生效——先把它所在的目录作为工作区打开。"
+    ))
+}
+
+async fn office_read(db: &DbManager, path: &str) -> Result<String, String> {
+    let kind = office_kind(path)?;
+    if kind == OfficeKind::Unknown {
+        return Err(office_kind_error(path));
+    }
+    // 见 office_edit 上的说明：格式先判，笼子后判。
+    guard_office_path(db, path)?;
+    match kind {
         OfficeKind::Doc => crate::office::docx_to_markdown(path).await,
         OfficeKind::Sheet => crate::office::xlsx_text(path).await,
         OfficeKind::Deck => {
@@ -610,6 +664,50 @@ mod tests {
 
     fn req(method: &str, params: Value, id: Option<Value>) -> RpcRequest {
         RpcRequest { jsonrpc: "2.0".into(), method: method.into(), params, id }
+    }
+
+    /// Office 读写只在 OMNIX 认识的目录里生效。
+    ///
+    /// 这两个工具以前只看扩展名，等于把「读写这台机器上任意 .docx/.xlsx/.pptx」
+    /// 交给了 agent。agent 通常本来就有文件权限，所以这不是提权——它挡的是
+    /// **受骗的代理**：网页里一句注入让它去读用户文档目录下的私人表格然后
+    /// 「总结一下」，内容就顺着模型出去了。
+    #[test]
+    fn office_paths_outside_every_workspace_are_refused() {
+        let db = db();
+        let outside = std::env::temp_dir().join("omnix_office_outside.xlsx");
+        std::fs::write(&outside, b"x").expect("写测试文件");
+        assert!(
+            super::guard_office_path(&db, &outside.to_string_lossy()).is_err(),
+            "工作区之外的文件不该放行"
+        );
+        let _ = std::fs::remove_file(&outside);
+    }
+
+    /// 登记过的工作区之内要放行——笼子关太死会让这两个工具整个不能用。
+    #[test]
+    fn office_paths_inside_a_registered_workspace_pass() {
+        let db = db();
+        let root = std::env::temp_dir().join(format!(
+            "omnix_office_ws_{}_{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_micros()
+        ));
+        std::fs::create_dir_all(&root).expect("建工作区");
+        let inside = root.join("book.xlsx");
+        std::fs::write(&inside, b"x").expect("写测试文件");
+        db.get_connection()
+            .unwrap()
+            .execute(
+                "INSERT INTO conversations (id, title, workspace_path, active_agent)
+                 VALUES ('c1', 't', ?1, 'Claude Code')",
+                rusqlite::params![root.to_string_lossy()],
+            )
+            .expect("登记工作区");
+
+        super::guard_office_path(&db, &inside.to_string_lossy())
+            .expect("登记过的工作区之内应放行");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     fn db() -> Arc<DbManager> {

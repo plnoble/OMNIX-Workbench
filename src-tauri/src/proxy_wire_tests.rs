@@ -1343,12 +1343,32 @@ mod gateway_access_tests {
         }
     }
 
-    /// 非网关路径不受影响（健康检查、静态预览等）。过度拦截同样是 bug。
+    /// 真正与网关无关的路径不受影响。过度拦截同样是 bug。
+    ///
+    /// `/health` **不在这里**——它以前在。绑 0.0.0.0 时它会把平台数量、请求计数
+    /// 这类内部状态交给局域网上任何一台设备，所以已纳入鉴权面（见下一条）。
     #[test]
     fn unrelated_paths_are_not_gated() {
-        for path in ["/health", "/preview/x/y.html", "/"] {
+        for path in ["/preview/x/y.html", "/"] {
             assert_eq!(decide_gateway_access(&req(path, false)), AccessDecision::Allow, "{path}");
         }
+    }
+
+    /// `/health` 对局域网要令牌，对本机不要。
+    ///
+    /// 它回的是「装了几个平台、发过多少请求」——免费的机器画像。本机进程仍然免
+    /// 令牌，桌面端自己的健康检查照常。
+    #[test]
+    fn health_is_gated_from_the_lan_but_not_locally() {
+        assert!(
+            matches!(decide_gateway_access(&req("/health", false)), AccessDecision::Deny(_)),
+            "/health 从非回环来必须要令牌"
+        );
+        assert_eq!(
+            decide_gateway_access(&req("/health", true)),
+            AccessDecision::Allow,
+            "/health 本机应放行"
+        );
     }
 }
 
