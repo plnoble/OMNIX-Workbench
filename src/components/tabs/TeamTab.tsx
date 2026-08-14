@@ -62,6 +62,14 @@ export function TeamTab() {
     () => detectedAgents.filter((agent) => ["Claude Code", "Codex"].includes(agent.name) && agent.status === "installed"),
     [detectedAgents],
   );
+  // 已装但当不了队长的，列出来——沉默的过滤最难排查。
+  const excludedAgents = useMemo(
+    () =>
+      detectedAgents
+        .filter((agent) => agent.status === "installed" && !["Claude Code", "Codex"].includes(agent.name))
+        .map((agent) => agent.name),
+    [detectedAgents],
+  );
   const [workspacePath, setWorkspacePath] = useState("");
   const [runs, setRuns] = useState<WorkspaceRun[]>([]);
   const [selectedRunId, setSelectedRunId] = useState("");
@@ -263,6 +271,17 @@ export function TeamTab() {
                 {supported.map((agent) => <option key={agent.name} value={agent.name}>{agent.name}</option>)}
               </select>
             </div>
+            {/* 队长白名单是后端定的（`team_runtime::parse_agent` 只认这两个）。
+                以前只有「一个都没装」时才提示，装了 Gemini 的用户只会看到下拉里
+                没有它、没有任何解释——「支持 8 个 Agent」在这里是不成立的，
+                界面得把这件事说出来，而不是让人以为自己没配好。 */}
+            <p className="mt-2 text-xs text-muted-foreground">
+              队长目前只能是 <strong>Claude Code</strong> 或 <strong>Codex</strong>：
+              它们是仅有的两个提供结构化事件流的 Agent，队长要靠它来拆解计划、跟踪 Worker 状态。
+              {excludedAgents.length > 0 && (
+                <> 已安装但不能当队长的：{excludedAgents.join("、")}——它们可以作为 Worker 参与。</>
+              )}
+            </p>
             <div className="mt-4 flex flex-wrap items-center gap-3">
               <Button onClick={generatePlan} disabled={busy === "planning" || supported.length === 0}>
                 {busy === "planning" ? <Loader2 className="h-4 w-4 animate-spin" /> : <ClipboardList className="h-4 w-4" />}

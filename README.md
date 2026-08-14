@@ -201,11 +201,12 @@ OMNIX-Workbench/
 │   └── types/                    # TypeScript 类型
 ├── src-tauri/                    # 后端源码
 │   ├── src/
-│   │   ├── lib.rs                # 应用初始化 + 60+ 命令注册
-│   │   ├── commands.rs           # Tauri 命令处理器 (5000+ 行)
-│   │   ├── db.rs                 # SQLite 数据库 (20 表)
-│   │   ├── proxy.rs              # Anthropic ↔ OpenAI 翻译代理
-│   │   ├── agent.rs              # Agent 子进程管理 (PTY)
+│   │   ├── lib.rs                # 应用初始化 + 461 个命令注册
+│   │   ├── commands/             # Tauri 命令（按领域分文件，早已不是单个 commands.rs）
+│   │   ├── db.rs / db_schema.rs  # SQLite（77 张表）
+│   │   ├── proxy*.rs             # 网关：Anthropic ↔ OpenAI 翻译、鉴权、远程面板
+│   │   ├── runtime*.rs           # Agent 会话运行时（Claude / Codex / ACP / print）
+│   │   ├── agent.rs              # Agent 检测、安装、定时任务调度
 │   │   ├── tool_adapters.rs      # 工具适配器 (5 个)
 │   │   ├── sync_engine.rs        # 同步引擎 + 扫描器 + Git 源
 │   │   ├── agent_templates.rs    # 25 个 Agent 模板
@@ -231,11 +232,17 @@ OMNIX-Workbench/
 
 ## 📊 代码规模
 
-| 类别 | 行数 |
+| 类别 | 规模 |
 |------|------|
-| Rust 后端 | ~12,000+ |
-| TypeScript 前端 | ~6,000+ |
-| **合计** | **~18,000+** |
+| Rust 后端 | ~67,000 行 |
+| TypeScript 前端 | ~32,000 行 |
+| **合计** | **~99,000 行** |
+| Tauri 命令 | 461 个 |
+| SQLite 表 | 77 张 |
+| Rust 测试 | 469 个 |
+
+> 数字用脚本数出来的，不是估的。上一版这里写着 ~18,000 行——那是很久以前的
+> 数字，一直没更新。
 
 ---
 
@@ -269,7 +276,7 @@ npx tauri build
 
 - **SOLID / DRY / KISS / YAGNI** — 不过度设计，不重复代码
 - **TypeScript strict** — 禁止 `any`，语义类型区分
-- **Rust `#![deny(unused)]`** — 零编译警告
+- **零编译警告** — `cargo check --lib --tests` 必须干净（CI 门禁的一部分）；`rustfmt` / 全量 `clippy` 目前只作为信号，不阻断合并
 - **结构化日志** — JSON 格式，Trace ID 贯穿
 - **安全编码** — 参数化 SQL，输入验证，密钥不硬编码
 - **AI Development Memory** — 每个任务/决策/错误都有结构化记录

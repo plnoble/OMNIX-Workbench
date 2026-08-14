@@ -1,19 +1,22 @@
 # OMNIX Workbench 使用说明书
 
-版本：0.1.0  
 产品：OMNIX Workbench  
 说明：多 Agent 开发与协作工作台
 
+> 这份说明书此前标着「版本 0.1.0」并让人去本地构建目录里找安装包，而应用早已
+> 通过 GitHub Releases 分发、并带自动更新。功能描述也停在那时候。已按当前版本
+> 重写入口部分；具体某一版改了什么见仓库根目录的 `CHANGELOG.md`。
+
 ## 1. 打开方式
 
-### 安装版
+### 安装（推荐）
 
-- MSI：打开 `src-tauri/target/release/bundle/msi/OMNIX Workbench_0.1.0_x64_en-US.msi`，安装后从开始菜单启动 `OMNIX Workbench`。
-- NSIS：打开 `src-tauri/target/release/bundle/nsis/OMNIX Workbench_0.1.0_x64-setup.exe`。
+到 [Releases](https://github.com/plnoble/OMNIX-Workbench/releases/latest) 下载：
 
-### 独立运行
+- `OMNIX.Workbench_<版本>_x64-setup.exe`（NSIS 安装包）
+- 或 `OMNIX.Workbench_<版本>_x64_en-US.msi`
 
-双击 `src-tauri/target/release/omnix-workbench.exe`。
+装完从开始菜单启动。**应用内会自动检测新版本并提示更新**，不用手动重装。
 
 ### 开发模式
 
@@ -38,10 +41,12 @@ npm.cmd run tauri -- dev
 
 默认固定入口：
 
-- 工作：单 Agent 对话和开发工作。
-- 团队：多个 Agent 的计划、执行和验收。
-- 智能体：检测、安装、更新和模型绑定。
-- 技能：技能库、熔炉、组合、市场和同步。
+- 对话：选一个 Agent 直接说话，不绑工作区。
+- 工作：把 Agent 接到一个目录上，能读写文件、跑命令、开工作树。
+- 智能体：检测、安装、更新和上游账号切换。
+- 技能：技能库、审核晋升、市场和同步。
+
+其余（团队、知识库、办公、监控、定时任务、MCP…）在宫格里。
 
 点击顶栏 `+`/宫格按钮可以打开其他应用。每个应用可以：
 
@@ -102,7 +107,9 @@ npm.cmd run tauri -- dev
 - 选择 Agent 官方/自带模型。
 - 选择 Models 中已启用且协议兼容的模型。
 
-OMNIX 优先使用系统现有 CLI，不覆盖系统安装。Gemini CLI、OpenCode 当前显示待适配状态，不代表完整结构化运行支持。
+OMNIX 优先使用系统现有 CLI，不覆盖系统安装。
+
+**能力不是齐平的**：只有 Claude Code 和 Codex 走 OMNIX 网关（多 Key 轮换、故障切换、Auto 路由对它们生效），也只有这两个能当团队队长；Gemini / Qwen / OpenCode / Copilot / Grok 用自己的账号和模型配置。模型下拉里会对不可选的项写明原因。
 
 ## 7. Models 模型中心
 
