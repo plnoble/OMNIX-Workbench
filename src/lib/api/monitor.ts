@@ -205,26 +205,6 @@ export const taskLifecycleApi = {
     invoke<TaskStats>("get_task_stats"),
 };
 
-// ── Skill Compound Interest ───────
-
-export const skillCompoundApi = {
-  /** Record a skill usage (boosts priority on success) */
-  recordUsage: (skillName: string, success: boolean) =>
-    invoke("record_skill_usage", { skillName, success }),
-
-  /** Get top skills ranked by compound interest */
-  getTopByUsage: (limit?: number) =>
-    invoke<Array<{
-      name: string;
-      description: string;
-      category: string | null;
-      usage_count: number;
-      success_count: number;
-      priority_score: number;
-      starred: boolean;
-    }>>("get_top_skills_by_usage", { limit }),
-};
-
 // ── Security & safety APIs ────────────────────────────
 
 // Prompt Injection Guard

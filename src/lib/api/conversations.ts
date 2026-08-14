@@ -265,11 +265,4 @@ export const taskDependencyApi = {
     invoke<string[]>("auto_unblock_tasks", { completedTaskId }),
 };
 
-// YOLO Full-Auto Mode
-
-export const conversationSkillsApi = {
-  get: (conversationId: string) =>
-    invoke<Array<{ name: string; description: string; category: string | null; usage_count: number; priority_score: number }>>("get_conversation_skills", { conversationId }),
-};
-
 // Tool Call Confirmation Queue

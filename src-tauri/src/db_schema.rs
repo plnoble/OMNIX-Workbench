@@ -233,10 +233,14 @@ impl DbManager {
                 content_hash TEXT NULL,                    -- SHA256 of SKILL.md content
                 starred INTEGER NOT NULL DEFAULT 0,        -- Favorite flag
                 category TEXT NULL,                        -- Skill category tag
-                usage_count INTEGER NOT NULL DEFAULT 0,    -- Times used by agents (compound interest)
-                last_used_at DATETIME NULL,                -- Last usage timestamp
-                success_count INTEGER NOT NULL DEFAULT 0,  -- Successful usages
-                priority_score REAL NOT NULL DEFAULT 1.0   -- Dynamic priority (increases with usage)
+                usage_count INTEGER NOT NULL DEFAULT 0,    -- 网关把它注入 system prompt 的次数（不是「用上了」）
+                last_used_at DATETIME NULL,                -- 最后一次注入时间
+                -- 下面两列已废弃，恒为默认值。原本的「技能复利」要靠它们排序，但
+                -- OMNIX 是透传网关，拿不到任何一次调用的成败，写不出真实的分数。
+                -- 只留不删：DROP COLUMN 塞不进 COLUMN_MIGRATIONS 的判重规则
+                -- （重跑会报 no such column，被当成真失败，user_version 从此推不动）。
+                success_count INTEGER NOT NULL DEFAULT 0,  -- 废弃：无人读写
+                priority_score REAL NOT NULL DEFAULT 1.0   -- 废弃：无人读写
             )",
             [],
         )?;

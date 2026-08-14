@@ -82,7 +82,9 @@ fn inject_official_skills(db: &DbManager, payload: &mut AnthropicRequest) {
         }),
         None => payload.system = Some(AnthropicMessageContent::String(injection)),
     }
-    // Compound-interest tracking: injected == used.
+    // 只记「注入过几次」，不是「有没有用」。OMNIX 是透传网关，真正的活在用户机器
+    // 上的 CLI 里跑，没有任何结果回到这里——所以别拿它当质量分排序，界面上也只
+    // 能写「注入」。想要真信号只有显式反馈一条路，那是另一个决定。
     if let Ok(conn) = db.get_connection() {
         for m in &matches {
             let _ = conn.execute(

@@ -645,9 +645,6 @@ pub fn run() {
             commands::task_fail,
             commands::task_archive,
             commands::get_task_stats,
-            // Skill Compound Interest
-            commands::record_skill_usage,
-            commands::get_top_skills_by_usage,
             // Autopilot Enhancement
             // Security & safety features
             commands::wrap_untrusted_content,
@@ -772,8 +769,6 @@ pub fn run() {
             commands::create_persistent_cron,
             commands::delete_persistent_cron,
             // Skill Rule Generator
-            // Conversation Skills Indicator
-            commands::get_conversation_skills,
             // Tool Call Confirmation Queue
             // PPT / Presentation panel (结构化幻灯模型 + 网关生成/编辑)
             commands::list_decks,

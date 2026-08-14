@@ -396,44 +396,6 @@ pub fn delete_persistent_cron(
 // Skill Rule Generator
 // ══════════════════════════════════════════════════
 
-// ══════════════════════════════════════════════════
-// Conversation Skills Indicator
-// ══════════════════════════════════════════════════
-
-/// Get skills loaded in a specific conversation
-#[tauri::command]
-pub fn get_conversation_skills(
-    conversation_id: String,
-    db: State<'_, Arc<DbManager>>,
-) -> Result<Vec<serde_json::Value>, String> {
-    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
-
-    // Get skills that are relevant to this conversation's workspace
-    let _workspace: Option<String> = conn.query_row(
-        "SELECT workspace_path FROM conversations WHERE id = ?1",
-        params![conversation_id],
-        |r| r.get(0),
-    ).ok();
-
-    // Get active skills
-    let mut stmt = conn.prepare(
-        "SELECT name, description, category, usage_count, priority_score FROM skills WHERE is_active = 1 ORDER BY priority_score DESC, usage_count DESC"
-    ).map_err(|e: rusqlite::Error| e.to_string())?;
-
-    let skills: Vec<serde_json::Value> = stmt.query_map([], |row| {
-        Ok(serde_json::json!({
-            "name": row.get::<_, String>(0)?,
-            "description": row.get::<_, String>(1)?,
-            "category": row.get::<_, Option<String>>(2)?,
-            "usage_count": row.get::<_, i32>(3)?,
-            "priority_score": row.get::<_, f64>(4)?,
-        }))
-    }).map_err(|e: rusqlite::Error| e.to_string())?
-        .flatten()
-        .collect();
-
-    Ok(skills)
-}
 
 // 工具审批队列（已移除）
 //

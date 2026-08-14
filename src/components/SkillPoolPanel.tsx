@@ -732,7 +732,12 @@ export function SkillPoolPanel() {
                     </span>
                   )}
                   {item.usage_count > 0 && (
-                    <span className="text-[10px] text-muted-foreground">调用 {item.usage_count}</span>
+                    <span
+                      className="text-[10px] text-muted-foreground"
+                      title="网关把这条技能追加进 system prompt 的次数。不代表它起没起作用——OMNIX 无从得知。"
+                    >
+                      注入 {item.usage_count}
+                    </span>
                   )}
                 </div>
               </div>
