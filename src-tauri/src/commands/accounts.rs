@@ -29,11 +29,9 @@ pub fn get_agent_accounts(
     let mut result = Vec::new();
     for r in rows {
         if let Ok(mut acc) = r {
-            // Mask API key for frontend display security
-            if acc.api_key.len() > 8 {
-                let last4 = &acc.api_key[acc.api_key.len()-4..];
-                acc.api_key = format!("{}...{}", &acc.api_key[..4], last4);
-            }
+            // 先解密再脱敏：库里现在是密文，直接截密文的头尾等于给用户看乱码。
+            // 而且原来那段用字节切片，Key 里只要有多字节字符就会 panic。
+            acc.api_key = crate::crypto::mask_secret(&crate::crypto::decrypt(&acc.api_key));
             result.push(acc);
         }
     }
@@ -45,6 +43,14 @@ pub fn save_agent_account(
     account: serde_json::Value,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<(), String> {
+    save_agent_account_core(&db, &account)
+}
+
+/// 命令体。抽出来是为了能测——`State<…>` 在单测里构造不出来。
+pub(crate) fn save_agent_account_core(
+    db: &DbManager,
+    account: &serde_json::Value,
+) -> Result<(), String> {
     let id = account["id"].as_str().unwrap_or_default().to_string();
     let account_name = account["account_name"].as_str().unwrap_or_default().to_string();
     let api_key = account["api_key"].as_str().unwrap_or_default().to_string();
@@ -55,10 +61,41 @@ pub fn save_agent_account(
     let agent_name = account["agent_name"].as_str().unwrap_or("claude-code").to_string();
 
     let conn = db.get_connection().map_err(|e| e.to_string())?;
+
+    // 列表接口给前端的是**脱敏**的 Key，而编辑表单会把它原样提交回来。不识别这一点
+    // 的话，「改个模型名再保存」就会把真 Key 覆盖成 `abcd...wxyz`——账号从此认证
+    // 不了。所以：提交值等于当前 Key 的掩码 = 用户没碰这个字段，保留原值。
+    let existing_plain: Option<String> = conn
+        .query_row(
+            "SELECT api_key FROM agent_accounts WHERE id = ?1",
+            params![id],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+        .map(|stored| crate::crypto::decrypt(&stored));
+
+    let key_to_store = match existing_plain.as_deref() {
+        // 没改：沿用原值
+        Some(prev) if crate::crypto::is_masked_form_of(&api_key, prev) => prev.to_string(),
+        // 留空：同样按「没改」处理，不要把账号的 Key 清掉
+        Some(prev) if api_key.trim().is_empty() => prev.to_string(),
+        _ => api_key.clone(),
+    };
+
     conn.execute(
         "INSERT OR REPLACE INTO agent_accounts (id, account_name, api_key, api_host, target_model, agent_name, is_active, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP)",
-        params![id, account_name, api_key, api_host, target_model, agent_name, is_active],
+        params![
+            id,
+            account_name,
+            // 密文入库。读取侧（`proxy::active_account_override`）本来就走
+            // `crypto::decrypt`，对明文有透传，所以存量行不会因此读不出来。
+            crate::crypto::encrypt(&key_to_store),
+            api_host,
+            target_model,
+            agent_name,
+            is_active
+        ],
     ).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -208,4 +245,147 @@ pub fn get_active_upstream_account(
         .ok()
         .flatten()
         .unwrap_or_default())
+}
+
+#[cfg(test)]
+mod account_key_tests {
+    use crate::db::DbManager;
+    use rusqlite::params;
+
+    fn test_db(tag: &str) -> DbManager {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "omnix_acctkey_{tag}_{}_{}.db",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_file(&path);
+        DbManager::new_with_path(path)
+    }
+
+    fn stored_key(db: &DbManager, id: &str) -> String {
+        db.get_connection()
+            .unwrap()
+            .query_row(
+                "SELECT api_key FROM agent_accounts WHERE id = ?1",
+                params![id],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap()
+    }
+
+    fn account(id: &str, key: &str, name: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": id, "account_name": name, "api_key": key,
+            "api_host": "https://x", "target_model": "m",
+            "agent_name": "claude-code", "is_active": true
+        })
+    }
+
+    /// **改个名字保存，不能把 Key 毁掉。**
+    ///
+    /// 列表接口给前端的是脱敏 Key（`sk-a...mnop`），编辑表单把它填进输入框，
+    /// 保存时原样提交。识别不出「这是退回来的掩码」的话，真 Key 就被覆盖成那串
+    /// 掩码——账号从此认证不了，而用户只是改了个显示名。
+    /// 脱敏做了、回写这一半没做，是这个 bug 的全部成因。
+    #[test]
+    fn editing_an_account_does_not_destroy_its_key() {
+        let db = test_db("roundtrip");
+        {
+            let conn = db.get_connection().unwrap();
+            conn.execute("DELETE FROM agent_accounts", []).unwrap();
+        }
+        super::save_agent_account_core(&db, &account("a1", "sk-abcdefghijklmnop", "原名")).unwrap();
+
+        // 模拟前端：列表拿到掩码 → 表单原样带回来 → 只改了名字
+        let masked = crate::crypto::mask_secret("sk-abcdefghijklmnop");
+        super::save_agent_account_core(&db, &account("a1", &masked, "新名字")).unwrap();
+
+        assert_eq!(
+            crate::crypto::decrypt(&stored_key(&db, "a1")),
+            "sk-abcdefghijklmnop",
+            "只改名字不该动 Key"
+        );
+    }
+
+    /// 新存进去的 Key 就得是密文——不能只靠迁移把存量补上，新写入还是明文。
+    #[test]
+    fn a_newly_saved_key_is_encrypted_at_rest() {
+        let db = test_db("atrest");
+        {
+            let conn = db.get_connection().unwrap();
+            conn.execute("DELETE FROM agent_accounts", []).unwrap();
+        }
+        super::save_agent_account_core(&db, &account("a1", "sk-abcdefghijklmnop", "n")).unwrap();
+        let at_rest = stored_key(&db, "a1");
+        assert_ne!(at_rest, "sk-abcdefghijklmnop", "新写入的 Key 还是明文");
+        assert_eq!(crate::crypto::decrypt(&at_rest), "sk-abcdefghijklmnop");
+    }
+
+    /// 用户真的换了一把新 Key，就必须换过去——别把「保护」做成「改不动」。
+    #[test]
+    fn a_genuinely_new_key_replaces_the_old_one() {
+        let db = test_db("replace");
+        {
+            let conn = db.get_connection().unwrap();
+            conn.execute("DELETE FROM agent_accounts", []).unwrap();
+        }
+        super::save_agent_account_core(&db, &account("a1", "sk-abcdefghijklmnop", "n")).unwrap();
+        super::save_agent_account_core(&db, &account("a1", "sk-brand-new-value-xyz", "n")).unwrap();
+        assert_eq!(
+            crate::crypto::decrypt(&stored_key(&db, "a1")),
+            "sk-brand-new-value-xyz"
+        );
+    }
+
+    /// 列表不能把完整 Key 交给前端。
+    #[test]
+    fn the_list_never_returns_a_full_key() {
+        let db = test_db("mask");
+        {
+            let conn = db.get_connection().unwrap();
+            conn.execute("DELETE FROM agent_accounts", []).unwrap();
+        }
+        super::save_agent_account_core(&db, &account("a1", "sk-abcdefghijklmnop", "n")).unwrap();
+        let masked = crate::crypto::mask_secret("sk-abcdefghijklmnop");
+        // 复现列表命令的脱敏这一步（命令本身带 State，测不到）
+        let shown = crate::crypto::mask_secret(&crate::crypto::decrypt(&stored_key(&db, "a1")));
+        assert_eq!(shown, masked);
+        assert!(!shown.contains("efghijkl"), "中段不该出现在脱敏结果里");
+    }
+
+    /// 存量明文就地加密后，**读取侧仍然拿得到明文**。
+    ///
+    /// 这条是冲着上一轮那次回归写的：平台 Key 迁移时「写迁走了、读没跟上」，
+    /// Auto 路由一个模型都选不出来。这里读取侧本来就走 `decrypt`，测试把它钉住。
+    #[test]
+    fn migrated_account_key_is_encrypted_but_still_readable() {
+        let db = test_db("migrate");
+        {
+            let conn = db.get_connection().unwrap();
+            conn.execute("DELETE FROM agent_accounts", []).unwrap();
+            conn.execute(
+                "INSERT INTO agent_accounts (id, account_name, api_key, api_host, target_model, agent_name, is_active)
+                 VALUES ('a1', '账号', 'sk-plain-secret-123', 'https://x', 'm', 'claude-code', 1)",
+                [],
+            )
+            .unwrap();
+        }
+        let moved = crate::commands::migrate_plaintext_secrets_in_place(&db).expect("迁移");
+        assert!(moved >= 1, "明文行应当被加密");
+
+        let at_rest = stored_key(&db, "a1");
+        assert_ne!(at_rest, "sk-plain-secret-123", "库里不该还是明文");
+        assert_eq!(
+            crate::crypto::decrypt(&at_rest),
+            "sk-plain-secret-123",
+            "读取侧必须还能拿到原文"
+        );
+
+        // 再跑一次不能把密文当明文二次加密
+        let again = crate::commands::migrate_plaintext_secrets_in_place(&db).expect("第二遍");
+        assert_eq!(again, 0, "已加密的行不该再被处理");
+        assert_eq!(crate::crypto::decrypt(&stored_key(&db, "a1")), "sk-plain-secret-123");
+    }
 }

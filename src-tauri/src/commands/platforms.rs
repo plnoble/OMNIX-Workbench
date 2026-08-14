@@ -384,6 +384,48 @@ pub fn save_model_platform(
 ///
 /// 判据很干净：`crypto::encrypt` 产出的值必带 `ENC:` 前缀，没有前缀的就是明文。
 /// 两种都搬（有前缀的原样搬，没前缀的加密后搬），搬完统一清空旧列。
+/// 把 `agent_accounts` 和 `search_providers` 里的明文 Key 就地加密。
+///
+/// 这两张表的 Key 一直是明文入库的，而平台 Key 在 v0.27 就搬进加密表了——同一个
+/// 产品里另一条路没跟上的典型。
+///
+/// 只加密、不搬表：这两处的 Key 是「一行一把」，没有多 Key 轮换的需求，`crypto`
+/// 的密文前缀足够把它们和明文区分开。**读取侧本来就走 `decrypt`（对明文有透传），
+/// 所以先迁数据、后迁读法这条路在这里不存在**——这正是上一轮 Auto 路由回归的
+/// 成因，不能再来一次。
+pub fn migrate_plaintext_secrets_in_place(db: &DbManager) -> Result<usize, String> {
+    let conn = db.get_connection().map_err(|e| e.to_string())?;
+    let mut done = 0usize;
+    for (table, id_col) in [("agent_accounts", "id"), ("search_providers", "id")] {
+        let rows: Vec<(String, String)> = {
+            let sql = format!("SELECT {id_col}, api_key FROM {table}");
+            let Ok(mut stmt) = conn.prepare(&sql) else { continue };
+            let Ok(mapped) = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            }) else { continue };
+            mapped.flatten().collect()
+        };
+        for (id, stored) in rows {
+            if stored.trim().is_empty() {
+                continue;
+            }
+            // 已经是密文的跳过：`decrypt` 解得出**且**结果与原值不同，说明它带前缀。
+            let plain = crate::crypto::decrypt(&stored);
+            if plain != stored {
+                continue;
+            }
+            let sql = format!("UPDATE {table} SET api_key = ?1 WHERE {id_col} = ?2");
+            if conn
+                .execute(&sql, params![crate::crypto::encrypt(&plain), id])
+                .is_ok()
+            {
+                done += 1;
+            }
+        }
+    }
+    Ok(done)
+}
+
 pub fn migrate_legacy_plaintext_keys(db: &DbManager) -> Result<usize, String> {
     let conn = db.get_connection().map_err(|e| e.to_string())?;
 

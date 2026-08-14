@@ -573,3 +573,58 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 }
+
+/// 给前端看的脱敏形式：`sk-a...wxyz`。
+///
+/// 列表接口一律返回这个，**不返回完整 Key**。短到没法脱敏的（≤8 字符）整串隐去，
+/// 否则「掩码」等于没掩。
+pub fn mask_secret(plaintext: &str) -> String {
+    let chars: Vec<char> = plaintext.chars().collect();
+    if chars.is_empty() {
+        return String::new();
+    }
+    if chars.len() <= 8 {
+        return "••••".to_string();
+    }
+    let head: String = chars[..4].iter().collect();
+    let tail: String = chars[chars.len() - 4..].iter().collect();
+    format!("{head}...{tail}")
+}
+
+/// 提交上来的值是不是「原样退回的掩码」——即用户根本没碰这个字段。
+///
+/// 没有这个判断，脱敏本身就是个数据损坏装置：列表给前端掩码，编辑表单把掩码填进
+/// 输入框，保存时原样提交，于是**真 Key 被覆盖成 `abcd...wxyz`**。账号那边已经
+/// 这样坏了一段时间——脱敏做了，回写这一半没做。
+pub fn is_masked_form_of(candidate: &str, stored_plaintext: &str) -> bool {
+    !candidate.is_empty() && candidate == mask_secret(stored_plaintext)
+}
+
+#[cfg(test)]
+mod mask_tests {
+    use super::{is_masked_form_of, mask_secret};
+
+    #[test]
+    fn masks_keep_only_the_ends() {
+        assert_eq!(mask_secret("sk-abcdefghijklmnop"), "sk-a...mnop");
+        assert_eq!(mask_secret(""), "");
+    }
+
+    /// 短 Key 整串隐去——留头留尾等于把一把 8 字符的 Key 露掉一半。
+    #[test]
+    fn short_secrets_are_fully_hidden() {
+        assert_eq!(mask_secret("12345678"), "••••");
+        assert_eq!(mask_secret("abc"), "••••");
+    }
+
+    /// 这条守的是「脱敏 + 回写」组合出来的数据损坏。
+    #[test]
+    fn a_returned_mask_is_recognised_as_unchanged() {
+        let stored = "sk-abcdefghijklmnop";
+        assert!(is_masked_form_of(&mask_secret(stored), stored));
+        // 用户真的换了一把新 Key，就不能当成没改
+        assert!(!is_masked_form_of("sk-brand-new-key-value", stored));
+        // 空值另有含义（清空），不算掩码
+        assert!(!is_masked_form_of("", stored));
+    }
+}

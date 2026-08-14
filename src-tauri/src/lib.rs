@@ -110,6 +110,14 @@ pub fn run() {
     // 存量明文 Key 搬进加密表并清空旧列。放在这里而不是 db_schema 的 ALTER 序列里，
     // 是因为它要用 crypto——那是逻辑迁移，不是表结构迁移。失败不拦启动：拿不到
     // Key 只是某个平台调不通，而崩在启动上是所有功能都没了。
+    // 账号 / 搜索供应商的明文 Key 就地加密。和上面那次不同，这两处不搬表，
+    // 读取侧也早就走 decrypt，所以不存在「写迁了读没迁」的窗口。
+    match commands::migrate_plaintext_secrets_in_place(&db) {
+        Ok(0) => {}
+        Ok(n) => println!("[OMNIX] 已加密 {n} 个账号/搜索供应商的明文 Key"),
+        Err(e) => eprintln!("[OMNIX] 明文密钥就地加密失败（不影响启动）：{e}"),
+    }
+
     match commands::migrate_legacy_plaintext_keys(&db) {
         Ok(0) => {}
         Ok(n) => println!("[OMNIX] 已把 {n} 个明文 API Key 迁入加密存储并清空旧列"),

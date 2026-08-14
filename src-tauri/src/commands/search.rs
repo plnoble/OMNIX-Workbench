@@ -42,8 +42,18 @@ pub fn get_search_providers(
     db: State<'_, Arc<DbManager>>,
 ) -> Result<Vec<SearchProvider>, String> {
     let rows = db.get_search_providers().map_err(|e| e.to_string())?;
+    // **不把完整 Key 交给前端**——这个列表只是给人看的，编辑表单需要的是「有没有
+    // 配过」而不是 Key 本身。提交时若原样退回掩码，`save_search_provider` 会认出
+    // 「没改过」并保留原值。
     Ok(rows.into_iter().map(|(id, name, api_type, api_key, api_address, is_enabled)| {
-        SearchProvider { id, name, api_type, api_key, api_address, is_enabled }
+        SearchProvider {
+            id,
+            name,
+            api_type,
+            api_key: crate::crypto::mask_secret(&crate::crypto::decrypt(&api_key)),
+            api_address,
+            is_enabled,
+        }
     }).collect())
 }
 
@@ -53,8 +63,30 @@ pub fn save_search_provider(
     provider: SearchProvider,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<(), String> {
-    db.save_search_provider(&provider.id, &provider.name, &provider.api_type, &provider.api_key, &provider.api_address, provider.is_enabled)
-        .map_err(|e| e.to_string())
+    // 列表给的是掩码，编辑表单会原样提交回来——不识别就会把真 Key 覆盖成
+    // `abcd...wxyz`。留空同样按「没改」处理。
+    let existing_plain = db
+        .get_search_providers()
+        .ok()
+        .and_then(|rows| {
+            rows.into_iter()
+                .find(|r| r.0 == provider.id)
+                .map(|r| crate::crypto::decrypt(&r.3))
+        });
+    let key_to_store = match existing_plain.as_deref() {
+        Some(prev) if crate::crypto::is_masked_form_of(&provider.api_key, prev) => prev.to_string(),
+        Some(prev) if provider.api_key.trim().is_empty() => prev.to_string(),
+        _ => provider.api_key.clone(),
+    };
+    db.save_search_provider(
+        &provider.id,
+        &provider.name,
+        &provider.api_type,
+        &crate::crypto::encrypt(&key_to_store),
+        &provider.api_address,
+        provider.is_enabled,
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// Delete a search provider.
@@ -98,6 +130,8 @@ pub(crate) async fn run_search(
             .ok_or_else(|| "还没有启用任何搜索供应商。请到「搜索」页左侧点「+」新增一个（Brave / Tavily 有免费额度），或启用已有的那个。".to_string())?
     };
     let (provider_id, provider_name, api_type, api_key, api_address, _is_enabled) = provider;
+    // 库里是密文。`decrypt` 对没有前缀的值原样返回，所以还没迁移的存量行也走得通。
+    let api_key = crate::crypto::decrypt(&api_key);
 
     // Simple percent-encoding for search queries
     let encoded_query: String = query.replace(' ', "%20")
