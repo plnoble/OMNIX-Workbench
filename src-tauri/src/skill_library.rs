@@ -16,6 +16,58 @@ use crate::proc::NoWindow;
 // 1. Semantic Skill Auto-Injection
 // ══════════════════════════════════════════════════
 
+/// 「消息里出现这个词 → 给这个分类的技能加分」。
+///
+/// 原本只有 ASCII 词（bug / fix / deploy …），判断又是直接
+/// `message.contains(keyword)`——纯中文消息一个都不含，**整条加权通道对中文是关着
+/// 的**。这跟同一函数里的分词坑是两处独立的问题：分词修好了只是让描述和名字能匹配
+/// 上，分类加权还得靠这张表里有中文词才会动。
+///
+/// 每个分类给一组中文触发词，都用双字词——单字（「写」「改」）太泛，会把不相干的
+/// 消息也抬过门槛。
+///
+/// 提到模块级常量：它原本写在「遍历每个技能」的循环体里，每条技能都要重新分配一次
+/// 这个 Vec。
+const CATEGORY_BOOSTS: &[(&str, &str)] = &[
+    ("bug", "调试诊断"),
+    ("error", "调试诊断"),
+    ("fix", "调试诊断"),
+    ("报错", "调试诊断"),
+    ("调试", "调试诊断"),
+    ("崩溃", "调试诊断"),
+    ("异常", "调试诊断"),
+    ("修复", "调试诊断"),
+    ("code", "研发效能"),
+    ("review", "研发效能"),
+    ("test", "研发效能"),
+    ("代码", "研发效能"),
+    ("审查", "研发效能"),
+    ("测试", "研发效能"),
+    ("重构", "研发效能"),
+    ("write", "文档办公"),
+    ("doc", "文档办公"),
+    ("translate", "文档办公"),
+    ("文档", "文档办公"),
+    ("翻译", "文档办公"),
+    ("撰写", "文档办公"),
+    ("security", "安全"),
+    ("安全", "安全"),
+    ("漏洞", "安全"),
+    ("deploy", "部署"),
+    ("部署", "部署"),
+    ("发布", "部署"),
+    ("上线", "部署"),
+    ("git", "版本控制"),
+    ("提交", "版本控制"),
+    ("分支", "版本控制"),
+    ("design", "设计"),
+    ("ui", "设计"),
+    ("设计", "设计"),
+    ("界面", "设计"),
+    ("api", "接口"),
+    ("接口", "接口"),
+];
+
 /// Match result for a skill against user input
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillMatch {
@@ -111,26 +163,7 @@ pub fn match_skills_for_message(
             }
         }
 
-        // Category-based boosting
-        let boost_keywords: Vec<(&str, &str)> = vec![
-            ("bug", "调试诊断"),
-            ("error", "调试诊断"),
-            ("fix", "调试诊断"),
-            ("code", "研发效能"),
-            ("review", "研发效能"),
-            ("test", "研发效能"),
-            ("write", "文档办公"),
-            ("doc", "文档办公"),
-            ("translate", "文档办公"),
-            ("security", "安全"),
-            ("deploy", "部署"),
-            ("git", "版本控制"),
-            ("design", "设计"),
-            ("ui", "设计"),
-            ("api", "接口"),
-        ];
-
-        for (keyword, boost_cat) in &boost_keywords {
+        for (keyword, boost_cat) in CATEGORY_BOOSTS {
             if message_lower.contains(keyword)
                 && (cat_lower.contains(boost_cat) || desc_lower.contains(keyword))
             {
@@ -851,6 +884,23 @@ mod injection_matching_tests {
         assert!(!hits.is_empty(), "英文消息没能命中对口的英文技能");
     }
 
+    /// 分类加权对中文也得管用。
+    ///
+    /// 这里技能名「灰度放量」和描述「按批次逐步扩大流量比例」跟消息**没有任何字面
+    /// 重叠**——分词修好了也一分拿不到。唯一的得分来源是分类加权：「上线」和
+    /// 「发布」各 +1.5，正好凑到 3.0 的门槛。所以这条测的就是 CATEGORY_BOOSTS
+    /// 里有没有中文词，把中文条目删掉它必红。
+    #[test]
+    fn chinese_category_boost_can_carry_a_match_on_its_own() {
+        let db = test_db("zh_boost");
+        add_skill(&db, "灰度放量", "按批次逐步扩大流量比例", "部署");
+        let hits = match_skills_for_message(&db, "准备上线，先发布到预发环境", true);
+        assert!(
+            !hits.is_empty(),
+            "中文分类加权没生效——「上线」「发布」都该给「部署」类技能加分"
+        );
+    }
+
     /// 中英混写时，「把」「的」「和」这类单字会被夹在英文 token 之间单独切出来。
     ///
     /// 旧的 `word.len() < 3` 按**字节**算，单个汉字正好 3 字节——一个都拦不住。
@@ -880,6 +930,112 @@ mod injection_matching_tests {
             hits.is_empty(),
             "不相干的中文消息不该命中：{:?}",
             hits.iter().map(|h| (&h.skill_name, h.relevance_score)).collect::<Vec<_>>()
+        );
+    }
+}
+
+#[cfg(test)]
+mod injection_ranking_corpus {
+    use super::*;
+    use crate::db::DbManager;
+
+    /// 一份**互相竞争**的技能样本。
+    ///
+    /// 上面那组测试每条只往库里放一个技能，于是「命中」是必然的——测不出排名。
+    /// 而网关只注入前 2 名（`proxy_anthropic.rs` 的 `truncate(2)`），所以「匹配上了
+    /// 但排第 3」对用户来说和没匹配上完全一样。要守排名就必须有陪跑的。
+    const FIXTURE: &[(&str, &str, &str)] = &[
+        ("代码审查", "审查代码质量，找出潜在缺陷和风格问题", "研发效能"),
+        ("单元测试", "为函数补充单元测试，覆盖边界情况", "研发效能"),
+        ("崩溃排查", "分析报错堆栈，定位崩溃的根本原因", "调试诊断"),
+        ("性能优化", "找出热点函数，降低耗时和内存占用", "研发效能"),
+        ("接口设计", "设计接口的路径、参数和返回结构", "接口"),
+        ("灰度发布", "按批次逐步扩大流量，准备回滚方案", "部署"),
+        ("文档撰写", "把功能说明写成用户能看懂的文档", "文档办公"),
+        ("中英翻译", "在中文和英文之间翻译技术内容", "文档办公"),
+    ];
+
+    /// 考题：一句话 → 谁必须进前 2、谁绝不能出现。
+    ///
+    /// 断言的是**前 2 名**而不是第 1 名，因为那才是网关真正会注入的范围；第 1 名
+    /// 在几个近义技能之间谁高谁低，属于可以接受的浮动。
+    ///
+    /// 注意这里只考「字面上够得着」的题。这个匹配器纯粹是词法的，「页面加载太慢」
+    /// 找不到「性能优化」——那需要语义理解，是它不具备的能力。把不具备的能力写成
+    /// 考题，只会得到一条永远红的测试，而不是一个更好的匹配器。
+    const CASES: &[(&str, &str, &[&str])] = &[
+        ("帮我审查一下这段代码", "代码审查", &["中英翻译", "灰度发布"]),
+        ("这个函数崩溃了，帮我看看报错堆栈", "崩溃排查", &["文档撰写", "中英翻译"]),
+        ("给支付模块补几个单元测试", "单元测试", &["灰度发布", "中英翻译"]),
+        ("准备上线，先发布到预发环境", "灰度发布", &["中英翻译", "单元测试"]),
+        ("把这段技术内容翻译成英文", "中英翻译", &["崩溃排查", "灰度发布"]),
+        ("设计一下这个接口的参数和返回结构", "接口设计", &["中英翻译", "崩溃排查"]),
+        ("写一份用户能看懂的功能说明文档", "文档撰写", &["崩溃排查", "灰度发布"]),
+        // 下面两条**只**靠描述匹配得分：消息里既没有技能名、也没有任何
+        // CATEGORY_BOOSTS 里的词。加权走的是原始消息 `contains`，不经过分词，
+        // 所以上面那些题即使分词坏掉也照样能过——这两条才真正守住分词那条路径。
+        ("找出耗时最多的那几个函数", "性能优化", &["中英翻译", "灰度发布"]),
+        ("覆盖一下边界情况", "单元测试", &["中英翻译", "崩溃排查"]),
+    ];
+
+    fn corpus_db() -> DbManager {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "omnix_skillcorpus_{}_{}.db",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_file(&path);
+        let db = DbManager::new_with_path(path);
+        {
+            let conn = db.get_connection().unwrap();
+            for (name, desc, cat) in FIXTURE {
+                conn.execute(
+                    "INSERT INTO skills (name, description, file_path, category, pool, is_active)
+                     VALUES (?1, ?2, '', ?3, 'official', 1)",
+                    rusqlite::params![name, desc, cat],
+                )
+                .unwrap();
+            }
+        }
+        db
+    }
+
+    /// 跑完整张表，**把所有不合格的一次列出来**。
+    ///
+    /// 逐条 `assert!` 会在第一条就停，于是调打分权重时只能看见第一个坏掉的，看不见
+    /// 「修好 5 条、弄坏 1 条」的全貌。这是这套东西唯一值得从 evaluator 那里学的
+    /// 性质：要看总账，不是看第一笔。
+    #[test]
+    fn the_ranking_corpus_holds() {
+        let db = corpus_db();
+        let mut failures: Vec<String> = Vec::new();
+
+        for (message, expected, forbidden) in CASES {
+            let hits = match_skills_for_message(&db, message, true);
+            let ranked: Vec<&str> = hits.iter().map(|h| h.skill_name.as_str()).collect();
+            // 网关注入前 2 名，所以排在第 3 及之后等于没命中。
+            let top2 = &ranked[..ranked.len().min(2)];
+
+            if !top2.contains(expected) {
+                failures.push(format!(
+                    "「{message}」→ 期待「{expected}」进前 2，实际排名 {ranked:?}"
+                ));
+            }
+            for bad in *forbidden {
+                if ranked.contains(bad) {
+                    failures.push(format!("「{message}」→ 不该出现「{bad}」，实际排名 {ranked:?}"));
+                }
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "考题表 {} / {} 条不合格：\n{}",
+            failures.len(),
+            CASES.len(),
+            failures.join("\n")
         );
     }
 }
