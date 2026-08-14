@@ -25,12 +25,26 @@ const STATUS_META: Record<string, { label: string; cls: string }> = {
   cancelled: { label: "已取消", cls: "bg-muted/30 text-muted-foreground" },
 };
 
+/**
+ * 拒绝时要补发的那条消息；不补则为空串。
+ *
+ * 抽出来是因为按钮文案和 `respond` 的行为必须同一个判断——写成两处迟早会漂：
+ * 按钮显示「拒绝并说明」而实际什么都没发，是比不做还糟的那种假控件。
+ *
+ * 两条不变量：**批准一律不补**（那是拒绝路径专有的），空白草稿不算数。
+ */
+export function correctionToSend(approved: boolean, draft: string | undefined): string {
+  return approved ? "" : (draft ?? "").trim();
+}
+
 /** 监控中心的「总控」视图（实时会话 + 审批 + 额度）。 */
 export function SupervisionConsole() {
   const [sessions, setSessions] = useState<SupervisedSession[]>([]);
   const [recentDone, setRecentDone] = useState<SupervisedSession[]>([]);
   const [busy, setBusy] = useState("");
   const [loadedOnce, setLoadedOnce] = useState(false);
+  /** 按会话存的「拒绝理由」草稿，见 respond 里的说明。 */
+  const [correction, setCorrection] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
     try {
@@ -45,8 +59,20 @@ export function SupervisionConsole() {
 
   usePolling(load, 2000);
 
+  /**
+   * 批准 / 拒绝，拒绝时可以顺带把「该怎么做」发回去。
+   *
+   * 两个协议都**没有**「改一改再放行」这种响应：ACP 只能从 agent 给的固定选项里
+   * 挑一个 optionId（allow_once / reject_once …），Codex 只能对请求的权限整体
+   * 授予或不授予。工具调用发生在别人的进程里，OMNIX 改不了它的参数。
+   *
+   * 所以纠正走的是「拒掉 + 补一条消息」——这是在这一层能做到的最接近的事，也
+   * 省掉「拒绝完还得切回聊天页打字」这一步。拒绝已经生效之后消息才发，万一发
+   * 失败也不会让人以为这次调用被放行了。
+   */
   const respond = async (s: SupervisedSession, approved: boolean) => {
     if (!s.approval) return;
+    const note = correctionToSend(approved, correction[s.session_id]);
     setBusy(s.session_id);
     try {
       await runtimeApi.respondApproval({
@@ -57,7 +83,22 @@ export function SupervisionConsole() {
         approvalMethod: s.approval.approval_method,
         requestedPermissions: s.approval.requested_permissions ?? undefined,
       });
-      toast.success(approved ? "已批准" : "已拒绝");
+      if (note) {
+        try {
+          await runtimeApi.sendMessage(s.session_id, note);
+        } catch (e) {
+          // 拒绝已经落地了，只是话没送到。草稿留着让人重试，别悄悄清空。
+          toast.error(`已拒绝，但纠正没发出去：${String(e)}`);
+          await load();
+          return;
+        }
+      }
+      setCorrection((prev) => {
+        const next = { ...prev };
+        delete next[s.session_id];
+        return next;
+      });
+      toast.success(approved ? "已批准" : note ? "已拒绝并回话" : "已拒绝");
       await load();
     } catch (e) {
       toast.error(String(e));
@@ -113,13 +154,24 @@ export function SupervisionConsole() {
               <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />
               <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">{s.approval.summary}</span>
             </div>
+            <textarea
+              className="mt-2 w-full resize-none rounded-md border border-border bg-background px-2 py-1.5 text-xs placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-warning/50"
+              rows={2}
+              placeholder="要拒绝的话，可以顺便说该怎么做（拒绝后作为下一条消息发过去）"
+              value={correction[s.session_id] ?? ""}
+              disabled={busy === s.session_id}
+              onChange={(e) =>
+                setCorrection((prev) => ({ ...prev, [s.session_id]: e.target.value }))
+              }
+            />
             <div className="mt-2 flex justify-end gap-2">
               <button
                 className="inline-flex h-7 items-center gap-1 rounded-md border border-border px-2.5 text-xs hover:bg-muted/40"
                 disabled={busy === s.session_id}
                 onClick={() => void respond(s, false)}
               >
-                <X className="h-3.5 w-3.5" /> 拒绝
+                <X className="h-3.5 w-3.5" />
+                {correctionToSend(false, correction[s.session_id]) ? "拒绝并说明" : "拒绝"}
               </button>
               <button
                 className="inline-flex h-7 items-center gap-1 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground hover:opacity-90"
