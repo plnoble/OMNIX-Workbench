@@ -1,23 +1,17 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import {
   ArrowRight,
-  Bot,
-  Brain,
-  BookOpen,
-  Clock,
   Database,
   FlaskConical,
-  GitCompare,
   MessageSquare,
-  Plug,
   Search,
   Settings,
   Sparkles,
-  Users,
   Zap,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { APP_ENTRIES } from "@/lib/appRegistry";
 
 interface CommandItem {
   id: string;
@@ -35,21 +29,32 @@ interface CommandPaletteProps {
   onToggleTheme: () => void;
 }
 
-const NAV_COMMANDS = [
-  { id: "nav-work", label: "工作", description: "选择 Agent 后直接开始输入", icon: <MessageSquare className="h-4 w-4" />, tab: "work" },
-  { id: "nav-team", label: "团队", description: "队长生成计划，确认后启动 Worker", icon: <Users className="h-4 w-4" />, tab: "team" },
-  { id: "nav-agents", label: "智能体", description: "检测、安装、更新和模型绑定", icon: <Bot className="h-4 w-4" />, tab: "agents" },
-  { id: "nav-skills", label: "技能", description: "管理技能包和同步目标", icon: <Sparkles className="h-4 w-4" />, tab: "skills" },
-  { id: "nav-models", label: "模型中心", description: "供应商、API Key、模型列表和健康检查", icon: <Database className="h-4 w-4" />, tab: "models" },
-  { id: "nav-knowledge", label: "知识库", description: "普通对话可手动启用的 RAG 资料源", icon: <BookOpen className="h-4 w-4" />, tab: "knowledge" },
-  { id: "nav-search", label: "搜索", description: "搜索供应商和搜索调试", icon: <Search className="h-4 w-4" />, tab: "search" },
-  { id: "nav-mcp", label: "MCP", description: "工具服务和 MCP Server", icon: <Plug className="h-4 w-4" />, tab: "mcp" },
-  { id: "nav-memory", label: "Memory", description: "长期记忆和经验复用", icon: <Brain className="h-4 w-4" />, tab: "memories" },
-  { id: "nav-labs", label: "Labs", description: "实验功能总览", icon: <FlaskConical className="h-4 w-4" />, tab: "labs" },
-  { id: "nav-compare", label: "Compare", description: "模型对比实验", icon: <GitCompare className="h-4 w-4" />, tab: "compare" },
-  { id: "nav-cron", label: "Cron", description: "定时任务", icon: <Clock className="h-4 w-4" />, tab: "cron" },
-  { id: "nav-settings", label: "设置", description: "系统设置和数据备份", icon: <Settings className="h-4 w-4" />, tab: "settings" },
-];
+/**
+ * 导航项**由 `APP_ENTRIES` 生成**，不再手写一份。
+ *
+ * 上一版是手抄清单，于是它和真实页面漂开了：有一条 `tab: "labs"`——`labs` 在
+ * appRegistry 里只是**分组名**不是页面 id，点进去主区一片空白；同时漏掉了
+ * 「对话」「办公」「监控」这些每天都用的页。Ctrl+K 本该是熟手入口，结果是一张
+ * 过期站点地图。
+ *
+ * 图标按分组给：`AppEntry` 里没有图标字段，与其为此再手抄一份 id→图标的映射
+ * （那就是同一个错误换个地方），不如按 group 分五种。
+ */
+const GROUP_ICONS: Record<string, ReactNode> = {
+  core: <MessageSquare className="h-4 w-4" />,
+  resource: <Database className="h-4 w-4" />,
+  assistant: <Sparkles className="h-4 w-4" />,
+  labs: <FlaskConical className="h-4 w-4" />,
+  system: <Settings className="h-4 w-4" />,
+};
+
+const NAV_COMMANDS = APP_ENTRIES.filter((entry) => entry.placement !== "hidden").map((entry) => ({
+  id: `nav-${entry.id}`,
+  label: entry.label,
+  description: entry.description,
+  icon: GROUP_ICONS[entry.group] ?? <Settings className="h-4 w-4" />,
+  tab: entry.id,
+}));
 
 export function CommandPalette({ open, onClose, onNavigate, onToggleTheme }: CommandPaletteProps) {
   const [query, setQuery] = useState("");

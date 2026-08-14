@@ -423,7 +423,6 @@ function MainAppShell() {
         activeTab={activeTab}
         activeAgent={convs.activeAgent}
         chatWorkspace={convs.chatWorkspace}
-        gatewayStatus={settings.gatewayStatus}
         pinnedEntries={pinnedEntries}
         launcherEntries={launcherEntries}
         hiddenEntries={hiddenEntries}

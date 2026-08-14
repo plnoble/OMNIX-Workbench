@@ -211,57 +211,17 @@ export function SystemSubTab() {
 
       {/* ── Translation Settings ────────────────────── */}
 
-      {/* ── Document Processing ────────────────────── */}
-      {group === "docs" && (
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm flex items-center gap-2">
-            <FileText className="h-4 w-4" /> 文档处理
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-3">
-          <span className="text-xs text-muted-foreground">
-            配置文档处理器后，导入 PDF/Word 等文件时可自动转换为 Markdown 再入库，提高检索精度。
-          </span>
+      {/* 这里以前有一整张「文档处理」卡片：转换器下拉（系统 OCR / Tesseract /
+          MinerU / Doc2X / Mistral OCR / PaddleOCR）、API 地址、API Key、
+          「导入时自动转换」开关，还附一句「推荐 Doc2X 或 MinerU 以获得最佳
+          转换质量」。
 
-          <div className="space-y-1.5">
-            <Label>文档转 Markdown 处理器</Label>
-            <select
-              className="w-full border border-border rounded-md px-3 py-2 text-sm bg-background"
-              defaultValue="system_ocr"
-            >
-              <option value="system_ocr">系统 OCR（Windows 内置）</option>
-              <option value="tesseract">Tesseract OCR（需安装）</option>
-              <option value="mineru">MinerU API</option>
-              <option value="doc2x">Doc2X API</option>
-              <option value="mistral_ocr">Mistral OCR API</option>
-              <option value="paddleocr">PaddleOCR API</option>
-            </select>
-          </div>
+          整块是布景：select 用 `defaultValue`、两个 Input 只有 placeholder、
+          Switch 用 `defaultChecked`——没有 state、没有 onChange、没有保存、
+          没有后端。选了等于没选。
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div className="space-y-1.5">
-              <Label>API 地址（可选）</Label>
-              <Input placeholder="https://api.example.com/v1/convert" />
-            </div>
-            <div className="space-y-1.5">
-              <Label>API Key（可选）</Label>
-              <Input type="password" placeholder="留空则无需认证" />
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2.5">
-            <Switch defaultChecked={true} id="doc_auto_convert" />
-            <Label htmlFor="doc_auto_convert" className="m-0">导入文档时自动转换为 Markdown</Label>
-          </div>
-
-          <div className="bg-muted/30 rounded-md px-3 py-2 text-xs text-muted-foreground">
-            💡 <strong>提示：</strong>本地 OCR 无需额外配置；API 处理器需填写地址和密钥。
-            推荐使用 Doc2X 或 MinerU 以获得最佳转换质量。
-          </div>
-        </CardContent>
-      </Card>
-      )}
+          假控件比缺功能更糟：缺功能用户知道没有，假控件让人以为是自己没配好。
+          真要做文档转换，从后端命令开始，不是从下拉框开始。 */}
 
       {/* 搜索配置已整体搬到宫格的「搜索」页：那里本来就有供应商列表和调试搜索，
           配 Key 却要跑到设置里来，是同一张表被切成两半。现在一页做完。 */}

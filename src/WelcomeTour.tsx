@@ -10,54 +10,48 @@ export interface TourStep {
   position?: "right" | "bottom" | "top" | "left" | "center";
 }
 
+/**
+ * 首次引导。
+ *
+ * 上一版整段是过期的：第一步跳 `dashboard`（那个页已并进设置›诊断，
+ * `handleTabChange` 会把它重写掉），每一步的 `targetId` 找的是 `nav-*` 元素而
+ * DOM 里**一个都没有**，文案还在讲「灵动网关控制面板」「Ignite 融合」
+ * 「stdin/stdout 团队控制台」和 WSL 集成——后者已经删掉了。
+ *
+ * 新用户第一次被带着走的，不该是一条已拆除的路。现在按**主路径**排：
+ * 对话 → 工作 → 模型 → 技能 → 其余。去掉了 `targetId`——没有可高亮的锚点就
+ * 别假装有，居中说明反而更清楚。
+ */
 const TOUR_STEPS: TourStep[] = [
   {
-    tab: "dashboard",
-    title: `${PRODUCT_NAME} 交互式开发中枢`,
-    content: `欢迎来到 ${PRODUCT_NAME}！这是一个${PRODUCT_DESCRIPTOR_ZH}。我们准备了 6 步简易指引，带您了解模型路由、技能熔炼与开发经验蒸馏等核心能力。`,
+    tab: "chat",
+    title: `欢迎使用 ${PRODUCT_NAME}`,
+    content: `${PRODUCT_DESCRIPTOR_ZH}。四步就能上手——先认识主路径，其余功能都在宫格里，用到再看。`,
     position: "center"
   },
   {
-    targetId: "nav-dashboard",
-    tab: "dashboard",
-    title: "📊 灵动网关控制面板",
-    content: "控制面板是您的运营看板。这里能查看到本地 API 代理的运行健康状况，并在右侧进行 Cron 任务定时唤醒管理，以及轮播查阅有助于避坑提效的研发贴士。",
-    position: "right"
+    tab: "chat",
+    title: "① 对话：选一个 Agent，直接说话",
+    content: "顶部选 Claude Code / Codex / Gemini 等已安装的 Agent，输入框直接提问。输入 /goal 可以给这条对话钉一个长期目标，之后每一轮都会朝它推进。",
+    position: "center"
   },
   {
-    targetId: "nav-agents",
-    tab: "agents",
-    title: "🤖 Agent 仓库与多账户热切",
-    content: "在这里可以扫描和一键沙箱部署 CLI Agent。上方卡槽集成了零中断多账号热切换面板，让您在开发时随心切换各种 API，更可以通过输入“Auto”启用智能自动路由切换！",
-    position: "right"
+    tab: "work",
+    title: "② 工作：把 Agent 接到一个目录上",
+    content: "选一个工作区，Agent 就能读写那里的文件、跑命令、开工作树。左侧能看到改动、检查点和子代理，随时回滚。",
+    position: "center"
   },
   {
-    targetId: "nav-skills",
+    tab: "models",
+    title: "③ 模型中心：配平台和 Key",
+    content: "加平台、填 API Key（多把 Key 可以轮换和故障切换）、拉取模型列表。模型名选「Auto」时，网关会按这次请求需要的能力自动挑一个。注意：走自家协议的 Agent（Gemini / Qwen / OpenCode / Copilot / Grok）用的是它们自己的模型配置，这里的设置对它们不生效。",
+    position: "center"
+  },
+  {
     tab: "skills",
-    title: "🧬 自进化技能拓扑融合炉",
-    content: "这是 OMNIX 的核心进化设施！在这里，您能用 D3.js 物理力学拓扑查看技能之间的双链依赖；还可以在卡槽中多选不同的规则包进行‘Ignite 融合’，智能生成融合后的超级技能卡片。",
-    position: "right"
-  },
-  {
-    targetId: "nav-memories",
-    tab: "memories",
-    title: "🧠 长期防错事故避坑记忆",
-    content: "智能预防‘二次事故’！系统会在启动 Agent 时，自动为您的工作区注入 CLAUDE.md 事故避坑规则。当开发 Timeline 结束后，您可以一键‘经验蒸馏’提炼新记忆卡片，沉淀为资产。",
-    position: "right"
-  },
-  {
-    targetId: "nav-team",
-    tab: "team",
-    title: "👥 Team Mode 协同控制台",
-    content: "真正的团队工作空间。左侧内置了实时双向 Standard Input/Output 进程终端控制台；右侧配备了层级折叠树状计划任务组件，让 Teammate Agent 之间的异步分工一目了然。",
-    position: "right"
-  },
-  {
-    targetId: "nav-settings",
-    tab: "settings",
-    title: "⚙️ 中转网关与系统参数",
-    content: "在这里配置代理监听端口、一键将 API 凭证静默同步给本地各种 Agent，或开启 WSL 虚拟机集成。如果您在模型名中快捷选择或输入了“Auto”，网关将根据当前请求意图智能自动调配合适的大模型！",
-    position: "right"
+    title: "④ 技能：把 SKILL.md 交给所有 Agent",
+    content: "导入或新建技能，晋升到正式池之后，所有走网关的 Agent 都能直接调用；也可以同步成文件分发给不走网关的工具。其余功能（知识库、办公、定时任务、监控…）都在左上角宫格里。",
+    position: "center"
   }
 ];
 

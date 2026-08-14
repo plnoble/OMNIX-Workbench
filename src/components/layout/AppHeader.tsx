@@ -16,7 +16,8 @@ import {
 import { Button } from "@/components/ui/button";
 import { APP_ICON_MAP } from "@/lib/appRegistry";
 import { cn } from "@/lib/utils";
-import type { AppEntry, GatewayStatus, NavigationPlacement } from "@/types";
+import { circuitBreakerApi } from "@/lib/tauri-api";
+import type { AppEntry, NavigationPlacement } from "@/types";
 
 type NavigationDirection = "left" | "right";
 
@@ -24,7 +25,6 @@ interface AppHeaderProps {
   activeTab: string;
   activeAgent: string;
   chatWorkspace: string;
-  gatewayStatus: GatewayStatus;
   pinnedEntries: AppEntry[];
   launcherEntries: AppEntry[];
   hiddenEntries: AppEntry[];
@@ -62,7 +62,6 @@ export function AppHeader({
   activeTab,
   activeAgent,
   chatWorkspace,
-  gatewayStatus,
   pinnedEntries,
   launcherEntries,
   hiddenEntries,
@@ -125,11 +124,44 @@ export function AppHeader({
     );
   }, [launcherQuery, pinnedEntries, launcherEntries]);
 
+  // 这个点以前显示的是 `gatewayStatus`——而那个值由 `saveSettings` 置 busy/idle，
+  // 也就是「设置正在保存吗」。它长在网关图标上、几乎永远是绿的，日常最显眼的
+  // 状态灯却和网关无关；真实健康在另一页 10 秒轮询一次。
+  //
+  // 现在接真的：读熔断器状态，有平台被熔断（Open）就红，半开就黄。保存设置的
+  // 反馈已经由 SystemSubTab 的 toast 承担，不需要这个点兼任。
+  const [gatewayHealth, setGatewayHealth] = useState<"ok" | "degraded" | "down">("ok");
+  useEffect(() => {
+    let alive = true;
+    const poll = async () => {
+      try {
+        const rows = await circuitBreakerApi.getStatus();
+        if (!alive) return;
+        if (rows.some((r) => r.state === "Open")) setGatewayHealth("down");
+        else if (rows.some((r) => r.state === "HalfOpen")) setGatewayHealth("degraded");
+        else setGatewayHealth("ok");
+      } catch {
+        // 拿不到状态就别乱报警——保持上一次的结论。
+      }
+    };
+    void poll();
+    const timer = setInterval(() => void poll(), 30_000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, []);
+
   const statusClass = {
-    idle: "bg-success",
-    busy: "bg-warning",
-    error: "bg-destructive",
-  }[gatewayStatus];
+    ok: "bg-success",
+    degraded: "bg-warning",
+    down: "bg-destructive",
+  }[gatewayHealth];
+  const statusTitle = {
+    ok: "网关正常：没有平台被熔断",
+    degraded: "网关半开：有平台正在试探性恢复",
+    down: "网关异常：有平台已被熔断，请到模型中心查看",
+  }[gatewayHealth];
 
   return (
     <header className="glass-chrome relative z-40 border-b">
@@ -151,6 +183,7 @@ export function AppHeader({
                 "absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-background",
                 statusClass
               )}
+              title={statusTitle}
             />
           </span>
           <div className="hidden min-w-0 min-[1500px]:block">
