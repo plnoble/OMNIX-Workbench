@@ -255,7 +255,15 @@ impl SkillGraph {
     /// Search with conflict awareness
     pub fn search(&self, query: &str, top_k: usize) -> SkillSearchResult {
         let query_lower = query.to_lowercase();
-        let query_words: Vec<&str> = query_lower.split_whitespace().collect();
+        // 与 `skill_library::match_skills_for_message` 同一个坑：`split_whitespace`
+        // 对中文只切出一整句，于是下面 `contains(word)` 要求整句是名字/描述的子串，
+        // 永远不成立。走同一套 CJK 二元切分。
+        //
+        // 这条链目前没有界面入口（`skillDagApi` 无组件调用方，见
+        // `commandWiring.test.ts` 的 KNOWN_UNUSED_APIS），但功能本身是完好的——
+        // 留着就该是对的，将来接上界面时不该再踩一次同样的坑。
+        let segmented = crate::knowledge::segment_for_index(&query_lower);
+        let query_words: Vec<&str> = segmented.split_whitespace().collect();
 
         // Score each node
         let mut scored: Vec<(&SkillNode, f32)> = self.nodes.values().map(|node| {
@@ -387,5 +395,48 @@ impl SkillGraph {
         }
 
         expanded.into_iter().collect()
+    }
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+
+    fn graph() -> SkillGraph {
+        let mut g = SkillGraph::new();
+        for (id, name, desc) in [
+            ("s1", "代码审查", "审查代码质量，找出潜在缺陷"),
+            ("s2", "灰度发布", "按批次逐步扩大流量"),
+        ] {
+            g.nodes.insert(
+                id.to_string(),
+                SkillNode {
+                    id: id.to_string(),
+                    name: name.to_string(),
+                    description: desc.to_string(),
+                    path: String::new(),
+                    status: "active".to_string(),
+                    tags: Vec::new(),
+                },
+            );
+        }
+        g
+    }
+
+    /// 中文查询要能命中中文技能。
+    ///
+    /// 改之前 `split_whitespace` 把「找出潜在缺陷」整句当一个词，于是
+    /// `desc.contains(word)` 要求整句是描述的子串——`search` 对中文完全不工作。
+    #[test]
+    fn a_chinese_query_finds_a_chinese_skill() {
+        let hits = graph().search("找出潜在缺陷", 5);
+        assert_eq!(hits.matches, vec!["s1"], "中文查询该命中「代码审查」");
+    }
+
+    /// 不相干的中文查询不该把整张图捞上来。
+    #[test]
+    fn an_unrelated_chinese_query_matches_nothing() {
+        let hits = graph().search("明天的天气", 5);
+        assert!(hits.matches.is_empty(), "不相干查询命中了 {:?}", hits.matches);
     }
 }

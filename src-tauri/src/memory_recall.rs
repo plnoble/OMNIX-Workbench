@@ -122,8 +122,21 @@ pub fn match_memories_for_message(db: &DbManager, message: &str, limit: usize) -
     };
 
     let message_lower = message.to_lowercase();
+    // 这里的切法**只**保留了「CJK 不是分隔符」，中文连写段仍然整段成一个 token：
+    // 「为什么我的异步任务会死锁」切出来就是它自己。于是下面 `incident_lower
+    // .contains(w)` 变成「整句话得是现象描述的子串」，永远不成立。
+    //
+    // 之所以一直没暴露，是因为上面关键词那条走的是**反方向**
+    // （`message_lower.contains(&kw)`，标签短、消息长，能中）。可记忆库的标签
+    // 习惯是 ASCII 技术词（`tokio,lock,deadlock`、`cors,fetch,credentials`），
+    // 中文提问一个都不含——捷径断了，就只剩这条断掉的路。实测三条纯中文提问
+    // 对口的记忆一条都召不回，见 `recall_ranking_corpus`。
+    //
+    // 和技能匹配用同一套 CJK 二元切分。`message_lower` 保持原样给关键词那条用，
+    // 只有分词这一路走 segmented。
+    let segmented = crate::knowledge::segment_for_index(&message_lower);
     // 长度 >= 2 的词才参与（放过中文双字词，同时滤掉 the/a 这类噪声）。
-    let words: Vec<&str> = message_lower
+    let words: Vec<&str> = segmented
         .split(|c: char| !c.is_alphanumeric() && !('\u{4e00}'..='\u{9fff}').contains(&c))
         .filter(|w| w.chars().count() >= 2)
         .collect();
@@ -455,6 +468,106 @@ mod tests {
             hits[0].incident_desc.contains("git"),
             "堆五个泛化词也不该盖过一个真触发词：{:?}",
             hits.iter().map(|h| (&h.incident_desc, h.score)).collect::<Vec<_>>()
+        );
+    }
+}
+
+#[cfg(test)]
+mod recall_ranking_corpus {
+    use super::*;
+
+    /// 三条互相竞争的记忆，**关键词都是 ASCII**——这是记忆库里的常态，因为坑点
+    /// 标签习惯用 `tokio,lock,deadlock` 这种技术词。而用户提问是中文。
+    const FIXTURE: &[(&str, &str, &str, &str)] = &[
+        (
+            "n1",
+            "异步任务里跨 await 持有同步互斥锁导致死锁",
+            "std::sync::MutexGuard across await",
+            "tokio,lock,deadlock,async",
+        ),
+        (
+            "n2",
+            "强制推送覆盖了公共分支的提交历史",
+            "git push -f",
+            "git,push,force,safety",
+        ),
+        (
+            "n3",
+            "跨域请求带凭证时通配来源被浏览器拦下",
+            "credentials include with wildcard origin",
+            "cors,fetch,credentials",
+        ),
+    ];
+
+    /// 考题：中文提问 → 该召回哪条。
+    ///
+    /// 每条消息都**不含任何 ASCII 关键词**，所以走不了 `message.contains(kw)` 那条
+    /// 捷径，只能靠现象描述/危险模式里的词命中——也就是必须真的把中文切开。
+    const CASES: &[(&str, &str)] = &[
+        ("为什么我的异步任务会死锁", "异步任务里跨 await 持有同步互斥锁导致死锁"),
+        ("不小心把公共分支的历史覆盖了", "强制推送覆盖了公共分支的提交历史"),
+        ("跨域请求带凭证一直被拦", "跨域请求带凭证时通配来源被浏览器拦下"),
+    ];
+
+    fn corpus_db() -> DbManager {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "omnix_memcorpus_{}_{}.db",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_file(&path);
+        let db = DbManager::new_run_test(path);
+        let conn = db.get_connection().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT, updated_at DATETIME);
+             CREATE TABLE IF NOT EXISTS memories (
+                id TEXT PRIMARY KEY, incident_desc TEXT NOT NULL, code_pattern TEXT NOT NULL,
+                remediation TEXT NOT NULL, keywords TEXT NOT NULL,
+                type TEXT NOT NULL DEFAULT 'experience', created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                status TEXT NOT NULL DEFAULT 'active',
+                confidence REAL NOT NULL DEFAULT 1,
+                repeated_count INTEGER NOT NULL DEFAULT 0,
+                verified TEXT NOT NULL DEFAULT 'claimed');",
+        )
+        .unwrap();
+        for (id, desc, pattern, kw) in FIXTURE {
+            conn.execute(
+                "INSERT INTO memories (id, incident_desc, code_pattern, remediation, keywords, type)
+                 VALUES (?1, ?2, ?3, '略', ?4, 'experience')",
+                rusqlite::params![id, desc, pattern, kw],
+            )
+            .unwrap();
+        }
+        drop(conn);
+        db
+    }
+
+    /// 跑完整张表，一次报出所有不合格项——理由同技能匹配那边：调权重时要看总账。
+    #[test]
+    fn the_chinese_recall_corpus_holds() {
+        let db = corpus_db();
+        let mut failures: Vec<String> = Vec::new();
+
+        for (message, expected) in CASES {
+            let hits = match_memories_for_message(&db, message, 3);
+            match hits.first() {
+                Some(top) if top.incident_desc == *expected => {}
+                Some(top) => failures.push(format!(
+                    "「{message}」→ 期待「{expected}」，实际第一名「{}」",
+                    top.incident_desc
+                )),
+                None => failures.push(format!("「{message}」→ 期待「{expected}」，实际一条都没召回")),
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "中文召回考题 {} / {} 条不合格：\n{}",
+            failures.len(),
+            CASES.len(),
+            failures.join("\n")
         );
     }
 }
