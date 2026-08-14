@@ -1178,8 +1178,6 @@ mod gateway_access_tests {
             peer_is_loopback: loopback,
             header_token: "",
             expected_token: SECRET,
-            use_wsl: false,
-            remote_enabled: false,
             panel_session_ok: false,
             panel_code_ok: false,
         }
@@ -1319,22 +1317,30 @@ mod gateway_access_tests {
         assert_eq!(decide_gateway_access(&r), AccessDecision::AllowRemotePanel);
     }
 
-    /// WSL 豁免只在手机远程访问**关着**时成立。
+    /// 网关路径对**任何**非回环地址都要令牌——没有任何模式例外。
     ///
-    /// 两个都开时监听在 0.0.0.0，一刀切的豁免等于把无鉴权网关送给局域网上
-    /// 每一台设备——这正是当初写下那段注释要防的事。
+    /// 这条取代了原来的「WSL 豁免只在远程访问关着时成立」。那条豁免已整段删除：
+    /// 它的开关（设置里的「在 WSL 中启动」）根本不落盘，所以豁免从没生效过，
+    /// 而任何人「顺手把开关修好」都会同时打开一个局域网无鉴权入口。
+    /// 潜伏在坏开关后面的洞比明着的洞更危险。
     #[test]
-    fn the_wsl_exemption_disappears_once_remote_access_is_on() {
-        let mut r = req("/v1/messages", false);
-        r.use_wsl = true;
-        r.remote_enabled = false;
-        assert_eq!(decide_gateway_access(&r), AccessDecision::Allow, "只开 WSL 时豁免成立");
+    fn gateway_paths_always_require_a_token_from_non_loopback() {
+        for path in ["/v1/messages", "/agent/claude", "/session/abc/v1/messages", "/mcp"] {
+            let r = req(path, false);
+            assert!(
+                matches!(decide_gateway_access(&r), AccessDecision::Deny(_)),
+                "{path} 从非回环地址来、没带令牌，必须拒绝"
+            );
+        }
+    }
 
-        r.remote_enabled = true;
-        assert!(
-            matches!(decide_gateway_access(&r), AccessDecision::Deny(_)),
-            "WSL + 远程访问同时开着时，豁免必须失效"
-        );
+    /// 本机进程仍然免令牌——桌面端自己就是这么调网关的。
+    #[test]
+    fn loopback_still_needs_no_token() {
+        for path in ["/v1/messages", "/agent/claude", "/mcp"] {
+            let r = req(path, true);
+            assert_eq!(decide_gateway_access(&r), AccessDecision::Allow, "{path} 本机应放行");
+        }
     }
 
     /// 非网关路径不受影响（健康检查、静态预览等）。过度拦截同样是 bug。

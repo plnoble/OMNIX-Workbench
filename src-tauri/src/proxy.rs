@@ -65,11 +65,6 @@ impl ProxyServer {
         let (tx, rx) = oneshot::channel::<()>();
         self.shutdown_tx = Some(tx);
 
-        let use_wsl = db
-            .get_setting("use_wsl")
-            .unwrap_or(None)
-            .unwrap_or_else(|| "false".to_string())
-            == "true";
         // Remote phone access: bind all interfaces only when the
         // user has explicitly enabled it, so the gateway stays localhost-only by
         // default. The remote endpoints are token-gated.
@@ -78,20 +73,19 @@ impl ProxyServer {
             .unwrap_or(None)
             .unwrap_or_else(|| "false".to_string())
             == "true";
-        let bind_ip = if use_wsl || remote_enabled {
+        let bind_ip = if remote_enabled {
             [0, 0, 0, 0]
         } else {
             [127, 0, 0, 1]
         };
         let addr = SocketAddr::from((bind_ip, port));
 
-        // CORS: restrict to localhost origins whenever we bind to 0.0.0.0 —
-        // this must follow the *bind* decision, not just WSL. Previously only
-        // `use_wsl` tightened it, so enabling 手机远程访问 exposed the gateway
+        // CORS: 绑 0.0.0.0 时把来源限制在 localhost。这个判断必须跟着 *bind*
+        // 决定走——历史上它只跟着 WSL，于是开手机远程访问时网关是敞的
         // with `CorsLayer::permissive()`, letting any web page a LAN browser
         // visits script requests against it. The remote panel is same-origin,
         // so restricting cross-origin here does not affect it.
-        let cors_layer = if use_wsl || remote_enabled {
+        let cors_layer = if remote_enabled {
             CorsLayer::new()
                 .allow_origin([
                     "http://localhost:1420"

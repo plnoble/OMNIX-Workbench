@@ -82,8 +82,6 @@ pub(crate) struct AccessRequest<'a> {
     pub peer_is_loopback: bool,
     pub header_token: &'a str,
     pub expected_token: &'a str,
-    pub use_wsl: bool,
-    pub remote_enabled: bool,
     /// 面板会话 Cookie 已验签通过（调用方已经比对过，见 `remote_session`）。
     pub panel_session_ok: bool,
     /// URL 里的一次性配对码已核销——**调用方已经把它用掉了**，走到这儿只剩「认不认」。
@@ -132,12 +130,16 @@ pub(crate) fn decide_gateway_access(req: &AccessRequest<'_>) -> AccessDecision {
         return AccessDecision::Allow;
     }
 
-    // WSL 里的 agent 是从非回环地址过来的，又不方便带令牌，所以 WSL 模式保留原来
-    // 的本地开发信任——**但仅限手机远程访问关着的时候**。两个都开时监听在
-    // 0.0.0.0，一刀切的 WSL 豁免等于把无鉴权的模型网关送给局域网上每一台设备。
-    if req.use_wsl && !req.remote_enabled {
-        return AccessDecision::Allow;
-    }
+    // 这里以前有一条 WSL 豁免：`use_wsl` 为真且手机远程访问关着时，**任何**非回环
+    // 地址都免令牌放行。理由是 WSL 里的 agent 从非回环地址过来、又不方便带令牌。
+    //
+    // 已整段删除。三件事叠起来才看清它的性质：那个「在 WSL 中启动」开关根本不
+    // 落盘（`useSettings` 读写两侧都没有 `use_wsl`），所以豁免从来没生效过，
+    // WSL 启动 agent 也从没跑过；而任何人「顺手把开关修好」都会同时打开一个
+    // 局域网无鉴权入口。潜伏在坏开关后面的洞比明着的洞更危险。
+    //
+    // 真要做 WSL 支持，得先解决「把令牌递进 WSL」——那条启动命令当时只 export
+    // 了 ANTHROPIC_BASE_URL，没有任何凭据。
     if !token_matches(req.header_token, req.expected_token) {
         return AccessDecision::Deny("远程访问模型网关需要有效令牌 (x-omnix-remote-token)");
     }
@@ -229,8 +231,6 @@ pub(super) async fn guard_gateway_access(
         peer_is_loopback: peer.ip().is_loopback(),
         header_token: &header_token,
         expected_token: &expected_token,
-        use_wsl: setting("use_wsl") == "true",
-        remote_enabled: setting("remote_access_enabled") == "true",
         panel_session_ok,
         panel_code_ok,
     });

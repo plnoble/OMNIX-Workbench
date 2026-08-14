@@ -2,7 +2,7 @@
  * useSettings — Application settings state and persistence
  *
  * Manages: targetModel, gpuAcceleration,
- * idleTimeout, autoStart, startToTray, useWsl, wslDistro, gatewayStatus,
+ * idleTimeout, autoStart, startToTray, gatewayStatus,
  * themeMode
  *
  * Note: apiKey, apiHost, and proxyPort are NO LONGER user-configurable here.
@@ -13,7 +13,7 @@
 import { useState, useCallback, useRef } from "react";
 import { settingsApi } from "@/lib/tauri-api";
 import type { GatewayStatus } from "@/types";
-import { DEFAULT_IDLE_TIMEOUT, DEFAULT_WSL_DISTRO } from "@/lib/constants";
+import { DEFAULT_IDLE_TIMEOUT } from "@/lib/constants";
 
 export type ThemeMode = "dark" | "light" | "auto";
 
@@ -23,8 +23,6 @@ interface SettingsState {
   idleTimeout: string;
   autoStart: boolean;
   startToTray: boolean;
-  useWsl: boolean;
-  wslDistro: string;
   gatewayStatus: GatewayStatus;
   themeMode: ThemeMode;
 }
@@ -35,8 +33,6 @@ interface SettingsActions {
   setIdleTimeout: (v: string) => void;
   setAutoStart: (v: boolean) => void;
   setStartToTray: (v: boolean) => void;
-  setUseWsl: (v: boolean) => void;
-  setWslDistro: (v: string) => void;
   setGatewayStatus: (v: GatewayStatus) => void;
   setThemeMode: (v: ThemeMode) => void;
   loadSettings: () => Promise<void>;
@@ -52,8 +48,6 @@ export function useSettings(): UseSettingsReturn {
   const [idleTimeout, setIdleTimeout] = useState(DEFAULT_IDLE_TIMEOUT);
   const [autoStart, setAutoStart] = useState(false);
   const [startToTray, setStartToTray] = useState(true);
-  const [useWsl, setUseWsl] = useState(false);
-  const [wslDistro, setWslDistro] = useState(DEFAULT_WSL_DISTRO);
   const [gatewayStatus, setGatewayStatus] = useState<GatewayStatus>("idle");
   const [themeMode, setThemeMode] = useState<ThemeMode>("auto");
 
@@ -126,8 +120,6 @@ export function useSettings(): UseSettingsReturn {
     idleTimeout, setIdleTimeout,
     autoStart, setAutoStart,
     startToTray, setStartToTray,
-    useWsl, setUseWsl,
-    wslDistro, setWslDistro,
     gatewayStatus, setGatewayStatus,
     themeMode, setThemeMode,
     loadSettings,

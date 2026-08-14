@@ -52,7 +52,6 @@ export const DEFAULT_PROXY_PORT = "1421";
 export const DEFAULT_IDLE_TIMEOUT = "15";
 
 /** Default WSL distribution */
-export const DEFAULT_WSL_DISTRO = "Ubuntu";
 
 // ══════════════════════════════════════════════════
 // API Provider Presets

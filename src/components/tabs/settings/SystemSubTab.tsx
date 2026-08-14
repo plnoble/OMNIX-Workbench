@@ -6,7 +6,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { Separator } from "@/components/ui/separator";
 import { FileText, Save, Settings } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/sonner";
@@ -44,8 +43,6 @@ export function SystemSubTab() {
     idleTimeout, setIdleTimeout,
     autoStart, setAutoStart,
     startToTray, setStartToTray,
-    useWsl, setUseWsl,
-    wslDistro, setWslDistro,
     themeMode,
     setThemeMode: onSetThemeMode,
   } = s;
@@ -197,20 +194,11 @@ export function SystemSubTab() {
             <StatusDockToggle />
           </div>
 
-          <Separator className="my-2.5" />
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div className="flex items-center gap-2.5">
-              <Switch checked={useWsl} onCheckedChange={setUseWsl} id="wsl_chk" />
-              <Label htmlFor="wsl_chk" className="m-0">在 WSL 中启动</Label>
-            </div>
-            {useWsl && (
-              <div className="space-y-1.5">
-                <Label>WSL 发行版名称</Label>
-                <Input value={wslDistro} onChange={(e) => setWslDistro(e.target.value)} />
-              </div>
-            )}
-          </div>
+          {/* 这里以前有「在 WSL 中启动」开关和发行版输入框。它们是布景：
+              `useSettings` 的 load/save 两侧都没有 `use_wsl`，拨了刷新就没，
+              后端那两条 WSL 分支（起 agent、网关绑 0.0.0.0）从没生效过。
+              连同后端一起删了——留一个假开关，等于给下一个人埋一个
+              「顺手修好开关就打开局域网无鉴权入口」的坑。 */}
 
           <Button className="w-full mt-4" onClick={onSaveSettings}>
             <Save className="h-4 w-4" /> 保存系统配置并重载网关

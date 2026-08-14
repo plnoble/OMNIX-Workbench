@@ -1193,52 +1193,20 @@ pub(crate) async fn run_cron_task(
         );
     }
 
-    let use_wsl = db
-        .get_setting("use_wsl")
-        .unwrap_or(None)
-        .unwrap_or_else(|| "false".to_string())
-        == "true";
-    let wsl_distro = db
-        .get_setting("wsl_distro")
-        .unwrap_or(None)
-        .unwrap_or_else(|| "Ubuntu".to_string());
+    // 这里以前有一条 WSL 分支：`use_wsl` 为真就改用 `wsl.exe -d <发行版>` 起 agent，
+    // 并把 ANTHROPIC_BASE_URL 指向宿主机路由 IP。整段删除，理由见
+    // `proxy_auth::decide_gateway_access` 上的说明——那个开关根本不落盘，
+    // 这条分支从没跑过；而它要成立就得让网关对局域网免令牌敞开。
     let proxy_port = db
         .get_setting("proxy_port")
         .unwrap_or(None)
         .unwrap_or_else(|| "1421".to_string());
-
-    let mut cmd = if use_wsl {
-        let mut c = Command::new("wsl.exe");
-        let args_escaped: Vec<String> = args
-            .iter()
-            .map(|a| {
-                if a.contains(' ') || a.contains('"') || a.contains('\'') {
-                    format!("'{}'", a.replace("'", "'\\''"))
-                } else {
-                    a.clone()
-                }
-            })
-            .collect();
-        let command_str = format!("{} {}", exe_path, args_escaped.join(" "));
-        let sh_command = format!(
-            "HOST_IP=$(ip route | grep default | awk '{{print $3}}'); \
-             export ANTHROPIC_BASE_URL=http://$HOST_IP:{}/agent/{}; \
-             export CLAUDE_CODE_HEADLESS=1; \
-             export DISABLE_UPDATES=1; \
-             export DISABLE_AUTOUPDATER=1; \
-             {}",
-            proxy_port,
-            agent_name.replace(' ', "_"),
-            command_str
-        );
-        c.args(&["-d", &wsl_distro, "--", "sh", "-c", &sh_command]);
-        c
-    } else {
-        let local_proxy_url = format!(
-            "http://localhost:{}/agent/{}",
-            proxy_port,
-            agent_name.replace(' ', "_")
-        );
+    let local_proxy_url = format!(
+        "http://localhost:{}/agent/{}",
+        proxy_port,
+        agent_name.replace(' ', "_")
+    );
+    let mut cmd = {
         let mut c = Command::new(&exe_path);
         c.args(args)
             .env("ANTHROPIC_BASE_URL", &local_proxy_url)
