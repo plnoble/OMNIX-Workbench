@@ -8,7 +8,23 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Plus, Zap, Edit, Trash2, Clock, Trash } from "lucide-react";
-import type { CronTask } from "@/types";
+import type { CronRun, CronTask } from "@/types";
+
+/**
+ * 运行状态怎么显示。
+ *
+ * 以前只判 `success`，剩下**一律**画成「✗ FAILED」。而后端还会写
+ * `skipped`（上一轮还在跑，这一轮主动不叠加——这是设计如此，不是失败）、
+ * `timeout`（上一轮超时被收掉）和 `running`。把主动跳过标成失败，看的人会去
+ * 排查一个根本不存在的故障。
+ */
+const RUN_BADGE: Record<CronRun["status"], { label: string; variant: "success" | "destructive" | "secondary" }> = {
+  success: { label: "✓ SUCCESS", variant: "success" },
+  failed: { label: "✗ FAILED", variant: "destructive" },
+  running: { label: "… RUNNING", variant: "secondary" },
+  skipped: { label: "⤼ SKIPPED", variant: "secondary" },
+  timeout: { label: "⏱ TIMEOUT", variant: "destructive" },
+};
 
 export function CronTab() {
   const cron = useCronStore();
@@ -103,15 +119,22 @@ export function CronTab() {
                     key={run.id}
                     className="flex justify-between items-center text-xs border-b border-border pb-1.5"
                   >
-                    <div>
-                      <Badge variant={run.status === "success" ? "success" : "destructive"}>
-                        {run.status === "success" ? "✓ SUCCESS" : "✗ FAILED"}
+                    <div className="min-w-0">
+                      <Badge variant={RUN_BADGE[run.status]?.variant ?? "destructive"}>
+                        {RUN_BADGE[run.status]?.label ?? `✗ ${run.status.toUpperCase()}`}
                       </Badge>
                       <span className="text-muted-foreground ml-2">
                         日志: <code>{run.log_path}</code>
                       </span>
+                      {/* 这段摘要以前是写进库里就没人读了：查询没选、DTO 没有、
+                          界面无从显示。它记的恰恰是这次定时运行往外发了什么。 */}
+                      {run.action_summary && (
+                        <div className="text-muted-foreground mt-0.5 truncate">
+                          {run.action_summary}
+                        </div>
+                      )}
                     </div>
-                    <span className="text-xs text-muted-foreground">
+                    <span className="text-xs text-muted-foreground shrink-0 ml-2">
                       {new Date(run.started_at).toLocaleString()}
                     </span>
                   </div>

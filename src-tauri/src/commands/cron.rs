@@ -163,7 +163,7 @@ pub(crate) fn get_cron_runs_core(db: &DbManager) -> Result<Vec<CronRun>, String>
     let conn = db.get_connection().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(
-            "SELECT id, task_id, status, log_path, started_at, finished_at
+            "SELECT id, task_id, status, log_path, started_at, finished_at, action_summary
          FROM cron_runs ORDER BY started_at DESC LIMIT 50",
         )
         .map_err(|e| e.to_string())?;
@@ -177,6 +177,7 @@ pub(crate) fn get_cron_runs_core(db: &DbManager) -> Result<Vec<CronRun>, String>
                 log_path: row.get(3)?,
                 started_at: row.get(4)?,
                 finished_at: row.get(5)?,
+                action_summary: row.get(6)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -414,6 +415,29 @@ mod tests {
             .map(|r| r.task_id)
             .collect();
         assert_eq!(runs, vec!["t2".to_string()], "被删任务的运行记录还留着");
+    }
+
+    /// 动作摘要要能从库里读回来。
+    ///
+    /// 这一列此前是**只写不读**的：`summarize_run` 往里写，而查询没选它、DTO
+    /// 里没有它、界面自然也显示不出来。更早一层，它的 ALTER 排在
+    /// `CREATE TABLE cron_runs` 前面，全新安装的库里**这一列压根不存在**，那条
+    /// UPDATE 也是 `let _ =`——整条链上没有一处会出声。
+    #[test]
+    fn the_action_summary_written_during_a_run_comes_back_out() {
+        let db = test_db("summary");
+        save(&db, "t1", "任务", "every 30 minutes").unwrap();
+        seed_run(&db, "r1", "t1", "2026-08-01 10:00:00");
+        db.get_connection()
+            .unwrap()
+            .execute(
+                "UPDATE cron_runs SET action_summary = ?1 WHERE id = 'r1'",
+                params!["期间发出 2 次对外请求"],
+            )
+            .expect("这一列必须存在——新库缺它的话这里就会失败");
+
+        let runs = get_cron_runs_core(&db).unwrap();
+        assert_eq!(runs[0].action_summary, "期间发出 2 次对外请求");
     }
 
     /// 运行列表按开始时间倒序，最多 50 条。

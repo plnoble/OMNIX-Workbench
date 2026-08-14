@@ -7,6 +7,156 @@ use std::fs;
 
 use crate::db::DbManager;
 
+/// 全部列迁移**就这一份**，而且跑在所有 `CREATE TABLE` 之后。
+///
+/// 以前它散在六处，夹在建表语句中间，于是踩了两个坑：
+///
+/// 1. **顺序坑。** `ALTER TABLE cron_runs ADD COLUMN action_summary` 排在
+///    `CREATE TABLE cron_runs` 前面，新库上报 `no such table` 然后被 `let _ =`
+///    吞掉——**全新安装的库里没有这一列**，升级上来的库有。定时任务的动作摘要
+///    因此对所有新用户是写进虚空的，而且不会报任何错。
+/// 2. **吞异常坑。** `let _ =` 把「这列已经有了」和「列名写错 / 默认值不合法 /
+///    表还不存在」压成同一个结果。真失败和已完成长得一模一样。
+///
+/// 现在：一份清单、一个应用点、只放过「列已存在」这一种错，其余的喊出来。
+/// `every_migrated_column_exists_in_a_fresh_database` 守着顺序不会再错。
+pub(crate) const COLUMN_MIGRATIONS: &[&str] = &[
+
+            "ALTER TABLE skills ADD COLUMN source_type TEXT NOT NULL DEFAULT 'local'",
+            "ALTER TABLE skills ADD COLUMN source_ref TEXT NULL",
+            "ALTER TABLE skills ADD COLUMN source_revision TEXT NULL",
+            "ALTER TABLE skills ADD COLUMN central_path TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE skills ADD COLUMN content_hash TEXT NULL",
+            "ALTER TABLE skills ADD COLUMN starred INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE skills ADD COLUMN category TEXT NULL",
+            // Skill compound interest fields
+            // Skill auto-update: when central content last changed via the update
+            // engine (drives the 「更新待复审」 badge: content_updated_at > reviewed_at)
+            "ALTER TABLE skills ADD COLUMN content_updated_at DATETIME NULL",
+            "ALTER TABLE skills ADD COLUMN usage_count INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE skills ADD COLUMN last_used_at DATETIME NULL",
+            "ALTER TABLE skills ADD COLUMN success_count INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE skills ADD COLUMN priority_score REAL NOT NULL DEFAULT 1.0",
+            // Agent task lifecycle fields
+            // 编排预设（借鉴 paseo）：worker 可按预设跑只读/计划模式（顾问、委员会）
+            "ALTER TABLE agent_runs ADD COLUMN work_mode TEXT NOT NULL DEFAULT 'direct'",
+            "ALTER TABLE conversations ADD COLUMN task_status TEXT NOT NULL DEFAULT 'pending'",
+            "ALTER TABLE conversations ADD COLUMN task_started_at DATETIME NULL",
+            "ALTER TABLE conversations ADD COLUMN task_completed_at DATETIME NULL",
+            "ALTER TABLE conversations ADD COLUMN task_duration_ms INTEGER NULL",
+            "ALTER TABLE conversations ADD COLUMN task_summary TEXT NULL",
+            "ALTER TABLE conversations ADD COLUMN task_files_changed INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE conversations ADD COLUMN task_exit_code INTEGER NULL",
+            "ALTER TABLE conversations ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0",
+            // model_platforms weighted routing fields
+            "ALTER TABLE model_platforms ADD COLUMN weight INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE model_platforms ADD COLUMN priority INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE model_platforms ADD COLUMN max_retries INTEGER NOT NULL DEFAULT 2",
+            "ALTER TABLE model_platforms ADD COLUMN is_healthy INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE model_platforms ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE model_platforms ADD COLUMN last_error TEXT NULL",
+            "ALTER TABLE model_platforms ADD COLUMN last_used_at DATETIME NULL",
+            // Agent model binding fields.
+            "ALTER TABLE agent_platform_bindings ADD COLUMN binding_kind TEXT NOT NULL DEFAULT 'omnix'",
+            "ALTER TABLE agent_platform_bindings ADD COLUMN builtin_model TEXT NULL",
+            // Skill pool governance (#3 技能池重构): every skill lives in a pool —
+            // 'pending' (待定池, default: collected/forged skills are NOT used until
+            // approved) or 'official' (正式池, injected via the gateway for all
+            // agents). Promotion to official REQUIRES a completed review.
+            "ALTER TABLE skills ADD COLUMN pool TEXT NOT NULL DEFAULT 'pending'",
+            "ALTER TABLE skills ADD COLUMN review_score INTEGER NULL",
+            "ALTER TABLE skills ADD COLUMN review_verdict TEXT NULL",
+            "ALTER TABLE skills ADD COLUMN review_summary TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE skills ADD COLUMN reviewed_at DATETIME NULL",
+            // R2 技能中心：中文摘要（看得懂）+ 完整审核意见（改得动）
+            "ALTER TABLE skills ADD COLUMN summary_zh TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE skills ADD COLUMN review_problems TEXT NOT NULL DEFAULT '[]'",
+            "ALTER TABLE skills ADD COLUMN review_improve TEXT NOT NULL DEFAULT ''",
+            // P2 技能锁：晋升正式池那一刻的内容指纹（SHA-256）与时间。
+            // 审核认可的是**当时那份内容**，不是这个文件名——之后文件被改了要查得出来。
+            "ALTER TABLE cron_runs ADD COLUMN action_summary TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE skills ADD COLUMN approved_hash TEXT NULL",
+            "ALTER TABLE skills ADD COLUMN approved_at TEXT NULL",
+            // R2 用量计量：缓存 token 的明细。
+            // `prompt_tokens` 记的是**计费口径的输入总量**（含这两列），这样
+            // total_tokens / estimate_cost 等既有读取端不用改就是对的；这两列
+            // 是明细，用来回答「这次到底命中了多少缓存」。
+            "ALTER TABLE request_logs ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE request_logs ADD COLUMN cache_creation_tokens INTEGER NOT NULL DEFAULT 0",
+            // T1 证据等级（借鉴 GenericAgent「无行动，不记忆」）：
+            // acted = 结论能对上网关记录的真实工具调用；claimed = 材料里只有陈述。
+            // 默认 claimed——存量数据是在没有这道校验时写的，不能追认为已验证。
+            "ALTER TABLE distillation_inbox ADD COLUMN verified TEXT NOT NULL DEFAULT 'claimed'",
+
+            // 以下几条原先散在别处，各自带一段 PRAGMA 预检或单独的 `let _ =`：
+            "ALTER TABLE agent_accounts ADD COLUMN agent_name TEXT DEFAULT ''",
+            // 熔断器跳闸的时刻，网关据此在冷却结束后放一次半开探测。
+            "ALTER TABLE model_platforms ADD COLUMN circuit_opened_at DATETIME NULL",
+            "ALTER TABLE platform_models ADD COLUMN has_long_context INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE platform_models ADD COLUMN has_tool_use INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE platform_models ADD COLUMN has_embedding INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE platform_models ADD COLUMN has_speedy INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE memories ADD COLUMN type TEXT NOT NULL DEFAULT 'experience'",
+            "ALTER TABLE platform_api_keys ADD COLUMN priority INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE platform_api_keys ADD COLUMN is_enabled INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE platform_api_keys ADD COLUMN last_status TEXT NOT NULL DEFAULT 'unknown'",
+            "ALTER TABLE platform_api_keys ADD COLUMN last_error TEXT NULL",
+            "ALTER TABLE platform_api_keys ADD COLUMN latency_ms INTEGER NULL",
+            "ALTER TABLE platform_api_keys ADD COLUMN last_checked_at TEXT NULL",
+            "ALTER TABLE memories ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'",
+            "ALTER TABLE memories ADD COLUMN workspace_path TEXT NULL",
+            "ALTER TABLE memories ADD COLUMN evidence_json TEXT NOT NULL DEFAULT '{}'",
+            "ALTER TABLE memories ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
+            // Evolution: relevance-based injection + dedup + effectiveness tracking.
+            "ALTER TABLE memories ADD COLUMN embedding BLOB NULL",
+            "ALTER TABLE memories ADD COLUMN dimensions INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE memories ADD COLUMN stack_tags TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE memories ADD COLUMN confidence REAL NOT NULL DEFAULT 1",
+            "ALTER TABLE memories ADD COLUMN verified TEXT NOT NULL DEFAULT 'claimed'",
+            "ALTER TABLE memories ADD COLUMN seen_count INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE memories ADD COLUMN repeated_count INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE memories ADD COLUMN last_matched_at TEXT NULL",
+            "ALTER TABLE kb_documents ADD COLUMN knowledge_base_id TEXT NOT NULL DEFAULT 'default'",
+];
+
+/// 迁移全部跑完后写进 `PRAGMA user_version` 的值。
+///
+/// 用条数本身当版本号：加一条 ALTER 就自动变一个新版本，老库据此重跑，
+/// **没有需要人手同步的第二个数字**。`schema_version_matches_the_migration_count`
+/// 钉住这个等式。
+pub(crate) fn schema_version() -> i32 {
+    COLUMN_MIGRATIONS.len() as i32
+}
+
+/// 这个错误是不是「这列已经有了」。
+///
+/// 只有这一种算正常——升级路径上每条 ALTER 第二次跑都会撞上它。别的都不是：
+/// `no such table` 是顺序错了，`near "..."` 是语句写错了，都得看得见。
+fn is_duplicate_column(error: &rusqlite::Error) -> bool {
+    error.to_string().contains("duplicate column name")
+}
+
+impl DbManager {
+    /// 应用列迁移，返回**不正常**的失败（已存在的不算）。
+    ///
+    /// 不让 `init_schema` 因此报错退出：一条坏迁移不该把整个应用锁在启动不了的
+    /// 状态。所以这里记日志、把清单交出去，由测试来当那道严格的闸。
+    fn apply_column_migrations(&self, conn: &Connection) -> Vec<String> {
+        let mut failures = Vec::new();
+        for sql in COLUMN_MIGRATIONS {
+            match conn.execute(sql, []) {
+                Ok(_) => {}
+                Err(error) if is_duplicate_column(&error) => {}
+                Err(error) => {
+                    log::error!("列迁移失败：{sql} —— {error}");
+                    failures.push(format!("{sql} —— {error}"));
+                }
+            }
+        }
+        failures
+    }
+}
+
 impl DbManager {
     pub fn init_schema(&self) -> Result<()> {
         let conn = self.get_connection()?;
@@ -262,80 +412,6 @@ impl DbManager {
             [],
         )?;
 
-        // Migration: add new columns to existing skills table if they don't exist
-        let migrations = [
-            "ALTER TABLE skills ADD COLUMN source_type TEXT NOT NULL DEFAULT 'local'",
-            "ALTER TABLE skills ADD COLUMN source_ref TEXT NULL",
-            "ALTER TABLE skills ADD COLUMN source_revision TEXT NULL",
-            "ALTER TABLE skills ADD COLUMN central_path TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE skills ADD COLUMN content_hash TEXT NULL",
-            "ALTER TABLE skills ADD COLUMN starred INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE skills ADD COLUMN category TEXT NULL",
-            // Skill compound interest fields
-            // Skill auto-update: when central content last changed via the update
-            // engine (drives the 「更新待复审」 badge: content_updated_at > reviewed_at)
-            "ALTER TABLE skills ADD COLUMN content_updated_at DATETIME NULL",
-            "ALTER TABLE skills ADD COLUMN usage_count INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE skills ADD COLUMN last_used_at DATETIME NULL",
-            "ALTER TABLE skills ADD COLUMN success_count INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE skills ADD COLUMN priority_score REAL NOT NULL DEFAULT 1.0",
-            // Agent task lifecycle fields
-            // 编排预设（借鉴 paseo）：worker 可按预设跑只读/计划模式（顾问、委员会）
-            "ALTER TABLE agent_runs ADD COLUMN work_mode TEXT NOT NULL DEFAULT 'direct'",
-            "ALTER TABLE conversations ADD COLUMN task_status TEXT NOT NULL DEFAULT 'pending'",
-            "ALTER TABLE conversations ADD COLUMN task_started_at DATETIME NULL",
-            "ALTER TABLE conversations ADD COLUMN task_completed_at DATETIME NULL",
-            "ALTER TABLE conversations ADD COLUMN task_duration_ms INTEGER NULL",
-            "ALTER TABLE conversations ADD COLUMN task_summary TEXT NULL",
-            "ALTER TABLE conversations ADD COLUMN task_files_changed INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE conversations ADD COLUMN task_exit_code INTEGER NULL",
-            "ALTER TABLE conversations ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0",
-            // model_platforms weighted routing fields
-            "ALTER TABLE model_platforms ADD COLUMN weight INTEGER NOT NULL DEFAULT 1",
-            "ALTER TABLE model_platforms ADD COLUMN priority INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE model_platforms ADD COLUMN max_retries INTEGER NOT NULL DEFAULT 2",
-            "ALTER TABLE model_platforms ADD COLUMN is_healthy INTEGER NOT NULL DEFAULT 1",
-            "ALTER TABLE model_platforms ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE model_platforms ADD COLUMN last_error TEXT NULL",
-            "ALTER TABLE model_platforms ADD COLUMN last_used_at DATETIME NULL",
-            // Agent model binding fields.
-            "ALTER TABLE agent_platform_bindings ADD COLUMN binding_kind TEXT NOT NULL DEFAULT 'omnix'",
-            "ALTER TABLE agent_platform_bindings ADD COLUMN builtin_model TEXT NULL",
-            // Skill pool governance (#3 技能池重构): every skill lives in a pool —
-            // 'pending' (待定池, default: collected/forged skills are NOT used until
-            // approved) or 'official' (正式池, injected via the gateway for all
-            // agents). Promotion to official REQUIRES a completed review.
-            "ALTER TABLE skills ADD COLUMN pool TEXT NOT NULL DEFAULT 'pending'",
-            "ALTER TABLE skills ADD COLUMN review_score INTEGER NULL",
-            "ALTER TABLE skills ADD COLUMN review_verdict TEXT NULL",
-            "ALTER TABLE skills ADD COLUMN review_summary TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE skills ADD COLUMN reviewed_at DATETIME NULL",
-            // R2 技能中心：中文摘要（看得懂）+ 完整审核意见（改得动）
-            "ALTER TABLE skills ADD COLUMN summary_zh TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE skills ADD COLUMN review_problems TEXT NOT NULL DEFAULT '[]'",
-            "ALTER TABLE skills ADD COLUMN review_improve TEXT NOT NULL DEFAULT ''",
-            // P2 技能锁：晋升正式池那一刻的内容指纹（SHA-256）与时间。
-            // 审核认可的是**当时那份内容**，不是这个文件名——之后文件被改了要查得出来。
-            "ALTER TABLE cron_runs ADD COLUMN action_summary TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE skills ADD COLUMN approved_hash TEXT NULL",
-            "ALTER TABLE skills ADD COLUMN approved_at TEXT NULL",
-            // R2 用量计量：缓存 token 的明细。
-            // `prompt_tokens` 记的是**计费口径的输入总量**（含这两列），这样
-            // total_tokens / estimate_cost 等既有读取端不用改就是对的；这两列
-            // 是明细，用来回答「这次到底命中了多少缓存」。
-            "ALTER TABLE request_logs ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE request_logs ADD COLUMN cache_creation_tokens INTEGER NOT NULL DEFAULT 0",
-            // T1 证据等级（借鉴 GenericAgent「无行动，不记忆」）：
-            // acted = 结论能对上网关记录的真实工具调用；claimed = 材料里只有陈述。
-            // 默认 claimed——存量数据是在没有这道校验时写的，不能追认为已验证。
-            "ALTER TABLE distillation_inbox ADD COLUMN verified TEXT NOT NULL DEFAULT 'claimed'",
-        ];
-        for sql in &migrations {
-            // ALTER TABLE ADD COLUMN silently fails if column already exists in SQLite,
-            // but we catch and ignore the error
-            let _ = conn.execute(sql, []);
-        }
-
         // 6. Memory Table (anti-failure incident dict)
         conn.execute(
             "CREATE TABLE IF NOT EXISTS memories (
@@ -392,27 +468,6 @@ impl DbManager {
             [],
         )?;
 
-        // Check if agent_name column exists in agent_accounts, if not add it
-        let has_agent_name = {
-            let mut stmt = conn.prepare("PRAGMA table_info(agent_accounts)")?;
-            let mut rows = stmt.query([])?;
-            let mut found = false;
-            while let Some(row) = rows.next()? {
-                let name: String = row.get(1)?;
-                if name == "agent_name" {
-                    found = true;
-                    break;
-                }
-            }
-            found
-        };
-        if !has_agent_name {
-            let _ = conn.execute(
-                "ALTER TABLE agent_accounts ADD COLUMN agent_name TEXT DEFAULT ''",
-                [],
-            );
-        }
-
         // 6c. Custom Models Table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS custom_models (
@@ -451,14 +506,6 @@ impl DbManager {
             )",
             [],
         )?;
-        // Circuit breaker: timestamp the platform's circuit tripped open, so the
-        // proxy can allow a half-open probe once the cooldown elapses.
-        // Idempotent — ignored if already present.
-        let _ = conn.execute(
-            "ALTER TABLE model_platforms ADD COLUMN circuit_opened_at DATETIME NULL",
-            [],
-        );
-
         // 6e. Platform Models Table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS platform_models (
@@ -475,31 +522,6 @@ impl DbManager {
             )",
             [],
         )?;
-
-        // 6e-migration. Add extended capability columns to platform_models if missing
-        {
-            let cols: Vec<String> = conn
-                .prepare("PRAGMA table_info(platform_models)")?
-                .query_map([], |row| row.get::<_, String>(1))?
-                .filter_map(|r| r.ok())
-                .collect();
-
-            if !cols.iter().any(|c| c == "has_long_context") {
-                let _ = conn.execute("ALTER TABLE platform_models ADD COLUMN has_long_context INTEGER NOT NULL DEFAULT 0", []);
-            }
-            if !cols.iter().any(|c| c == "has_tool_use") {
-                let _ = conn.execute("ALTER TABLE platform_models ADD COLUMN has_tool_use INTEGER NOT NULL DEFAULT 1", []);
-            }
-            if !cols.iter().any(|c| c == "has_embedding") {
-                let _ = conn.execute("ALTER TABLE platform_models ADD COLUMN has_embedding INTEGER NOT NULL DEFAULT 0", []);
-            }
-            if !cols.iter().any(|c| c == "has_speedy") {
-                let _ = conn.execute(
-                    "ALTER TABLE platform_models ADD COLUMN has_speedy INTEGER NOT NULL DEFAULT 0",
-                    [],
-                );
-            }
-        }
 
         // 7. Tasks Table (pipeline/todo plans)
         conn.execute(
@@ -960,52 +982,6 @@ impl DbManager {
         // Seed default search providers if empty
         self.seed_default_search_providers(&conn)?;
 
-        // Migration: add type column to memories table (idempotent)
-        let _ = conn.execute(
-            "ALTER TABLE memories ADD COLUMN type TEXT NOT NULL DEFAULT 'experience'",
-            [],
-        );
-        for migration in [
-            "ALTER TABLE platform_api_keys ADD COLUMN priority INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE platform_api_keys ADD COLUMN is_enabled INTEGER NOT NULL DEFAULT 1",
-            "ALTER TABLE platform_api_keys ADD COLUMN last_status TEXT NOT NULL DEFAULT 'unknown'",
-            "ALTER TABLE platform_api_keys ADD COLUMN last_error TEXT NULL",
-            "ALTER TABLE platform_api_keys ADD COLUMN latency_ms INTEGER NULL",
-            "ALTER TABLE platform_api_keys ADD COLUMN last_checked_at TEXT NULL",
-        ] {
-            let _ = conn.execute(migration, []);
-        }
-        let _ = conn.execute(
-            "ALTER TABLE memories ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'",
-            [],
-        );
-        let _ = conn.execute(
-            "ALTER TABLE memories ADD COLUMN workspace_path TEXT NULL",
-            [],
-        );
-        let _ = conn.execute(
-            "ALTER TABLE memories ADD COLUMN evidence_json TEXT NOT NULL DEFAULT '{}'",
-            [],
-        );
-        let _ = conn.execute(
-            "ALTER TABLE memories ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
-            [],
-        );
-        // Evolution: relevance-based injection + dedup + effectiveness tracking.
-        for migration in [
-            "ALTER TABLE memories ADD COLUMN embedding BLOB NULL",
-            "ALTER TABLE memories ADD COLUMN dimensions INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE memories ADD COLUMN stack_tags TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE memories ADD COLUMN confidence REAL NOT NULL DEFAULT 1",
-            // T1 证据等级，老库升级用；新库由 CREATE TABLE 直接带上。
-            // 必须放在这一批——上面那批 migrations 跑在 CREATE TABLE memories 之前。
-            "ALTER TABLE memories ADD COLUMN verified TEXT NOT NULL DEFAULT 'claimed'",
-            "ALTER TABLE memories ADD COLUMN seen_count INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE memories ADD COLUMN repeated_count INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE memories ADD COLUMN last_matched_at TEXT NULL",
-        ] {
-            let _ = conn.execute(migration, []);
-        }
         // Cached per-workspace embedding/signals so the synchronous inject path
         // can rank memories by relevance without making a network call.
         let _ = conn.execute(
@@ -1067,6 +1043,27 @@ impl DbManager {
         );
 
         self.init_late_tables(&conn)?;
+
+        // 列迁移放在**最后**：此时所有表都建好了，不会再出现「ALTER 排在 CREATE
+        // 前面」那种静默丢列。版本号相同就整段跳过——这样「跑一遍全是重复列错误」
+        // 不再是常态路径，真失败才有机会被看见。
+        let stored: i32 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap_or(0);
+        if stored != schema_version() {
+            let failures = self.apply_column_migrations(&conn);
+            if failures.is_empty() {
+                conn.execute_batch(&format!("PRAGMA user_version = {}", schema_version()))?;
+            } else {
+                // 有没修好的就不推版本号，下次启动还会再试一遍。
+                log::error!("{} 条列迁移没成功，schema 版本号不推进", failures.len());
+            }
+        }
+        // 依赖迁移列的索引必须排在迁移之后。
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_kb_documents_base ON kb_documents(knowledge_base_id, updated_at)",
+            [],
+        )?;
         Ok(())
     }
 
@@ -1256,14 +1253,6 @@ impl DbManager {
     fn remove_known_mock_conversations(&self, conn: &Connection) -> Result<()> {
         conn.execute(
             "DELETE FROM messages WHERE conversation_id IN ('mock_sess_cors', 'mock_sess_lock')",
-            [],
-        )?;
-        let _ = conn.execute(
-            "ALTER TABLE kb_documents ADD COLUMN knowledge_base_id TEXT NOT NULL DEFAULT 'default'",
-            [],
-        );
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_kb_documents_base ON kb_documents(knowledge_base_id, updated_at)",
             [],
         )?;
         conn.execute(
@@ -1675,5 +1664,145 @@ mod single_source_of_truth {
         }
         drop(conn);
         let _ = std::fs::remove_file(&path);
+    }
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::{is_duplicate_column, schema_version, COLUMN_MIGRATIONS};
+    use crate::db::DbManager;
+
+    fn fresh_db(tag: &str) -> (DbManager, std::path::PathBuf) {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "omnix_migrate_{tag}_{}_{}.db",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_file(&path);
+        (DbManager::new_with_path(path.clone()), path)
+    }
+
+    /// 从 `ALTER TABLE <表> ADD COLUMN <列> …` 里取出表名和列名。
+    fn table_and_column(sql: &str) -> (&str, &str) {
+        let rest = sql
+            .strip_prefix("ALTER TABLE ")
+            .unwrap_or_else(|| panic!("不认识的迁移语句：{sql}"));
+        let mut parts = rest.split_whitespace();
+        let table = parts.next().expect(sql);
+        assert_eq!(parts.next(), Some("ADD"), "{sql}");
+        assert_eq!(parts.next(), Some("COLUMN"), "{sql}");
+        (table, parts.next().expect(sql))
+    }
+
+    /// **每一条迁移的列，在全新安装的库里都必须真的存在。**
+    ///
+    /// 这条是冲着一个已经发生过的 bug 写的：`ALTER TABLE cron_runs ADD COLUMN
+    /// action_summary` 排在 `CREATE TABLE cron_runs` **前面**，新库上报
+    /// `no such table` 被 `let _ =` 吞掉，于是全新安装的库里没有这一列，而升级
+    /// 上来的库有。定时任务的动作摘要对所有新用户是写进虚空的，一声不吭。
+    ///
+    /// 语句从 `COLUMN_MIGRATIONS` 读，库从真实的 `init_schema` 建——把新加的
+    /// ALTER 放错位置，这条就红。
+    #[test]
+    fn every_migrated_column_exists_in_a_fresh_database() {
+        let (db, path) = fresh_db("fresh");
+        let conn = db.get_connection().unwrap();
+        let mut missing = Vec::new();
+        for sql in COLUMN_MIGRATIONS {
+            let (table, column) = table_and_column(sql);
+            if conn
+                .prepare(&format!("SELECT {column} FROM {table} LIMIT 0"))
+                .is_err()
+            {
+                missing.push(format!("{table}.{column}"));
+            }
+        }
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            missing.is_empty(),
+            "全新安装的库里缺这些列（多半是 ALTER 排在了它的 CREATE TABLE 前面）：{missing:?}"
+        );
+    }
+
+    /// 同一份迁移清单跑第二遍必须一条不错——**「列已经有了」是升级路径的常态**。
+    ///
+    /// 顺带钉住分类没写反：把「已存在」也当成失败，升级时每次启动都会刷一屏错。
+    #[test]
+    fn rerunning_the_migrations_reports_no_failures() {
+        let (db, path) = fresh_db("rerun");
+        let conn = db.get_connection().unwrap();
+        let mut unexpected = Vec::new();
+        for sql in COLUMN_MIGRATIONS {
+            if let Err(error) = conn.execute(sql, []) {
+                if !is_duplicate_column(&error) {
+                    unexpected.push(format!("{sql} —— {error}"));
+                }
+            }
+        }
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
+        assert!(unexpected.is_empty(), "第二遍不该出现这些错：{unexpected:?}");
+    }
+
+    /// 真失败不能被当成「已经跑过了」。
+    ///
+    /// 这是整件事的要害：`let _ =` 把列名写错、表不存在、默认值不合法全压成和
+    /// 「已存在」同一个结果。分类必须只认那一种。
+    #[test]
+    fn a_real_failure_is_not_mistaken_for_an_applied_migration() {
+        let (db, path) = fresh_db("classify");
+        let conn = db.get_connection().unwrap();
+        // 表不存在——顺序错了的那种
+        let err = conn
+            .execute("ALTER TABLE 根本没有这张表 ADD COLUMN x TEXT", [])
+            .unwrap_err();
+        assert!(!is_duplicate_column(&err), "表不存在被当成了已跑过：{err}");
+        // 语句本身不合法
+        let err = conn
+            .execute("ALTER TABLE skills ADD COLUMN", [])
+            .unwrap_err();
+        assert!(!is_duplicate_column(&err), "语法错被当成了已跑过：{err}");
+        // 而「已存在」要认得出来
+        let err = conn
+            .execute("ALTER TABLE skills ADD COLUMN starred INTEGER", [])
+            .unwrap_err();
+        assert!(is_duplicate_column(&err), "「列已存在」没认出来：{err}");
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 建好的库要把版本号写进 `PRAGMA user_version`，值等于迁移条数。
+    ///
+    /// 版本号就是条数，没有第二个需要人手同步的数字：加一条 ALTER 自动换一个
+    /// 新版本，老库据此重跑一遍把列补上。
+    #[test]
+    fn a_fresh_database_records_the_schema_version() {
+        let (db, path) = fresh_db("version");
+        let conn = db.get_connection().unwrap();
+        let stored: i32 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(stored, schema_version());
+        assert_eq!(schema_version(), COLUMN_MIGRATIONS.len() as i32);
+    }
+
+    /// 清单里不能有重复：同一列写两遍，第二遍永远是「已存在」，看不出是笔误
+    /// 还是有意为之。
+    #[test]
+    fn no_column_is_migrated_twice() {
+        let mut seen = std::collections::HashSet::new();
+        let mut dupes = Vec::new();
+        for sql in COLUMN_MIGRATIONS {
+            let (table, column) = table_and_column(sql);
+            if !seen.insert((table, column)) {
+                dupes.push(format!("{table}.{column}"));
+            }
+        }
+        assert!(dupes.is_empty(), "重复的列迁移：{dupes:?}");
     }
 }

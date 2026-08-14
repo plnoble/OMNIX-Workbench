@@ -491,11 +491,18 @@ export interface CronTask {
 /** A single execution run of a cron task */
 export interface CronRun {
   id: string;
-  cron_task_id: string;
-  status: "success" | "failed" | "running";
+  /** 后端序列化的字段名是 `task_id`。这里以前写的是 `cron_task_id`——对不上，
+   *  取出来永远是 undefined。界面碰巧没用到它，所以一直没暴露。 */
+  task_id: string;
+  /** 后端还会写 `timeout`（上一轮超时被收掉）和 `skipped`（上一轮还在跑，
+   *  这一轮主动不叠加）。这两种都不是失败。 */
+  status: "success" | "failed" | "running" | "timeout" | "skipped";
   log_path: string;
   started_at: string;
-  finished_at: string;
+  /** 还在跑的时候是 null。 */
+  finished_at: string | null;
+  /** 这次运行的时间窗内观察到的对外动作摘要，可能为空。 */
+  action_summary: string;
 }
 
 /** Remote access connection info for cross-device debugging */

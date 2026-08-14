@@ -147,6 +147,12 @@ pub struct CronRun {
     pub log_path: String,
     pub started_at: String,
     pub finished_at: Option<String>,
+    /// 这次运行的时间窗内观察到的对外动作摘要（`summarize_run` 写的）。
+    ///
+    /// 这一列一直是**只写不读**：查询没选它、DTO 没有它、界面也就无从显示。
+    /// 而它记的恰恰是「这次定时任务期间往外发了什么」——最值得被人看见的那类
+    /// 信息，收不回来。
+    pub action_summary: String,
 }
 
 // ── Re-export all command functions from submodules ──
