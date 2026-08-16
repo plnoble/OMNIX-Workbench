@@ -12,6 +12,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > 这份文件此前停在 0.4.0，而应用已经发到 0.28.0；更新器的说明里却写着「详见
 > CHANGELOG」，指向一份对不上的文件。补齐用的是真实提交记录，没有事后追写。
 
+## [0.31.0] - 2026-08-16
+
+技术审查修复批次（P1-P9 全量闭环 + 工程治理）：
+
+- **安装器管道死锁修复（P1）**：`agent.rs` 两处 `Stdio::piped()` 只 `wait()` 不读管道的
+  模式改为 `wait_with_output()`，Antigravity 安装器与 npm install 路径不再因输出超缓冲
+  区双向死锁；失败分支附 stderr 尾部 10 行便于定位。
+- **checkpoint 静默失败拦截（P2）**：`update-ref` 后增加 `rev-parse --verify` 回读校验，
+  git 2.55 files-ref 后端静默丢写时立即报错而非留下一纸空检查点。
+- **依赖漏洞清零（P3/P5）**：nanoid 3.3.16 → 3.3.18；esbuild 经 overrides 实装 0.28.2，
+  `npm audit` 0 漏洞。
+- **状态注册竞态修复（P4）**：`toggle_selection_auto_capture` 的 `try_state`+`manage` 改为
+  `static OnceLock` 幂等化，消除并发双重 manage panic。
+- **clippy 清零（P6）**：97 个警告 → 0。自动修复 65 项 + 手工修复机械项（strip_prefix、
+  clamp、`&Path`/`&[Chunk]` 等）+ 设计层面警告带理由 `#[allow]`；
+  `tool_adapters` 的 `&Box<dyn ToolAdapter>` 改为 `&dyn ToolAdapter`（真修复）。
+- **密钥迁移失败 UI 警示（P9）**：明文 Key 加密迁移失败不再只写 stderr--失败原因落库
+  `key_migration_alert`，前端启动时拉取并以 toast 显式提醒（30s），密钥明文滞留不再静默。
+- **测试兼容**：vitest 默认 threads/forks 池在沙箱环境无法传递配置，改用 `vmThreads`。
+- **仓库治理**：移除仓库根临时文件；`.workbuddy` 本地日志不入库；归档第一阶段技术
+  审查报告至 `docs/`。
+
+## [0.30.0] - 2026-08-15
+
+中文用户可感知的三处修复（技能自动注入、分类加权、记忆自动召回对中文全线失效）、
+监督台「拒绝并说明」、三道接线守卫、以及一批双轨残留与幽灵调用的清理。
+（详细说明见发版提交 4822291。）
+
+
 ## [0.29.2] — 2026-08-14
 
 安全与数据完整性修复（Grok 审核后逐条复现）：
