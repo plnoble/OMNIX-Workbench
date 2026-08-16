@@ -43,10 +43,8 @@ pub(crate) fn list_conversations_core(
         .map_err(|e| e.to_string())?;
 
     let mut result = Vec::new();
-    for r in rows {
-        if let Ok(conv) = r {
-            result.push(conv);
-        }
+    for conv in rows.flatten() {
+        result.push(conv);
     }
     Ok(result)
 }
@@ -139,10 +137,8 @@ pub(crate) fn get_conversation_messages_core(
         .map_err(|e| e.to_string())?;
 
     let mut result = Vec::new();
-    for r in rows {
-        if let Ok(msg) = r {
-            result.push(msg);
-        }
+    for msg in rows.flatten() {
+        result.push(msg);
     }
     Ok(result)
 }
@@ -314,10 +310,8 @@ pub(crate) fn get_conversation_tasks_core(
         .map_err(|e| e.to_string())?;
 
     let mut result = Vec::new();
-    for r in rows {
-        if let Ok(t) = r {
-            result.push(t);
-        }
+    for t in rows.flatten() {
+        result.push(t);
     }
     Ok(result)
 }

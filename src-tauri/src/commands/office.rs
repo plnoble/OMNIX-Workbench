@@ -149,7 +149,7 @@ pub async fn office_merge_batch(
             .as_deref()
             .and_then(|k| record.pointer(&format!("/{k}")))
             .and_then(|v| v.as_str())
-            .map(|s| super::slides::sanitize_filename(s))
+            .map(super::slides::sanitize_filename)
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| format!("{:03}", i + 1));
         let out = out_dir.join(format!("{label}.{ext}"));

@@ -16,6 +16,7 @@
 //! Grok 的凭据优先级（官方文档 02-authentication.md）：
 //!   1. `[model.<name>]` 里的 api_key/env_key   2. `~/.grok/auth.json` 的会话令牌
 //!   3. `XAI_API_KEY` 环境变量（兜底）
+//!
 //! 所以「已登录」时会话令牌优先于 API Key —— 状态里两者都报给用户，避免困惑。
 
 use std::path::PathBuf;

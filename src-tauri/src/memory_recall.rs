@@ -77,7 +77,7 @@ const GENERIC_KEYWORDS: &[&str] = &[
 ];
 
 fn is_generic(keyword: &str) -> bool {
-    GENERIC_KEYWORDS.iter().any(|g| *g == keyword)
+    GENERIC_KEYWORDS.contains(&keyword)
 }
 
 /// 低于这条线就不再注入。

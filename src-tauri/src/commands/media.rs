@@ -413,6 +413,7 @@ pub(crate) fn truncate_raw(value: &serde_json::Value) -> String {
 /// completed image task's id — its file is inlined as a data URL (whether the
 /// provider accepts data URLs is verified live; a rejection surfaces on the
 /// task card).
+#[allow(clippy::too_many_arguments)]  // Tauri 命令入参由前端表单决定，无法收敛
 #[tauri::command]
 pub async fn media_create_video_task(
     platform_id: String,
@@ -601,7 +602,7 @@ async fn poll_one_video(app: &AppHandle, db: &Arc<DbManager>, item: &PendingVide
         MediaTaskStatus::Completed => {
             let outcome = match result.video_url.as_deref() {
                 Some(video_url) => download_video(&client, video_url, &item.task_id).await,
-                None => Err(format!("任务完成但未找到视频 URL（原始响应已记录）")),
+                None => Err("任务完成但未找到视频 URL（原始响应已记录）".to_string()),
             };
             match outcome {
                 Ok(path) => {

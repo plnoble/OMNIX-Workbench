@@ -136,15 +136,6 @@ export interface AgentExecConfig {
   sandbox_mode: string | null;
 }
 
-export const agentExecApi = {
-  /** Get execution config for an agent */
-  getConfig: (agentName: string) =>
-    invoke<AgentExecConfig>("get_agent_exec_config", { agentName }),
-
-  /** Save execution config */
-  saveConfig: (config: AgentExecConfig) =>
-    invoke("save_agent_exec_config", { config }),
-};
 
 // ── Autopilot ─────────────────────
 
@@ -166,17 +157,6 @@ export interface GcResult {
   details: string[];
 }
 
-export const workspaceGcApi = {
-  /** Get GC config */
-  getConfig: () => invoke<WorkspaceGcConfig>("get_gc_config"),
-
-  /** Save GC config */
-  saveConfig: (config: WorkspaceGcConfig) =>
-    invoke("save_gc_config", { config }),
-
-  /** Execute garbage collection */
-  run: () => invoke<GcResult>("run_workspace_gc"),
-};
 
 
 export interface YoloModeConfig {
@@ -188,21 +168,6 @@ export interface YoloModeConfig {
   max_retries: number;
 }
 
-export const yoloApi = {
-  /** Get YOLO mode on/off status (backward compatible) */
-  getStatus: () => invoke<boolean>("get_yolo_mode"),
-  /** Toggle YOLO mode on/off (backward compatible) */
-  set: (enabled: boolean) => invoke("set_yolo_mode", { enabled }),
-  /** Get full YOLO mode configuration with graded permissions */
-  getConfig: () => invoke<YoloModeConfig>("get_yolo_mode_config"),
-  /** Set YOLO mode configuration with graded permissions */
-  setConfig: (config: Partial<YoloModeConfig>) => invoke("set_yolo_mode_config", { config }),
-  /** Check if a specific tool call should be auto-approved under current YOLO mode */
-  checkPermission: (toolName: string, dangerLevel: "safe" | "moderate" | "dangerous") =>
-    invoke<{ auto_approved: boolean; yolo_level: string; tool_name: string; danger_level: string; auto_retry: boolean; max_retries: number }>(
-      "check_yolo_permission", { toolName, dangerLevel }
-    ),
-};
 
 // Persistent Cron
 export interface PersistentCronTask {

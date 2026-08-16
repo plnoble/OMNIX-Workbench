@@ -31,10 +31,8 @@ pub fn get_all_memories(
     }).map_err(|e| e.to_string())?;
 
     let mut result = Vec::new();
-    for r in rows {
-        if let Ok(mem) = r {
-            result.push(mem);
-        }
+    for mem in rows.flatten() {
+        result.push(mem);
     }
     Ok(result)
 }

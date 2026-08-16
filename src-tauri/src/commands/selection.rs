@@ -425,14 +425,18 @@ pub async fn toggle_selection_auto_capture(
     app_handle: AppHandle,
     enabled: bool,
 ) -> Result<bool, String> {
-    use std::sync::Mutex as StdMutex;
+    use std::sync::{Mutex as StdMutex, OnceLock};
 
     struct AutoCaptureHandle(StdMutex<Option<tokio::task::JoinHandle<()>>>);
 
-    let handle = app_handle.try_state::<AutoCaptureHandle>();
-    if handle.is_none() {
-        app_handle.manage(AutoCaptureHandle(StdMutex::new(None)));
-    }
+    // 全局 OnceLock 兜底注册：避免两个并发首调同时看到 try_state()==None
+    // 而双重 manage()（第二次会 panic）。惰性注册改由进程级单例完成，天然幂等。
+    static REGISTER: OnceLock<()> = OnceLock::new();
+    REGISTER.get_or_init(|| {
+        if app_handle.try_state::<AutoCaptureHandle>().is_none() {
+            app_handle.manage(AutoCaptureHandle(StdMutex::new(None)));
+        }
+    });
     let handle = app_handle.state::<AutoCaptureHandle>();
 
     let mut guard = handle.0.lock().map_err(|e| format!("Lock error: {}", e))?;

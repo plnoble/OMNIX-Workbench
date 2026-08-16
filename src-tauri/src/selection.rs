@@ -155,7 +155,7 @@ pub fn simulate_ctrl_c() {
     // input events to the system queue; there are no memory safety invariants beyond
     // the structs being valid for the duration of the call.
     unsafe {
-        let vk_ctrl = VK_CONTROL.0 as u16;
+        let vk_ctrl = VK_CONTROL.0;
         let vk_c = 0x43u16; // 'C' key
 
         let inputs: [INPUT; 4] = [
@@ -421,13 +421,13 @@ pub fn get_selected_text_via_uia() -> Result<String, String> {
 /// Returns the captured text, or an error if nothing could be captured.
 pub async fn capture_selection() -> Result<String, String> {
     // Tier 1: Try UIA on a blocking thread (COM must be on a dedicated thread)
-    let uia_result = tokio::task::spawn_blocking(|| get_selected_text_via_uia())
+    let uia_result = tokio::task::spawn_blocking(get_selected_text_via_uia)
         .await
         .map_err(|e| format!("UIA task failed: {}", e))?;
 
     match uia_result {
         Ok(text) if !text.trim().is_empty() => {
-            return Ok(text);
+            Ok(text)
         }
         _ => {
             // Tier 2: Fallback to SendInput + clipboard
@@ -451,7 +451,7 @@ pub async fn capture_selection_with_context() -> Result<CaptureResult, String> {
     let (window_title, process_name) = get_focused_window_info();
 
     // Tier 1: Try UIA on a blocking thread
-    let uia_result = tokio::task::spawn_blocking(|| get_selected_text_via_uia())
+    let uia_result = tokio::task::spawn_blocking(get_selected_text_via_uia)
         .await
         .map_err(|e| format!("UIA task failed: {}", e))?;
 

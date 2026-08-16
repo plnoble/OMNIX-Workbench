@@ -231,6 +231,7 @@ fn resolve_default_model_selection(
 
 fn load_agent_binding(db: &DbManager, agent: AgentId) -> Result<Option<AgentBinding>, String> {
     let conn = db.get_connection().map_err(|error| error.to_string())?;
+    #[allow(clippy::type_complexity)]  // 行结构由 SQL 列序决定，提取 type 别名收益有限
     let row: Option<(String, Option<String>, Option<String>, Option<String>)> = conn
         .query_row(
             "SELECT COALESCE(binding_kind, 'omnix'), builtin_model, platform_id, model_name

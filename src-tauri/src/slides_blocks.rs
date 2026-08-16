@@ -697,7 +697,7 @@ fn color_of(it: &SlideItem, order: &[&str]) -> &'static str {
     series_color(order.iter().position(|o| *o == g).unwrap_or(0))
 }
 
-fn group_order<'a>(items: &'a [SlideItem]) -> Vec<&'a str> {
+fn group_order(items: &[SlideItem]) -> Vec<&str> {
     let mut out: Vec<&str> = Vec::new();
     for it in items {
         let g = it.group.trim();

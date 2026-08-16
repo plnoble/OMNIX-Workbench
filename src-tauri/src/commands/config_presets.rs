@@ -122,64 +122,6 @@ pub fn import_backup(
 
 // ── Activity Log ────────────────────────────────────────
 
-/// Activity log entry DTO
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct ActivityLogEntry {
-    pub id: String,
-    pub action: String,
-    pub target: String,
-    pub details: String,
-    pub created_at: String,
-}
-
-/// Log an activity.
-#[tauri::command]
-pub fn log_activity(
-    action: String,
-    target: String,
-    details: String,
-    db: State<'_, Arc<DbManager>>,
-) -> Result<(), String> {
-    let conn = db.get_connection().map_err(|e| e.to_string())?;
-    let id = format!("act_{}", chrono::Utc::now().timestamp_millis());
-    conn.execute(
-        "INSERT INTO activity_log (id, action, target, details) VALUES (?1, ?2, ?3, ?4)",
-        params![id, action, target, details],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// Get recent activity log entries.
-#[tauri::command]
-pub fn get_activity_log(
-    limit: u32,
-    db: State<'_, Arc<DbManager>>,
-) -> Result<Vec<ActivityLogEntry>, String> {
-    let conn = db.get_connection().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare(
-        "SELECT id, action, target, details, created_at FROM activity_log ORDER BY created_at DESC LIMIT ?1"
-    ).map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map(params![limit], |row| {
-            Ok(ActivityLogEntry {
-                id: row.get::<_, String>(0)?,
-                action: row.get::<_, String>(1)?,
-                target: row.get::<_, String>(2)?,
-                details: row.get::<_, String>(3)?,
-                created_at: row.get::<_, String>(4).unwrap_or_default(),
-            })
-        })
-        .map_err(|e| e.to_string())?;
-    let mut result = Vec::new();
-    for r in rows {
-        if let Ok(item) = r {
-            result.push(item);
-        }
-    }
-    Ok(result)
-}
-
 // ══════════════════════════════════════════════════
 // MCP Presets
 // ══════════════════════════════════════════════════

@@ -283,9 +283,7 @@ fn tool_definitions() -> Value {
 /// 全是同步的库内查询。
 pub async fn handle_rpc(db: &Arc<DbManager>, req: RpcRequest) -> Option<RpcResponse> {
     // 通知没有 id，不能回。最常见的是 initialized / cancelled。
-    let Some(id) = req.id.clone() else {
-        return None;
-    };
+    let id = req.id.clone()?;
 
     Some(match req.method.as_str() {
         "initialize" => ok(

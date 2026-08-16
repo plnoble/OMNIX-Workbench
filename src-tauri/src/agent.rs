@@ -501,14 +501,14 @@ impl AgentManager {
         if agent_name == "Google Antigravity" {
             let mut cmd = if cfg!(windows) {
                 let mut c = Command::new("powershell");
-                c.args(&[
+                c.args([
                     "-Command",
                     "irm https://antigravity.google/cli/install.ps1 | iex",
                 ]);
                 c
             } else {
                 let mut c = Command::new("sh");
-                c.args(&[
+                c.args([
                     "-c",
                     "curl -fsSL https://antigravity.google/cli/install.sh | bash",
                 ]);
@@ -517,19 +517,34 @@ impl AgentManager {
             cmd.no_window()
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
-            let mut child = cmd
+            let child = cmd
                 .spawn()
                 .map_err(|e| format!("Failed to spawn Antigravity installer: {}", e))?;
-            let status = child
-                .wait()
+                // wait_with_output 会持续排空管道。只 wait() 不读时，安装脚本输出
+                // 一旦超过管道缓冲区（Windows 4-64KB），子进程阻塞在写端，父进程
+                // 等它退出 -> 双向死锁，UI 永久卡死（历史事故）。
+            let output = child
+                .wait_with_output()
                 .await
                 .map_err(|e| format!("Antigravity installer run error: {}", e))?;
-            if status.success() {
+            if output.status.success() {
                 return Ok(());
             } else {
+                let tail = |bytes: &[u8]| {
+                    String::from_utf8_lossy(bytes)
+                        .lines()
+                        .rev()
+                        .take(10)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
                 return Err(format!(
-                    "Antigravity installer failed with code {:?}",
-                    status.code()
+                    "Antigravity installer failed with code {:?}: {}",
+                    output.status.code(),
+                    tail(&output.stderr)
                 ));
             }
         }
@@ -594,13 +609,16 @@ impl AgentManager {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        let mut child = cmd
+        let child = cmd
             .spawn()
             .map_err(|e| format!("Failed to run npm command: {}", e))?;
-        let status = child
-            .wait()
+            // 同 Antigravity 安装器：wait_with_output 排空管道，防止 npm 输出
+            // 超过管道缓冲区时双向死锁。
+        let output = child
+            .wait_with_output()
             .await
             .map_err(|e| format!("Npm install process error: {}", e))?;
+        let status = output.status;
 
         if status.success() {
             if agent_name == "Claude Code" {
@@ -1066,7 +1084,7 @@ impl CronField {
     fn matches(&self, current: u32) -> bool {
         match self {
             CronField::Any => true,
-            CronField::Step(step) => current % step == 0,
+            CronField::Step(step) => current.is_multiple_of(*step),
             CronField::Exact(value) => *value == current,
         }
     }

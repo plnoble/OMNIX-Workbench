@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   BackupTableInfo,
   ImportResult,
-  ActivityLogEntry,
+
 } from "@/types";
 
 // ── Workspace checkpoints + diff review ──
@@ -133,13 +133,5 @@ export const backupApi = {
 
 // ── Prompt Library ──────────────────────────────────────
 
-
 // ── Activity Log ────────────────────────────────────────
-
-export const activityApi = {
-  log: (action: string, target: string, details: string) =>
-    invoke("log_activity", { action, target, details }),
-  getRecent: (limit?: number) =>
-    invoke<ActivityLogEntry[]>("get_activity_log", { limit: limit ?? 50 }),
-};
 

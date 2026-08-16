@@ -280,7 +280,18 @@ pub fn get_gpu_database() -> Vec<crate::model_knowledge::GpuSpec> {
 // Code Deep Analysis
 // ══════════════════════════════════════════════════
 
-/// Analyze a codebase directory — returns file statistics and structure
+/// 统计一个代码库：文件数、行数、语言分布、最大的若干文件。
+///
+/// 三处以前会出事的地方：
+///
+/// 1. **软链环导致无限递归。** 原来用 `path.is_dir()` 判断——它**跟随**软链，
+///    于是工作区里一个指向祖先目录的软链（或 Windows junction）就会让 `walk_dir`
+///    一路递归到爆栈。现在用 `entry.file_type()`（不跟随软链）明确排除软链，
+///    另外加一道深度上限兜底：判类型这一层万一被绕过，深度也拦得住。
+/// 2. **为数行数把整个文件读进内存。** `read_to_string` 碰上一个几百 MB 的日志或
+///    数据集就是几百 MB 驻留。改成流式数换行符，并对超大文件直接跳过计行——
+///    它对「这个库多大」这个问题没有信息量，却能拖垮统计本身。
+/// 3. **输出绝对路径。** 泄露本机目录结构，界面上也是一长串没法看。改成相对根目录。
 #[tauri::command]
 pub fn analyze_codebase(path: String) -> Result<serde_json::Value, String> {
     crate::input_validation::validate_workspace_path(&path, "path")?;
@@ -288,127 +299,139 @@ pub fn analyze_codebase(path: String) -> Result<serde_json::Value, String> {
     if !dir.exists() || !dir.is_dir() {
         return Err(format!("Path does not exist or is not a directory: {}", path));
     }
-
-    let mut file_count = 0u32;
-    let mut total_lines = 0u32;
-    let mut languages: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
-    let mut largest_files: Vec<(String, u64)> = Vec::new();
-
-    fn walk_dir(
-        dir: &PathBuf,
-        file_count: &mut u32,
-        total_lines: &mut u32,
-        languages: &mut std::collections::HashMap<String, u32>,
-        largest_files: &mut Vec<(String, u64)>,
-    ) {
-        if let Ok(entries) = fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    let name = path.file_name().unwrap_or_default().to_string_lossy();
-                    // Skip common non-source directories
-                    if name == "node_modules" || name == ".git" || name == "target" || name == "dist" || name == ".next" {
-                        continue;
-                    }
-                    walk_dir(&path, file_count, total_lines, languages, largest_files);
-                } else {
-                    *file_count += 1;
-                    let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-                    let name = path.to_string_lossy().to_string();
-
-                    // Track largest files
-                    largest_files.push((name.clone(), size));
-                    if largest_files.len() > 100 {
-                        largest_files.sort_by(|a, b| b.1.cmp(&a.1));
-                        largest_files.truncate(50);
-                    }
-
-                    // Count lines for text files
-                    if let Ok(content) = fs::read_to_string(&path) {
-                        *total_lines += content.lines().count() as u32;
-                    }
-
-                    // Detect language by extension
-                    if let Some(ext) = path.extension() {
-                        let ext_str = ext.to_string_lossy().to_lowercase();
-                        let lang = match ext_str.as_str() {
-                            "rs" => "Rust",
-                            "ts" | "tsx" => "TypeScript",
-                            "js" | "jsx" => "JavaScript",
-                            "py" => "Python",
-                            "go" => "Go",
-                            "java" => "Java",
-                            "cpp" | "cc" | "cxx" => "C++",
-                            "c" => "C",
-                            "cs" => "C#",
-                            "rb" => "Ruby",
-                            "swift" => "Swift",
-                            "kt" => "Kotlin",
-                            "html" | "htm" => "HTML",
-                            "css" | "scss" | "sass" => "CSS",
-                            "json" => "JSON",
-                            "md" => "Markdown",
-                            "yaml" | "yml" => "YAML",
-                            "toml" => "TOML",
-                            "sql" => "SQL",
-                            _ => "Other",
-                        };
-                        *languages.entry(lang.to_string()).or_insert(0) += 1;
-                    }
-                }
-            }
-        }
-    }
-
-    walk_dir(&dir, &mut file_count, &mut total_lines, &mut languages, &mut largest_files);
-    largest_files.sort_by(|a, b| b.1.cmp(&a.1));
-    largest_files.truncate(20);
-
+    let stats = scan_codebase(&dir);
     Ok(serde_json::json!({
         "path": path,
-        "total_files": file_count,
-        "total_lines": total_lines,
-        "languages": languages,
-        "largest_files": largest_files.iter().map(|(name, size)| {
+        "total_files": stats.file_count,
+        "total_lines": stats.total_lines,
+        "languages": stats.languages,
+        "largest_files": stats.largest_files.iter().map(|(name, size)| {
             serde_json::json!({ "name": name, "size_bytes": size })
         }).collect::<Vec<_>>(),
     }))
 }
 
+/// 递归深度上限。软链已经在类型判断那层挡掉了，这是第二道闸——真实代码库不会有
+/// 这么深的目录，撞到上限本身就说明碰上了病态结构。
+const MAX_SCAN_DEPTH: usize = 64;
+
+/// 超过这个大小就不数行数了（仍然计入文件数和「最大文件」榜）。
+const MAX_LINE_COUNT_BYTES: u64 = 8 * 1024 * 1024;
+
+#[derive(Default)]
+pub(crate) struct CodebaseStats {
+    pub file_count: u32,
+    pub total_lines: u64,
+    pub languages: std::collections::HashMap<String, u32>,
+    /// (相对根目录的路径, 字节数)，按大小降序，最多 20 条。
+    pub largest_files: Vec<(String, u64)>,
+}
+
+/// 流式数行数：按换行符计，不把文件读进内存。读不出 UTF-8（二进制）时返回 0。
+fn count_lines(path: &PathBuf) -> u64 {
+    use std::io::{BufRead, BufReader};
+    let Ok(file) = fs::File::open(path) else { return 0 };
+    let mut reader = BufReader::new(file);
+    let mut lines = 0u64;
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        match reader.read_until(b'\n', &mut buf) {
+            Ok(0) => break,
+            Ok(_) => lines += 1,
+            Err(_) => break, // 读坏了就按已数到的算，不让统计整个失败
+        }
+    }
+    lines
+}
+
+fn language_of(ext: &str) -> &'static str {
+    match ext {
+        "rs" => "Rust",
+        "ts" | "tsx" => "TypeScript",
+        "js" | "jsx" => "JavaScript",
+        "py" => "Python",
+        "go" => "Go",
+        "java" => "Java",
+        "cpp" | "cc" | "cxx" => "C++",
+        "c" => "C",
+        "cs" => "C#",
+        "rb" => "Ruby",
+        "swift" => "Swift",
+        "kt" => "Kotlin",
+        "html" | "htm" => "HTML",
+        "css" | "scss" | "sass" => "CSS",
+        "json" => "JSON",
+        "md" => "Markdown",
+        "yaml" | "yml" => "YAML",
+        "toml" => "TOML",
+        "sql" => "SQL",
+        _ => "Other",
+    }
+}
+
+/// 不参与统计的目录：构建产物和依赖树。它们的体量会把真实代码淹没。
+fn is_skipped_dir(name: &str) -> bool {
+    matches!(
+        name,
+        "node_modules" | ".git" | "target" | "dist" | ".next"
+            | ".venv" | "venv" | "__pycache__" | "vendor" | "build" | "out" | "coverage"
+    )
+}
+
+pub(crate) fn scan_codebase(root: &PathBuf) -> CodebaseStats {
+    let mut stats = CodebaseStats::default();
+    walk(root, root, 0, &mut stats);
+    stats.largest_files.sort_by(|a, b| b.1.cmp(&a.1));
+    stats.largest_files.truncate(20);
+    stats
+}
+
+fn walk(root: &PathBuf, dir: &PathBuf, depth: usize, stats: &mut CodebaseStats) {
+    if depth > MAX_SCAN_DEPTH {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        // `entry.file_type()` **不跟随**软链——这是防环的第一道，也是主要一道。
+        let Ok(file_type) = entry.file_type() else { continue };
+        if file_type.is_symlink() {
+            continue;
+        }
+        let path = entry.path();
+        if file_type.is_dir() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if is_skipped_dir(&name) {
+                continue;
+            }
+            walk(root, &path, depth + 1, stats);
+            continue;
+        }
+
+        stats.file_count += 1;
+        let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+        let rel = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().to_string();
+
+        stats.largest_files.push((rel, size));
+        if stats.largest_files.len() > 100 {
+            stats.largest_files.sort_by(|a, b| b.1.cmp(&a.1));
+            stats.largest_files.truncate(50);
+        }
+
+        if size <= MAX_LINE_COUNT_BYTES {
+            stats.total_lines += count_lines(&path);
+        }
+
+        if let Some(ext) = path.extension() {
+            let lang = language_of(&ext.to_string_lossy().to_lowercase());
+            *stats.languages.entry(lang.to_string()).or_insert(0) += 1;
+        }
+    }
+}
+
 // ══════════════════════════════════════════════════
 // Configuration Backup
 // ══════════════════════════════════════════════════
-
-/// Backup a file before modification
-#[tauri::command]
-pub fn backup_config_file(file_path: String, category: String) -> Result<Option<String>, String> {
-    // `category` 会被当成目录名拼进备份根目录——不挡分隔符的话，
-    // `../../` 就能把任意文件的副本写到备份区外面去。
-    crate::input_validation::validate_user_file_path(&file_path, "file_path")?;
-    crate::input_validation::validate_path_component(&category, "category")?;
-    let path = PathBuf::from(&file_path);
-    crate::backup::backup_file(&path, &category).map(|p| p.map(|p| p.to_string_lossy().to_string()))
-}
-
-/// List backups for a category
-#[tauri::command]
-pub fn list_backups(category: String) -> Vec<crate::backup::BackupEntry> {
-    crate::backup::list_backups(&category)
-}
-
-/// Restore a backup
-#[tauri::command]
-pub fn restore_backup(backup_path: String, target_path: String) -> Result<(), String> {
-    // 这条命令**往任意路径写任意内容**，是这批里最危险的一个。
-    // 来源按目录关死（只能是备份区里的东西），落点按用户文件那道闸走。
-    crate::input_validation::validate_contained(
-        &backup_path,
-        &crate::storage::backups_dir(),
-        "backup_path",
-    )?;
-    crate::input_validation::validate_user_file_path(&target_path, "target_path")?;
-    crate::backup::restore_backup(&backup_path, &target_path)
-}
 
 // ══════════════════════════════════════════════════
 // API Provider Preset Management
@@ -773,5 +796,101 @@ mod preset_key_tests {
             .filter_map(|r| r.ok())
             .collect();
         assert_eq!(active, vec!["mine".to_string()], "活跃 Key 应当仍然只有用户自己选的那把");
+    }
+}
+
+#[cfg(test)]
+mod codebase_scan_tests {
+    use super::*;
+    use std::fs;
+
+    fn temp_root(tag: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let p = std::env::temp_dir().join(format!(
+            "omnix_scan_{tag}_{}_{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = fs::remove_dir_all(&p);
+        fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    /// 最大文件榜里给的是**相对根目录**的路径。
+    ///
+    /// 以前给的是绝对路径——泄露本机目录结构，界面上还是一长串没法看的东西。
+    #[test]
+    fn largest_files_are_relative_to_the_scanned_root() {
+        let root = temp_root("rel");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+
+        let stats = scan_codebase(&root);
+        let (name, _) = &stats.largest_files[0];
+        assert!(!name.contains(root.to_str().unwrap()), "不该出现绝对路径：{name}");
+        assert!(name.ends_with("main.rs"), "路径应相对根目录，实际 {name}");
+    }
+
+    /// 行数按换行符流式统计，不把文件读进内存。
+    #[test]
+    fn counts_lines_without_reading_whole_files() {
+        let root = temp_root("lines");
+        fs::write(root.join("a.rs"), "one\ntwo\nthree\n").unwrap();
+        assert_eq!(scan_codebase(&root).total_lines, 3);
+    }
+
+    /// 超过阈值的文件**仍然计入文件数和最大文件榜**，只是不数行数。
+    ///
+    /// 这条守的是「跳过」的分寸：跳过计行是为了不被一个几百 MB 的数据集拖垮，
+    /// 但那个文件本身恰恰是「这个库里什么最大」最该报出来的答案。
+    #[test]
+    fn oversized_files_still_count_but_skip_line_counting() {
+        let root = temp_root("big");
+        let big = vec![b'x'; (MAX_LINE_COUNT_BYTES + 1) as usize];
+        fs::write(root.join("big.bin"), &big).unwrap();
+        fs::write(root.join("small.rs"), "a\nb\n").unwrap();
+
+        let stats = scan_codebase(&root);
+        assert_eq!(stats.file_count, 2, "超大文件也要计入文件数");
+        assert_eq!(stats.total_lines, 2, "超大文件不该参与计行");
+        assert_eq!(stats.largest_files[0].0, "big.bin", "超大文件该排在最大文件榜首");
+    }
+
+    /// 深度上限兜底：病态嵌套不会一路递归下去。
+    ///
+    /// 主防线是「不跟随软链」（`entry.file_type()`），但那一层依赖平台行为；
+    /// 深度上限是不依赖平台的第二道。这里造一个超过上限的目录链，断言扫描正常
+    /// 返回、并且确实**没有**把上限之外的文件算进来。
+    #[test]
+    fn pathological_nesting_stops_at_the_depth_cap() {
+        let root = temp_root("deep");
+        let mut p = root.clone();
+        for i in 0..(MAX_SCAN_DEPTH + 5) {
+            p = p.join(format!("d{i}"));
+        }
+        fs::create_dir_all(&p).unwrap();
+        fs::write(p.join("deep.rs"), "x\n").unwrap();
+        fs::write(root.join("shallow.rs"), "y\n").unwrap();
+
+        let stats = scan_codebase(&root);
+        assert_eq!(stats.file_count, 1, "只该数到浅层那个，深处的被上限挡住");
+        assert_eq!(stats.largest_files[0].0, "shallow.rs");
+    }
+
+    /// 构建产物目录不参与统计。
+    #[test]
+    fn build_output_directories_are_skipped() {
+        let root = temp_root("skip");
+        for d in ["node_modules", "target", "__pycache__", ".venv"] {
+            fs::create_dir_all(root.join(d)).unwrap();
+            fs::write(root.join(d).join("junk.js"), "noise\n").unwrap();
+        }
+        fs::write(root.join("real.rs"), "code\n").unwrap();
+
+        let stats = scan_codebase(&root);
+        assert_eq!(stats.file_count, 1, "只有 real.rs 该被统计");
+        assert_eq!(stats.languages.get("Rust"), Some(&1));
+        assert_eq!(stats.languages.get("JavaScript"), None, "依赖树里的 js 不该算进语言分布");
     }
 }

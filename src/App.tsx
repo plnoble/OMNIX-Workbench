@@ -217,6 +217,7 @@ function MainAppShell() {
     void translation.loadTranslationSettings();
     navigation.loadLayout();
     checkOnboarding();
+    void checkMigrationAlert();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps -- mount-only init: all load functions are stable ref-less fetchers
 
   // Warm only the handful of chunks the user is most likely to open next, so
@@ -247,6 +248,23 @@ function MainAppShell() {
       console.error("Failed to check onboarding state:", e);
     }
   };
+  // 启动时拉取密钥迁移失败警示：后端在启动早期跑明文 Key 加密迁移（lib.rs），
+  // 失败时只写 stderr 用户根本看不见，密钥就一直躺在库里明文。失败原因会落到
+  // settings 表的 key_migration_alert，这里读出来用 toast 显式提醒用户。
+  const checkMigrationAlert = async () => {
+    try {
+      const alert = await invoke<string | null>("get_app_setting", { key: "key_migration_alert" });
+      if (alert && alert.trim()) {
+        toast.error("密钥加密迁移失败", {
+          description: alert + "。部分 API Key 可能仍以明文存储，请检查模型平台设置后重启应用重试。",
+          duration: 30000,
+        });
+      }
+    } catch {
+      // 读不到就静默跳过：这只是个增强警示，不能因它阻塞启动。
+    }
+  };
+
 
   // ── Listen for StatusDock navigation events ────────
   // (Listener registered below, after handleTabChange is defined, via a ref so

@@ -270,7 +270,7 @@ fn split_by_paragraphs(
 }
 
 /// Apply overlap: prepend trailing text from previous chunk to current chunk.
-fn apply_overlap(chunks: &mut Vec<Chunk>, config: &ChunkConfig) {
+fn apply_overlap(chunks: &mut [Chunk], config: &ChunkConfig) {
     if config.overlap_chars == 0 || chunks.len() <= 1 {
         return;
     }
@@ -683,7 +683,7 @@ pub fn unindex_document(conn: &rusqlite::Connection, document_id: &str) -> rusql
 
 /// `?,?,?` for an `IN (...)` clause.
 fn sql_placeholders(n: usize) -> String {
-    std::iter::repeat("?").take(n).collect::<Vec<_>>().join(",")
+    std::iter::repeat_n("?", n).collect::<Vec<_>>().join(",")
 }
 
 /// Vector similarity search using brute-force cosine similarity.
@@ -895,6 +895,7 @@ pub fn rrf_fuse(
 /// 3. Runs vector similarity search
 /// 4. Fuses results via RRF
 /// 5. Enriches results with chunk content and document metadata
+#[allow(clippy::too_many_arguments)]  // 混合检索可选参数集，已有调用方依赖此签名
 pub async fn hybrid_search(
     db: &DbManager,
     query: &str,

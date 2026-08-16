@@ -104,8 +104,8 @@ fn parse_yaml_simple(yaml: &str) -> SkillFrontmatter {
         }
 
         // Array item: starts with "- "
-        if trimmed.starts_with("- ") {
-            let val = trimmed[2..].trim().trim_matches('"').to_string();
+        if let Some(stripped) = trimmed.strip_prefix("- ") {
+            let val = stripped.trim().trim_matches('"').to_string();
             array_values.push(val);
             continue;
         }

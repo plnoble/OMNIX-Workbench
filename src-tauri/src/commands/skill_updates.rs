@@ -12,9 +12,9 @@
 //!
 //! - source == central            → in sync (self-heal `base` if stale)
 //! - source ≠ central == base     → clean update: backup central, pull source in,
-//!                                  stamp `content_updated_at`
+//!   stamp `content_updated_at`
 //! - source ≠ central ≠ base      → conflict: both sides changed — never guess,
-//!                                  report and let the user pick
+//!   report and let the user pick
 //!
 //! Governance: an update to an **official** skill does not silently change what
 //! the gateway injects *unvetted* — the pool keeps injecting (the vetted skill

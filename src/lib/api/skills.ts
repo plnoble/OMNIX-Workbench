@@ -482,18 +482,6 @@ export interface SetValidation {
   valid: boolean; missing_deps: string[]; conflicts: ConflictPair[];
   redundant: [string, string][]; suggestions: string[];
 }
-export const skillDagApi = {
-  search: (query: string, topK?: number) =>
-    invoke<SkillSearchResult>("search_skills_dag", { query, topK }),
-  checkSet: (skillIds: string[]) =>
-    invoke<SetValidation>("check_skill_set", { skillIds }),
-  expandSet: (skillIds: string[]) =>
-    invoke<string[]>("expand_skill_set", { skillIds }),
-  addEdge: (source: string, target: string, edgeType: string, reason: string) =>
-    invoke<string>("add_skill_edge", { source, target, edgeType, reason }),
-  removeEdge: (source: string, target: string, edgeType: string) =>
-    invoke<string>("remove_skill_edge", { source, target, edgeType }),
-};
 
 // Async Agent Mailbox
 

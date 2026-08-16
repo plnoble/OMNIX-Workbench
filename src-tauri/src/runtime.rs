@@ -537,6 +537,7 @@ pub fn get_agent_session_record(
     session_id: &str,
 ) -> Result<AgentSessionRecord, String> {
     let conn = db.get_connection().map_err(|error| error.to_string())?;
+    #[allow(clippy::type_complexity)]  // 行结构由 SQL 列序决定，提取 type 别名收益有限
     let row: Option<(
         String,
         String,

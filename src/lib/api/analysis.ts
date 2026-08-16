@@ -13,14 +13,6 @@ export const codeAnalysisApi = {
 export interface BackupEntry {
   name: string; path: string; size_bytes: number; created_at: number;
 }
-export const configBackupApi = {
-  backup: (filePath: string, category: string) =>
-    invoke<string | null>("backup_config_file", { filePath, category }),
-  list: (category: string) =>
-    invoke<BackupEntry[]>("list_backups", { category }),
-  restore: (backupPath: string, targetPath: string) =>
-    invoke("restore_backup", { backupPath, targetPath }),
-};
 
 // API Provider Preset
 export const apiPresetApi = {

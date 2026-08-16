@@ -94,6 +94,7 @@ pub fn supervision_overview(db: State<'_, Arc<DbManager>>) -> Result<Supervision
         )
         .map_err(|e| e.to_string())?;
 
+    #[allow(clippy::type_complexity)]  // 行结构由 SQL 列序决定，提取 type 别名收益有限
     let rows: Vec<(String, String, String, String, String, String, String, String, Option<String>)> =
         stmt.query_map([], |r| {
             Ok((

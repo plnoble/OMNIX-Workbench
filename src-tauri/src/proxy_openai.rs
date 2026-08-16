@@ -538,7 +538,7 @@ pub(super) async fn handle_openai_forward_impl(
                 if let Ok(bytes) = &r {
                     recorder.observe(bytes);
                 }
-                r.map_err(|e| axum::Error::new(e))
+                r.map_err(axum::Error::new)
             });
             Response::builder()
                 .status(StatusCode::OK)
@@ -733,9 +733,7 @@ pub(super) async fn handle_openai_forward_impl(
                         let line = String::from_utf8_lossy(line_bytes).trim().to_string();
                         buffer_bytes.drain(..pos + 1);
 
-                        if line.starts_with("data: ") {
-                            let data_content = &line[6..];
-
+                        if let Some(data_content) = line.strip_prefix("data: ") {
                             #[derive(Debug, Deserialize)]
                             #[serde(tag = "type")]
                             enum AnthropicStreamEvent {
@@ -781,7 +779,7 @@ pub(super) async fn handle_openai_forward_impl(
                                             ]
                                         });
                                         output_bytes.extend_from_slice(
-                                            format!("data: {}\n\n", chunk.to_string()).as_bytes(),
+                                            format!("data: {}\n\n", chunk).as_bytes(),
                                         );
                                     }
                                     AnthropicStreamEvent::MessageStop => {

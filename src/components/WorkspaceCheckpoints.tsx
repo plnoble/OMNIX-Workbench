@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { History, RotateCcw, Undo2, ChevronDown, ChevronRight } from "lucide-react";
+import { History, RotateCcw, Undo2, ChevronDown, ChevronRight, FileCode } from "lucide-react";
 
-import { checkpointApi, type Checkpoint, type FileDiff } from "@/lib/tauri-api";
+import { checkpointApi, codeAnalysisApi, type Checkpoint, type CodebaseAnalysis, type FileDiff } from "@/lib/tauri-api";
 import { toast } from "@/components/ui/sonner";
 import { cn } from "@/lib/utils";
 
@@ -82,6 +82,8 @@ export function WorkspaceCheckpoints({ workspacePath, conversationId, refreshSig
 
   return (
     <div className="flex flex-col gap-3 text-sm">
+      <CodebaseStats workspacePath={workspacePath} />
+
       {/* Changes / diff */}
       <div>
         <div className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
@@ -170,6 +172,85 @@ export function WorkspaceCheckpoints({ workspacePath, conversationId, refreshSig
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * 这个工作区有多大：文件数、行数、语言分布、最大的几个文件。
+ *
+ * **要人按才扫**。它遍历整棵目录树并逐个文件数行数——挂在「选了工作区就自动跑」
+ * 上会变成用户没要求的后台开销，而这个数字并不是每次都需要看。
+ *
+ * 结果不缓存：库随时在变，缓存一份旧数字比不显示更容易误导。
+ */
+function CodebaseStats({ workspacePath }: { workspacePath: string }) {
+  const [stats, setStats] = useState<CodebaseAnalysis | null>(null);
+  const [scanning, setScanning] = useState(false);
+
+  // 换了工作区，上一个的统计立刻作废——留着会张冠李戴。
+  useEffect(() => { setStats(null); }, [workspacePath]);
+
+  const scan = async () => {
+    setScanning(true);
+    try {
+      setStats(await codeAnalysisApi.analyze(workspacePath));
+    } catch (e) {
+      toast.error(`统计失败：${e}`);
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  // 语言按文件数降序，只显示前 5 种——尾巴上那些各一两个文件的没有信息量。
+  const topLanguages = stats
+    ? Object.entries(stats.languages).sort((a, b) => b[1] - a[1]).slice(0, 5)
+    : [];
+
+  return (
+    <div>
+      <div className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
+        <FileCode className="h-3.5 w-3.5" />
+        代码库规模
+        <button
+          className="ml-auto rounded border border-border px-1.5 py-0.5 text-[10px] font-normal hover:bg-muted/40 disabled:opacity-50"
+          disabled={scanning || !workspacePath}
+          onClick={() => void scan()}
+          title="遍历工作区统计文件数、行数和语言分布。跳过 node_modules / target / .venv 这类构建产物和依赖树。"
+        >
+          {scanning ? "统计中…" : stats ? "重新统计" : "统计"}
+        </button>
+      </div>
+      {stats === null ? (
+        <p className="text-xs text-muted-foreground">
+          {scanning ? "正在遍历目录…" : "未统计。"}
+        </p>
+      ) : (
+        <div className="flex flex-col gap-1.5 rounded-md border border-border/60 px-2.5 py-2">
+          <div className="text-xs">
+            {stats.total_files.toLocaleString()} 个文件 · {stats.total_lines.toLocaleString()} 行
+          </div>
+          {topLanguages.length > 0 && (
+            <div className="flex flex-wrap gap-1">
+              {topLanguages.map(([lang, count]) => (
+                <span key={lang} className="rounded bg-muted/40 px-1.5 py-0.5 text-[10px]">
+                  {lang} {count}
+                </span>
+              ))}
+            </div>
+          )}
+          {stats.largest_files.length > 0 && (
+            <div className="text-[11px] text-muted-foreground">
+              最大：
+              {stats.largest_files.slice(0, 3).map((f) => (
+                <span key={f.name} className="ml-1" title={`${f.size_bytes.toLocaleString()} 字节`}>
+                  {f.name} ({Math.round(f.size_bytes / 1024)}KB)
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

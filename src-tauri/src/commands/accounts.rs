@@ -27,13 +27,11 @@ pub fn get_agent_accounts(
     }).map_err(|e| e.to_string())?;
 
     let mut result = Vec::new();
-    for r in rows {
-        if let Ok(mut acc) = r {
-            // 先解密再脱敏：库里现在是密文，直接截密文的头尾等于给用户看乱码。
-            // 而且原来那段用字节切片，Key 里只要有多字节字符就会 panic。
-            acc.api_key = crate::crypto::mask_secret(&crate::crypto::decrypt(&acc.api_key));
-            result.push(acc);
-        }
+    for mut acc in rows.flatten() {
+        // 先解密再脱敏：库里现在是密文，直接截密文的头尾等于给用户看乱码。
+        // 而且原来那段用字节切片，Key 里只要有多字节字符就会 panic。
+        acc.api_key = crate::crypto::mask_secret(&crate::crypto::decrypt(&acc.api_key));
+        result.push(acc);
     }
     Ok(result)
 }
@@ -177,7 +175,7 @@ pub fn list_agent_upstream_accounts(
                     expired,
                 });
             }
-        }
+    }
     }
 
     // Grok 的凭据归它自己的 CLI（`~/.grok/auth.json`，xAI 官方流程、自动续期），
@@ -197,7 +195,7 @@ pub fn list_agent_upstream_accounts(
                 // CLI 自己持有令牌，OMNIX 换不了也不需要换——它始终是生效的那个。
                 is_active: true,
             });
-        }
+    }
     }
 
     // This agent's api-key accounts.
@@ -218,7 +216,7 @@ pub fn list_agent_upstream_accounts(
                     expired: false,
                 });
             }
-        }
+    }
     }
     Ok(out)
 }
@@ -295,7 +293,7 @@ mod account_key_tests {
         {
             let conn = db.get_connection().unwrap();
             conn.execute("DELETE FROM agent_accounts", []).unwrap();
-        }
+    }
         super::save_agent_account_core(&db, &account("a1", "sk-abcdefghijklmnop", "原名")).unwrap();
 
         // 模拟前端：列表拿到掩码 → 表单原样带回来 → 只改了名字
@@ -316,7 +314,7 @@ mod account_key_tests {
         {
             let conn = db.get_connection().unwrap();
             conn.execute("DELETE FROM agent_accounts", []).unwrap();
-        }
+    }
         super::save_agent_account_core(&db, &account("a1", "sk-abcdefghijklmnop", "n")).unwrap();
         let at_rest = stored_key(&db, "a1");
         assert_ne!(at_rest, "sk-abcdefghijklmnop", "新写入的 Key 还是明文");
@@ -330,7 +328,7 @@ mod account_key_tests {
         {
             let conn = db.get_connection().unwrap();
             conn.execute("DELETE FROM agent_accounts", []).unwrap();
-        }
+    }
         super::save_agent_account_core(&db, &account("a1", "sk-abcdefghijklmnop", "n")).unwrap();
         super::save_agent_account_core(&db, &account("a1", "sk-brand-new-value-xyz", "n")).unwrap();
         assert_eq!(
@@ -346,7 +344,7 @@ mod account_key_tests {
         {
             let conn = db.get_connection().unwrap();
             conn.execute("DELETE FROM agent_accounts", []).unwrap();
-        }
+    }
         super::save_agent_account_core(&db, &account("a1", "sk-abcdefghijklmnop", "n")).unwrap();
         let masked = crate::crypto::mask_secret("sk-abcdefghijklmnop");
         // 复现列表命令的脱敏这一步（命令本身带 State，测不到）
@@ -371,7 +369,7 @@ mod account_key_tests {
                 [],
             )
             .unwrap();
-        }
+    }
         let moved = crate::commands::migrate_plaintext_secrets_in_place(&db).expect("迁移");
         assert!(moved >= 1, "明文行应当被加密");
 

@@ -429,7 +429,7 @@ pub fn markdown_to_docx_batch(md: &str, brand: Option<&crate::slides::Brand>) ->
             && trimmed.chars().next().is_some_and(|c| c.is_ascii_digit())
             && (trimmed[1..].starts_with(". ") || trimmed[1..].starts_with("、"))
         {
-            let rest = trimmed.splitn(2, [' ', '、']).nth(1).unwrap_or("");
+            let rest = trimmed.split_once([' ', '、']).map(|x| x.1).unwrap_or("");
             props.insert("text".into(), clean(rest).into());
             props.insert("listStyle".into(), "ordered".into());
             is_heading = false;

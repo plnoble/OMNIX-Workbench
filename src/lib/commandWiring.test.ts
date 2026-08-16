@@ -157,18 +157,8 @@ const BARREL = path.join(ROOT, "src", "lib", "tauri-api.ts");
  * 它背后的 Rust 命令一起删。新写的包装不许进这里——没有组件要用，就先别写。
  */
 const KNOWN_UNUSED_APIS = [
-  "activityApi",
-  "agentExecApi",
-  "apiPresetApi",
-  "codeAnalysisApi",
-  "configBackupApi",
-  "healthCheckApi",
-  "modelSyncApi",
   "notificationApi",
   "platformHealthApi",
-  "skillDagApi",
-  "workspaceGcApi",
-  "yoloApi",
 ];
 
 describe("API 包装接线", () => {

@@ -150,6 +150,17 @@ pub fn create_checkpoint_core(
     };
     let ref_name = format!("refs/omnix/checkpoints/{id}");
     git(&root, &["update-ref", &ref_name, &commit], None, &[])?;
+    // 回读校验：本机出现过 git 2.55 files-ref 后端 update-ref 返回 0 但 ref
+    // 未落盘的静默失败（reftable 后端正常）。不校验的话，快照会在恢复时才
+    // 暴露"从未存在"，用户数据安全功能形同虚设。失败即报错，绝不带病落库。
+    let verified = git(&root, &["rev-parse", "--verify", "--quiet", &ref_name], None, &[])
+        .ok()
+        .filter(|v| v.trim() == commit.trim());
+    if verified.is_none() {
+        return Err(format!(
+            "检查点写入后校验失败：git update-ref 对 {ref_name} 静默未生效（可能为 git 2.55 files-ref 后端在部分环境的回归）。请升级 git 或改用 reftable 后端后重试。",
+        ));
+    }
 
     let created_at = chrono::Utc::now().to_rfc3339();
     let conn = db.get_connection().map_err(|error| error.to_string())?;
@@ -197,7 +208,7 @@ fn diff_against(root: &Path, base: &str) -> Result<Vec<FileDiff>, String> {
     for line in name_status.lines() {
         let mut parts = line.split('\t');
         let status = parts.next().unwrap_or("").chars().next().unwrap_or('?').to_string();
-        let path = match parts.last() {
+        let path = match parts.next_back() {
             Some(path) if !path.is_empty() => path.to_string(),
             _ => continue,
         };

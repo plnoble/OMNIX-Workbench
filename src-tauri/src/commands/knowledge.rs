@@ -77,7 +77,7 @@ pub fn get_previewable_files(workspace_path: String) -> Result<Vec<PreviewFile>,
                                 .and_then(|m| m.modified())
                                 .and_then(|t| {
                                     t.duration_since(std::time::SystemTime::UNIX_EPOCH).map_err(
-                                        |e| std::io::Error::new(std::io::ErrorKind::Other, e),
+                                        std::io::Error::other,
                                     )
                                 })
                                 .map(|d| d.as_secs())
@@ -115,12 +115,12 @@ pub fn read_file_content_utf8(file_path: String) -> Result<String, String> {
     use std::fs;
     use std::path::Path;
     let path = Path::new(&file_path);
-    validate_file_path(&path)?;
+    validate_file_path(path)?;
     if !path.exists() || !path.is_file() {
         return Err("File does not exist".to_string());
     }
     // Size limit: 2 MB to prevent memory exhaustion
-    if let Ok(meta) = fs::metadata(&path) {
+    if let Ok(meta) = fs::metadata(path) {
         if meta.len() > 2 * 1024 * 1024 {
             return Err("File too large (max 2 MB)".to_string());
         }
@@ -130,7 +130,7 @@ pub fn read_file_content_utf8(file_path: String) -> Result<String, String> {
 
 fn base64_encode(data: &[u8]) -> String {
     const CHARSET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut result = String::with_capacity((data.len() + 2) / 3 * 4);
+    let mut result = String::with_capacity(data.len().div_ceil(3) * 4);
     let mut i = 0;
     while i < data.len() {
         let chunk = &data[i..std::cmp::min(i + 3, data.len())];
@@ -168,12 +168,12 @@ pub fn read_file_as_base64(file_path: String) -> Result<String, String> {
     use std::fs;
     use std::path::Path;
     let path = Path::new(&file_path);
-    validate_file_path(&path)?;
+    validate_file_path(path)?;
     if !path.exists() || !path.is_file() {
         return Err("File does not exist".to_string());
     }
     // Size limit: 5 MB for binary preview
-    if let Ok(meta) = fs::metadata(&path) {
+    if let Ok(meta) = fs::metadata(path) {
         if meta.len() > 5 * 1024 * 1024 {
             return Err("File too large (max 5 MB)".to_string());
         }
@@ -838,7 +838,7 @@ pub async fn kb_generate_embeddings(
     for (batch_idx, batch) in chunk_texts.chunks(batch_size).enumerate() {
         let batch_texts: Vec<String> = batch.to_vec();
         let embeddings =
-            knowledge::generate_embeddings(&*db, batch_texts, &model_name, None).await?;
+            knowledge::generate_embeddings(&db, batch_texts, &model_name, None).await?;
 
         let conn = db.get_connection().map_err(|e| e.to_string())?;
         for (i, embedding) in embeddings.iter().enumerate() {
@@ -884,7 +884,7 @@ pub async fn kb_hybrid_search(
 ) -> Result<Vec<SearchResult>, String> {
     let limit = limit.unwrap_or(10);
     knowledge::hybrid_search(
-        &*db,
+        &db,
         &query,
         &embedding_model,
         limit,
@@ -907,7 +907,7 @@ pub async fn kb_rag_query(
 ) -> Result<RagResponse, String> {
     let top_k = top_k.unwrap_or(5);
     knowledge::rag_query(
-        &*db,
+        &db,
         &query,
         &embedding_model,
         &chat_model,
@@ -961,12 +961,12 @@ pub async fn kb_import_file(
     use std::path::Path;
 
     let path = Path::new(&file_path);
-    validate_file_path(&path)?;
+    validate_file_path(path)?;
     if !path.exists() || !path.is_file() {
         return Err(format!("文件不存在: {}", file_path));
     }
     // Size limit: 10 MB for KB import
-    if let Ok(meta) = std::fs::metadata(&path) {
+    if let Ok(meta) = std::fs::metadata(path) {
         if meta.len() > 10 * 1024 * 1024 {
             return Err("文件过大 (最大 10 MB)".to_string());
         }

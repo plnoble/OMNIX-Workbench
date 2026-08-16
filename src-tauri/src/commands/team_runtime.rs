@@ -172,6 +172,7 @@ fn create_runtime_conversation(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]  // 回合执行参数为既有调用链约定，重构签名超出本次清理范围
 async fn execute_turn(
     runtime: Arc<RuntimeManager>,
     agent_manager: Arc<AgentManager>,

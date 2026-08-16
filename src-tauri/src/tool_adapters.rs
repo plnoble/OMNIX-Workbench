@@ -522,14 +522,14 @@ impl AdapterRegistry {
     }
 
     /// Get a specific adapter by tool_id
-    pub fn get(&self, tool_id: &str) -> Option<&Box<dyn ToolAdapter>> {
-        self.adapters.iter().find(|a| a.tool_id() == tool_id)
+    pub fn get(&self, tool_id: &str) -> Option<&dyn ToolAdapter> {
+        self.adapters.iter().find(|a| a.tool_id() == tool_id).map(|v| &**v)
     }
 
     /// Get all installed adapters
     #[allow(dead_code)]
-    pub fn installed(&self) -> Vec<&Box<dyn ToolAdapter>> {
-        self.adapters.iter().filter(|a| a.is_installed()).collect()
+    pub fn installed(&self) -> Vec<&dyn ToolAdapter> {
+        self.adapters.iter().filter(|a| a.is_installed()).map(|a| &**a).collect()
     }
 
     /// Get all tool status info for frontend display

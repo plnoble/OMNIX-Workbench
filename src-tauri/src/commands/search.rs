@@ -210,7 +210,7 @@ pub(crate) async fn run_search(
             if let Some(abstract_text) = json.get("AbstractText").and_then(|v| v.as_str()) {
                 if !abstract_text.is_empty() {
                     out.push(WebSearchResult {
-                        title: json.get("Heading").and_then(|v| v.as_str()).unwrap_or(&query).to_string(),
+                        title: json.get("Heading").and_then(|v| v.as_str()).unwrap_or(query).to_string(),
                         url: json.get("AbstractURL").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                         snippet: abstract_text.to_string(),
                         source: provider_name.clone(),
@@ -407,7 +407,7 @@ pub(crate) async fn run_search(
     // 存进搜索历史（「搜索」页右侧的回看列表读这张表）。
     let history_id = format!("sh_{}", chrono::Utc::now().timestamp_millis());
     let results_json = serde_json::to_string(&results).unwrap_or_else(|_| "[]".to_string());
-    let _ = db.save_search_history(&history_id, &query, &provider_id, results.len() as i32, &results_json);
+    let _ = db.save_search_history(&history_id, query, &provider_id, results.len() as i32, &results_json);
 
     Ok(results)
 }

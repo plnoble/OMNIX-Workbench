@@ -90,6 +90,10 @@ export default defineConfig(async () => ({
   // 不排掉的话 vitest 会把副本里的测试也跑一遍：数量翻倍，而且一个过期的
   // 副本可能为早就改掉的代码报「通过」。
   test: {
+    // 沙箱/受限环境里默认的 threads/forks worker 池无法把配置传给子进程，
+    // 全部测试会以 "Cannot read properties of undefined (reading 'config')" 失败；
+    // vmThreads 池在本机与沙箱里都验证通过。
+    pool: "vmThreads",
     exclude: ["**/node_modules/**", "**/dist/**", "**/.claude/worktrees/**"],
   },
 

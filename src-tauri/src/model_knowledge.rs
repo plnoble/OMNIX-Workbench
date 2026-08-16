@@ -68,7 +68,7 @@ pub fn generation_penalty(family: &str, generation: u32) -> f32 {
         _ => return 1.0,
     };
 
-    let age = (latest as i32 - generation as i32).max(0) as u32;
+    let age = (latest - generation as i32).max(0) as u32;
     if age == 0 { return 1.0; }
     // Demote by 12% per generation, floor at 0.55
     (1.0 - 0.12 * age as f32).max(0.55)

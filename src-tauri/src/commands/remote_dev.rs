@@ -428,7 +428,8 @@ pub async fn start_remote_run(
     let stderr = child.stderr.take().ok_or("no stderr")?;
     running_map().lock().unwrap().insert(run_id.clone(), child);
 
-    for (stream, is_err) in [(stdout, false)] {
+    {
+        let (stream, is_err) = (stdout, false);
         let app2 = app.clone();
         let rid = run_id.clone();
         tokio::spawn(async move {

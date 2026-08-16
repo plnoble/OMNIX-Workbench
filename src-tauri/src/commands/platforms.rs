@@ -332,10 +332,8 @@ pub fn get_model_platforms(db: State<'_, Arc<DbManager>>) -> Result<Vec<ModelPla
         .map_err(|e| e.to_string())?;
 
     let mut result = Vec::new();
-    for r in rows {
-        if let Ok(p) = r {
-            result.push(p);
-        }
+    for p in rows.flatten() {
+        result.push(p);
     }
     Ok(result)
 }
@@ -554,14 +552,12 @@ pub fn get_platform_models(
     );
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map(params![platform_id], |row| row_to_platform_model(row))
+        .query_map(params![platform_id], row_to_platform_model)
         .map_err(|e| e.to_string())?;
 
     let mut result = Vec::new();
-    for r in rows {
-        if let Ok(m) = r {
-            result.push(m);
-        }
+    for m in rows.flatten() {
+        result.push(m);
     }
     Ok(result)
 }
@@ -629,16 +625,14 @@ pub fn get_active_models(db: State<'_, Arc<DbManager>>) -> Result<Vec<PlatformMo
         JOIN model_platforms mp ON pm.platform_id = mp.id \
         WHERE pm.is_enabled = 1 AND mp.is_enabled = 1 \
         ORDER BY mp.name, pm.model_name";
-    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map([], |row| row_to_platform_model(row))
+        .query_map([], row_to_platform_model)
         .map_err(|e| e.to_string())?;
 
     let mut result = Vec::new();
-    for r in rows {
-        if let Ok(m) = r {
-            result.push(m);
-        }
+    for m in rows.flatten() {
+        result.push(m);
     }
     Ok(result)
 }
@@ -759,6 +753,7 @@ struct CapResult {
 /// ── Tier 1: Hardcoded model capability catalog ──────────────
 /// Covers ~100 mainstream models. Each entry is (id_substring, 8 capabilities).
 /// Simplified to our 8-dimension capability model.
+#[allow(clippy::type_complexity)]  // 模型能力矩阵元组与目录结构一一对应，拆分反而降低可读性
 const MODEL_CATALOG: &[(&str, (bool, bool, bool, bool, bool, bool, bool, bool))] = &[
     // ── xAI Grok ────────────────────────────────
     ("grok-4.5", (true, false, true, true, true, true, false, false)),
@@ -1182,6 +1177,7 @@ const MODEL_CATALOG: &[(&str, (bool, bool, bool, bool, bool, bool, bool, bool))]
 /// Infer 8-dimension capability flags from a model name.
 /// Phase 1: Match against hardcoded catalog (most accurate).
 /// Phase 2: Fall back to enhanced name heuristics.
+#[allow(clippy::type_complexity)]  // 与 MODEL_CATALOG 条目类型保持一致，拆分反而降低可读性
 fn infer_capabilities(name: &str) -> CapResult {
     let n = name.to_lowercase();
 
@@ -1822,7 +1818,7 @@ pub async fn batch_check_models(
         );
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map(params![platform_id], |row| row_to_platform_model(row))
+            .query_map(params![platform_id], row_to_platform_model)
             .map_err(|e| e.to_string())?;
         return Ok(rows.filter_map(|r| r.ok()).collect());
     }
@@ -1939,13 +1935,11 @@ pub async fn batch_check_models(
     );
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map(params![platform_id], |row| row_to_platform_model(row))
+        .query_map(params![platform_id], row_to_platform_model)
         .map_err(|e| e.to_string())?;
     let mut updated = Vec::new();
-    for r in rows {
-        if let Ok(m) = r {
-            updated.push(m);
-        }
+    for m in rows.flatten() {
+        updated.push(m);
     }
     Ok(updated)
 }
@@ -2016,7 +2010,7 @@ pub fn reinfer_model_capabilities(
                 id,
             ],
         );
-        if let Ok(_) = result {
+        if result.is_ok() {
             count += 1;
         }
     }

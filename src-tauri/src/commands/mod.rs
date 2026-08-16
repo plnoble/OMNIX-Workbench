@@ -5,7 +5,6 @@
 mod accounts;
 mod agent_installs;
 mod agents;
-mod automation;
 mod autopilots;
 mod cc_switch;
 mod conversation_goals;
@@ -144,7 +143,6 @@ pub struct CronRun {
 pub use accounts::*;
 pub use agent_installs::*;
 pub use agents::*;
-pub use automation::*;
 pub use autopilots::*;
 pub use cc_switch::*;
 pub use conversation_goals::*;

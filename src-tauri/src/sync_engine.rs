@@ -6,7 +6,7 @@
 
 use rusqlite::params;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::db::DbManager;
@@ -707,7 +707,7 @@ impl SyncEngine {
             }
 
             // Check for orphaned: DB has sync target but file missing
-            for (key, _) in &db_targets {
+            for key in db_targets.keys() {
                 if key.ends_with(&format!("-{}", adapter.tool_id())) {
                     let skill_name = key.trim_end_matches(&format!("-{}", adapter.tool_id()));
                     let already_found = discovered.iter().any(|d| d.name == skill_name);
@@ -765,13 +765,13 @@ impl SyncEngine {
             // Create central store directory
             let mut central_dir = skills_dir.clone();
             central_dir.push(&item.name);
-            if let Err(_) = fs::create_dir_all(&central_dir) {
+            if fs::create_dir_all(&central_dir).is_err() {
                 continue;
             }
 
             // Write SKILL.md and profile files to central store
             let skill_md_path = central_dir.join("SKILL.md");
-            if let Err(_) = fs::write(&skill_md_path, &content) {
+            if fs::write(&skill_md_path, &content).is_err() {
                 continue;
             }
             let core_path = central_dir.join(format!("{}_core.md", item.name));
@@ -806,7 +806,7 @@ impl SyncEngine {
                 ],
             );
 
-            if let Ok(_) = result {
+            if result.is_ok() {
                 // Also create a sync target record
                 let target_id = format!("{}-{}", item.name, item.tool_id);
                 let _ = conn.execute(
@@ -1221,11 +1221,10 @@ impl SyncEngine {
                         let mod_time: std::time::SystemTime = modified;
                         // Simple check: if older than cutoff, remove
                         if let Ok(duration) = mod_time.elapsed() {
-                            if duration.as_secs() > (GIT_CACHE_CLEANUP_DAYS as u64) * 86400 {
-                                if std::fs::remove_dir_all(&path).is_ok() {
+                            if duration.as_secs() > (GIT_CACHE_CLEANUP_DAYS as u64) * 86400
+                                && std::fs::remove_dir_all(&path).is_ok() {
                                     removed += 1;
                                 }
-                            }
                         }
                     }
                 }
@@ -1280,7 +1279,7 @@ impl SyncEngine {
 
     fn list_repo_skills_from_path(
         &self,
-        repo_path: &PathBuf,
+        repo_path: &Path,
     ) -> Result<Vec<GitSkillCandidate>, String> {
         let skills_dir = repo_path.join("skills");
         if !skills_dir.exists() {
@@ -1334,10 +1333,7 @@ fn sanitize_repo_name(url: &str) -> String {
         .trim_start_matches("https://")
         .trim_start_matches("http://")
         .trim_start_matches("git@")
-        .replace(':', "_")
-        .replace('/', "_")
-        .replace('.', "_")
-        .replace('-', "_");
+        .replace([':', '/', '.', '-'], "_");
 
     // Take a reasonable length
     let result: String = cleaned.chars().take(64).collect();

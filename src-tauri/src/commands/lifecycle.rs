@@ -182,7 +182,7 @@ pub fn get_request_logs(
 
     let (sql, query_params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(ref model) = model_filter {
         (
-            format!("SELECT id, timestamp, model, platform, prompt_tokens, completion_tokens, total_tokens, latency_ms, status_code, is_stream, is_error, error_message, request_id, source FROM request_logs WHERE model LIKE ?1 ORDER BY id DESC LIMIT ?2 OFFSET ?3"),
+            "SELECT id, timestamp, model, platform, prompt_tokens, completion_tokens, total_tokens, latency_ms, status_code, is_stream, is_error, error_message, request_id, source FROM request_logs WHERE model LIKE ?1 ORDER BY id DESC LIMIT ?2 OFFSET ?3".to_string(),
             vec![Box::new(format!("%{}%", model)), Box::new(limit), Box::new(offset)],
         )
     } else {
@@ -463,7 +463,7 @@ pub fn update_platform_routing(
     let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
     conn.execute(
         "UPDATE model_platforms SET weight = ?1, priority = ?2 WHERE id = ?3",
-        params![weight.max(1).min(100), priority.max(0).min(100), platform_id],
+        params![weight.clamp(1, 100), priority.clamp(0, 100), platform_id],
     ).map_err(|e: rusqlite::Error| e.to_string())?;
     Ok(())
 }

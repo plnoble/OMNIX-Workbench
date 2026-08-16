@@ -7,7 +7,7 @@
 //! 5. Experience Distillation — extract skills from project history
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::db::DbManager;
 use crate::proc::NoWindow;
@@ -339,8 +339,8 @@ pub fn intercept_protocols(output: &str) -> Vec<ProtocolAction> {
         let line = lines[i].trim();
 
         // Look for fenced code blocks with protocol tags
-        if line.starts_with("```") {
-            let lang_tag = line[3..].trim();
+        if let Some(stripped) = line.strip_prefix("```") {
+            let lang_tag = stripped.trim();
 
             // Check for protocol tags
             if lang_tag.starts_with("skill:")
@@ -783,7 +783,7 @@ pub fn distill_from_project(project_path: &str) -> Result<Vec<DistillRecommendat
 }
 
 /// Extract dependencies from package.json or Cargo.toml
-fn extract_dependencies(root: &PathBuf) -> Vec<String> {
+fn extract_dependencies(root: &Path) -> Vec<String> {
     let mut deps = Vec::new();
 
     // package.json

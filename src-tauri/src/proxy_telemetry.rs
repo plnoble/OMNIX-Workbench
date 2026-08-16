@@ -176,6 +176,7 @@ pub(super) fn anthropic_error(status: StatusCode, message: impl Into<String>) ->
 /// `usage` 为 `None` 表示**上游没报或没读到**，此时 token 列全零。
 /// 这跟「真的用了零个 token」在库里长得一样，只能靠这里如实传 `None`
 /// 而不是随手凑个零来保证——所以调用方必须真去读上游响应，见 [`usage_meter`]。
+#[allow(clippy::too_many_arguments)]  // 结构化日志字段集，参数与遥测 schema 一一对应
 pub fn log_request(
     db: &DbManager,
     model: &str,

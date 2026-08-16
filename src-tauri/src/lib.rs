@@ -27,7 +27,6 @@ mod runtime;
 mod runtime_acp;
 mod runtime_manager;
 mod selection;
-mod skill_dag;
 mod skill_audit;
 mod skill_export;
 mod skill_frontmatter;
@@ -112,16 +111,33 @@ pub fn run() {
     // Key 只是某个平台调不通，而崩在启动上是所有功能都没了。
     // 账号 / 搜索供应商的明文 Key 就地加密。和上面那次不同，这两处不搬表，
     // 读取侧也早就走 decrypt，所以不存在「写迁了读没迁」的窗口。
+    // 迁移失败不能只写 stderr：用户看不到终端，密钥就一直躺在库里明文。
+    // 失败原因落库到 key_migration_alert，前端启动时拉取并 toast 警示（见 App.tsx）。
+    let mut migration_error: Option<String> = None;
     match commands::migrate_plaintext_secrets_in_place(&db) {
         Ok(0) => {}
         Ok(n) => println!("[OMNIX] 已加密 {n} 个账号/搜索供应商的明文 Key"),
-        Err(e) => eprintln!("[OMNIX] 明文密钥就地加密失败（不影响启动）：{e}"),
+        Err(e) => {
+            eprintln!("[OMNIX] 明文密钥就地加密失败（不影响启动）：{e}");
+            migration_error = Some(format!("账号/搜索供应商明文 Key 就地加密失败：{e}"));
+        }
     }
 
     match commands::migrate_legacy_plaintext_keys(&db) {
         Ok(0) => {}
         Ok(n) => println!("[OMNIX] 已把 {n} 个明文 API Key 迁入加密存储并清空旧列"),
-        Err(e) => eprintln!("[OMNIX] 明文 Key 迁移失败（不影响启动）：{e}"),
+        Err(e) => {
+            eprintln!("[OMNIX] 明文 Key 迁移失败（不影响启动）：{e}");
+            let msg = format!("平台明文 API Key 迁移失败：{e}");
+            migration_error = Some(match migration_error {
+                Some(prev) => format!("{prev}；{msg}"),
+                None => msg,
+            });
+        }
+    }
+    match &migration_error {
+        Some(err) => { let _ = db.set_setting("key_migration_alert", err); }
+        None => { let _ = db.set_setting("key_migration_alert", ""); }
     }
 
     // 2. Initialize Agent Subprocess watchdog Manager
@@ -165,17 +181,15 @@ pub fn run() {
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, shortcut, event| {
                     use tauri_plugin_global_shortcut::ShortcutState;
-                    if event.state == ShortcutState::Pressed {
-                        if Some(shortcut.id()) == qa_id {
-                            // Quick Assistant toggle
-                            use tauri::Manager;
-                            if let Some(qa) = app.get_webview_window("quick-assistant") {
-                                if qa.is_visible().unwrap_or(false) {
-                                    let _ = qa.hide();
-                                } else {
-                                    let _ = qa.show();
-                                    let _ = qa.set_focus();
-                                }
+                    if event.state == ShortcutState::Pressed && Some(shortcut.id()) == qa_id {
+                        // Quick Assistant toggle
+                        use tauri::Manager;
+                        if let Some(qa) = app.get_webview_window("quick-assistant") {
+                            if qa.is_visible().unwrap_or(false) {
+                                let _ = qa.hide();
+                            } else {
+                                let _ = qa.show();
+                                let _ = qa.set_focus();
                             }
                         }
                     }
@@ -568,8 +582,6 @@ pub fn run() {
             commands::import_backup,
             // Prompt Library
             // Activity Log
-            commands::log_activity,
-            commands::get_activity_log,
             // Skill Sync commands (P1 — DEC-018)
             commands::get_skill_tool_status,
             commands::sync_skill_to_tools,
@@ -608,13 +620,8 @@ pub fn run() {
             commands::get_agent_template,
             // Skills Lock File commands
             // Agent Execution Environment commands
-            commands::get_agent_exec_config,
-            commands::save_agent_exec_config,
             // Autopilot commands
             // Workspace GC commands
-            commands::get_gc_config,
-            commands::save_gc_config,
-            commands::run_workspace_gc,
             // Request Logs & Usage Stats
             commands::get_request_logs,
             commands::get_usage_stats,
@@ -653,9 +660,6 @@ pub fn run() {
             commands::list_installed_ollama_models,
             commands::analyze_codebase,
             // Config Backup
-            commands::backup_config_file,
-            commands::list_backups,
-            commands::restore_backup,
             // API Provider Preset
             commands::apply_api_preset,
             // MCP Presets
@@ -732,19 +736,9 @@ pub fn run() {
             commands::get_model_pricing,
             commands::estimate_model_cost,
             // Skill DAG
-            commands::search_skills_dag,
-            commands::check_skill_set,
-            commands::expand_skill_set,
-            commands::add_skill_edge,
-            commands::remove_skill_edge,
             // Async Agent Mailbox
             // Enhanced Task Dependencies
             // YOLO Mode
-            commands::get_yolo_mode,
-            commands::set_yolo_mode,
-            commands::get_yolo_mode_config,
-            commands::set_yolo_mode_config,
-            commands::check_yolo_permission,
             // Persistent Cron
             // Skill Rule Generator
             // Tool Call Confirmation Queue

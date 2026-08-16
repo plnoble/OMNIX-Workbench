@@ -385,7 +385,7 @@ pub(super) async fn handle_messages_impl(
                 if let Ok(bytes) = &r {
                     recorder.observe(bytes);
                 }
-                r.map_err(|e| axum::Error::new(e))
+                r.map_err(axum::Error::new)
             });
             Response::builder()
                 .status(StatusCode::OK)

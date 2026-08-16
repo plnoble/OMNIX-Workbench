@@ -176,9 +176,7 @@ pub fn get_skill_targets(
     }).map_err(|e: rusqlite::Error| e.to_string())?;
 
     let mut result = Vec::new();
-    for r in rows {
-        if let Ok(item) = r { result.push(item); }
-    }
+    for item in rows.flatten() { result.push(item); }
     Ok(result)
 }
 

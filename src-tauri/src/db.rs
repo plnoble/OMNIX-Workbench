@@ -616,6 +616,7 @@ impl DbManager {
         // - Knowledge Base can find an embedding model
         // All are seeded as disabled; users enable them after adding API keys.
         // Ollama models are auto-enabled (local, no API key needed).
+        #[allow(clippy::type_complexity)]  // 种子数据表驱动，元组列与 INSERT 列序一一对应
         let default_models: Vec<(&str, &str, &str, i32, i32, i32, i32, i32, i32, i32, i32)> = vec![
             // DeepSeek models
             (
@@ -986,6 +987,7 @@ impl DbManager {
         Ok(())
     }
 
+    #[allow(clippy::type_complexity)]  // 行结构由 SQL 列序决定，提取 type 别名收益有限
     pub fn get_search_providers(
         &self,
     ) -> Result<Vec<(String, String, String, String, String, bool)>> {
@@ -1004,10 +1006,8 @@ impl DbManager {
             ))
         })?;
         let mut result = Vec::new();
-        for r in rows {
-            if let Ok(item) = r {
-                result.push(item);
-            }
+        for item in rows.flatten() {
+            result.push(item);
         }
         Ok(result)
     }
@@ -1054,6 +1054,7 @@ impl DbManager {
         Ok(())
     }
 
+    #[allow(clippy::type_complexity)]  // 行结构由 SQL 列序决定，提取 type 别名收益有限
     pub fn get_search_history(
         &self,
         limit: i32,
@@ -1072,10 +1073,8 @@ impl DbManager {
             ))
         })?;
         let mut result = Vec::new();
-        for r in rows {
-            if let Ok(item) = r {
-                result.push(item);
-            }
+        for item in rows.flatten() {
+            result.push(item);
         }
         Ok(result)
     }
@@ -1094,6 +1093,7 @@ impl DbManager {
 
     // ── MCP Servers CRUD ─────────────────────────────────
 
+    #[allow(clippy::type_complexity)]  // 行结构由 SQL 列序决定，提取 type 别名收益有限
     pub fn get_mcp_servers(
         &self,
     ) -> Result<Vec<(String, String, String, String, String, String, String, bool)>> {
@@ -1114,14 +1114,13 @@ impl DbManager {
             ))
         })?;
         let mut result = Vec::new();
-        for r in rows {
-            if let Ok(item) = r {
-                result.push(item);
-            }
+        for item in rows.flatten() {
+            result.push(item);
         }
         Ok(result)
     }
 
+    #[allow(clippy::too_many_arguments)]  // MCP Server 字段集与表结构一一对应，引入结构体重构超出本次清理范围
     pub fn save_mcp_server(
         &self,
         id: &str,
@@ -1236,10 +1235,8 @@ impl DbManager {
             }
             Ok(serde_json::Value::Object(map))
         })?;
-        for r in rows {
-            if let Ok(v) = r {
-                rows_json.push(v);
-            }
+        for v in rows.flatten() {
+            rows_json.push(v);
         }
         serde_json::to_string(&rows_json)
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))

@@ -48,6 +48,7 @@ pub const JSONRPC_INTERNAL_ERROR: i64 = -32603;
 /// The reader loop consumes this: [`AcpInbound::Emit`] events are persisted and
 /// published like any other runtime event, while the request variants require
 /// the client to write a JSON-RPC response back over stdin.
+#[allow(clippy::large_enum_variant)]  // 大成员为热路径事件载体，Box 化需评估生命周期影响，暂豁免
 #[derive(Debug, Clone, PartialEq)]
 pub enum AcpInbound {
     /// Runtime events distilled from a notification or a response. The reader

@@ -36,10 +36,8 @@ pub(crate) fn get_cron_tasks_core(db: &DbManager) -> Result<Vec<CronTask>, Strin
         .map_err(|e| e.to_string())?;
 
     let mut result = Vec::new();
-    for r in rows {
-        if let Ok(task) = r {
-            result.push(task);
-        }
+    for task in rows.flatten() {
+        result.push(task);
     }
     Ok(result)
 }
@@ -183,10 +181,8 @@ pub(crate) fn get_cron_runs_core(db: &DbManager) -> Result<Vec<CronRun>, String>
         .map_err(|e| e.to_string())?;
 
     let mut result = Vec::new();
-    for r in rows {
-        if let Ok(run) = r {
-            result.push(run);
-        }
+    for run in rows.flatten() {
+        result.push(run);
     }
     Ok(result)
 }

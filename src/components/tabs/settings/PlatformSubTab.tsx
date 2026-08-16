@@ -14,11 +14,31 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
-import { Activity, AlertTriangle, Brain, Code, Edit, Eye, GripVertical, Layers, Maximize2, Mic, Plus, RefreshCw, Search, Star, Trash2, Wrench, Zap } from "lucide-react";
+import { Activity, AlertTriangle, Brain, Code, Edit, Eye, GitCompare, GripVertical, Layers, Maximize2, Mic, Plus, RefreshCw, Search, Star, Trash2, Wrench, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/sonner";
-import { platformApi, modelApi, settingsApi } from "@/lib/tauri-api";
+import { apiPresetApi, platformApi, modelApi, modelSyncApi, settingsApi, type ModelSyncResult } from "@/lib/tauri-api";
 import type { ModelPlatform, ModelRouting, PlatformModel } from "@/types";
+
+/**
+ * 预设清单。**id 必须和 `apply_api_preset_core` 里那张表一一对应**——后端按 id
+ * 查，对不上就是 `Unknown preset`。这里只放 id 和显示名，地址/协议/默认模型全在
+ * 后端那一份，不在前端复制第二份（复制了就会漂）。
+ */
+const API_PRESETS: [string, string][] = [
+  ["openai", "OpenAI"],
+  ["anthropic", "Anthropic"],
+  ["openrouter", "OpenRouter"],
+  ["deepseek", "DeepSeek"],
+  ["siliconflow", "硅基流动"],
+  ["zhipu", "智谱 GLM"],
+  ["moonshot", "月之暗面 Kimi"],
+  ["minimax", "MiniMax"],
+  ["bailian", "百炼"],
+  ["volcengine", "火山引擎"],
+  ["ollama", "Ollama（本地）"],
+  ["lmstudio", "LM Studio（本地）"],
+];
 
 export function PlatformSubTab() {
   const p = usePlatformsStore();
@@ -38,6 +58,67 @@ export function PlatformSubTab() {
   const onAddPlatform = () => p.openPlatformModal();
   const onEditPlatform = (plat: ModelPlatform) => p.openPlatformModal(plat);
   const selectedPlatform = platforms.find((p) => p.id === selectedPlatformId);
+
+  const [applyingPreset, setApplyingPreset] = useState(false);
+
+  /**
+   * 按预设建供应商。**不在这里收 Key**——先把平台建出来，Key 走已有的多 Key 管理
+   * （那边才有加密存储）。在这里顺手要一个 Key 会绕开加密策略，正是本轮修过的坑。
+   */
+  const applyPreset = useCallback(async (presetId: string) => {
+    setApplyingPreset(true);
+    try {
+      const msg = await apiPresetApi.apply(presetId, "");
+      toast.success(msg || "已添加，去右侧填 API Key");
+      await p.loadPlatforms();
+    } catch (e) {
+      toast.error(`添加失败：${e}`);
+    } finally {
+      setApplyingPreset(false);
+    }
+  }, [p]);
+
+  /**
+   * 和上游对比的结果。**先看后做**——不自动应用。
+   *
+   * 「获取模型」是拉列表全加，看不出上游**下架**了什么；这里的差异能看出来，
+   * 而下架恰恰是最该被人过目的那一类（本地还留着一个上游已经没有的模型，
+   * 路由过去就是失败）。所以差异摆出来、动作分开按，不合成一个「一键同步」。
+   */
+  const [diff, setDiff] = useState<ModelSyncResult | null>(null);
+  const [comparing, setComparing] = useState(false);
+  const [applying, setApplying] = useState(false);
+
+  const compareUpstream = useCallback(async (platformId: string) => {
+    setComparing(true);
+    try {
+      const result = await modelSyncApi.syncPlatform(platformId);
+      setDiff(result);
+      if (result.error) toast.error(`对比失败：${result.error}`);
+    } catch (e) {
+      toast.error(`对比失败：${e}`);
+    } finally {
+      setComparing(false);
+    }
+  }, []);
+
+  const applyDiff = useCallback(
+    async (add: string[], remove: string[]) => {
+      if (!diff) return;
+      setApplying(true);
+      try {
+        const [added, removed] = await modelSyncApi.apply(diff.platform_id, add, remove);
+        toast.success(`已新增 ${added} 个、移除 ${removed} 个`);
+        setDiff(null);
+        onFetchRemoteModels();
+      } catch (e) {
+        toast.error(`应用失败：${e}`);
+      } finally {
+        setApplying(false);
+      }
+    },
+    [diff, onFetchRemoteModels],
+  );
 
   // 路由说明（同名竞争者 / 当前赢家 / 最近一次真实失败）——按模型 id 索引。
   const [routing, setRouting] = useState<Record<string, ModelRouting>>({});
@@ -156,9 +237,27 @@ export function PlatformSubTab() {
       <div className="w-52 border-r border-border pr-3 flex flex-col gap-3 shrink-0">
         <div className="flex justify-between items-center">
           <span className="text-sm font-semibold text-muted-foreground">模型提供商</span>
-          <Button size="sm" variant="outline" onClick={onAddPlatform} className="h-7 w-7 p-0">
-            <Plus className="h-3 w-3" />
-          </Button>
+          <div className="flex items-center gap-1">
+            <select
+              className="h-7 rounded border border-border bg-background px-1 text-[11px]"
+              value=""
+              disabled={applyingPreset}
+              title="按预设一键建供应商：地址、协议类型、默认模型都填好，只差你的 Key。"
+              onChange={(e) => {
+                if (e.target.value) void applyPreset(e.target.value);
+              }}
+            >
+              <option value="">{applyingPreset ? "添加中…" : "按预设添加"}</option>
+              {API_PRESETS.map(([id, label]) => (
+                <option key={id} value={id}>
+                  {label}
+                </option>
+              ))}
+            </select>
+            <Button size="sm" variant="outline" onClick={onAddPlatform} className="h-7 w-7 p-0" title="手动新增">
+              <Plus className="h-3 w-3" />
+            </Button>
+          </div>
         </div>
         <p className="-mt-1 text-[11px] leading-4 text-muted-foreground">
           顺序即<strong className="text-foreground">路由优先级</strong>：同一个模型名挂在多个供应商上时，靠前的先用。拖左侧手柄调整。
@@ -224,6 +323,16 @@ export function PlatformSubTab() {
                     <RefreshCw className={cn("h-3 w-3", fetchingModels && "animate-spin")} />
                     {fetchingModels ? "拉取中..." : "获取模型"}
                   </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => void compareUpstream(selectedPlatform.id)}
+                    disabled={comparing}
+                    title="和上游对比一遍：哪些是新增的、哪些上游已经下架。「获取模型」只会把远端的加进来，发现不了下架。"
+                  >
+                    <GitCompare className={cn("h-3 w-3", comparing && "animate-pulse")} />
+                    {comparing ? "对比中..." : "对比上游"}
+                  </Button>
                   <Button size="sm" variant="outline" onClick={() => onBatchTestModels(selectedPlatform.id)} disabled={batchTesting[selectedPlatform.id]}>
                     {batchTesting[selectedPlatform.id] ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Activity className="h-3 w-3" />}
                     {batchTesting[selectedPlatform.id] ? "检测中..." : "健康检测"}
@@ -248,6 +357,68 @@ export function PlatformSubTab() {
                 </div>
               </CardContent>
             </Card>
+
+              {diff && diff.platform_id === selectedPlatform.id && !diff.error && (
+                <div className="mb-3 rounded-lg border border-border bg-muted/20 p-3">
+                  <div className="mb-2 flex items-center justify-between">
+                    <span className="text-xs font-medium">
+                      与上游对比：本地 {diff.local_models.length} 个 · 上游{" "}
+                      {diff.upstream_models.length} 个
+                    </span>
+                    <button
+                      className="text-xs text-muted-foreground hover:text-foreground"
+                      onClick={() => setDiff(null)}
+                    >
+                      收起
+                    </button>
+                  </div>
+                  {diff.new_models.length === 0 && diff.removed_models.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">完全一致，无需改动。</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {diff.new_models.length > 0 && (
+                        <div className="flex items-start gap-2">
+                          <span className="shrink-0 rounded border border-success/50 bg-success/10 px-1.5 py-0.5 text-[10px] text-success">
+                            上游新增 {diff.new_models.length}
+                          </span>
+                          <span className="min-w-0 flex-1 break-all text-xs text-muted-foreground">
+                            {diff.new_models.join("、")}
+                          </span>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={applying}
+                            onClick={() => void applyDiff(diff.new_models, [])}
+                          >
+                            添加
+                          </Button>
+                        </div>
+                      )}
+                      {diff.removed_models.length > 0 && (
+                        <div className="flex items-start gap-2">
+                          <span className="shrink-0 rounded border border-destructive/50 bg-destructive/10 px-1.5 py-0.5 text-[10px] text-destructive">
+                            上游已下架 {diff.removed_models.length}
+                          </span>
+                          <span
+                            className="min-w-0 flex-1 break-all text-xs text-muted-foreground"
+                            title="本地还留着上游已经没有的模型。路由到它就是失败——但失败要等真发出请求才看得见。"
+                          >
+                            {diff.removed_models.join("、")}
+                          </span>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={applying}
+                            onClick={() => void applyDiff([], diff.removed_models)}
+                          >
+                            移除
+                          </Button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
 
             {/* Models List */}
             <Card className="flex-1 flex flex-col overflow-hidden">

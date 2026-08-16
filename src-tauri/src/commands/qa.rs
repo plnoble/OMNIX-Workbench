@@ -23,7 +23,7 @@ pub async fn qa_query(
         // Use RAG pipeline
         let emb_model = embedding_model.unwrap_or_else(|| "nomic-embed-text".to_string());
         let rag_result =
-            knowledge::rag_query(&*db, &query, &emb_model, &chat_model, 5, None, None).await?;
+            knowledge::rag_query(&db, &query, &emb_model, &chat_model, 5, None, None).await?;
         Ok(QaResponse {
             answer: rag_result.answer,
             sources: rag_result.sources,
@@ -32,7 +32,7 @@ pub async fn qa_query(
     } else {
         // Direct LLM call (no knowledge base)
         let (api_key, api_address, api_type, actual_model) =
-            knowledge::resolve_chat_platform(&*db, &chat_model)?;
+            knowledge::resolve_chat_platform(&db, &chat_model)?;
 
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(60))
@@ -118,7 +118,7 @@ pub async fn qa_query_stream(
     if use_kb {
         let emb_model = embedding_model.unwrap_or_else(|| "nomic-embed-text".to_string());
         let rag_result =
-            knowledge::rag_query(&*db, &query, &emb_model, &chat_model, 5, None, None).await?;
+            knowledge::rag_query(&db, &query, &emb_model, &chat_model, 5, None, None).await?;
 
         // Emit full answer as one chunk then done
         let _ = app_handle.emit("qa-stream-chunk", rag_result.answer.clone());
@@ -134,7 +134,7 @@ pub async fn qa_query_stream(
 
     // Direct LLM call with streaming
     let (api_key, api_address, api_type, actual_model) =
-        knowledge::resolve_chat_platform(&*db, &chat_model)?;
+        knowledge::resolve_chat_platform(&db, &chat_model)?;
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
