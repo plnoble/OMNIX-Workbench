@@ -14,7 +14,7 @@ export function PreviewPane({ onClose }: { onClose: () => void }) {
   const preview = usePreviewStore();
   const {
     previewFiles, selectedPreviewFile, previewType,
-    previewHtmlUrl, previewTextContent, previewImageBase64,
+    previewTextContent, previewImageBase64,
     selectPreviewFile: onSelectFile,
     loadPreviewFiles: onRefreshFiles,
     loadGitDiff: onLoadGitDiff,
@@ -56,7 +56,6 @@ export function PreviewPane({ onClose }: { onClose: () => void }) {
         {selectedPreviewFile ? (
           <PreviewContent
             previewType={previewType}
-            previewHtmlUrl={previewHtmlUrl}
             previewTextContent={previewTextContent}
             previewImageBase64={previewImageBase64}
           />
@@ -72,17 +71,26 @@ export function PreviewPane({ onClose }: { onClose: () => void }) {
 
 function PreviewContent({
   previewType,
-  previewHtmlUrl,
   previewTextContent,
   previewImageBase64,
 }: {
   previewType: PreviewType;
-  previewHtmlUrl: string;
   previewTextContent: string;
   previewImageBase64: string;
 }) {
-  if (previewType === "html" && previewHtmlUrl) {
-    return <iframe src={previewHtmlUrl} className="w-full h-full border-none bg-white" title="HTML Preview" />;
+  if (previewType === "html" && previewTextContent) {
+    return (
+      <iframe
+        // 源码直接喂 srcDoc，不走 URL——网关没有 /preview 路由（见 usePreview 里的
+        // 说明）。**sandbox 不给 allow-same-origin**：这份 HTML 是 agent 生成的，
+        // 属于不可信内容；给了同源就等于让它能读写本应用的存储并向网关发认证请求。
+        // 不加 allow-scripts：预览是给人看的，不是给它跑的。
+        srcDoc={previewTextContent}
+        sandbox=""
+        className="w-full h-full border-none bg-white"
+        title="HTML Preview"
+      />
+    );
   }
 
   if (previewType === "image" && previewImageBase64) {
