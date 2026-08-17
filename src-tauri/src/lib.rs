@@ -135,6 +135,10 @@ pub fn run() {
             });
         }
     }
+    // 请求日志按保留期修剪。放在迁移之后、代理启动之前：这时数据库已经就绪，
+    // 而网关还没开始往里写新行。
+    commands::prune_request_logs_on_startup(&db);
+
     match &migration_error {
         Some(err) => { let _ = db.set_setting("key_migration_alert", err); }
         None => { let _ = db.set_setting("key_migration_alert", ""); }

@@ -378,13 +378,52 @@ pub fn cleanup_request_logs(
     keep_days: Option<u32>,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<usize, String> {
-    let days = keep_days.unwrap_or(30);
+    cleanup_request_logs_core(&db, keep_days.unwrap_or(DEFAULT_LOG_RETENTION_DAYS))
+}
+
+/// 请求日志的默认保留天数。
+///
+/// 90 天：用量面板的图表最长看 30 天，留三倍余量给「上个季度花了多少」这类回看。
+/// 再久没有信息价值——那是遥测，不是用户内容。
+pub const DEFAULT_LOG_RETENTION_DAYS: u32 = 90;
+
+/// 保留天数的设置键。0 表示**不清理**（留给想自己管的人）。
+pub const LOG_RETENTION_SETTING: &str = "request_log_retention_days";
+
+pub(crate) fn cleanup_request_logs_core(db: &DbManager, keep_days: u32) -> Result<usize, String> {
+    if keep_days == 0 {
+        return Ok(0);
+    }
     let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
-    let deleted = conn.execute(
-        "DELETE FROM request_logs WHERE timestamp < datetime('now', ?1)",
-        params![format!("-{} days", days)],
-    ).map_err(|e: rusqlite::Error| e.to_string())?;
+    let deleted = conn
+        .execute(
+            "DELETE FROM request_logs WHERE timestamp < datetime('now', ?1)",
+            params![format!("-{} days", keep_days)],
+        )
+        .map_err(|e: rusqlite::Error| e.to_string())?;
     Ok(deleted)
+}
+
+/// 启动时按保留期修剪请求日志。
+///
+/// `request_logs` 每次网关请求都写一行，而清理**从来没有调用方**——命令注册了、
+/// 前端包装也在，但没有任何组件调它，也没有定时任务。于是这张表单调增长：实测
+/// 20 万行时用量面板那组聚合要 133ms（50k 时 33ms），线性上去。按每天千次请求
+/// 算大约 200 天到那个量级——慢，但不会自己停。
+///
+/// 放在启动而不是定时器：这是维护动作，用户不该为它操心，也不值得为它常驻一个
+/// 任务。失败只记日志不拦启动——修剪不掉顶多是表大一点，崩在启动是所有功能都没了。
+pub fn prune_request_logs_on_startup(db: &DbManager) {
+    let days = db
+        .get_setting(LOG_RETENTION_SETTING)
+        .unwrap_or(None)
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(DEFAULT_LOG_RETENTION_DAYS);
+    match cleanup_request_logs_core(db, days) {
+        Ok(0) => {}
+        Ok(n) => println!("[OMNIX] 已清理 {n} 条超过 {days} 天的请求日志"),
+        Err(e) => log::warn!("请求日志清理失败（不影响使用）：{e}"),
+    }
 }
 
 // ══════════════════════════════════════════════════
@@ -874,5 +913,91 @@ mod cost_weighting_tests {
         assert!(weighted < naive / 5.0, "折算后应显著低于全价：{weighted} vs {naive}");
         // 12 + 4500 + 1500 = 6012 等价 token。
         assert!((weighted - 0.006012).abs() < 1e-6, "{weighted}");
+    }
+}
+
+#[cfg(test)]
+mod log_retention_tests {
+    use super::*;
+    use crate::db::DbManager;
+
+    fn test_db(tag: &str) -> DbManager {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "omnix_retention_{tag}_{}_{}.db",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_file(&path);
+        DbManager::new_with_path(path)
+    }
+
+    /// 塞一条 `age_days` 天前的日志。
+    fn seed(db: &DbManager, age_days: i64) {
+        db.get_connection()
+            .unwrap()
+            .execute(
+                "INSERT INTO request_logs (model, timestamp) VALUES ('m', datetime('now', ?1))",
+                params![format!("-{age_days} days")],
+            )
+            .unwrap();
+    }
+
+    fn count(db: &DbManager) -> i64 {
+        db.get_connection()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM request_logs", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// 超过保留期的删掉，期内的留着。
+    #[test]
+    fn only_entries_older_than_the_retention_window_are_removed() {
+        let db = test_db("window");
+        seed(&db, 100); // 超期
+        seed(&db, 95);  // 超期
+        seed(&db, 10);  // 期内
+        seed(&db, 0);   // 今天
+        assert_eq!(count(&db), 4);
+
+        let deleted = cleanup_request_logs_core(&db, 90).expect("清理");
+        assert_eq!(deleted, 2, "应只删掉超过 90 天的两条");
+        assert_eq!(count(&db), 2, "期内的两条必须留着");
+    }
+
+    /// **保留天数为 0 = 不清理**，不是「全删」。
+    ///
+    /// 这条守的是一个很容易写反的边界：`datetime('now', '-0 days')` 就是此刻，
+    /// 于是「0」会被解释成「删掉所有比现在旧的」——也就是**清空整张表**。
+    /// 想自己管日志的人把它设成 0，结果一次启动就把历史全没了。
+    #[test]
+    fn zero_means_keep_everything_not_delete_everything() {
+        let db = test_db("zero");
+        seed(&db, 1000);
+        seed(&db, 1);
+        assert_eq!(cleanup_request_logs_core(&db, 0).expect("清理"), 0);
+        assert_eq!(count(&db), 2, "保留天数为 0 时一条都不该删");
+    }
+
+    /// 启动修剪读设置；没设过就用默认值，且不 panic。
+    #[test]
+    fn startup_pruning_falls_back_to_the_default_retention() {
+        let db = test_db("startup");
+        seed(&db, 200);
+        seed(&db, 1);
+        prune_request_logs_on_startup(&db); // 未设置 → 默认 90 天
+        assert_eq!(count(&db), 1, "默认保留期应把 200 天前那条清掉");
+    }
+
+    /// 设置里的值优先于默认值。
+    #[test]
+    fn the_setting_overrides_the_default() {
+        let db = test_db("setting");
+        db.set_setting(LOG_RETENTION_SETTING, "7").unwrap();
+        seed(&db, 30); // 默认 90 天下会留着，设成 7 天就该删
+        seed(&db, 1);
+        prune_request_logs_on_startup(&db);
+        assert_eq!(count(&db), 1, "应按设置的 7 天清理，而不是默认 90 天");
     }
 }
