@@ -231,8 +231,12 @@ pub fn run_skill_audit(db: State<'_, Arc<DbManager>>) -> Result<Vec<SkillAuditRe
         if !content.contains('#') { issues.push("No headings".into()); score -= 2; }
         if !content.contains("```") && content.len() > 500 { issues.push("No code blocks".into()); score -= 1; }
         if content.contains("TODO") || content.contains("FIXME") { issues.push("Has TODO/FIXME".into()); score -= 1; }
-        let issues_str = issues.join("; ");
-        let _ = conn.execute("INSERT INTO skill_audit_log (skill_name, score, issues) VALUES (?1, ?2, ?3)", params![name, score.max(1), issues_str]);
+        // 这里曾把每条结果也写进 skill_audit_log。那张表**没有任何读取方**——审计
+        // 结果是靠这个函数的返回值到界面的（SkillTab 的「质量审计」按钮直接用
+        // `skillAuditApi.run()` 的返回），表里那份从来没人看过。
+        //
+        // 313 个技能点一次审计就是 313 行，纯浪费。删写入、留表：删表不可逆，而一张
+        // 空表无害（同 success_count / priority_score 那两列的处置）。
         results.push(SkillAuditResult {
             skill_name: name, score: score.max(1), issues,
             suggestion: if score < 7 { "Expand with more instructions".into() } else { "Quality OK".into() },

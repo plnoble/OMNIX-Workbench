@@ -173,6 +173,14 @@ pub fn detect_and_log(db: &DbManager, session_id: &str, text: &str) {
         Ok(s) => s,
         Err(_) => return,
     };
+    // 检测到了就说一声。
+    //
+    // `activity_log` 目前**没有任何读取方**——这条记录写进去就再没人看见。检测器
+    // 本身是活的（`runtime_manager` 每条 agent 消息都调），信号也有价值，所以没有
+    // 把写入删掉；但在补上读取端之前，日志是它唯一能被人看到的出口。
+    // 这笔债由 `write_only_tables_are_declared` 钉住。
+    log::info!("检测到已知失误模式（会话 {session_id}）：{details}");
+
     let id = format!("act_{}_{}", chrono::Utc::now().timestamp_micros(), session_id);
     if let Err(error) = conn.execute(
         "INSERT INTO activity_log (id, action, target, details) VALUES (?1, 'mistake_detected', ?2, ?3)",

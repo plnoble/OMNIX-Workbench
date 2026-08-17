@@ -343,9 +343,11 @@ pub fn intercept_protocols(output: &str) -> Vec<ProtocolAction> {
             let lang_tag = stripped.trim();
 
             // Check for protocol tags
+            // `task:` 已移除（见下面 apply 里的说明：读取方没了，留着只会谎报成功）。
+            // 这里也一并不再识别，否则解析出来只是为了走到「Unknown protocol action」
+            // ——白解析一趟。
             if lang_tag.starts_with("skill:")
                 || lang_tag.starts_with("memory:")
-                || lang_tag.starts_with("task:")
                 || lang_tag.starts_with("config:")
             {
                 let action_type = lang_tag.split(':').next().unwrap_or("").to_string();
@@ -389,16 +391,17 @@ pub fn execute_protocol_action(action: &ProtocolAction, db: &DbManager) -> Resul
             ).map_err(|e| e.to_string())?;
             Ok(format!("Memory stored: {}", id))
         }
-        "task" => {
-            // Add to checklist (table created in init_schema)
-            let conn = db.get_connection().map_err(|e| e.to_string())?;
-            let id = format!("proto_chk_{}", chrono::Utc::now().timestamp_millis());
-            conn.execute(
-                "INSERT INTO dev_checklist (id, session_id, title, source) VALUES (?1, 'protocol', ?2, 'ai_generated')",
-                rusqlite::params![id, action.content],
-            ).map_err(|e| e.to_string())?;
-            Ok(format!("Task added: {}", id))
-        }
+        // `task:` 曾把内容写进 dev_checklist 并回一句「Task added」。那张表的读取方
+        // （checklist_get / _summary / _add / _update）在 d8c0c64 被删掉了——它们连同
+        // 整个任务系统一起，是「需要新建面板才能接上，而新建面板的原因是和 CronTab /
+        // SupervisionTab / TeamTab 重叠」那一批。读取方没了，写入方留着，于是 agent
+        // 每写一条 task 就往一张没人看的表里塞一行，还收到一句成功回执。
+        //
+        // 删掉整个分支而不是保留写入：谎报成功比不支持更糟——agent 会以为待办已经
+        // 记下了。现在它落到下面的 `_` 分支，得到「Unknown protocol action」，是实话。
+        //
+        // 这个协议从没对 agent 宣传过 `task:`（纯被动解析），所以不存在「说好支持又
+        // 撤回」的问题。
         _ => Ok(format!("Unknown protocol action: {}", action.action_type)),
     }
 }
