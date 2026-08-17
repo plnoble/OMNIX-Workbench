@@ -484,10 +484,22 @@ impl AgentManager {
                 "tosAccepted": true,
                 "primaryColor": "green"
             });
-            let _ = fs::write(config_file, tos_bypass_json.to_string());
-            println!(
-                "Pre-seeded Claude Code configuration to bypass initial TOS interactive prompt."
-            );
+            // 写失败要说出来，而且**不能照样报成功**。
+            //
+            // 这里以前是 `let _ = fs::write(...)` 后面无条件打印「已预置」——写不进去
+            // 时日志里仍然是一句成功。而真失败的后果很具体：Claude Code 启动后会弹
+            // 交互式 ToS 提示，我们是当子进程拉起来的，没人能回答那个提示，agent 就
+            // 那么挂着。用户看到的是「点了启动没反应」，日志却说预置成功。
+            match fs::write(&config_file, tos_bypass_json.to_string()) {
+                Ok(()) => println!(
+                    "Pre-seeded Claude Code configuration to bypass initial TOS interactive prompt."
+                ),
+                Err(error) => log::warn!(
+                    "预置 Claude Code 配置失败（{}）：{error}。\
+                     它启动时可能停在交互式 ToS 提示上而无法继续。",
+                    config_file.display()
+                ),
+            }
         }
     }
 }
@@ -839,8 +851,16 @@ pub(crate) fn inject_workspace_memories(
     // commit and still routes every agent to the lessons.
     let sidecar_rel = format!("{MEMORY_SIDECAR_DIR}/{MEMORY_SIDECAR_FILE}");
     let sidecar_dir = workspace_path.join(MEMORY_SIDECAR_DIR);
-    let _ = fs::create_dir_all(&sidecar_dir);
-    let _ = fs::write(sidecar_dir.join(MEMORY_SIDECAR_FILE), &memories_md);
+    // 边车文件写不成 = **记忆整个功能静默不生效**：agent 照常启动、照常干活，
+    // 只是永远看不到那些教训，而界面上没有任何迹象。这类「功能还在、只是不起作用」
+    // 的失败最难发现，所以至少要在日志里留一行。
+    //
+    // 仍然不中断流程：拿不到记忆比起不动 agent 要好得多。
+    if let Err(error) = fs::create_dir_all(&sidecar_dir) {
+        log::warn!("建记忆边车目录失败（{}）：{error}——本次不会注入记忆", sidecar_dir.display());
+    } else if let Err(error) = fs::write(sidecar_dir.join(MEMORY_SIDECAR_FILE), &memories_md) {
+        log::warn!("写记忆边车文件失败（{}）：{error}——本次不会注入记忆", sidecar_dir.display());
+    }
     ensure_sidecar_ignored(&workspace_path);
 
     let pointer = memory_pointer_block(&sidecar_rel);
@@ -870,10 +890,14 @@ pub(crate) fn inject_workspace_memories(
                 } else {
                     content.push_str(&pointer);
                 }
-                let _ = fs::write(&file_path, content);
+                // 指针写不进去，agent 就不知道去哪找记忆——边车文件写成了也白写。
+                // 和上面同一个道理：只记日志，不中断启动。
+                if let Err(error) = fs::write(&file_path, content) {
+                    log::warn!("更新记忆指针失败（{}）：{error}", file_path.display());
+                }
             }
-        } else {
-            let _ = fs::write(&file_path, &pointer);
+        } else if let Err(error) = fs::write(&file_path, &pointer) {
+            log::warn!("写入记忆指针失败（{}）：{error}", file_path.display());
         }
     }
 
