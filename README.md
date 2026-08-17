@@ -16,7 +16,7 @@ OMNIX Workbench 是一个 **多 Agent 开发与协作工作台**，让你在一�
 
 **核心能力：**
 - 🔄 **技能同步引擎** — 将 Skill 文件一键同步到所有 Agent 的技能目录
-- 🧠 **25 个预设角色模板** — Bug 修复、代码审查、PRD 撰写等开箱即用
+- 🧠 **55 个预设角色模板** — Bug 修复、代码审查、PRD 撰写等开箱即用
 - 🌐 **Git 技能源** — 从 Git 仓库发现、导入、追踪更新
 - 📦 **技能包导入导出** — `.skill` 格式打包分享
 - 🤖 **7 个 Agent CLI 支持** — Claude Code / Gemini CLI / Codex / Copilot / Qwen Code / Antigravity / OpenCode
@@ -32,16 +32,17 @@ OMNIX Workbench 是一个 **多 Agent 开发与协作工作台**，让你在一�
 ├────────────────────────┬─────────────────────────────┤
 │   Frontend (React)     │    Backend (Rust)           │
 │                        │                             │
-│  ┌─ SkillHub          │  ┌─ tool_adapters.rs        │
-│  ├─ AgentHub          │  ├─ sync_engine.rs           │
+│  ┌─ SkillTab          │  ┌─ tool_adapters.rs        │
+│  ├─ AgentHubTab       │  ├─ sync_engine.rs           │
 │  ├─ ChatTab           │  ├─ agent_templates.rs       │
-│  ├─ KnowledgeHub      │  ├─ skill_frontmatter.rs     │
-│  ├─ MemoryHub         │  ├─ knowledge.rs (RAG)       │
-│  ├─ CompareHub        │  ├─ selection.rs (Win32 UIA) │
-│  ├─ SettingsTab       │  ├─ proxy.rs (Anthropic↔OAI) │
-│  └─ DashboardTab      │  └─ agent.rs (PTY Manager)   │
+│  ├─ KnowledgeTab      │  ├─ skill_frontmatter.rs     │
+│  ├─ MemoryTab         │  ├─ knowledge.rs (RAG)       │
+│  ├─ SupervisionTab    │  ├─ selection.rs (Win32 UIA) │
+│  ├─ SettingsTab       │  ├─ proxy*.rs (网关 + 鉴权)  │
+│  └─ DashboardTab      │  └─ runtime*.rs (会话运行时) │
+│    …共 31 个 Tab      │                             │
 │                        │                             │
-│  17 个自定义 Hooks      │  SQLite 20 表 + FTS5        │
+│  21 个自定义 Hooks      │  SQLite 74 表 + FTS5        │
 └────────────────────────┴─────────────────────────────┘
 ```
 
@@ -52,7 +53,8 @@ OMNIX Workbench 是一个 **多 Agent 开发与协作工作台**，让你在一�
 ### 环境要求
 
 - **Node.js** ≥ 18
-- **Rust** ≥ 1.70
+- **Rust** 1.94.0（CI 钉死这个版本，见 `.github/workflows/ci.yml`——`clippy -D warnings`
+  是阻塞门，浮动工具链会让门在没碰过相关代码的提交上变红）
 - **Git**
 
 ### 安装与运行
@@ -97,17 +99,21 @@ npx tauri build
 | GitHub Copilot | `~/.github/copilot/skills/` | VS Code 扩展扫描 |
 | Gemini CLI | `~/.gemini/skills/` | `which gemini` |
 | Codex | `~/.codex/skills/` | `which codex` |
+| OpenCode | `~/.opencode/skills/` | `which opencode` |
 
 ### 2. Agent 模板库
 
-25 个预设角色模板，每个包含专业的系统提示和关联技能：
+55 个预设角色模板，每个包含专业的系统提示和关联技能：
 
-| 分类 | 模板 |
+| 分类 | 数量 |
 |------|------|
-| **Engineering** | Bug Fixer, Code Reviewer, Frontend Builder, Commit Message, PR Description, ADR Writer, RCA Writer... |
-| **Product** | PRD Drafter, PRD Critic, OKR Drafter, One-Pager, User Story Writer, Brainstormer |
-| **Writing** | Summarizer, 中英互译, Email Reply, Writing Critic, JD Writer |
-| **Design** | UX Copywriter, HTML Slides, Tutor |
+| **Engineering** | 9 |
+| **Product** | 7 |
+| **办公** / **Writing** | 6 / 6 |
+| **Meta** | 5 |
+| **DevOps** / **Data** | 4 / 4 |
+| **Workflow** / **Life** / **Education** / **Design** | 3 / 3 / 3 / 3 |
+| **Security** | 2 |
 
 ### 3. Git 技能源
 
@@ -178,8 +184,7 @@ Actual skill content here...
 | **UI 组件** | shadcn/ui (Radix) + Tailwind CSS | 4.x |
 | **后端** | Rust + Tokio (async) | 2021 edition |
 | **HTTP 代理** | Axum | 0.7 |
-| **数据库** | SQLite (rusqlite, bundled) | 0.31 |
-| **终端** | portable-pty | 0.8 |
+| **数据库** | SQLite (rusqlite, bundled) | 0.33 |
 | **HTTP 客户端** | reqwest | 0.12 |
 | **可视化** | D3.js (拓扑图) | 7.x |
 
@@ -192,24 +197,24 @@ OMNIX-Workbench/
 ├── src/                          # 前端源码
 │   ├── App.tsx                   # 主编排器
 │   ├── components/
-│   │   ├── tabs/                 # 10 个功能 Tab
+│   │   ├── tabs/                 # 31 个功能 Tab
 │   │   ├── modals/               # 6 个 Modal
 │   │   ├── layout/               # Header/Sidebar/Preview
 │   │   └── ui/                   # shadcn/ui 组件
-│   ├── hooks/                    # 17 个自定义 Hook
-│   ├── lib/                      # tauri-api.ts / utils
+│   ├── hooks/                    # 21 个自定义 Hook
+│   ├── lib/                      # tauri-api.ts / api/ 包装 / utils
 │   └── types/                    # TypeScript 类型
 ├── src-tauri/                    # 后端源码
 │   ├── src/
-│   │   ├── lib.rs                # 应用初始化 + 461 个命令注册
-│   │   ├── commands/             # Tauri 命令（按领域分文件，早已不是单个 commands.rs）
-│   │   ├── db.rs / db_schema.rs  # SQLite（77 张表）
+│   │   ├── lib.rs                # 应用初始化 + 402 个命令注册
+│   │   ├── commands/             # Tauri 命令（56 个文件，按领域分）
+│   │   ├── db.rs / db_schema.rs  # SQLite（74 张表）
 │   │   ├── proxy*.rs             # 网关：Anthropic ↔ OpenAI 翻译、鉴权、远程面板
 │   │   ├── runtime*.rs           # Agent 会话运行时（Claude / Codex / ACP / print）
 │   │   ├── agent.rs              # Agent 检测、安装、定时任务调度
-│   │   ├── tool_adapters.rs      # 工具适配器 (5 个)
+│   │   ├── tool_adapters.rs      # 工具适配器 (6 个)
 │   │   ├── sync_engine.rs        # 同步引擎 + 扫描器 + Git 源
-│   │   ├── agent_templates.rs    # 25 个 Agent 模板
+│   │   ├── agent_templates.rs    # 55 个 Agent 模板
 │   │   ├── skill_frontmatter.rs  # YAML frontmatter 解析
 │   │   ├── knowledge.rs          # RAG 知识库引擎
 │   │   └── selection.rs          # Win32 选择助手
@@ -234,15 +239,20 @@ OMNIX-Workbench/
 
 | 类别 | 规模 |
 |------|------|
-| Rust 后端 | ~67,000 行 |
-| TypeScript 前端 | ~32,000 行 |
-| **合计** | **~99,000 行** |
-| Tauri 命令 | 461 个 |
-| SQLite 表 | 77 张 |
-| Rust 测试 | 469 个 |
+| Rust 后端 | ~67,200 行 |
+| TypeScript 前端 | ~32,800 行 |
+| **合计** | **~100,000 行** |
+| Tauri 命令 | 402 个 |
+| SQLite 表 | 74 张 |
+| Rust 测试 | 568 个 |
+| 前端测试 | 50 个 |
 
 > 数字用脚本数出来的，不是估的。上一版这里写着 ~18,000 行——那是很久以前的
 > 数字，一直没更新。
+>
+> **命令数是 461 → 402，唯一一个降下来的数字。** 不是删功能，是删「注册了但前端
+> 根本够不着」的死命令——那些命令编译得过、测试也绿，只是没有任何一行前端代码会
+> 调用它们。详见下面的接线守卫。
 
 ---
 
@@ -255,17 +265,20 @@ npm run dev
 # Tauri 开发模式（前端 + 后端）
 npx tauri dev
 
-# TypeScript 类型检查
-npx tsc --noEmit
-
-# Rust 编译检查
-cd src-tauri && cargo check
-
-# Rust 单元测试
-cd src-tauri && cargo test --lib
-
 # 构建生产版本
 npx tauri build
+```
+
+**提交前把 CI 的门在本地跑一遍**（顺序与 CI 一致，任意一步红就别提交）：
+
+```bash
+npx tsc --noEmit && npx vite build && npx vitest run && npm run lint && cd src-tauri && cargo test --lib && cargo clippy --lib --tests -- -D warnings && cd .. && bash .github/scripts/pitfall-guard.sh
+```
+
+本地 Rust 工具链要和 CI 一致（1.94.0），否则 `clippy -D warnings` 可能本地绿、CI 红：
+
+```bash
+rustup toolchain install 1.94.0 --component clippy
 ```
 
 ---
@@ -276,10 +289,46 @@ npx tauri build
 
 - **SOLID / DRY / KISS / YAGNI** — 不过度设计，不重复代码
 - **TypeScript strict** — 禁止 `any`，语义类型区分
-- **零编译警告** — `cargo check --lib --tests` 必须干净（CI 门禁的一部分）；`rustfmt` / 全量 `clippy` 目前只作为信号，不阻断合并
 - **结构化日志** — JSON 格式，Trace ID 贯穿
 - **安全编码** — 参数化 SQL，输入验证，密钥不硬编码
 - **AI Development Memory** — 每个任务/决策/错误都有结构化记录
+
+### CI 阻塞门
+
+失败即拦，没有 `continue-on-error`：
+
+| 门 | 命令 |
+|---|---|
+| 类型检查 + 构建（含产物体积预算） | `tsc --noEmit && vite build` |
+| 前端单测 | `vitest run` |
+| 前端 lint | `biome lint src --diagnostic-level=error` |
+| Rust 单测 | `cargo test --lib` |
+| Rust lint | `cargo clippy --lib --tests -- -D warnings` |
+| 坑点守卫 | `.github/scripts/pitfall-guard.sh` |
+
+`rustfmt` 等仍是非阻塞信号——但**如实报红**，不再用 `continue-on-error` 伪装成绿勾。
+
+**坑点守卫**扫的是 `CLAUDE.md` 里记着的三条历史事故（`credentials: 'include'` 配
+通配符 CORS、跨 `await` 持有 `std::sync::MutexGuard`、`git push -f`）。写下来跟拦得住
+是两回事，这一步负责拦。
+
+### 接线守卫
+
+这个项目最高产的一类 bug 不是逻辑写错，而是**两端各自都对、中间没接上**——后端命令
+注册了、编译过了、测试全绿，但没有任何一行前端代码会调它。Rust 编译器和 TypeScript
+都不会吭声，因为跨端只靠字符串对上号。
+
+四道守卫各守一条接缝，都是**只允许变短的棘轮**：
+
+| 守卫 | 抓什么 |
+|---|---|
+| `eventWiring.test.ts` | 后端 `emit` 的事件，前端没有 `listen` |
+| `commandWiring.test.ts` | 注册的命令没有前端调用方（死代码） |
+| 同上 | 前端 `invoke` 了根本不存在的命令（**调到就是运行时报错**） |
+| 同上 | API 包装没有任何组件在用（整条链是死的） |
+
+外加一道数据库层的「写了但没人读」检查：某张表只有写入没有读取，说明要么功能没接完，
+要么这张表该删。
 
 ---
 
