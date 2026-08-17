@@ -138,14 +138,14 @@ export const CompareHub: React.FC = () => {
       .catch((e) => toast.error("读取已启用模型失败", { description: String(e) }));
 
     return () => {
-      abortControllersRef.current.forEach((controller) => controller.abort());
+      abortControllersRef.current.forEach((controller) => { controller.abort(); });
       fusionAbortControllerRef.current?.abort();
     };
   }, []);
 
   /** Abort all in-flight comparison streams. */
   const stopAll = () => {
-    abortControllersRef.current.forEach((c) => c.abort());
+    abortControllersRef.current.forEach((c) => { c.abort(); });
     abortControllersRef.current = [];
     setThreads((prev) => {
       const next: typeof prev = {};
@@ -178,7 +178,7 @@ export const CompareHub: React.FC = () => {
     const targets = selectedModelRefs;
     if (!prompt.trim() || targets.length === 0) return;
 
-    abortControllersRef.current.forEach((controller) => controller.abort());
+    abortControllersRef.current.forEach((controller) => { controller.abort(); });
     abortControllersRef.current = [];
 
     const submitted = prompt.trim();
@@ -234,7 +234,7 @@ export const CompareHub: React.FC = () => {
   };
 
   const handleNewConversation = () => {
-    abortControllersRef.current.forEach((controller) => controller.abort());
+    abortControllersRef.current.forEach((controller) => { controller.abort(); });
     abortControllersRef.current = [];
     setThreads({});
     setFusionContent("");

@@ -38,6 +38,20 @@ jobs:
       - name: Frontend unit tests (vitest)
         run: npm run test
 
+      # 前端 lint。**门设在 error 级为零**，warn 不阻塞。
+      #
+      # 只开抓 bug 的两组（correctness / suspicious），装饰性的全关。全量 recommended
+      # 跑出来是 544 条，其中 263 条是「<button> 缺 type」、31 条是模板字符串风格——
+      # 这个量级没人会看，真信号会被淹掉。收窄后 102 条，全部落在
+      # useExhaustiveDependencies（hook 依赖漏项 → 陈旧闭包）和 noArrayIndexKey
+      # （用下标当 key → 列表重排错乱）这两类上，是真会出事的。
+      #
+      # 那两类目前 96 条设为 warn：它们要逐个看依赖数组的语义，一次性改完风险比
+      # 收益大。error 级已经清零（改了 5 处 forEach 隐式返回 + 1 处把非 hook 函数
+      # 命名成 usePreset），所以门先立在这里，新增的 error 当场拦。
+      - name: Frontend lint（biome，error 阻塞）
+        run: npx biome lint src --diagnostic-level=error
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:

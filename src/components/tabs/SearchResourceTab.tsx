@@ -80,7 +80,7 @@ export function SearchResourceTab() {
     }
   };
 
-  const usePreset = (preset: typeof PRESETS[number]) => {
+  const applyPreset = (preset: typeof PRESETS[number]) => {
     onAddProvider();
     onUpdateProviderForm("api_type", preset.type);
     onUpdateProviderForm("name", preset.name);
@@ -112,7 +112,7 @@ export function SearchResourceTab() {
             {PRESETS.map((preset) => (
               <button
                 key={preset.name}
-                onClick={() => usePreset(preset)}
+                onClick={() => applyPreset(preset)}
                 title={`打开 ${preset.name} 的 Key 申请页，并把新增表单预填成这个供应商`}
                 className={cn(
                   "flex items-start gap-1.5 rounded-md border bg-background/20 p-2 text-left transition hover:bg-background/50",

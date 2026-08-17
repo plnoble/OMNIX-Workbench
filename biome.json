@@ -1,0 +1,28 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.5.8/schema.json",
+  "files": {
+    "includes": ["src/**/*.ts", "src/**/*.tsx"]
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": false,
+      "correctness": {
+        "useExhaustiveDependencies": "warn",
+        "useHookAtTopLevel": "error",
+        "noUnusedImports": "error",
+        "noUnusedVariables": "error"
+      },
+      "suspicious": {
+        "noArrayIndexKey": "warn",
+        "noDoubleEquals": "error",
+        "noExplicitAny": "off",
+        "noAsyncPromiseExecutor": "error",
+        "noDuplicateObjectKeys": "error",
+        "useIterableCallbackReturn": "error"
+      }
+    }
+  },
+  "formatter": { "enabled": false },
+  "assist": { "enabled": false }
+}

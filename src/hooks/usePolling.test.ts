@@ -16,7 +16,7 @@ function fakeVisibility(startHidden = false) {
     } satisfies VisibilitySource,
     set(next: boolean) {
       hidden = next;
-      handlers.forEach((h) => h());
+      handlers.forEach((h) => { h(); });
     },
     get subscriberCount() {
       return handlers.size;

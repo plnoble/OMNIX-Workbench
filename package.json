@@ -8,6 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "vitest run",
+    "lint": "biome lint src",
     "tauri": "tauri",
     "tauri:build": "tauri build",
     "tauri:build:msi": "tauri build --bundles msi",
@@ -49,6 +50,7 @@
     "tailwindcss": "^4.3.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.5.8",
     "@tauri-apps/cli": "^2",
     "@types/d3": "^7.4.3",
     "@types/react": "^19.1.8",
