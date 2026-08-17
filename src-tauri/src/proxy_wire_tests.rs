@@ -1405,6 +1405,10 @@ mod key_failover_tests {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let auth = Arc::new(Mutex::new(Vec::new()));
 
+        // 这个元组类型是 axum 的 State 提取器要求的形状，clippy 嫌它复杂
+        // （type_complexity）。不抽 type 别名：它只在这一个假上游里用一次，
+        // 起个名字反而要读的人多跳一次才能知道里面装的是什么。
+        #[allow(clippy::type_complexity)]
         async fn handler(
             AxumState((auth, good, status)): AxumState<(Arc<Mutex<Vec<String>>>, &'static str, StatusCode)>,
             headers: axum::http::HeaderMap,

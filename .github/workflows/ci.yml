@@ -59,11 +59,17 @@ jobs:
         shell: bash
         run: bash .github/scripts/pitfall-guard.sh
 
-      # 坑点2「跨 await 持有 std::sync 锁」交给 clippy 做真正的作用域分析，
-      # 文本匹配判不了作用域。只开这一条 lint，所以不受下面那堆 clippy 欠债影响。
-      - name: 坑点2 · 跨 await 持锁（阻塞）
+      # 全量 clippy 当门。以前这里只开 `await_holding_lock` 一条（坑点2「跨 await
+      # 持有 std::sync 锁」，文本匹配判不了作用域，得靠 clippy 做真正的作用域分析），
+      # 理由是「不受那堆 clippy 欠债影响」——那堆欠债现在清零了（6 条，逐条按语义
+      # 修，两条测试里的显式 allow 并写明理由），所以直接上 -D warnings。
+      #
+      # 现在加最便宜：欠债为 0 时开门，之后每一条都是新债，当场就能拦。等积累到
+      # 几百条再想开，就没人愿意开了。await_holding_lock 属于 clippy::all，被这条
+      # 覆盖，不再单列。
+      - name: Rust lint（clippy，阻塞）
         working-directory: ./src-tauri
-        run: cargo clippy --lib --quiet -- -A clippy::all -D clippy::await_holding_lock
+        run: cargo clippy --lib --tests --quiet -- -D warnings
 
       # ── 非阻塞信号：但**必须看得见** ──────────────────────────────────
       # 这三步以前是 continue-on-error，失败也显示绿勾——等于没有这一步，还

@@ -651,6 +651,79 @@ fn load_capability(db: &Arc<DbManager>, name: &str) -> Result<String, String> {
     );
     Ok(content)
 }
+/// 把调用方写好的幻灯内容渲染成真文件。
+///
+/// **分工是刻意的**：调用方本来就是个带模型的 agent，让它写内容；OMNIX 只做它
+/// 擅长且对方做不了的事——排版、渲染、导出成 .pptx。这里**不调模型**，
+/// 所以不花钱、不慢、也不会跟对方的模型抢着写内容。
+fn create_deck(args: &Value) -> Result<String, String> {
+    let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("").trim();
+    if title.is_empty() {
+        return Err("title 不能为空。".into());
+    }
+    let slides = args.get("slides").and_then(|v| v.as_array()).ok_or("slides 必须是数组。")?;
+    if slides.is_empty() {
+        return Err("slides 至少要有一页。".into());
+    }
+    let theme = args.get("theme").and_then(|v| v.as_str()).unwrap_or("midnight");
+
+    let mut deck: crate::slides::Deck = serde_json::from_value(serde_json::json!({
+        "title": title, "theme": theme, "slides": slides,
+    }))
+    .map_err(|e| format!("幻灯内容解析失败：{e}"))?;
+    for s in deck.slides.iter_mut() {
+        s.fill_default_params();
+    }
+
+    let dir = crate::storage::exports_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建导出目录失败：{e}"))?;
+    let stem: String = title
+        .chars()
+        .map(|c| if r#"/\:*?"<>|"#.contains(c) { '_' } else { c })
+        .collect();
+
+    let html_path = dir.join(format!("{stem}.html"));
+    let html = crate::slides::render_deck_html(&deck, None, true);
+    let html = crate::slides::embed_deck_source(&html, &deck)?;
+    std::fs::write(&html_path, html).map_err(|e| format!("写出 HTML 失败：{e}"))?;
+
+    let pptx_path = dir.join(format!("{stem}.pptx"));
+    let pptx_note = match crate::pptx::build_pptx(&deck) {
+        Ok(bytes) => match std::fs::write(&pptx_path, bytes) {
+            Ok(_) => format!("\n- PowerPoint：{}", pptx_path.display()),
+            Err(e) => format!("\n- PowerPoint 写出失败：{e}"),
+        },
+        Err(e) => format!("\n- PowerPoint 生成失败：{e}"),
+    };
+
+    // 体检结果一并返回：调用方看不到渲染结果，这是它唯一能知道
+    // 「内容会不会溢出、图表有没有数据」的途径。
+    let report = crate::slides_lint::lint_deck(&deck);
+    let issues = if report.findings.is_empty() {
+        "\n\n体检：没发现问题。".to_string()
+    } else {
+        let lines: Vec<String> = report
+            .findings
+            .iter()
+            .filter(|f| !matches!(f.severity, crate::slides_lint::Severity::Info))
+            .take(8)
+            .map(|f| format!("  - {}", f.message))
+            .collect();
+        if lines.is_empty() {
+            "\n\n体检：没发现需要处理的问题。".to_string()
+        } else {
+            format!("\n\n体检发现 {} 处需要注意：\n{}", lines.len(), lines.join("\n"))
+        }
+    };
+
+    Ok(format!(
+        "已生成 {} 页的《{title}》：\n- 网页：{}{pptx_note}\n\
+         （网页文件里嵌了原始数据，可以在 OMNIX 里「导回 HTML」继续编辑）{issues}",
+        deck.slides.len(),
+        html_path.display(),
+    ))
+}
+
 
 // ─────────────────────────────────────────────────────────────────────────
 // Tests
@@ -957,76 +1030,3 @@ mod tests {
 // ─────────────────────────────────────────────────────────────────────────
 // Q3 · 产出交付物
 // ─────────────────────────────────────────────────────────────────────────
-
-/// 把调用方写好的幻灯内容渲染成真文件。
-///
-/// **分工是刻意的**：调用方本来就是个带模型的 agent，让它写内容；OMNIX 只做它
-/// 擅长且对方做不了的事——排版、渲染、导出成 .pptx。这里**不调模型**，
-/// 所以不花钱、不慢、也不会跟对方的模型抢着写内容。
-fn create_deck(args: &Value) -> Result<String, String> {
-    let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("").trim();
-    if title.is_empty() {
-        return Err("title 不能为空。".into());
-    }
-    let slides = args.get("slides").and_then(|v| v.as_array()).ok_or("slides 必须是数组。")?;
-    if slides.is_empty() {
-        return Err("slides 至少要有一页。".into());
-    }
-    let theme = args.get("theme").and_then(|v| v.as_str()).unwrap_or("midnight");
-
-    let mut deck: crate::slides::Deck = serde_json::from_value(serde_json::json!({
-        "title": title, "theme": theme, "slides": slides,
-    }))
-    .map_err(|e| format!("幻灯内容解析失败：{e}"))?;
-    for s in deck.slides.iter_mut() {
-        s.fill_default_params();
-    }
-
-    let dir = crate::storage::exports_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| format!("创建导出目录失败：{e}"))?;
-    let stem: String = title
-        .chars()
-        .map(|c| if r#"/\:*?"<>|"#.contains(c) { '_' } else { c })
-        .collect();
-
-    let html_path = dir.join(format!("{stem}.html"));
-    let html = crate::slides::render_deck_html(&deck, None, true);
-    let html = crate::slides::embed_deck_source(&html, &deck)?;
-    std::fs::write(&html_path, html).map_err(|e| format!("写出 HTML 失败：{e}"))?;
-
-    let pptx_path = dir.join(format!("{stem}.pptx"));
-    let pptx_note = match crate::pptx::build_pptx(&deck) {
-        Ok(bytes) => match std::fs::write(&pptx_path, bytes) {
-            Ok(_) => format!("\n- PowerPoint：{}", pptx_path.display()),
-            Err(e) => format!("\n- PowerPoint 写出失败：{e}"),
-        },
-        Err(e) => format!("\n- PowerPoint 生成失败：{e}"),
-    };
-
-    // 体检结果一并返回：调用方看不到渲染结果，这是它唯一能知道
-    // 「内容会不会溢出、图表有没有数据」的途径。
-    let report = crate::slides_lint::lint_deck(&deck);
-    let issues = if report.findings.is_empty() {
-        "\n\n体检：没发现问题。".to_string()
-    } else {
-        let lines: Vec<String> = report
-            .findings
-            .iter()
-            .filter(|f| !matches!(f.severity, crate::slides_lint::Severity::Info))
-            .take(8)
-            .map(|f| format!("  - {}", f.message))
-            .collect();
-        if lines.is_empty() {
-            "\n\n体检：没发现需要处理的问题。".to_string()
-        } else {
-            format!("\n\n体检发现 {} 处需要注意：\n{}", lines.len(), lines.join("\n"))
-        }
-    };
-
-    Ok(format!(
-        "已生成 {} 页的《{title}》：\n- 网页：{}{pptx_note}\n\
-         （网页文件里嵌了原始数据，可以在 OMNIX 里「导回 HTML」继续编辑）{issues}",
-        deck.slides.len(),
-        html_path.display(),
-    ))
-}

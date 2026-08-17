@@ -1,3 +1,7 @@
+// `tests::tests` 这个套娃是 clippy 的 module_inception。这里显式豁免而不是改名：
+// 整个文件就是「集成测试」这一件事，外层文件名已经说了 tests，内层再起一个别的
+// 名字（`integration` / `suite`）只会让 `cargo test <name>` 的过滤词变得不直觉。
+#[allow(clippy::module_inception)]
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -104,7 +108,7 @@ mod tests {
 
         // Spawn a sleeping subprocess mimicking an idle agent CLI
         let mut child = Command::new("ping")
-            .args(&["127.0.0.1", "-n", "5"])
+            .args(["127.0.0.1", "-n", "5"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()

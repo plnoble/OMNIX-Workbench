@@ -449,8 +449,8 @@ mod tests {
 
         // 一句同时提到「配置问题」和那个反直觉触发词的话。
         let hits = match_memories_for_message(&db, "force-with-lease 的配置问题", 3);
-        assert_eq!(
-            hits[0].incident_desc.contains("git"), true,
+        assert!(
+            hits[0].incident_desc.contains("git"),
             "带反直觉触发词的那条必须排在只有泛化词的前面：{:?}",
             hits.iter().map(|h| (&h.incident_desc, h.score)).collect::<Vec<_>>()
         );

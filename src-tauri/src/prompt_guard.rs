@@ -206,7 +206,6 @@ pub fn wrap_untrusted(content: &str, source_label: &str) -> String {
 /// 是模型在回应那段声明。方向反了：用户的话是最可信的输入，需要围栏的是从别处
 /// 抓来的内容。要包外部内容请直接用 `wrap_untrusted`，并且在**内容进入上下文的
 /// 那一处**包，不要在网关上统一套。
-
 #[cfg(test)]
 mod tests {
     use super::*;
