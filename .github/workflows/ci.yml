@@ -52,9 +52,23 @@ jobs:
       - name: Frontend lint（biome，error 阻塞）
         run: npx biome lint src --diagnostic-level=error
 
+      # 工具链钉死版本，不用 @stable 的浮动解析。
+      #
+      # 不是洁癖，是被咬过一次：下面那道 `clippy -D warnings` 立起来的**第二天**，
+      # v0.32.0 的 CI 就红了——红在 `unnecessary_sort_by`，而那次提交根本没碰过
+      # 那三行代码。本地 clippy 1.94 对它报 0 条，CI 解析到的 stable 是 1.97，
+      # 新版本给这条 lint 加上了「反向比较 → Reverse」的识别。
+      #
+      # 浮动工具链 + `-D warnings` 是个陷阱组合：门槛由「未来某天发布的某个 Rust」
+      # 决定，于是 CI 会在一个与改动无关的提交上变红，而本地怎么跑都是绿的。门必须
+      # 可复现，否则它拦的就不是「新债」而是「运气」。
+      #
+      # 升级工具链从此是一次**显式提交**：改这里的版本号，同时修新版本带来的 lint。
+      # 那样红得有理有据，也知道该改什么。
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: "1.94.0"
           components: rustfmt, clippy
 
       - name: Rust cache
