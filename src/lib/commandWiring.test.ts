@@ -27,14 +27,10 @@ const ROOT = path.resolve(__dirname, "../..");
  */
 const KNOWN_ORPHANS = [
   "get_all_models_metadata",
-  "get_skill_content",
   "read_file_as_base64",
   "read_file_content_utf8",
-  "save_skill_content",
   "scan_prompt_injection",
-  "toggle_skill_active",
   "uninstall_agent_cli",
-  "update_skill_profile",
 ];
 
 function readFiles(dir: string, exts: string[]): string[] {
@@ -151,9 +147,9 @@ const BARREL = path.join(ROOT, "src", "lib", "tauri-api.ts");
  * 和 KNOWN_ORPHANS 一样，这是待定夺的债，不是豁免：每一条要么接上界面、要么连同
  * 它背后的 Rust 命令一起删。新写的包装不许进这里——没有组件要用，就先别写。
  */
-const KNOWN_UNUSED_APIS = [
-  "notificationApi",
-  "platformHealthApi",
+const KNOWN_UNUSED_APIS: string[] = [
+  // 空了。起点是 21 条——逐条验证后一半是空壳或双轨被删，一半接上了界面。
+  // 保持空：新写的包装不许进这里，没有组件要用就先别写。
 ];
 
 describe("API 包装接线", () => {

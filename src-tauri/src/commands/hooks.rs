@@ -20,6 +20,7 @@ use tauri::{AppHandle, Emitter, State};
 use crate::db::DbManager;
 use crate::runtime::RuntimeEventKind;
 use crate::runtime_manager::SessionEventEnvelope;
+use super::safety::push_ntfy;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Hook {
@@ -81,7 +82,7 @@ fn kind_str(kind: RuntimeEventKind) -> &'static str {
 
 /// Run a single hook's action. Pure side-effects; returns `(ok, detail)`.
 /// `app` is optional so this is reusable from a manual test command.
-fn run_action(
+async fn run_action(
     app: Option<&AppHandle>,
     hook_name: &str,
     action_type: &str,
@@ -153,6 +154,31 @@ fn run_action(
         "log" => {
             let msg = if payload.is_empty() { format!("{event}: {text}") } else { payload.to_string() };
             (true, msg)
+        }
+        // 推到手机。**这是 OMNIX 里唯一能把消息送出这台机器的路径**——上面那个
+        // `notify` 只是 emit 一个前端事件，人不在电脑前时等于没有通知。
+        //
+        // payload 格式：`<server>|<topic>`，例如 `https://ntfy.sh|omnix-alerts`。
+        // 不做成结构化字段是因为 hooks 表只有一个 action_payload 列，为一种动作加
+        // 两列会让其余动作全带着两个空列。
+        "ntfy" => {
+            let mut parts = payload.splitn(2, '|');
+            let server = parts.next().unwrap_or("").trim();
+            let topic = parts.next().unwrap_or("").trim();
+            if server.is_empty() || topic.is_empty() {
+                return (
+                    false,
+                    "ntfy 动作需要 `<服务器>|<主题>` 形式的载荷，例如 https://ntfy.sh|my-topic".into(),
+                );
+            }
+            let title = format!("OMNIX · {hook_name}");
+            let body = if text.is_empty() { event.to_string() } else { text.to_string() };
+            // **等结果再报**，不 fire-and-forget：钩子运行记录里那句「成功」是用户
+            // 判断「消息到底发出去没有」的唯一依据，抢答等于把失败藏起来。
+            match push_ntfy(server, topic, &title, &body).await {
+                Ok(()) => (true, format!("已推送到 {server}/{topic}")),
+                Err(error) => (false, format!("推送失败：{error}")),
+            }
         }
         other => (false, format!("未知动作类型: {other}")),
     }
@@ -246,7 +272,7 @@ fn record_run(db: &DbManager, hook: &Hook, session_id: &str, event: &str, ok: bo
 /// Evaluate enabled hooks against one runtime event. Called from the runtime
 /// event consumer loop. Cheap for the common case (filters noisy kinds first,
 /// then a single indexed-ish query); never holds a DB guard across the action.
-pub fn evaluate_hooks(db: &DbManager, app: &AppHandle, envelope: &SessionEventEnvelope) {
+pub async fn evaluate_hooks(db: &DbManager, app: &AppHandle, envelope: &SessionEventEnvelope) {
     let event = kind_str(envelope.event.kind);
     if !HOOKABLE_KINDS.contains(&event) {
         return;
@@ -292,7 +318,7 @@ pub fn evaluate_hooks(db: &DbManager, app: &AppHandle, envelope: &SessionEventEn
             &envelope.session_id,
             event,
             &text,
-        );
+        ).await;
         record_run(db, &hook, &envelope.session_id, event, ok, &detail);
     }
 }
@@ -395,7 +421,7 @@ pub fn delete_hook(id: String, db: State<'_, Arc<DbManager>>) -> Result<(), Stri
 
 /// Manually fire a hook's action once (for the UI "测试" button).
 #[tauri::command]
-pub fn test_hook(id: String, app: AppHandle, db: State<'_, Arc<DbManager>>) -> Result<String, String> {
+pub async fn test_hook(id: String, app: AppHandle, db: State<'_, Arc<DbManager>>) -> Result<String, String> {
     let hook = {
         let conn = db.get_connection().map_err(|e| e.to_string())?;
         conn.query_row(
@@ -426,7 +452,7 @@ pub fn test_hook(id: String, app: AppHandle, db: State<'_, Arc<DbManager>>) -> R
         "test-session",
         "test",
         "（手动测试触发）",
-    );
+    ).await;
     record_run(&db, &hook, "test-session", "test", ok, &detail);
     if ok { Ok(detail) } else { Err(detail) }
 }
@@ -546,8 +572,8 @@ mod sandbox_tests {
 mod tests {
     use super::*;
 
-    #[test]
-    fn matcher_and_log_action() {
+    #[tokio::test]
+    async fn matcher_and_log_action() {
         let db_path = std::env::temp_dir().join(format!("omnix_hooks_{}.sqlite", chrono::Utc::now().timestamp_micros()));
         let db = DbManager::new_runtime_test(db_path.clone());
         db.init_schema().expect("schema");
@@ -560,11 +586,19 @@ mod tests {
         ).unwrap();
         drop(conn);
 
-        let (ok, _) = run_action(None, "build", "log", "done", "s1", "turn_completed", "running deploy step");
+        let (ok, _) = run_action(None, "build", "log", "done", "s1", "turn_completed", "running deploy step").await;
         assert!(ok);
 
+        // ntfy 的载荷格式错了要**说清楚怎么写**，不能只报失败。
+        // 用户在钩子编辑框里填的是一个自由文本，格式约定只存在于这句提示里。
+        for bad in ["", "https://ntfy.sh", "|topic", "https://ntfy.sh|"] {
+            let (ok, detail) = run_action(None, "h", "ntfy", bad, "s1", "turn_completed", "t").await;
+            assert!(!ok, "载荷 {bad:?} 应被拒");
+            assert!(detail.contains("服务器"), "错误里要给出格式示例，实际：{detail}");
+        }
+
         // Unknown action type fails cleanly.
-        let (ok2, _) = run_action(None, "x", "bogus", "", "s1", "turn_completed", "");
+        let (ok2, _) = run_action(None, "x", "bogus", "", "s1", "turn_completed", "").await;
         assert!(!ok2);
 
         drop(db);

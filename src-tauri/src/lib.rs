@@ -232,7 +232,7 @@ pub fn run() {
                     // Fire user-state hooks before forwarding to the UI. The
                     // engine drops its DB guard before any action/spawn, so it
                     // never holds a lock across the loop's await.
-                    commands::evaluate_hooks(&hooks_db, &runtime_app, &envelope);
+                    commands::evaluate_hooks(&hooks_db, &runtime_app, &envelope).await;
                     // Auto-record key events (errors/approvals) into the project
                     // protocol for workspaces that have it enabled.
                     commands::protocol_auto_record(&hooks_db, &envelope);
@@ -430,10 +430,7 @@ pub fn run() {
             commands::uninstall_agent_cli,
             commands::repair_installed_agent,
             commands::sync_external_agent_configs,
-            commands::get_skill_content,
-            commands::save_skill_content,
             commands::toggle_skill_active,
-            commands::update_skill_profile,
             commands::create_skill,
             commands::get_agent_accounts,
             commands::save_agent_account,
@@ -632,8 +629,6 @@ pub fn run() {
             commands::get_usage_timeseries,
             commands::cleanup_request_logs,
             // Platform Health Management
-            commands::get_platform_health,
-            commands::reset_platform_health,
             commands::update_platform_routing,
             // Upstream Model Auto-Sync
             commands::sync_upstream_models,
@@ -651,8 +646,6 @@ pub fn run() {
             commands::estimate_tokens,
             commands::get_context_budget,
             commands::run_skill_audit,
-            commands::send_desktop_notification,
-            commands::send_ntfy_notification,
             commands::compact_conversation_context,
             commands::get_model_recommendations,
             commands::get_model_database,

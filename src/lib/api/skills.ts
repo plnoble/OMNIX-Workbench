@@ -21,6 +21,8 @@ export interface SkillPoolItem {
   reviewed_at: string | null;
   updated_at: string;
   needs_re_review: boolean;
+  /** 是否参与网关注入。false = 保留审核结论但暂时不注入。 */
+  is_active: boolean;
 }
 export interface SkillReformProposal {
   new_content: string;
@@ -92,6 +94,15 @@ export const skillPoolApi = {
   ) =>
     invoke<void>("apply_pool_fusion", { name, description, content, sources, retireSources }),
   remove: (name: string) => invoke<void>("delete_pool_skill", { name }),
+  /**
+   * 停用/启用：只切 is_active，**不动 pool**。
+   *
+   * 和「退回待定」的区别：降级会丢掉「已审核通过」的状态，将来要重审；停用保留
+   * 审核结论，只是这一阵不注入。网关匹配器一直在按 is_active 过滤，但此前没有任何
+   * 界面能改它——这一列永远是 1。
+   */
+  setActive: (name: string, active: boolean) =>
+    invoke<void>("toggle_skill_active", { name, isActive: active }),
 };
 
 

@@ -1,4 +1,4 @@
-use tauri::{AppHandle, Emitter, State};
+use tauri::{Emitter, State};
 use tokio::io::AsyncBufReadExt;
 use crate::proc::NoWindow;
 use std::sync::Arc;
@@ -255,29 +255,35 @@ pub fn run_skill_audit(db: State<'_, Arc<DbManager>>) -> Result<Vec<SkillAuditRe
 
 // ── Desktop Notification ──────────────────────────
 
-#[tauri::command]
-pub fn send_desktop_notification(title: String, body: String, app_handle: AppHandle) -> Result<(), String> {
-    app_handle.emit("omnix-notification", serde_json::json!({ "title": title, "body": body }))
-        .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
 // ── ntfy Push ─────────────────────────────────────
 
-#[tauri::command]
-pub async fn send_ntfy_notification(
-    server: String, topic: String, title: String, message: String, priority: Option<String>,
+/// 往 ntfy 推一条消息。
+///
+/// 这里以前是个 `#[tauri::command]`，但**没有任何前端在调**——推手机这条路一直
+/// 够不着。现在降级成普通函数，由钩子的 `ntfy` 动作作为唯一入口调用：那才是它
+/// 真正有用的场景（长任务跑完、人不在电脑前）。要再开一个手动入口时，从这里包
+/// 一层命令即可，逻辑只有这一份。
+pub(crate) async fn push_ntfy(
+    server: &str,
+    topic: &str,
+    title: &str,
+    message: &str,
 ) -> Result<(), String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .unwrap_or_else(|_| reqwest::Client::new());
-    let pri = priority.unwrap_or_else(|| "default".into());
-    let res = client.post(format!("{}/{}", server.trim_end_matches('/'), topic))
-        .header("Title", &title).header("Priority", &pri)
-        .body(message).send().await
-        .map_err(|e| format!("ntfy request failed: {}", e))?;
-    if !res.status().is_success() { return Err(format!("ntfy HTTP {}", res.status())); }
+    let res = client
+        .post(format!("{}/{}", server.trim_end_matches('/'), topic))
+        .header("Title", title)
+        .header("Priority", "default")
+        .body(message.to_string())
+        .send()
+        .await
+        .map_err(|e| format!("ntfy 请求失败：{e}"))?;
+    if !res.status().is_success() {
+        return Err(format!("ntfy HTTP {}", res.status()));
+    }
     Ok(())
 }
 

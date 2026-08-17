@@ -163,6 +163,10 @@ export function usePlatforms(): UsePlatformsReturn {
       api_key: platformForm.api_key,
       api_address: platformForm.api_address,
       is_enabled: true,
+      // 新建平台用默认路由：权重 1、优先级 0。编辑现有平台时保留原值——
+      // 这个表单不含路由字段，用默认值覆盖会把用户拖出来的顺序冲掉。
+      weight: editingPlatform?.weight ?? 1,
+      priority: editingPlatform?.priority ?? 0,
     };
 
     await platformApi.save(newPlatform);

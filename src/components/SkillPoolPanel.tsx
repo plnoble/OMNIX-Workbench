@@ -63,6 +63,8 @@ export function SkillPoolPanel() {
   /** 技能名 → 存证。空 Map 表示还没读到，不是「都没问题」。 */
   const [provenance, setProvenance] = useState<Map<string, SkillProvenance>>(new Map());
   const [relocking, setRelocking] = useState("");
+  const [togglingActive, setTogglingActive] = useState("");
+
   const [models, setModels] = useState<PlatformModel[]>([]);
   const [chatModel, setChatModel] = useState("");
   const [injectionOn, setInjectionOn] = useState(true);
@@ -120,6 +122,29 @@ export function SkillPoolPanel() {
       /* 存证读不到就不显示徽标，不打扰 */
     }
   }, []);
+
+  /**
+   * 停用/启用一条技能。
+   *
+   * 网关匹配器一直按 `is_active = 1` 过滤，但此前**没有任何界面能改它**——
+   * 唯一的写入方没有调用方，所以这一列永远是 1，「这条今天先别注入」做不到。
+   * 现役的替代是「退回待定」，但那会丢掉审核结论、将来要重审；这里只切开关。
+   */
+  const setActive = useCallback(
+    async (name: string, active: boolean) => {
+      setTogglingActive(name);
+      try {
+        await skillPoolApi.setActive(name, active);
+        toast.success(active ? `已启用「${name}」` : `已停用「${name}」，网关不再注入`);
+        await load();
+      } catch (e) {
+        toast.error(`操作失败：${e}`);
+      } finally {
+        setTogglingActive("");
+      }
+    },
+    [load],
+  );
 
   /**
    * 重新上锁：把指纹更新到当前内容。
@@ -806,6 +831,33 @@ export function SkillPoolPanel() {
                       </span>
                     );
                   })()}
+                  {/*
+                    停用标记。只在**已停用**时显示——和存证徽标同一个取向：正常
+                    状态不占位置，异常才出现。
+                  */}
+                  {!item.is_active && (
+                    <span
+                      className="rounded border border-border bg-muted/40 px-1 py-0.5 text-[10px] text-muted-foreground"
+                      title="已停用：保留审核结论，但网关不会注入它。"
+                    >
+                      已停用
+                    </span>
+                  )}
+                  <button
+                    className="rounded border border-border px-1 py-0.5 text-[10px] hover:bg-muted/40 disabled:opacity-50"
+                    disabled={togglingActive === item.name}
+                    title={
+                      item.is_active
+                        ? "停用：网关不再注入它，但保留「已审核通过」的状态（不同于退回待定）"
+                        : "启用：重新参与网关注入"
+                    }
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void setActive(item.name, !item.is_active);
+                    }}
+                  >
+                    {togglingActive === item.name ? "…" : item.is_active ? "停用" : "启用"}
+                  </button>
                   {provenance.get(item.name)?.status.state === "drifted" && (
                     <button
                       className="rounded border border-border px-1 py-0.5 text-[10px] hover:bg-muted/40 disabled:opacity-50"

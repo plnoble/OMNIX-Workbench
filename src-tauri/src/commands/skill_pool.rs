@@ -40,6 +40,13 @@ pub struct SkillPoolItem {
     pub updated_at: String,
     /// Content was auto-updated after the last review (「更新待复审」 badge).
     pub needs_re_review: bool,
+    /// 是否参与网关注入。
+    ///
+    /// 网关匹配器一直在按 `WHERE is_active = 1` 过滤，但**没有任何界面能改它**——
+    /// 唯一的写入方 `toggle_skill_active` 没有调用方，所以这一列永远是默认的 1，
+    /// 「这条今天先别注入」这个动作不存在。和「退回待定」不同：降级会丢掉
+    /// 「已审核通过」的状态，将来还得重审；停用只是暂时不注入。
+    pub is_active: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,7 +92,8 @@ pub fn list_skill_pool(db: State<'_, Arc<DbManager>>) -> Result<Vec<SkillPoolIte
                     usage_count, starred, review_score, review_verdict, review_summary,
                     reviewed_at, updated_at, summary_zh, review_problems, review_improve,
                     (reviewed_at IS NOT NULL AND content_updated_at IS NOT NULL
-                     AND content_updated_at > reviewed_at)
+                     AND content_updated_at > reviewed_at),
+                    is_active
              FROM skills
              ORDER BY pool DESC, review_score IS NULL, updated_at DESC",
         )
@@ -111,6 +119,7 @@ pub fn list_skill_pool(db: State<'_, Arc<DbManager>>) -> Result<Vec<SkillPoolIte
                 reviewed_at: r.get(11)?,
                 updated_at: r.get(12)?,
                 needs_re_review: r.get::<_, i64>(16)? != 0,
+                is_active: r.get::<_, i64>(17)? != 0,
             })
         })
         .map_err(|e| e.to_string())?;

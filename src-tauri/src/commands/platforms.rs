@@ -281,6 +281,13 @@ pub struct ModelPlatform {
     pub api_key: String,
     pub api_address: String,
     pub is_enabled: bool,
+    /// 路由决胜的两个因子：`priority DESC, weight DESC`。
+    ///
+    /// 以前这个 DTO 里没有它们，于是界面既显示不出当前值、也没法回传——
+    /// `update_platform_routing` 一次写两列，前端拿不到 priority 就只能瞎填一个，
+    /// 等于把用户拖出来的优先级冲掉。
+    pub weight: i32,
+    pub priority: i32,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -313,7 +320,7 @@ pub fn get_model_platforms(db: State<'_, Arc<DbManager>>) -> Result<Vec<ModelPla
     // 抄送前端一遍。
     let mut stmt = conn
         .prepare(
-            "SELECT id, name, api_type, api_address, is_enabled
+            "SELECT id, name, api_type, api_address, is_enabled, weight, priority
              FROM model_platforms ORDER BY priority DESC, name",
         )
         .map_err(|e| e.to_string())?;
@@ -327,6 +334,8 @@ pub fn get_model_platforms(db: State<'_, Arc<DbManager>>) -> Result<Vec<ModelPla
                 api_key: String::new(),
                 api_address: row.get(3)?,
                 is_enabled: is_enabled_int != 0,
+                weight: row.get(5)?,
+                priority: row.get(6)?,
             })
         })
         .map_err(|e| e.to_string())?;

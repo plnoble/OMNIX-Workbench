@@ -25,6 +25,13 @@ const EVENTS: { value: string; label: string }[] = [
 ];
 const ACTIONS: { value: string; label: string; hint: string }[] = [
   { value: "notify", label: "桌面通知", hint: "通知正文（留空则用事件内容）" },
+  // 桌面通知只在 OMNIX 开着、人在电脑前时有用。ntfy 是**唯一能把消息送出这台
+  // 机器**的动作——长任务挂着、人走开了，只有它能叫到人。
+  {
+    value: "ntfy",
+    label: "推送到手机（ntfy）",
+    hint: "格式：<服务器>|<主题>，例如 https://ntfy.sh|omnix-alerts。手机装 ntfy App 订阅同一主题即可收到。",
+  },
   { value: "command", label: "执行命令", hint: "shell 命令，可用 $OMNIX_SESSION_ID / $OMNIX_EVENT / $OMNIX_EVENT_TEXT" },
   { value: "log", label: "记录日志", hint: "记录到下方运行日志的内容" },
 ];

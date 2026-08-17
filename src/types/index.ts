@@ -428,6 +428,9 @@ export interface ModelPlatform {
   api_key: string;
   api_address: string;
   is_enabled: boolean;
+  /** 路由决胜：priority DESC, weight DESC。两者都由界面可编辑（优先级=列表顺序）。 */
+  weight: number;
+  priority: number;
 }
 
 /** A model available under a platform, with capability flags */

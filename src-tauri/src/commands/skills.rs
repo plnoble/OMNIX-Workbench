@@ -1,94 +1,9 @@
 use crate::db::DbManager;
 use crate::input_validation;
-use crate::skill_frontmatter::{generate_with_frontmatter, parse_frontmatter, SkillFrontmatter};
+use crate::skill_frontmatter::{generate_with_frontmatter, SkillFrontmatter};
 use rusqlite::params;
-use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::State;
-
-#[tauri::command]
-pub fn get_skill_content(
-    name: String,
-    profile: String,
-    db: State<'_, Arc<DbManager>>,
-) -> Result<String, String> {
-    let conn = db
-        .get_connection()
-        .map_err(|e: rusqlite::Error| e.to_string())?;
-    let mut stmt = conn
-        .prepare("SELECT file_path FROM skills WHERE name = ?1")
-        .map_err(|e: rusqlite::Error| e.to_string())?;
-    let file_path_str: String = stmt
-        .query_row(params![name], |r: &rusqlite::Row| r.get(0))
-        .map_err(|e: rusqlite::Error| format!("Skill not found: {}", e))?;
-
-    let mut path = PathBuf::from(&file_path_str);
-
-    let suffix = match profile.to_lowercase().as_str() {
-        "minimal" => "minimal",
-        "comprehensive" => "comprehensive",
-        _ => "core",
-    };
-    path.set_file_name(format!("{}_{}.md", name, suffix));
-
-    if !path.exists() {
-        return Err(format!(
-            "Profile file not found at: {}",
-            path.to_string_lossy()
-        ));
-    }
-
-    let raw = std::fs::read_to_string(&path)
-        .map_err(|e| format!("Failed to read skill content: {}", e))?;
-
-    // Parse frontmatter and return body only (frontend gets clean content)
-    let (_fm, body) = parse_frontmatter(&raw);
-    Ok(body)
-}
-
-#[tauri::command]
-pub fn save_skill_content(
-    name: String,
-    profile: String,
-    content: String,
-    db: State<'_, Arc<DbManager>>,
-) -> Result<(), String> {
-    let conn = db
-        .get_connection()
-        .map_err(|e: rusqlite::Error| e.to_string())?;
-    let mut stmt = conn
-        .prepare("SELECT file_path FROM skills WHERE name = ?1")
-        .map_err(|e: rusqlite::Error| e.to_string())?;
-    let file_path_str: String = stmt
-        .query_row(params![name], |r: &rusqlite::Row| r.get(0))
-        .map_err(|e: rusqlite::Error| format!("Skill not found: {}", e))?;
-
-    let mut path = PathBuf::from(&file_path_str);
-
-    let suffix = match profile.to_lowercase().as_str() {
-        "minimal" => "minimal",
-        "comprehensive" => "comprehensive",
-        _ => "core",
-    };
-    path.set_file_name(format!("{}_{}.md", name, suffix));
-
-    let mut tmp_path = path.clone();
-    tmp_path.set_extension("tmp");
-
-    std::fs::write(&tmp_path, &content)
-        .map_err(|e| format!("Failed to write temporary file: {}", e))?;
-
-    std::fs::rename(&tmp_path, &path)
-        .map_err(|e| format!("Failed to atomically replace skill file: {}", e))?;
-
-    conn.execute(
-        "UPDATE skills SET updated_at = CURRENT_TIMESTAMP WHERE name = ?1",
-        params![name],
-    )
-    .map_err(|e: rusqlite::Error| e.to_string())?;
-
-    Ok(())
-}
 
 #[tauri::command]
 pub fn toggle_skill_active(
@@ -102,23 +17,6 @@ pub fn toggle_skill_active(
     conn.execute(
         "UPDATE skills SET is_active = ?1, updated_at = CURRENT_TIMESTAMP WHERE name = ?2",
         params![if is_active { 1 } else { 0 }, name],
-    )
-    .map_err(|e: rusqlite::Error| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn update_skill_profile(
-    name: String,
-    profile: String,
-    db: State<'_, Arc<DbManager>>,
-) -> Result<(), String> {
-    let conn = db
-        .get_connection()
-        .map_err(|e: rusqlite::Error| e.to_string())?;
-    conn.execute(
-        "UPDATE skills SET profile = ?1, updated_at = CURRENT_TIMESTAMP WHERE name = ?2",
-        params![profile, name],
     )
     .map_err(|e: rusqlite::Error| e.to_string())?;
     Ok(())

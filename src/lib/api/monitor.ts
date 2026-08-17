@@ -80,32 +80,20 @@ export const requestLogApi = {
     invoke<number>("cleanup_request_logs", { keepDays }),
 };
 
-// ── Platform Health ───────
+// ── 平台路由权重 ───────
 
-export interface PlatformHealth {
-  id: string;
-  name: string;
-  api_type: string;
-  is_enabled: boolean;
-  is_healthy: boolean;
-  weight: number;
-  priority: number;
-  consecutive_failures: number;
-  last_error: string | null;
-  last_used_at: string | null;
-  model_count: number;
-}
-
-export const platformHealthApi = {
-  /** Get health status of all platforms */
-  getAll: () => invoke<PlatformHealth[]>("get_platform_health"),
-
-  /** Reset a platform's health status */
-  reset: (platformId: string) =>
-    invoke("reset_platform_health", { platformId }),
-
-  /** Update platform weight and priority */
-  updateRouting: (platformId: string, weight: number, priority: number) =>
+/**
+ * 改一个平台的路由权重。
+ *
+ * 网关按 `priority DESC, weight DESC` + 模型名哈希决胜（见 PlatformSubTab 的说明）。
+ * priority 早就能改——列表顺序就是它；但 **weight 一直没有任何界面入口**，也就是
+ * 同优先级的两个平台之间怎么分流，用户完全改不了。
+ *
+ * 同批曾有 getAll / reset 两条读健康状态的，已删：健康展示由网关健康卡承担
+ * （熔断器实时状态 + 主动探测），再放一份「另一套口径的健康」只会让人问哪个准。
+ */
+export const platformRoutingApi = {
+  update: (platformId: string, weight: number, priority: number) =>
     invoke("update_platform_routing", { platformId, weight, priority }),
 };
 
@@ -196,13 +184,6 @@ export const skillAuditApi = {
 };
 
 
-// Desktop Notifications
-export const notificationApi = {
-  send: (title: string, body: string) =>
-    invoke("send_desktop_notification", { title, body }),
-  sendNtfy: (server: string, topic: string, title: string, message: string, priority?: string) =>
-    invoke("send_ntfy_notification", { server, topic, title, message, priority }),
-};
 
 // Context Compaction
 export interface CompactResult {

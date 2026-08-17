@@ -376,6 +376,9 @@ mod key_storage_tests {
                     api_key: String::new(),
                     api_address: row.get(3)?,
                     is_enabled: is_enabled_int != 0,
+                    // 这条测试只关心 api_key 有没有被查回来，路由权重取默认即可。
+                    weight: 1,
+                    priority: 0,
                 })
             })
             .unwrap()

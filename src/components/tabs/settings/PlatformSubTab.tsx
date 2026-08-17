@@ -17,7 +17,7 @@ import { Badge } from "@/components/ui/badge";
 import { Activity, AlertTriangle, Brain, Code, Edit, Eye, GitCompare, GripVertical, Layers, Maximize2, Mic, Plus, RefreshCw, Search, Star, Trash2, Wrench, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/sonner";
-import { apiPresetApi, platformApi, modelApi, modelSyncApi, settingsApi, type ModelSyncResult } from "@/lib/tauri-api";
+import { apiPresetApi, platformApi, platformRoutingApi, modelApi, modelSyncApi, settingsApi, type ModelSyncResult } from "@/lib/tauri-api";
 import type { ModelPlatform, ModelRouting, PlatformModel } from "@/types";
 
 /**
@@ -60,6 +60,27 @@ export function PlatformSubTab() {
   const selectedPlatform = platforms.find((p) => p.id === selectedPlatformId);
 
   const [applyingPreset, setApplyingPreset] = useState(false);
+  const [savingWeight, setSavingWeight] = useState(false);
+
+  /**
+   * 存路由权重。**priority 原样带回去**——后端那条命令一次写两列，只传 weight
+   * 会把优先级重置成 0，而优先级是用户拖列表拖出来的，悄悄清零最难查。
+   */
+  const saveWeight = useCallback(
+    async (plat: ModelPlatform, weight: number) => {
+      setSavingWeight(true);
+      try {
+        await platformRoutingApi.update(plat.id, weight, plat.priority ?? 0);
+        toast.success(`已把「${plat.name}」的权重设为 ${weight}`);
+        await p.loadPlatforms();
+      } catch (e) {
+        toast.error(`保存权重失败：${e}`);
+      } finally {
+        setSavingWeight(false);
+      }
+    },
+    [p],
+  );
 
   /**
    * 按预设建供应商。**不在这里收 Key**——先把平台建出来，Key 走已有的多 Key 管理
@@ -317,6 +338,31 @@ export function PlatformSubTab() {
                   <span className="text-xs text-muted-foreground">
                     Endpoint: <code className="break-all">{selectedPlatform.api_address}</code>
                   </span>
+                  {/*
+                    权重：决胜规则 `priority DESC, weight DESC` 的第二个因子。
+                    priority 由左侧列表顺序决定（可拖），而 weight **此前没有任何
+                    界面入口**——同优先级的两个平台之间怎么分流，用户改不了。
+                    改完立刻落库，不需要额外「保存」：这是个单值设置，加一步确认
+                    只会让人以为没生效。
+                  */}
+                  <div className="mt-1.5 flex items-center gap-1.5">
+                    <span className="text-xs text-muted-foreground">权重</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={100}
+                      defaultValue={selectedPlatform.weight ?? 1}
+                      disabled={savingWeight}
+                      title="同优先级时按权重分流，1~100。优先级由左侧列表顺序决定。"
+                      className="h-6 w-16 rounded border border-border bg-background px-1.5 text-xs"
+                      onBlur={(e) => {
+                        const next = Number(e.target.value);
+                        if (Number.isFinite(next) && next !== selectedPlatform.weight) {
+                          void saveWeight(selectedPlatform, next);
+                        }
+                      }}
+                    />
+                  </div>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <Button size="sm" variant="outline" onClick={onFetchRemoteModels} disabled={fetchingModels}>
