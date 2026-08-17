@@ -74,15 +74,53 @@ pub fn get_context_budget(
     }))
 }
 
-/// Compact conversation context — summarize old messages and keep recent ones.
-/// Returns the number of messages compacted.
+/// 每条旧消息在摘录里保留的字符数。
+const DIGEST_CHARS_PER_MESSAGE: usize = 200;
+
+/// 压缩前把原文写到备份目录，返回文件路径。
+///
+/// 复用 `storage::backups_dir()`（用户可在「设置 → 存储位置」改），不新起一套目录。
+/// 返回 `Err` 时调用方必须中止压缩——没有备份就不能删。
+fn write_compaction_backup(
+    conversation_id: &str,
+    messages: &[(String, String)],
+) -> Result<PathBuf, String> {
+    let dir = crate::storage::backups_dir().join("compaction");
+    fs::create_dir_all(&dir).map_err(|e| format!("建备份目录失败：{e}"))?;
+    let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+    // 会话 id 由 OMNIX 生成（`conv_*`），但仍按路径分量校验一次——它要拼进文件名。
+    crate::input_validation::validate_path_component(conversation_id, "conversation_id")?;
+    let path = dir.join(format!("{conversation_id}_{stamp}.json"));
+    let payload = serde_json::json!({
+        "conversation_id": conversation_id,
+        "compacted_at": chrono::Local::now().to_rfc3339(),
+        "messages": messages.iter().map(|(role, content)| {
+            serde_json::json!({ "role": role, "content": content })
+        }).collect::<Vec<_>>(),
+    });
+    fs::write(&path, serde_json::to_string_pretty(&payload).unwrap_or_default())
+        .map_err(|e| format!("写备份失败：{e}"))?;
+    Ok(path)
+}
+
+/// 压缩对话上下文：把早期消息换成一份**截断摘录**，只保留最近若干条。
+///
+/// **不是 AI 摘要**——每条只留前 200 字后拼接。原文在删除前会写进
+/// `<备份目录>/compaction/`，所以这个操作是可逆的（手工恢复）。
 #[tauri::command]
 pub fn compact_conversation_context(
     conversation_id: String,
     keep_recent: Option<usize>,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<serde_json::Value, String> {
-    let keep = keep_recent.unwrap_or(20);
+    compact_core(&db, &conversation_id, keep_recent.unwrap_or(20))
+}
+
+pub(crate) fn compact_core(
+    db: &DbManager,
+    conversation_id: &str,
+    keep: usize,
+) -> Result<serde_json::Value, String> {
     let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
 
     // Get total message count
@@ -111,16 +149,36 @@ pub fn compact_conversation_context(
         |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
     ).map_err(|e: rusqlite::Error| e.to_string())?.flatten().collect();
 
-    // Build summary from old messages
-    let mut summary_parts = Vec::new();
+    // 删之前先把原文落盘。
+    //
+    // 这一步以前没有：旧消息被 DELETE 掉，只留下每条前 200 字的拼接，**不可恢复**。
+    // 截断本身是有意的（要的就是把上下文缩小），但「缩小」不该等于「销毁」——
+    // 备份让这个操作变成可逆的，代价只是一个 JSON 文件。
+    //
+    // 写失败就**中止整个压缩**：宁可这次没压成，也不能在没有退路的情况下删。
+    let backup_path = write_compaction_backup(conversation_id, &old_messages)?;
+
+    // 把旧消息压成「每条前 200 字」的清单。
+    //
+    // **这不是摘要**——没有模型参与，就是截断后拼接。函数名和界面文案都必须这么说，
+    // 否则用户以为拿到的是浓缩过的要点，实际拿到的是一堆残句。
+    let mut digest_parts = Vec::new();
     for (role, content) in &old_messages {
-        let truncated: String = content.chars().take(200).collect();
-        summary_parts.push(format!("[{}]: {}", role, truncated));
+        let truncated: String = content.chars().take(DIGEST_CHARS_PER_MESSAGE).collect();
+        let elided = content.chars().count() > DIGEST_CHARS_PER_MESSAGE;
+        digest_parts.push(format!(
+            "[{}]: {}{}",
+            role,
+            truncated,
+            if elided { "…（已截断）" } else { "" }
+        ));
     }
     let summary = format!(
-        "=== CONVERSATION SUMMARY ({} older messages compacted) ===\n{}\n=== END SUMMARY ===",
+        "=== 早期对话摘录（{} 条，每条保留前 {} 字，非摘要）===\n{}\n=== 原文备份：{} ===",
         old_messages.len(),
-        summary_parts.join("\n")
+        DIGEST_CHARS_PER_MESSAGE,
+        digest_parts.join("\n"),
+        backup_path.display()
     );
 
     // Delete old messages
@@ -892,5 +950,145 @@ mod codebase_scan_tests {
         assert_eq!(stats.file_count, 1, "只有 real.rs 该被统计");
         assert_eq!(stats.languages.get("Rust"), Some(&1));
         assert_eq!(stats.languages.get("JavaScript"), None, "依赖树里的 js 不该算进语言分布");
+    }
+}
+
+#[cfg(test)]
+mod compaction_tests {
+    use super::*;
+    use crate::db::DbManager;
+
+    fn test_db(tag: &str) -> Arc<DbManager> {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "omnix_compact_{tag}_{}_{}.db",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_file(&path);
+        Arc::new(DbManager::new_with_path(path))
+    }
+
+    /// 塞 n 条消息，第 i 条内容是 `<i>` 后跟 len 个 'x'。
+    fn seed(db: &DbManager, conv: &str, n: usize, len: usize) {
+        let conn = db.get_connection().unwrap();
+        conn.execute(
+            "INSERT INTO conversations (id, title, workspace_path, active_agent)
+             VALUES (?1, 'T', '', 'claude')",
+            params![conv],
+        )
+        .unwrap();
+        for i in 0..n {
+            conn.execute(
+                "INSERT INTO messages (id, conversation_id, role, content, timestamp)
+                 VALUES (?1, ?2, 'user', ?3, datetime('now', ?4))",
+                params![
+                    format!("m{i}"),
+                    conv,
+                    format!("{i}{}", "x".repeat(len)),
+                    format!("-{} minutes", n - i)
+                ],
+            )
+            .unwrap();
+        }
+    }
+
+    fn message_count(db: &DbManager, conv: &str) -> i64 {
+        db.get_connection()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1",
+                params![conv],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    /// 压缩会**删掉**原始消息，只留最近 N 条 + 一条汇总。
+    #[test]
+    fn compaction_removes_the_original_messages() {
+        let db = test_db("removes");
+        seed(&db, "c1", 30, 10);
+        assert_eq!(message_count(&db, "c1"), 30);
+
+        compact_core(&db, "c1", 20).expect("压缩");
+
+        // 20 条保留 + 1 条汇总
+        assert_eq!(message_count(&db, "c1"), 21, "原始消息应已被删除");
+    }
+
+    /// **原文在删除前必须落盘，且内容完整**。
+    ///
+    /// 这是这次修复的核心：截断是有意的，销毁不是。备份让操作可逆——所以这条
+    /// 断言的不只是「文件存在」，而是**未截断的全文**都在里面。
+    #[test]
+    fn originals_are_backed_up_in_full_before_deletion() {
+        let db = test_db("backup");
+        let long = format!("0{}", "x".repeat(500));
+        seed(&db, "c3", 25, 500);
+
+        let before = std::time::SystemTime::now();
+        compact_core(&db, "c3", 20).expect("压缩");
+
+        let dir = crate::storage::backups_dir().join("compaction");
+        let mut found: Option<String> = None;
+        for entry in std::fs::read_dir(&dir).expect("备份目录应已建立").flatten() {
+            let meta = entry.metadata().unwrap();
+            if meta.modified().map(|m| m >= before).unwrap_or(false)
+                && entry.file_name().to_string_lossy().starts_with("c3_")
+            {
+                found = std::fs::read_to_string(entry.path()).ok();
+            }
+        }
+        let body = found.expect("应写出本次压缩的备份文件");
+        assert!(
+            body.contains(&long),
+            "备份里应是**未截断**的全文（500+ 字符），实际没找到"
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&body).expect("备份应是合法 JSON");
+        assert_eq!(
+            parsed["messages"].as_array().unwrap().len(),
+            5,
+            "25 条留 20 条，应备份被删掉的 5 条"
+        );
+    }
+
+    /// 摘录里每条只保留前 200 字符，并明确标注被截断过。
+    ///
+    /// 这条测的是「口径」而不是「对错」：截断本身是有意的（要的就是缩小上下文），
+    /// 但产出必须说自己是摘录，不能自称摘要。
+    #[test]
+    fn the_digest_truncates_each_message_at_200_chars() {
+        let db = test_db("truncate");
+        seed(&db, "c2", 25, 500); // 每条 500+ 字符
+        compact_core(&db, "c2", 20).expect("压缩");
+
+        let digest: String = db
+            .get_connection()
+            .unwrap()
+            .query_row(
+                "SELECT content FROM messages WHERE conversation_id = ?1 AND role = 'system'",
+                params!["c2"],
+                |r| r.get(0),
+            )
+            .unwrap();
+
+        // 被压掉的是最早 5 条（25 - 20）。取第一条看它被截到多长。
+        let line = digest
+            .lines()
+            .find(|l| l.starts_with("[user]:"))
+            .expect("汇总里应有 user 行");
+        let body = line.trim_start_matches("[user]: ");
+        assert!(
+            body.ends_with("…（已截断）"),
+            "被截断的条目必须自己说出来，否则读的人会以为那就是全文：{body}"
+        );
+        let kept = body.trim_end_matches("…（已截断）").chars().count();
+        assert_eq!(kept, 200, "每条应保留前 200 字符，实际 {kept}");
+
+        // 产出不能自称「摘要」——没有模型参与，它只是摘录。
+        assert!(digest.contains("非摘要"), "摘录必须标明自己不是摘要");
+        assert!(digest.contains("原文备份："), "摘录里要指出原文备份在哪");
     }
 }

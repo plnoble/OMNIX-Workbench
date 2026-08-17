@@ -10,7 +10,8 @@ import { toast } from "@/components/ui/sonner";
  * conversation transcript (R4 (a)). OMNIX owns the `messages` table (what it
  * replays on resume), so this count is precise for that transcript; the live
  * CLI session may compact independently. Shows used/window tokens, a colored
- * fill, and a 压缩 action that summarizes old messages when the transcript grows
+ * fill, and a 压缩 action that truncates old messages (200 chars each, no model
+ * involved) when the transcript grows
  * large. Hidden until the conversation actually has content.
  */
 interface Props {
@@ -55,12 +56,21 @@ export function ContextMeter({ conversationId, modelName, refreshSignal, onCompa
   }, [load, refreshSignal]);
 
   const compact = async () => {
-    if (!window.confirm("压缩较早的对话：把旧消息汇总成一条摘要，仅保留最近 20 条。OMNIX 存储的对话会被改写，不可撤销。继续？")) return;
+    // 文案必须和实现一致。这里以前写的是「汇总成一条摘要」——听起来是浓缩过的
+    // 要点，实际是**每条截前 200 字后拼接**，没有模型参与。用户据此以为信息还在，
+    // 而超出部分当时是直接删掉、不可恢复的。现在原文会先备份，措辞也照实说。
+    if (
+      !window.confirm(
+        "压缩较早的对话：每条旧消息只保留前 200 字（不是 AI 摘要），仅保留最近 20 条完整消息。\n\n" +
+          "原文会先备份到「设置 → 存储位置」的备份目录下 compaction/ 里，可手工恢复。\n\n继续？",
+      )
+    )
+      return;
     setCompacting(true);
     try {
       const result = await contextCompactApi.compact(conversationId, 20);
       if (result.compacted > 0) {
-        toast.success(`已压缩 ${result.compacted} 条旧消息为摘要`);
+        toast.success(`已压缩 ${result.compacted} 条旧消息，原文已备份`);
         onCompacted?.();
       } else {
         toast.info(result.message || "消息较少，无需压缩");
