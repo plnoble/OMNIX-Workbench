@@ -1343,14 +1343,30 @@ mod gateway_access_tests {
         }
     }
 
-    /// 真正与网关无关的路径不受影响。过度拦截同样是 bug。
+    /// 未注册的路径**对局域网也要凭据**，对本机照常放行。
     ///
-    /// `/health` **不在这里**——它以前在。绑 0.0.0.0 时它会把平台数量、请求计数
-    /// 这类内部状态交给局域网上任何一台设备，所以已纳入鉴权面（见下一条）。
+    /// 这条断言方向变过。原来叫 `unrelated_paths_are_not_gated`，断言
+    /// `/preview/x/y.html` 和 `/` 从局域网免令牌放行，理由是「过度拦截同样是 bug」。
+    ///
+    /// 改掉是因为那个理由在这个网关上不成立：它开了手机远程访问就绑 0.0.0.0，
+    /// 而**它没有任何应当公开的表面**——连远程面板都要会话。原来的判断是白名单式
+    /// （不在 `/v1/` `/agent/` `/session/` `/mcp` `/health` 里就直接放行），也就是
+    /// 默认放行；新加一条路由忘了归类，就是对局域网静默敞开。
+    ///
+    /// 实际影响为零：这两个路径当时和现在都**没有注册**（router 里无 fallback、
+    /// 无静态服务），本机的 `/preview` 调用走的是 localhost，回环这条路没变。
     #[test]
-    fn unrelated_paths_are_not_gated() {
+    fn unregistered_paths_still_require_credentials_from_the_lan() {
         for path in ["/preview/x/y.html", "/"] {
-            assert_eq!(decide_gateway_access(&req(path, false)), AccessDecision::Allow, "{path}");
+            assert!(
+                matches!(decide_gateway_access(&req(path, false)), AccessDecision::Deny(_)),
+                "{path} 从局域网应要凭据"
+            );
+            assert_eq!(
+                decide_gateway_access(&req(path, true)),
+                AccessDecision::Allow,
+                "{path} 本机应放行"
+            );
         }
     }
 

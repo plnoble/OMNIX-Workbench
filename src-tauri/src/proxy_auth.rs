@@ -120,17 +120,24 @@ pub(crate) fn decide_gateway_access(req: &AccessRequest<'_>) -> AccessDecision {
         return AccessDecision::Deny("远程面板需要有效会话：请在电脑上「诊断」页重新扫码或复制链接");
     }
 
-    // `/mcp` 必须在这一行里：它把技能库、联网搜索和 Office 读写交给调用方，开了
-    // 手机远程访问之后网关绑的是 0.0.0.0，漏掉它等于把这些能力对局域网无鉴权敞开。
-    // `/health` 也在里面：它回的是平台数量、请求计数这类内部状态。绑 0.0.0.0 时
-    // 让局域网随便探，等于免费提供一份「这台机器上装了什么、用得多不多」的报告。
-    // 本机进程不受影响（下面那行对回环直接放行）。
-    let is_gateway = req.path.starts_with("/v1/")
-        || req.path.starts_with("/agent/")
-        || req.path.starts_with("/session/")
-        || req.path == "/mcp"
-        || req.path == "/health";
-    if !is_gateway || req.peer_is_loopback {
+    // 走到这里的都不是远程面板路径。**一律要凭据**：回环放行，其余要令牌。
+    //
+    // 这里以前先算一个白名单（`/v1/` `/agent/` `/session/` `/mcp` `/health`），
+    // 然后 `if !is_gateway || peer_is_loopback { Allow }`——落在白名单**外**的路径
+    // 对任何 IP、不带任何凭据直接放行。当时 router 里每条路由恰好都被覆盖，所以
+    // 没有实际暴露；但那是**默认放行**：以后新加一条路由，忘了进白名单就是对局域网
+    // 静默敞开，没有报错、没有日志，只有开着「手机远程访问」时才会被人从外面摸到。
+    //
+    // 白名单整个去掉了——它唯一的作用是决定「谁不用鉴权」，而正确答案是「没有谁」。
+    // 改成默认拒绝的代价是新路由默认要令牌，那个方向的失败**看得见**（本机以外
+    // 调不通，立刻发现），原来那个方向的失败看不见。
+    // `router_coverage_tests` 扫 proxy.rs 的真实路由表钉住这一点。
+    //
+    // 白名单里那两条曾单独写过理由，仍然成立、现在由默认拒绝一并覆盖：
+    // `/mcp` 把技能库、联网搜索和 Office 读写交给调用方；`/health` 回的是平台数量、
+    // 请求计数这类内部状态——绑 0.0.0.0 时让局域网随便探，等于免费提供一份
+    // 「这台机器上装了什么、用得多不多」的报告。
+    if req.peer_is_loopback {
         return AccessDecision::Allow;
     }
 
@@ -308,5 +315,116 @@ mod tests {
         for pair in snapshot.windows(2) {
             assert!(pair[0].last_seen >= pair[1].last_seen);
         }
+    }
+}
+
+#[cfg(test)]
+mod route_classification_tests {
+    use super::*;
+
+    fn from_lan(path: &str) -> AccessDecision {
+        decide_gateway_access(&AccessRequest {
+            path,
+            peer_is_loopback: false,
+            header_token: "",
+            expected_token: "real-token",
+            panel_session_ok: false,
+            panel_code_ok: false,
+        })
+    }
+
+    /// 未归类的路径**不能**对局域网无凭据放行。
+    ///
+    /// 判断走的是白名单（`/v1/` `/agent/` `/session/` `/mcp` `/health`），
+    /// 落在白名单外、又不是 `/api/remote/` 的路径原本直接 `Allow`——**任何 IP、
+    /// 不要凭据**。当前 router 里每条路由恰好都被覆盖，所以没有实际暴露；但这是
+    /// 默认放行的设计，新加一条路由忘了归类就是静默敞开，而且不会有任何征兆。
+    #[test]
+    fn an_unclassified_path_is_not_open_to_the_lan() {
+        assert!(
+            matches!(from_lan("/some/new/route"), AccessDecision::Deny(_)),
+            "未归类路径对局域网无凭据放行了"
+        );
+    }
+
+    /// 已知网关路径仍然按原规则：非回环要令牌。
+    #[test]
+    fn known_gateway_paths_still_require_a_token_from_the_lan() {
+        for p in ["/v1/messages", "/mcp", "/health", "/agent/claude/v1/messages"] {
+            assert!(matches!(from_lan(p), AccessDecision::Deny(_)), "{p} 应要令牌");
+        }
+    }
+
+    /// 回环仍然免令牌——本机进程（agent CLI）靠这条工作，不能收紧。
+    #[test]
+    fn loopback_still_bypasses_the_token_for_gateway_paths() {
+        let d = decide_gateway_access(&AccessRequest {
+            path: "/v1/messages",
+            peer_is_loopback: true,
+            header_token: "",
+            expected_token: "real-token",
+            panel_session_ok: false,
+            panel_code_ok: false,
+        });
+        assert_eq!(d, AccessDecision::Allow, "本机调用不该被挡");
+    }
+}
+
+#[cfg(test)]
+mod router_coverage_tests {
+    use super::*;
+
+    /// 从 `proxy.rs` 的源码里抠出 `.route("<path>"` 的全部路径。
+    ///
+    /// 扫源码而不是维护第二份清单：清单会漂，源码不会。
+    fn declared_routes() -> Vec<String> {
+        let src = include_str!("proxy.rs");
+        let mut out = Vec::new();
+        for (i, _) in src.match_indices(".route(") {
+            let rest = &src[i + ".route(".len()..];
+            let Some(start) = rest.find('"') else { continue };
+            let Some(end) = rest[start + 1..].find('"') else { continue };
+            out.push(rest[start + 1..start + 1 + end].to_string());
+        }
+        out
+    }
+
+    /// **router 里声明的每一条路由，从局域网访问都必须要凭据。**
+    ///
+    /// 这条守的是新加路由时的疏忽。判断逻辑已经改成默认拒绝，所以它现在恒成立——
+    /// 但正因如此才要钉住：一旦有人为了图方便再加一条「这个路径不用鉴权」的
+    /// 例外，这里立刻会红。
+    ///
+    /// Axum 的 `:param` 段用一个占位值替换后再判——判断只看前缀，不解析参数。
+    #[test]
+    fn every_declared_route_requires_credentials_from_the_lan() {
+        let routes = declared_routes();
+        // 自检：扫得到东西才说明这条测试没有空转
+        assert!(routes.len() >= 10, "只扫到 {} 条路由，正则大概率失效了", routes.len());
+
+        let mut open: Vec<String> = Vec::new();
+        for route in &routes {
+            let concrete = route
+                .split('/')
+                .map(|seg| if seg.starts_with(':') { "x" } else { seg })
+                .collect::<Vec<_>>()
+                .join("/");
+            let decision = decide_gateway_access(&AccessRequest {
+                path: &concrete,
+                peer_is_loopback: false,
+                header_token: "",
+                expected_token: "real-token",
+                panel_session_ok: false,
+                panel_code_ok: false,
+            });
+            if !matches!(decision, AccessDecision::Deny(_)) {
+                open.push(route.clone());
+            }
+        }
+        assert!(
+            open.is_empty(),
+            "这些路由对局域网无凭据放行：{}\n新增路由不要开鉴权例外。",
+            open.join(", ")
+        );
     }
 }
