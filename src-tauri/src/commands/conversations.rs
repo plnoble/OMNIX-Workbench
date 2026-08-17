@@ -267,56 +267,6 @@ pub(crate) fn delete_conversation_core(
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-
-pub struct DbTask {
-    pub id: String,
-    pub conversation_id: String,
-    pub title: String,
-    pub status: String,
-    pub order_num: i32,
-    pub dependencies: Vec<String>,
-}
-
-#[tauri::command]
-pub fn get_conversation_tasks(
-    conversation_id: String,
-    db: State<'_, Arc<DbManager>>,
-) -> Result<Vec<DbTask>, String> {
-    get_conversation_tasks_core(&db, &conversation_id)
-}
-
-pub(crate) fn get_conversation_tasks_core(
-    db: &DbManager,
-    conversation_id: &str,
-) -> Result<Vec<DbTask>, String> {
-    // 同一批里其余读取命令都验了 id，只有这条漏了。
-    input_validation::validate_id(conversation_id, "conversation_id")?;
-    let conn = db.get_connection().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare("SELECT id, conversation_id, title, status, order_num, dependencies FROM tasks WHERE conversation_id = ?1 ORDER BY order_num ASC")
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map(params![conversation_id], |row| {
-            let deps_str: String = row.get(5)?;
-            let dependencies: Vec<String> = serde_json::from_str(&deps_str).unwrap_or_default();
-            Ok(DbTask {
-                id: row.get(0)?,
-                conversation_id: row.get(1)?,
-                title: row.get(2)?,
-                status: row.get(3)?,
-                order_num: row.get(4)?,
-                dependencies,
-            })
-        })
-        .map_err(|e| e.to_string())?;
-
-    let mut result = Vec::new();
-    for t in rows.flatten() {
-        result.push(t);
-    }
-    Ok(result)
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteAccessInfo {
     // Serialized as `ip` / `url` to match the frontend `RemoteAccessInfo` type.
     #[serde(rename = "ip")]
@@ -613,7 +563,6 @@ mod tests {
     #[test]
     fn blank_ids_are_rejected_before_touching_sql() {
         let db = test_db("validate");
-        assert!(get_conversation_tasks_core(&db, "  ").is_err());
         assert!(get_conversation_messages_core(&db, "").is_err());
         assert!(delete_conversation_core(&db, "").is_err());
         assert!(set_conversation_archived_core(&db, "", true).is_err());
@@ -622,28 +571,4 @@ mod tests {
         assert!(create_conversation_core(&db, "c", "t", &ws(), "a", Some("")).is_err());
     }
 
-    /// 任务列表按 order_num 升序，且只取本会话的。
-    #[test]
-    fn tasks_come_back_in_order_for_the_right_conversation() {
-        let db = test_db("tasks");
-        seed(&db, "c1");
-        seed(&db, "c2");
-        {
-            let conn = db.get_connection().unwrap();
-            conn.execute(
-                "INSERT INTO tasks (id, conversation_id, title, status, order_num, dependencies)
-                 VALUES ('t2', 'c1', '第二', 'todo', 2, '[\"t1\"]'),
-                        ('t1', 'c1', '第一', 'done', 1, '[]'),
-                        ('tx', 'c2', '别的', 'todo', 1, '[]')",
-                [],
-            )
-            .unwrap();
-        }
-        let tasks = get_conversation_tasks_core(&db, "c1").unwrap();
-        assert_eq!(
-            tasks.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),
-            vec!["t1", "t2"]
-        );
-        assert_eq!(tasks[1].dependencies, vec!["t1".to_string()]);
-    }
 }

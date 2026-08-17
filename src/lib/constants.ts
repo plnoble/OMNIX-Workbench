@@ -274,39 +274,6 @@ export const MCP_SERVICE_PRESETS: McpServicePreset[] = [
 // Output Style Presets
 // ══════════════════════════════════════════════════
 
-export interface OutputStylePreset {
-  id: string;
-  name: string;
-  description: string;
-  system_prompt_suffix: string;
-}
-
-export const OUTPUT_STYLE_PRESETS: OutputStylePreset[] = [
-  {
-    id: "engineer-professional",
-    name: "专业工程风格",
-    description: "严谨、简洁、注重代码质量和技术准确性",
-    system_prompt_suffix: "You are a senior software engineer. Be precise, concise, and technically accurate. Always consider edge cases, error handling, and security implications. Prefer standard library solutions over third-party dependencies.",
-  },
-  {
-    id: "concise",
-    name: "简洁风格",
-    description: "最少文字，直接给答案和代码",
-    system_prompt_suffix: "Be extremely concise. No explanations unless asked. Direct code output. Minimal comments. Think step-by-step internally but output only the result.",
-  },
-  {
-    id: "educational",
-    name: "教学风格",
-    description: "详细解释原理，适合学习场景",
-    system_prompt_suffix: "You are a patient teacher. Explain concepts clearly with examples. When writing code, add detailed comments explaining each step. Suggest related topics for further learning. Use analogies when helpful.",
-  },
-  {
-    id: "creative",
-    name: "创意风格",
-    description: "灵活、开放、善于提出多种方案",
-    system_prompt_suffix: "Think creatively and propose multiple approaches to each problem. Consider unconventional solutions. Evaluate trade-offs between simplicity, performance, and maintainability. Be open to experimentation.",
-  },
-];
 
 /**
  * Nominal context-window sizes (tokens) by model-name substring, for the

@@ -104,6 +104,37 @@ export const searchApi = {
 
 // ── MCP Servers ─────────────────────────────────────────
 
+/**
+ * 内置的 MCP 预设：一组按场景配好的服务器（后端硬编码，见
+ * `config_presets.rs::get_mcp_presets`）。
+ *
+ * 只在这里声明**形状**，不复制内容——服务器地址/命令/参数全在后端那一份。
+ * 前端再抄一遍就会漂，这个仓库在输出风格预设上刚踩过：两边各存一份、内容还不同，
+ * 而且两边都没人用。
+ */
+export interface McpPresetServer {
+  name: string;
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+  url: string;
+  server_type: string;
+  description: string;
+}
+export interface McpPreset {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  servers: McpPresetServer[];
+}
+
+export const mcpPresetApi = {
+  list: () => invoke<McpPreset[]>("get_mcp_presets"),
+  /** 批量装入，返回实际新增条数。同 id 已存在的跳过（后端是 INSERT OR IGNORE）。 */
+  apply: (presetId: string) => invoke<number>("apply_mcp_preset", { presetId }),
+};
+
 export const mcpApi = {
   list: () => invoke<McpServer[]>("get_mcp_servers"),
   save: (server: McpServer) => invoke("save_mcp_server", { server }),

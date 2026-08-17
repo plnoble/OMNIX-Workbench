@@ -454,7 +454,6 @@ pub fn run() {
             commands::refresh_workspace_profile,
             commands::consolidate_memories,
             commands::get_all_conversations,
-            commands::get_conversation_tasks,
             commands::get_remote_access_info,
             commands::set_remote_access,
             commands::rotate_remote_token,
@@ -716,8 +715,6 @@ pub fn run() {
             commands::kb_export_base,
             commands::kb_import_base,
             // Output Styles
-            commands::get_output_styles,
-            commands::get_output_style_prompt,
             // Architecture Graph
             // Skill Library Features
             commands::match_skills_for_injection,

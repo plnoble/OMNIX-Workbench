@@ -26,12 +26,7 @@ const ROOT = path.resolve(__dirname, "../..");
  * 界面，要么删掉。新增命令一律不许进这里：加不进调用方就说明这个命令还不该注册。
  */
 const KNOWN_ORPHANS = [
-  "apply_mcp_preset",
   "get_all_models_metadata",
-  "get_conversation_tasks",
-  "get_mcp_presets",
-  "get_output_style_prompt",
-  "get_output_styles",
   "get_skill_content",
   "read_file_as_base64",
   "read_file_content_utf8",

@@ -10,8 +10,8 @@ import { Badge } from "@/components/ui/badge";
 import { Edit, ExternalLink, Globe, Key, Plug, Plus, Save, Store, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/sonner";
-import { mcpApi, mcpSyncApi } from "@/lib/tauri-api";
-import type { AgentMcpState } from "@/lib/tauri-api";
+import { mcpApi, mcpPresetApi, mcpSyncApi } from "@/lib/tauri-api";
+import type { AgentMcpState, McpPreset } from "@/lib/tauri-api";
 import { DEFAULT_PROXY_PORT } from "@/lib/constants";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { McpServer } from "@/types";
@@ -37,6 +37,36 @@ export function McpSubTab() {
   const [selfBusy, setSelfBusy] = useState(false);
   const loadAgentStates = () => mcpSyncApi.getAgentStates().then(setAgentStates).catch(() => {});
   useEffect(() => { loadAgentStates(); }, []);
+
+  // 内置预设：一次装好一组 MCP 服务器。列表来自后端（唯一一份定义），
+  // 读失败就让下拉留空——它是便利入口，不该拖住整个面板。
+  const [presets, setPresets] = useState<McpPreset[]>([]);
+  const [applyingPreset, setApplyingPreset] = useState(false);
+  useEffect(() => {
+    mcpPresetApi.list().then(setPresets).catch(() => setPresets([]));
+  }, []);
+
+  /**
+   * 装一组预设。后端是 `INSERT OR IGNORE`，所以**不会覆盖**已存在的同 id 服务器。
+   * 返回的是实际新增条数——全部已存在时是 0，这时要说「已存在」而不是「已添加」，
+   * 否则用户会以为装上了却在列表里找不到变化。
+   */
+  const applyPreset = async (presetId: string) => {
+    setApplyingPreset(true);
+    try {
+      const added = await mcpPresetApi.apply(presetId);
+      if (added > 0) {
+        toast.success(`已添加 ${added} 个 MCP 服务器`);
+        onReloadMcpServers();
+      } else {
+        toast.info("这组预设里的服务器都已存在，未做改动");
+      }
+    } catch (e) {
+      toast.error(`添加失败：${e}`);
+    } finally {
+      setApplyingPreset(false);
+    }
+  };
 
   // Sync targets: OMNIX-managed MCP → each agent's native config.
   const SYNC_TARGETS = ["claude_code", "codex", "gemini", "opencode"];
@@ -205,9 +235,27 @@ export function McpSubTab() {
             <CardTitle className="text-sm">🔌 MCP 服务器管理</CardTitle>
             <p className="mt-1 text-xs text-muted-foreground">配一次，点「同步」即可写入 Claude Code / Codex / Gemini / OpenCode 的原生配置（写前自动备份，可单独撤销）。</p>
           </div>
-          <Button size="sm" variant="outline" onClick={() => onOpenMcpModal()}>
-            <Plus className="h-3 w-3" /> 新增
-          </Button>
+          <div className="flex items-center gap-2">
+            <select
+              className="h-8 rounded border border-border bg-background px-2 text-xs"
+              value=""
+              disabled={applyingPreset || presets.length === 0}
+              title="按场景一次装好一组 MCP 服务器。已存在同 id 的不会被覆盖。"
+              onChange={(e) => {
+                if (e.target.value) void applyPreset(e.target.value);
+              }}
+            >
+              <option value="">{applyingPreset ? "添加中…" : "按预设批量添加"}</option>
+              {presets.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}（{p.servers.length}）
+                </option>
+              ))}
+            </select>
+            <Button size="sm" variant="outline" onClick={() => onOpenMcpModal()}>
+              <Plus className="h-3 w-3" /> 新增
+            </Button>
+          </div>
         </CardHeader>
         <CardContent>
           {/* Reverse import: pull each agent's native MCP servers into OMNIX. */}
