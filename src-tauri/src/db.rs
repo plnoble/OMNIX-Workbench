@@ -51,25 +51,87 @@ pub const BACKUP_TABLES: &[&str] = &[
     "request_logs",
 ];
 
+/// 启动失败时给用户看的那段话。
+///
+/// 抽出来是因为对话框本身没法测，而**内容**是这次修复的全部价值：出事的时候
+/// 用户手里只有这一段字。所以它必须同时说清「哪一步失败」「涉及哪个路径」
+/// 「下一步做什么」，这三件缺一件人就卡住了。
+pub(crate) fn startup_failure_message(step: &str, detail: &str, path: &str) -> String {
+    format!(
+        "OMNIX 无法启动。\n\n\
+         失败的步骤：{step}\n\
+         涉及路径：{path}\n\
+         系统报告：{detail}\n\n\
+         常见原因：磁盘已满、该目录被安全软件或云盘同步锁定、当前账户对它没有写权限。\n\
+         可以先手动打开上面那个路径确认它存在且可写，然后重新启动 OMNIX。"
+    )
+}
+
+#[cfg(windows)]
+#[link(name = "user32")]
+extern "system" {
+    fn MessageBoxW(hwnd: isize, text: *const u16, caption: *const u16, utype: u32) -> i32;
+}
+
+/// 弹一个原生对话框说明启动失败，然后退出。
+///
+/// release 构建是 GUI 子系统（`main.rs` 的 `windows_subsystem = "windows"`），
+/// **没有控制台**——`panic!` 的消息写到一个没人接的 stderr 上。用户看到的是
+/// 「双击图标，什么都没发生」：没有窗口、没有报错、没有日志，无从自查。
+///
+/// 崩本身是对的（没有数据库就没有任何功能可用），缺的是**告诉他为什么**。
+/// 这里不用 Tauri 的对话框插件：这段代码跑在 `tauri::Builder` 之前，那时插件还
+/// 不存在。直接调 Win32，和 `lib.rs` 里既有的 `GetClientRect` 同一个做法。
+fn fatal_startup_error(step: &str, detail: &str, path: &str) -> ! {
+    let message = startup_failure_message(step, detail, path);
+    eprintln!("[OMNIX] {message}");
+    #[cfg(windows)]
+    {
+        let to_wide = |s: &str| -> Vec<u16> {
+            use std::os::windows::ffi::OsStrExt;
+            std::ffi::OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+        };
+        let text = to_wide(&message);
+        let caption = to_wide("OMNIX Workbench");
+        // MB_OK | MB_ICONERROR
+        unsafe { MessageBoxW(0, text.as_ptr(), caption.as_ptr(), 0x10) };
+    }
+    std::process::exit(1);
+}
+
 impl DbManager {
     pub fn new() -> Self {
-        // Resolve home directory path on Windows / Linux
-        let home_dir = dirs::home_dir()
-            .expect("Failed to determine home directory. Cannot initialize database.");
-        let mut omnix_dir = home_dir.clone();
-        omnix_dir.push(".omnix");
+        // 这条路径上的每一步失败都直接弹窗退出，不 panic——见 `fatal_startup_error`。
+        // `new_with_path` 保持 `expect`：那是测试用的入口，测试要的就是 panic，
+        // 换成 exit(1) 会把整个测试进程带走。
+        let Some(home_dir) = dirs::home_dir() else {
+            fatal_startup_error(
+                "定位用户主目录",
+                "操作系统没有返回主目录路径",
+                "（未知）",
+            );
+        };
+        let omnix_dir = home_dir.join(".omnix");
 
-        // Ensure directory exists
         if !omnix_dir.exists() {
-            fs::create_dir_all(&omnix_dir).expect("Failed to create .omnix data directory");
+            if let Err(error) = fs::create_dir_all(&omnix_dir) {
+                fatal_startup_error(
+                    "创建数据目录",
+                    &error.to_string(),
+                    &omnix_dir.to_string_lossy(),
+                );
+            }
         }
 
-        let mut db_path = omnix_dir;
-        db_path.push("omnix.db");
-
-        let db = Self::from_path(db_path);
-        db.init_schema()
-            .expect("Failed to initialize database schema");
+        let db_path = omnix_dir.join("omnix.db");
+        let db = Self::from_path(db_path.clone());
+        if let Err(error) = db.init_schema() {
+            fatal_startup_error(
+                "初始化数据库表结构",
+                &error.to_string(),
+                &db_path.to_string_lossy(),
+            );
+        }
         db
     }
 
@@ -1486,5 +1548,36 @@ mod tests {
         if test_db_path.exists() {
             let _ = std::fs::remove_file(&test_db_path);
         }
+    }
+}
+
+#[cfg(test)]
+mod startup_failure_tests {
+    use super::startup_failure_message;
+
+    /// 出事时用户手里只有这一段字，所以三件事必须都在：
+    /// 哪一步失败、涉及哪个路径、下一步做什么。缺一件人就卡住。
+    #[test]
+    fn the_message_says_which_step_which_path_and_what_to_do() {
+        let m = startup_failure_message(
+            "创建数据目录",
+            "拒绝访问。 (os error 5)",
+            r"C:\Users\me\.omnix",
+        );
+        assert!(m.contains("创建数据目录"), "要说清哪一步失败了");
+        assert!(m.contains(r"C:\Users\me\.omnix"), "要给出涉及的路径，否则无从检查");
+        assert!(m.contains("拒绝访问"), "要带上系统原始报错，否则没法搜");
+        assert!(
+            m.contains("重新启动") || m.contains("确认"),
+            "要告诉用户下一步做什么，不能只报错"
+        );
+    }
+
+    /// 路径未知时也不能出现空字段——空着比写「未知」更让人以为是程序错乱。
+    #[test]
+    fn an_unknown_path_still_renders_a_placeholder() {
+        let m = startup_failure_message("定位用户主目录", "没有返回主目录路径", "（未知）");
+        assert!(m.contains("（未知）"));
+        assert!(!m.contains("涉及路径：\n"), "路径字段不该是空的");
     }
 }
