@@ -132,7 +132,6 @@ export function useSelection(): UseSelectionReturn {
       if (autoCaptureIsEnabled) {
         try {
           await selectionApi.toggleAutoCapture(true);
-          console.log("[useSelection] Auto-capture monitor started on app launch");
         } catch (e) {
           console.error("[useSelection] Failed to start auto-capture monitor:", e);
         }
