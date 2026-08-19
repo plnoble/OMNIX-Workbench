@@ -340,7 +340,13 @@ mod loopback_client_wiring {
             let at = from + i;
             let rest = &src[at + "Client::".len()..];
             if rest.starts_with("builder(") || rest.starts_with("new(") {
-                let end = (at + 700).min(src.len());
+                // 退到字符边界再切：源码里全是中文注释，按字节切 700 会切进
+                // 一个汉字中间直接 panic（`is not a char boundary`）。
+                // 「按字节量长度」这个坑本仓库记过账，这里又踩了一次。
+                let mut end = (at + 700).min(src.len());
+                while end > at && !src.is_char_boundary(end) {
+                    end -= 1;
+                }
                 if !src[at..end].contains(".no_proxy()") {
                     n += 1;
                 }
@@ -410,5 +416,12 @@ mod loopback_client_wiring {
         // 700 字节之外的 `.no_proxy()` 不该把这一处洗白
         let far = format!("Client::builder(){}\n.no_proxy()", " ".repeat(800));
         assert_eq!(bare_client_sites(&far), 1);
+
+        // 中文注释夹在中间也不能 panic——第一版就是在这儿炸的，因为窗口
+        // 按字节切、正好切进一个汉字里。
+        let cjk = format!("Client::builder()
+// {}
+.no_proxy()", "网关注释".repeat(60));
+        assert_eq!(bare_client_sites(&cjk), 1);
     }
 }

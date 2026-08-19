@@ -228,10 +228,29 @@ pub fn build_skill_injection(matches: &[SkillMatch], db: &DbManager) -> String {
             })
             .unwrap_or_default();
         if content.is_empty() {
+            // 匹配器已经算出这条技能相关（有分数、也进了日志），注入却悄悄把它
+            // 丢掉——用户看到的是「技能没生效」，而排查时**没有任何痕迹**指向
+            // 「文件读不到」。留痕，否则这条路上的失败永远查不出来。
+            log::warn!(
+                "技能「{}」匹配上了（相关度 {:.1}）但内容读不到，本次未注入；检查 skills 表 central_path / file_path 指向的目录里还有没有 {}_core.md 或 SKILL.md",
+                m.skill_name,
+                m.relevance_score,
+                m.skill_name
+            );
             continue;
         }
-        // Cap each skill so a bloated skill can't blow up the request.
-        let capped: String = content.chars().take(6000).collect();
+        // 单条技能封顶，免得一条臃肿技能把整个请求撑爆。
+        //
+        // **截断必须留标记。** 模型拿到半份技能时，若结尾看起来是完整的，它会
+        // 当成完整指令照做——而缺掉的那半可能正是约束条件。本轮在 ntfy 推送那里
+        // 刚修过同一个毛病，判断标准一样：宁可让下游知道信息不全。
+        const SKILL_INJECT_CAP: usize = 6000;
+        let capped: String = if content.chars().count() > SKILL_INJECT_CAP {
+            let kept: String = content.chars().take(SKILL_INJECT_CAP).collect();
+            format!("{kept}\n\n…（技能内容过长，已截断）")
+        } else {
+            content
+        };
         injection.push_str(&format!(
             "## Skill: {} (relevance: {:.1})\n{}\n\n",
             m.skill_name, m.relevance_score, capped
@@ -845,7 +864,7 @@ mod injection_matching_tests {
     use super::*;
     use crate::db::DbManager;
 
-    fn test_db(tag: &str) -> DbManager {
+    pub(super) fn test_db(tag: &str) -> DbManager {
         use std::sync::atomic::{AtomicU32, Ordering};
         static N: AtomicU32 = AtomicU32::new(0);
         let path = std::env::temp_dir().join(format!(
@@ -1040,5 +1059,109 @@ mod injection_ranking_corpus {
             CASES.len(),
             failures.join("\n")
         );
+    }
+}
+
+/// 注入环节的**失败可见性**：截断要留标记，读不到要留痕。
+///
+/// 两条都不是假想。匹配器算出相关度、写进日志之后，注入这一步原来会：
+/// - 把超过 6000 字的技能**无声截断**，模型拿到半份当完整的照做；
+/// - 内容读不到时 `continue` **无声丢弃**，用户只看到「技能没生效」，查无可查。
+///
+/// 同一个毛病本轮在 ntfy 推送那里也修过一次——那次的教训是断言别钉总长度
+/// （加了标记总长必然变），要钉**标记 + 保留下来的内容**。
+#[cfg(test)]
+mod injection_visibility_tests {
+    use super::injection_matching_tests::test_db;
+    use super::*;
+
+    /// 建一个带真实 SKILL.md 的技能目录。用 `temp_dir` 而不是引 `tempfile`
+    /// ——仓库里其它测试也是这么做的，不为一条测试加依赖。
+    struct SkillDir(std::path::PathBuf);
+    impl Drop for SkillDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn db_with_skill(tag: &str, body: &str) -> (DbManager, SkillDir) {
+        let dir = std::env::temp_dir().join(format!(
+            "omnix_skillinject_{tag}_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("SKILL.md"), body).unwrap();
+        let db = test_db(tag);
+        let conn = db.get_connection().unwrap();
+        conn.execute(
+            "INSERT INTO skills (name, description, file_path, category, pool, is_active)
+             VALUES ('长技能', 'd', ?1, 'c', 'official', 1)",
+            rusqlite::params![dir.to_string_lossy().to_string()],
+        )
+        .unwrap();
+        drop(conn);
+        (db, SkillDir(dir))
+    }
+
+    fn one_match() -> Vec<SkillMatch> {
+        vec![SkillMatch {
+            skill_name: "长技能".into(),
+            relevance_score: 12.0,
+            matched_keywords: vec!["长".into()],
+            content_preview: String::new(),
+        }]
+    }
+
+    #[test]
+    fn an_over_long_skill_is_marked_as_truncated() {
+        let body = "尽".repeat(6500);
+        let (db, _dir) = db_with_skill("cap", &body);
+        let out = build_skill_injection(&one_match(), &db);
+
+        assert!(
+            out.contains("已截断"),
+            "超长技能被截断却没留标记，模型会把半份当完整的照做"
+        );
+        // 钉「保留了多少」，不钉总长度——总长度必然因为标记而变。
+        assert!(
+            out.contains(&"尽".repeat(6000)),
+            "截断点不对：前 6000 字应当原样保留"
+        );
+        assert!(
+            !out.contains(&"尽".repeat(6001)),
+            "超出上限的内容漏了出去"
+        );
+    }
+
+    #[test]
+    fn a_short_skill_is_not_marked() {
+        let (db, _dir) = db_with_skill("short", "短技能正文");
+        let out = build_skill_injection(&one_match(), &db);
+        assert!(out.contains("短技能正文"));
+        assert!(
+            !out.contains("已截断"),
+            "没超长却打了截断标记"
+        );
+    }
+
+    #[test]
+    fn a_skill_whose_file_is_missing_is_not_silently_dropped() {
+        // 库里有这条技能、匹配器也给了分，但目录里没有任何技能文件。
+        let db = test_db("missing");
+        let conn = db.get_connection().unwrap();
+        conn.execute(
+            "INSERT INTO skills (name, description, file_path, category, pool, is_active)
+             VALUES ('长技能', 'd', '/no/such/dir', 'c', 'official', 1)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let out = build_skill_injection(&one_match(), &db);
+        // 注入块里不该出现半条残缺记录……
+        assert!(!out.contains("## Skill: 长技能"));
+        // ……但也不该假装无事发生：外壳仍在，说明走到了这一步而不是提前返回。
+        assert!(out.contains("<auto_injected_skills>"));
     }
 }

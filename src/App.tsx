@@ -218,6 +218,7 @@ function MainAppShell() {
     navigation.loadLayout();
     checkOnboarding();
     void checkMigrationAlert();
+    void checkGatewayBindAlert();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps -- mount-only init: all load functions are stable ref-less fetchers
 
   // Warm only the handful of chunks the user is most likely to open next, so
@@ -251,6 +252,25 @@ function MainAppShell() {
   // 启动时拉取密钥迁移失败警示：后端在启动早期跑明文 Key 加密迁移（lib.rs），
   // 失败时只写 stderr 用户根本看不见，密钥就一直躺在库里明文。失败原因会落到
   // settings 表的 key_migration_alert，这里读出来用 toast 显式提醒用户。
+  // 网关绑定失败同样只写日志用户看不见：1421 被占用时（残留进程、VPN、开了第二个
+  // 实例）网关整个起不来，Agent / MCP / 对照页会全线失败，而报出来的错看起来像
+  // 「模型坏了」。后端把原因落到 settings 的 gateway_bind_alert，这里读出来 toast。
+  const checkGatewayBindAlert = async () => {
+    try {
+      const alert = await invoke<string | null>("get_app_setting", { key: "gateway_bind_alert" });
+      if (alert && alert.trim()) {
+        toast.error("本地网关未能启动", {
+          description:
+            alert +
+            "。端口可能被占用：请关掉重复运行的 OMNIX 或占用该端口的程序后重启应用。在此之前，Agent 会话与模型调用都会失败。",
+          duration: 30000,
+        });
+      }
+    } catch {
+      // 读不到就静默跳过：这只是个增强警示，不能因它阻塞启动。
+    }
+  };
+
   const checkMigrationAlert = async () => {
     try {
       const alert = await invoke<string | null>("get_app_setting", { key: "key_migration_alert" });

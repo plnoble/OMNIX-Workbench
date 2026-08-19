@@ -33,6 +33,10 @@ mod wire_tests;
 use remote_panel::*;
 
 // Define sharing state
+/// 网关绑定失败的告警键。前端启动时读它并 toast（`App.tsx`），
+/// 和 `key_migration_alert` 是同一档：后台失败必须走到用户眼前。
+pub const GATEWAY_BIND_ALERT: &str = "gateway_bind_alert";
+
 pub struct ProxyState {
     pub db: Arc<DbManager>,
     pub agent_manager: Arc<crate::agent::AgentManager>,
@@ -157,6 +161,10 @@ impl ProxyServer {
             concurrency_semaphore: Arc::new(tokio::sync::Semaphore::new(20)), // max 20 concurrent proxy requests
         });
 
+        // 绑定失败要让用户看见，所以先留一个 db 句柄——`state` 马上会被
+        // `.with_state()` move 进 router。
+        let alert_db = Arc::clone(&state.db);
+
         let app = Router::new()
             // P1：OMNIX 作为能力提供方。挂在网关上而不是另起一个进程，
             // 鉴权、CORS、绑定地址都沿用同一套（见 guard_gateway_access）。
@@ -208,12 +216,26 @@ impl ProxyServer {
 
         tauri::async_runtime::handle().spawn(async move {
             let listener = match tokio::net::TcpListener::bind(addr).await {
-                Ok(l) => l,
+                Ok(l) => {
+                    // 上一次的告警要清掉，否则换了端口或占用进程退了之后，
+                    // 界面还在报一个已经不存在的故障。
+                    let _ = alert_db.set_setting(GATEWAY_BIND_ALERT, "");
+                    l
+                }
                 Err(e) => {
+                    // 只写日志等于没说：网关起不来，Agent / MCP / 对照页会全线
+                    // 失败，而报出来的错像是「模型坏了」。用户永远想不到是 1421
+                    // 被占用——残留进程、VPN、开了第二个实例都会这样。
+                    //
+                    // 和密钥迁移失败同一档：落库 + 前端启动时 toast。
                     log::warn!(
                         "OMNIX Proxy: Failed to bind to {}: {}. Port may be in use.",
                         addr,
                         e
+                    );
+                    let _ = alert_db.set_setting(
+                        GATEWAY_BIND_ALERT,
+                        &format!("网关无法监听 {addr}：{e}"),
                     );
                     return;
                 }

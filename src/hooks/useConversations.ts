@@ -650,7 +650,17 @@ export function useConversations(
     // for non-Git workspaces; never blocks the turn.
     if (config.workMode === "direct" && chatWorkspace && chatWorkspace !== "direct") {
       const snippet = displayContent.slice(0, 40);
-      checkpointApi.create(chatWorkspace, convId, snippet || "改动前检查点").catch(() => undefined);
+      // 失败要说出来。Direct 模式下这一轮**照样会改文件**，用户以为「有检查点、
+      // 能回滚」，真出事时才发现快照根本没建成——那时已经晚了。
+      // 非 git 工作区不会走到这里：后端对它返回 `skipped: true` 而不是错误，
+      // 所以进到 catch 的都是真失败（git 静默丢写、杀软锁库、仓库损坏）。
+      // 仍然不阻塞这一轮：提示归提示，任务照跑。
+      checkpointApi.create(chatWorkspace, convId, snippet || "改动前检查点").catch((e) => {
+        toast.warning("改动前检查点未能创建", {
+          description: `${e}。这一轮的文件改动将无法一键回滚，建议先手动提交或备份。`,
+          duration: 10000,
+        });
+      });
     }
 
     const inputMsg = agentContent.trim() || "请查看附带的图片。";
