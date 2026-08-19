@@ -471,10 +471,9 @@ pub struct ModelSyncResult {
 
 /// Fetch models from a single upstream platform
 async fn fetch_upstream_models(api_address: &str, api_key: &str, api_type: &str) -> Result<Vec<String>, String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| e.to_string())?;
+    // 上游地址是用户配置的，可能是 localhost（Ollama / 本地 vLLM）：
+    // 回环绕开系统代理，公网保留——写死任何一边都会错一半。
+    let client = crate::storage::client_for_url(api_address, std::time::Duration::from_secs(10));
 
     let models_url = if api_type == "ollama" {
         format!("{}/api/tags", api_address.trim_end_matches('/'))
@@ -715,9 +714,10 @@ pub async fn check_all_platform_health(
             format!("{}/v1/models", address.trim_end_matches('/'))
         };
 
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(5))
-            .build();
+        // 平台地址是用户配置的（ollama 分支打的就是本机 11434）：
+        // 回环绕开系统代理，公网保留。
+        let client: Result<reqwest::Client, String> =
+            Ok(crate::storage::client_for_url(&url, std::time::Duration::from_secs(5)));
         let (is_reachable, model_count, error) = match client {
             Ok(c) => {
                 let mut req = c.get(&url);

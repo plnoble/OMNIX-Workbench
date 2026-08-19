@@ -136,6 +136,52 @@ pub fn loopback_client(timeout: std::time::Duration) -> reqwest::Client {
         .unwrap_or_else(|_| reqwest::Client::new())
 }
 
+/// 目标 URL 是不是本机回环——**判定的单一来源**。
+///
+/// 网关（`proxy.rs`）和所有直连上游的命令都用这一个，别再各写一份：同一个坑
+/// 已经踩过两次（先是内部 1421 调用，再是 Ollama 探测与嵌入），每次都是因为
+/// 「知道要 no_proxy」的知识只存在于某一个文件里。
+pub fn url_targets_loopback(url: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    let host = host.trim_matches(['[', ']']).to_ascii_lowercase();
+    if host == "localhost" || host.ends_with(".localhost") {
+        return true;
+    }
+    let Ok(ip) = host.parse::<std::net::IpAddr>() else {
+        return false;
+    };
+    match ip {
+        std::net::IpAddr::V4(v4) => v4.is_loopback(),
+        std::net::IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || v6
+                    .to_ipv4_mapped()
+                    .is_some_and(|mapped| mapped.is_loopback())
+        }
+    }
+}
+
+/// 按目标 URL 选客户端：回环绕开系统代理，其余保留。
+///
+/// 凡是打**用户配置的 `api_address`** 的地方都该用它——Ollama 是种子平台，
+/// 它的地址就是 `http://localhost:11434`，而同一段代码换个平台又要打公网。
+/// 写死任何一边都会错一半：写死 `.no_proxy()` 墙内连不上云 API，不写回环被
+/// 代理劫成空 502。
+pub fn client_for_url(url: &str, timeout: std::time::Duration) -> reqwest::Client {
+    if url_targets_loopback(url) {
+        return loopback_client(timeout);
+    }
+    reqwest::Client::builder()
+        .timeout(timeout)
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -354,10 +354,8 @@ async fn generate_image_inner(
     size: &str,
     task_id: &str,
 ) -> Result<(String, String), String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(180))
-        .build()
-        .map_err(|error| error.to_string())?;
+    // 上游地址是用户配置的，可能是 localhost：回环绕开系统代理，公网保留。
+    let client = crate::storage::client_for_url(api_address, std::time::Duration::from_secs(180));
     let url = format!("{}/images/generations", api_address.trim_end_matches('/'));
     let body = build_image_request(model, prompt, size);
     let response = client
@@ -484,10 +482,8 @@ pub async fn media_create_video_task(
     };
     insert_task(&db, &task)?;
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
-        .build()
-        .map_err(|error| error.to_string())?;
+    // 上游地址是用户配置的，可能是 localhost：回环绕开系统代理，公网保留。
+    let client = crate::storage::client_for_url(&api_address, std::time::Duration::from_secs(60));
     let url = format!("{}/videos", api_address.trim_end_matches('/'));
     let response = client
         .post(&url)
@@ -587,12 +583,8 @@ async fn poll_one_video(app: &AppHandle, db: &Arc<DbManager>, item: &PendingVide
     let Ok((api_key, api_address)) = resolve_media_platform(db, &item.platform_id) else {
         return;
     };
-    let Ok(client) = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-    else {
-        return;
-    };
+    // 上游地址是用户配置的，可能是 localhost：回环绕开系统代理，公网保留。
+    let client = crate::storage::client_for_url(&api_address, std::time::Duration::from_secs(30));
     let url = build_video_poll_url(&api_address, &item.external_id);
     let Ok(response) = client.get(&url).bearer_auth(&api_key).send().await else {
         return; // transient network error — retry next tick

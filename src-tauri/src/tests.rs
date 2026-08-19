@@ -154,7 +154,7 @@ mod table_wiring {
         "activity_log",
     ];
 
-    fn read_sources() -> String {
+    pub(super) fn read_sources() -> String {
         let mut src = String::new();
         for entry in walk(std::path::Path::new("src")) {
             // 测试夹具里的 INSERT 不算生产写入——`chat_knowledge_bindings` 就是
@@ -177,7 +177,7 @@ mod table_wiring {
     /// `new_run_test` 挂了 `#[cfg(test)]`，按第一个出现处切会把后面整个文件
     /// （含 `get_setting` 的 `FROM settings`）全丢掉——这条守卫第一版就是这么把
     /// `settings` 误报成只写不读的。守卫抓到的第一个 bug 是它自己的。
-    fn production_part(text: &str) -> &str {
+    pub(super) fn production_part(text: &str) -> &str {
         for (i, _) in text.match_indices("#[cfg(test)]") {
             let after = text[i + "#[cfg(test)]".len()..].trim_start();
             if after.starts_with("mod ") {
@@ -187,7 +187,7 @@ mod table_wiring {
         text
     }
 
-    fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    pub(super) fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
         let mut out = Vec::new();
         if let Ok(entries) = std::fs::read_dir(dir) {
             for e in entries.flatten() {
@@ -281,5 +281,134 @@ mod table_wiring {
             "KNOWN_WRITE_ONLY 里这些条目已经不成立（写入没了，或已经有读取端），请删掉：{}",
             stale.join(", ")
         );
+    }
+}
+
+/// 第五道守卫：**回环调用不许走系统代理**。
+///
+/// Windows 上 reqwest 会读系统代理，却**不解析** WinINET 的 ProxyOverride 绕行表。
+/// 用户开着 Clash 一类的本地代理（`ProxyEnable=1, ProxyServer=127.0.0.1:7897`）时，
+/// 发往 `127.0.0.1` / `localhost` 的请求会被塞进代理绕一圈，失败时回来的是一个
+/// **空正文的 502**——界面上看起来像「Ollama 没装」或「模型坏了」。
+///
+/// 这个坑在这个仓库里踩过**三次**，每次换一个文件：
+/// 1. 内部打自己 1421 网关 → 修出了 `storage::loopback_client`
+/// 2. 网关打 localhost 上游 → 修出了 `proxy::client_for`
+/// 3. Ollama 探测 / 嵌入 / 健康检查 / ntfy → 也就是这一轮
+///
+/// 每一次「要 no_proxy」的知识都只存在于刚修过的那个文件里，下一个新写的
+/// `Client::builder()` 照样踩。前两次的守卫（`storage.rs` 里那条）只盯自己一个
+/// 文件，管不到别处——所以这一道按**全仓**扫。
+///
+/// 判据：凡是打**用户配置地址**的调用，都必须走 `storage::client_for_url`
+/// （它按 host 选：回环绕开代理，公网保留系统代理——墙内访问云 API 需要）。
+/// 只可能打写死的公网地址的，登记在下面的白名单里。
+#[cfg(test)]
+mod loopback_client_wiring {
+    /// 允许直接构造 reqwest Client 的文件 → 允许的处数。**只允许变短。**
+    ///
+    /// 每一条都必须是「目标地址写死在代码里、不可能是 localhost」的调用。
+    /// 新增命令一律不许进这里：只要地址来自数据库或用户输入，就该走
+    /// `client_for_url`，因为 Ollama / 本地 vLLM 就是合法的用户配置。
+    const PUBLIC_ONLY: &[(&str, usize)] = &[
+        // 选客户端的工厂本身就在这里（公网分支必须保留系统代理）。
+        ("storage.rs", 3),
+        // 网关的云上游 client，与 `direct_client` 成对，由 `client_for` 分流。
+        ("proxy.rs", 1),
+        // 远端模型目录，地址是编译期常量。
+        ("model_knowledge.rs", 1),
+        // OfficeCLI 安装包，github.com。
+        ("office.rs", 1),
+        // 技能源，raw.githubusercontent.com / api.github.com。
+        ("skill_library.rs", 2),
+        // OAuth 授权端点，来自各家供应商的固定配置。
+        ("commands/oauth.rs", 1),
+        // 局域网模型主机连通性测试——**故意**打非回环地址，走代理反而是对的。
+        ("commands/remote_dev.rs", 1),
+        // 联网搜索与 fetch_url，均先过 `guard_public_url`（只放行公网）。
+        ("commands/search.rs", 3),
+    ];
+
+    /// 数一个文件里「没有 `.no_proxy()` 兜底」的 Client 构造处。
+    ///
+    /// 窗口取 700 字节是因为 builder 链最长也就这么长；放宽会把隔壁那处的
+    /// `.no_proxy()` 误算进来，收紧会漏掉带一堆 `.timeout()` 的长链。
+    fn bare_client_sites(src: &str) -> usize {
+        let mut n = 0;
+        let mut from = 0;
+        while let Some(i) = src[from..].find("Client::") {
+            let at = from + i;
+            let rest = &src[at + "Client::".len()..];
+            if rest.starts_with("builder(") || rest.starts_with("new(") {
+                let end = (at + 700).min(src.len());
+                if !src[at..end].contains(".no_proxy()") {
+                    n += 1;
+                }
+            }
+            from = at + "Client::".len();
+        }
+        n
+    }
+
+    #[test]
+    fn user_configured_upstreams_never_bypass_the_loopback_check() {
+        let mut offenders: Vec<String> = Vec::new();
+        let mut seen: Vec<(String, usize)> = Vec::new();
+
+        for path in super::table_wiring::walk(std::path::Path::new("src")) {
+            let name = path.to_string_lossy().replace('\\', "/");
+            let Some(rel) = name.strip_prefix("src/") else {
+                continue;
+            };
+            // 测试文件不算生产调用：夹具用什么 client 由 T0 那条测试自己管
+            // （`proxy_wire_tests.rs` 的夹具已经 `.no_proxy()`，否则开着代理
+            // 跑 `cargo test` 会红 19 条，而 CI 干净 runner 上是绿的）。
+            if rel == "tests.rs" || rel.ends_with("_tests.rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            let count = bare_client_sites(super::table_wiring::production_part(&text));
+            if count == 0 {
+                continue;
+            }
+            seen.push((rel.to_string(), count));
+            match PUBLIC_ONLY.iter().find(|(f, _)| *f == rel) {
+                None => offenders.push(format!(
+                    "{rel}：{count} 处直接构造 Client。地址若来自用户配置，请改用 \
+                     `crate::storage::client_for_url(&url, timeout)`；确实只打写死的\
+                     公网地址，才登记进 PUBLIC_ONLY 并写明理由。"
+                )),
+                Some((_, allowed)) if count > *allowed => offenders.push(format!(
+                    "{rel}：新增了裸 Client（{allowed} → {count}）。白名单只许变短。"
+                )),
+                _ => {}
+            }
+        }
+
+        // 清单会烂：文件删了、或者后来改走 client_for_url 了，条目却留着。
+        for (file, allowed) in PUBLIC_ONLY {
+            let actual = seen.iter().find(|(f, _)| f == file).map(|(_, c)| *c);
+            assert_eq!(
+                actual,
+                Some(*allowed),
+                "PUBLIC_ONLY 里 `{file}` 已经不成立（实际 {actual:?} 处），请更新或删掉这条"
+            );
+        }
+
+        assert!(offenders.is_empty(), "{}", offenders.join("\n"));
+    }
+
+    /// 自检：扫描本身得真的扫到东西，否则上面那条永远是绿的。
+    #[test]
+    fn the_scanner_actually_finds_sites() {
+        assert_eq!(bare_client_sites("let c = Client::builder().build();"), 1);
+        assert_eq!(
+            bare_client_sites("let c = Client::builder().no_proxy().build();"),
+            0
+        );
+        assert_eq!(bare_client_sites("Client::new()"), 1);
+        // 700 字节之外的 `.no_proxy()` 不该把这一处洗白
+        let far = format!("Client::builder(){}\n.no_proxy()", " ".repeat(800));
+        assert_eq!(bare_client_sites(&far), 1);
     }
 }

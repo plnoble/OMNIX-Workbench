@@ -269,12 +269,12 @@ pub(crate) async fn push_ntfy(
     title: &str,
     message: &str,
 ) -> Result<(), String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new());
+    // ntfy 服务器是用户填的，自建实例常在本机（`http://localhost:8080`）：
+    // 回环绕开系统代理，公网 ntfy.sh 保留。
+    let url = format!("{}/{}", server.trim_end_matches('/'), topic);
+    let client = crate::storage::client_for_url(&url, std::time::Duration::from_secs(30));
     let res = client
-        .post(format!("{}/{}", server.trim_end_matches('/'), topic))
+        .post(&url)
         .header("Title", title)
         .header("Priority", "default")
         .body(message.to_string())

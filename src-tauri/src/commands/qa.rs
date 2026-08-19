@@ -34,10 +34,9 @@ pub async fn qa_query(
         let (api_key, api_address, api_type, actual_model) =
             knowledge::resolve_chat_platform(&db, &chat_model)?;
 
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(60))
-            .build()
-            .map_err(|e| e.to_string())?;
+        // 上游地址是用户配置的，可能是 localhost（Ollama / 本地 vLLM）：
+        // 回环绕开系统代理，公网保留——写死任何一边都会错一半。
+        let client = crate::storage::client_for_url(&api_address, std::time::Duration::from_secs(60));
 
         let system = "你是一个智能助手，请简洁准确地回答用户的问题。";
         let answer = match api_type.as_str() {
@@ -136,10 +135,9 @@ pub async fn qa_query_stream(
     let (api_key, api_address, api_type, actual_model) =
         knowledge::resolve_chat_platform(&db, &chat_model)?;
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
-        .build()
-        .map_err(|e| e.to_string())?;
+    // 上游地址是用户配置的，可能是 localhost（Ollama / 本地 vLLM）：
+    // 回环绕开系统代理，公网保留——写死任何一边都会错一半。
+    let client = crate::storage::client_for_url(&api_address, std::time::Duration::from_secs(120));
 
     let system = "你是一个智能助手，请简洁准确地回答用户的问题。";
 

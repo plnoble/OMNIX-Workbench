@@ -402,10 +402,9 @@ pub async fn generate_embeddings(
     let (api_key, api_address, api_type, actual_model) =
         resolve_embedding_platform(db, model_name, platform_id)?;
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| e.to_string())?;
+    // 上游地址是用户配置的，可能是 localhost（Ollama / 本地 vLLM）：
+    // 回环绕开系统代理，公网保留——写死任何一边都会错一半。
+    let client = crate::storage::client_for_url(&api_address, std::time::Duration::from_secs(30));
 
     let mut all_embeddings: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
 
@@ -1079,10 +1078,9 @@ pub async fn rag_query(
     // 3. Resolve chat model platform
     let (api_key, api_address, api_type, actual_model) = resolve_chat_platform(db, chat_model)?;
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
-        .build()
-        .map_err(|e| e.to_string())?;
+    // 上游地址是用户配置的，可能是 localhost（Ollama / 本地 vLLM）：
+    // 回环绕开系统代理，公网保留——写死任何一边都会错一半。
+    let client = crate::storage::client_for_url(&api_address, std::time::Duration::from_secs(120));
 
     // 4. Call LLM
     let answer = match api_type.as_str() {

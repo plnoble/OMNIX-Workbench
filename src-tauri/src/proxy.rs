@@ -60,30 +60,10 @@ impl ProxyState {
 }
 
 /// Hosts that must never be sent through the system HTTP proxy.
-pub(crate) fn url_targets_loopback(url: &str) -> bool {
-    let Ok(parsed) = reqwest::Url::parse(url) else {
-        return false;
-    };
-    let Some(host) = parsed.host_str() else {
-        return false;
-    };
-    let host = host.trim_matches(['[', ']']).to_ascii_lowercase();
-    if host == "localhost" || host.ends_with(".localhost") {
-        return true;
-    }
-    let Ok(ip) = host.parse::<std::net::IpAddr>() else {
-        return false;
-    };
-    match ip {
-        std::net::IpAddr::V4(v4) => v4.is_loopback(),
-        std::net::IpAddr::V6(v6) => {
-            v6.is_loopback()
-                || v6
-                    .to_ipv4_mapped()
-                    .is_some_and(|mapped| mapped.is_loopback())
-        }
-    }
-}
+///
+/// 判定逻辑放在 `storage.rs`，那里是**单一来源**：命令层直连用户配置的
+/// `api_address` 时要用同一个判据，各写一份就是这个坑复发的原因。
+pub(crate) use crate::storage::url_targets_loopback;
 
 // Wire DTOs (Anthropic/OpenAI request & response shapes) live in
 // proxy_types.rs; re-exported so `crate::proxy::*` paths keep working.

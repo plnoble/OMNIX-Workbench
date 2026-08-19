@@ -150,10 +150,9 @@ pub async fn get_all_models_metadata(
     }
 
     // 2. Local Ollama Probe
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_millis(1500))
-        .build()
-        .map_err(|e| e.to_string())?;
+    // 打的是字面 localhost，必须绕开系统代理：开着 Clash 时这条探测会被劫成
+    // 空 502，界面上表现为「没装 Ollama」——而 Ollama 明明在跑。
+    let client = crate::storage::loopback_client(std::time::Duration::from_millis(1500));
 
     if let Ok(resp) = client.get("http://localhost:11434/api/tags").send().await {
         if resp.status().is_success() {
@@ -1297,10 +1296,9 @@ pub async fn fetch_remote_models(
     };
     let api_key = crate::crypto::decrypt(&api_key);
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(8))
-        .build()
-        .map_err(|e| e.to_string())?;
+    // 同一个平台的 api_address 贯穿下面所有分支，所以在这里一次定客户端：
+    // 地址是 localhost（Ollama / 本地 vLLM）就绕开系统代理，公网上游保留。
+    let client = crate::storage::client_for_url(&api_address, std::time::Duration::from_secs(8));
 
     let mut model_names = Vec::new();
 
@@ -1706,10 +1704,8 @@ pub async fn check_model_status(
         return Ok(detail);
     }
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-        .map_err(|e| e.to_string())?;
+    // 同上：单模型健康检查也走 api_address，localhost 平台要绕开系统代理。
+    let client = crate::storage::client_for_url(&api_address, std::time::Duration::from_secs(5));
 
     let start = std::time::Instant::now();
     let mut detail = HealthCheckDetail {
@@ -1846,10 +1842,9 @@ pub async fn batch_check_models(
         rows.filter_map(|r| r.ok()).collect()
     };
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(8))
-        .build()
-        .map_err(|e| e.to_string())?;
+    // 同一个平台的 api_address 贯穿下面所有分支，所以在这里一次定客户端：
+    // 地址是 localhost（Ollama / 本地 vLLM）就绕开系统代理，公网上游保留。
+    let client = crate::storage::client_for_url(&api_address, std::time::Duration::from_secs(8));
 
     // Ping each model concurrently
     let mut handles = Vec::new();
