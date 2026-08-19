@@ -96,18 +96,10 @@ fn parse_login_prompt(buffer: &str) -> Option<(String, String)> {
 pub fn grok_auth_status(db: State<'_, Arc<DbManager>>) -> Result<GrokAuthStatus, String> {
     let cli_path = AgentManager::find_agent_path_static("Grok Build", Some(&db));
     let auth_file = grok_auth_file();
-    let api_key_in_omnix = db
-        .get_connection()
-        .ok()
-        .and_then(|conn| {
-            conn.query_row(
-                "SELECT api_key FROM model_platforms WHERE id = 'xai'",
-                [],
-                |row| row.get::<_, String>(0),
-            )
-            .ok()
-        })
-        .is_some_and(|key| !key.trim().is_empty());
+    let api_key_in_omnix = crate::commands::platform_keys(&db, "xai")
+        .0
+        .iter()
+        .any(|key| !key.trim().is_empty());
 
     Ok(GrokAuthStatus {
         cli_installed: cli_path.is_some(),

@@ -460,6 +460,36 @@ pub fn runtime_set_agent_model_preference(
     db.set_setting(&key, model.trim()).map_err(|error| error.to_string())
 }
 
+/// Resolve the workspace an agent session will `cwd` into.
+///
+/// `"direct"` (and, for the remote panel, an empty string) means the user
+/// home directory — not a secrets folder. Everything else must pass
+/// `validate_workspace_path` so `~\.ssh` / `~\.omnix` cannot become cwd.
+pub(crate) fn resolve_session_workspace_path(
+    workspace_path: &str,
+    empty_as_home: bool,
+) -> Result<String, String> {
+    let trimmed = workspace_path.trim();
+    let resolved = if trimmed.is_empty() {
+        if !empty_as_home {
+            return Err("请选择工作区后再开始工作".into());
+        }
+        dirs::home_dir()
+            .ok_or_else(|| "无法确定当前用户目录".to_string())?
+            .to_string_lossy()
+            .into_owned()
+    } else if trimmed == "direct" {
+        dirs::home_dir()
+            .ok_or_else(|| "无法确定当前用户目录".to_string())?
+            .to_string_lossy()
+            .into_owned()
+    } else {
+        trimmed.to_string()
+    };
+    crate::input_validation::validate_workspace_path(&resolved, "workspace_path")?;
+    Ok(resolved)
+}
+
 #[tauri::command]
 pub async fn runtime_start_session(
     request: CreateRuntimeSessionRequest,
@@ -467,17 +497,7 @@ pub async fn runtime_start_session(
     agent_manager: State<'_, Arc<AgentManager>>,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<AgentSessionRecord, String> {
-    if request.workspace_path.trim().is_empty() {
-        return Err("请选择工作区后再开始工作".into());
-    }
-    let workspace_path = if request.workspace_path == "direct" {
-        dirs::home_dir()
-            .ok_or_else(|| "无法确定当前用户目录".to_string())?
-            .to_string_lossy()
-            .into_owned()
-    } else {
-        request.workspace_path
-    };
+    let workspace_path = resolve_session_workspace_path(&request.workspace_path, false)?;
     let definition = agent_definition(request.agent);
     let executable_path = agent_manager
         .find_agent_path(definition.display_name)
@@ -512,14 +532,7 @@ pub async fn remote_start_session(
     workspace_path: String,
     conversation_id: String,
 ) -> Result<AgentSessionRecord, String> {
-    let workspace_path = if workspace_path.trim().is_empty() || workspace_path == "direct" {
-        dirs::home_dir()
-            .ok_or_else(|| "无法确定当前用户目录".to_string())?
-            .to_string_lossy()
-            .into_owned()
-    } else {
-        workspace_path
-    };
+    let workspace_path = resolve_session_workspace_path(&workspace_path, true)?;
     let definition = agent_definition(agent);
     let executable_path = agent_manager
         .find_agent_path(definition.display_name)
@@ -859,5 +872,27 @@ mod tests {
 
         drop(db);
         let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn session_workspace_rejects_secret_directories() {
+        use super::resolve_session_workspace_path;
+        let home = dirs::home_dir().expect("home");
+        for leaf in [".ssh", ".omnix"] {
+            let path = home.join(leaf);
+            let err = resolve_session_workspace_path(&path.to_string_lossy(), false)
+                .expect_err("secrets dir must be refused");
+            assert!(
+                err.contains("不允许") || err.contains("密钥") || err.contains("凭据"),
+                "{leaf}: {err}"
+            );
+        }
+        assert!(resolve_session_workspace_path("", false).is_err());
+        assert!(resolve_session_workspace_path("direct", false).is_ok());
+        let tmp = std::env::temp_dir();
+        assert!(
+            resolve_session_workspace_path(&tmp.to_string_lossy(), false).is_ok(),
+            "ordinary temp dir should pass"
+        );
     }
 }

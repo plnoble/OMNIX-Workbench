@@ -750,8 +750,17 @@ impl RuntimeManager {
         Ok(format!("模型已切换：{model}"))
     }
 
+    pub async fn stop_all_sessions(&self) {
+        let print_ids: Vec<String> = self.print_sessions.read().await.keys().cloned().collect();
+        let active_ids: Vec<String> = self.active.read().await.keys().cloned().collect();
+        for id in print_ids.into_iter().chain(active_ids) {
+            let _ = self.stop_session(&id).await;
+        }
+    }
+
     pub async fn stop_session(&self, session_id: &str) -> Result<(), String> {
         update_agent_session_status(&self.db, session_id, AgentSessionStatus::Stopping, None)?;
+        self.print_sessions.write().await.remove(session_id);
         let active = self.active.write().await.remove(session_id);
         if let Some(active) = active {
             // ACP defines a graceful `session/cancel`; send it best-effort before

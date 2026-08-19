@@ -45,7 +45,7 @@ pub(super) async fn handle_responses_for_session(
         }
         let upstream_url = join_url(&upstream.api_address, "/responses");
         let request = state
-            .http_client
+            .client_for(&upstream_url)
             .post(&upstream_url)
             .header("Content-Type", "application/json")
             .json(&payload);
@@ -74,7 +74,7 @@ pub(super) async fn handle_responses_for_session(
         crate::responses_bridge::responses_request_to_chat(&payload, &upstream.model_name);
     let upstream_url = join_url(&upstream.api_address, "/chat/completions");
     let request = state
-        .http_client
+        .client_for(&upstream_url)
         .post(&upstream_url)
         .header("Content-Type", "application/json")
         .json(&chat_body);
@@ -479,7 +479,7 @@ pub(super) async fn handle_openai_forward_impl(
         }
 
         let mut req_builder = state
-            .http_client
+            .client_for(&upstream_url)
             .post(&upstream_url)
             .header("Content-Type", "application/json")
             .json(&payload);
@@ -644,7 +644,7 @@ pub(super) async fn handle_openai_forward_impl(
         );
 
         let mut req_builder = state
-            .http_client
+            .client_for(&upstream_url)
             .post(&upstream_url)
             .header("Content-Type", "application/json")
             .header("anthropic-version", "2023-06-01")

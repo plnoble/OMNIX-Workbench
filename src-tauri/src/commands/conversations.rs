@@ -180,7 +180,7 @@ pub(crate) fn create_conversation_core(
     }
     let conn = db.get_connection().map_err(|e| e.to_string())?;
     conn.execute(
-        "INSERT OR REPLACE INTO conversations (id, title, workspace_path, active_agent, parent_conversation_id) VALUES (?1, ?2, ?3, ?4, ?5)",
+        "INSERT OR IGNORE INTO conversations (id, title, workspace_path, active_agent, parent_conversation_id) VALUES (?1, ?2, ?3, ?4, ?5)",
         params![id, title, workspace_path, active_agent, parent_conversation_id],
     ).map_err(|e| e.to_string())?;
     Ok(())
@@ -339,6 +339,26 @@ mod tests {
 
     fn seed(db: &DbManager, id: &str) {
         create_conversation_core(db, id, "标题", &ws(), "Claude Code", None).unwrap();
+    }
+
+    /// `INSERT OR REPLACE` deletes the old row first, which CASCADE-wipes
+    /// messages. A repeated create with the same id must leave history alone.
+    #[test]
+    fn creating_the_same_conversation_twice_does_not_wipe_messages() {
+        let db = test_db("replace");
+        seed(&db, "c1");
+        add_conversation_message_core(&db, "m1", "c1", "user", "第一句").unwrap();
+        create_conversation_core(&db, "c1", "新标题", &ws(), "Claude Code", None).unwrap();
+        let count: i64 = db
+            .get_connection()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE conversation_id = 'c1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "同 id 再创建一次把消息级联删了");
     }
 
     fn ids(list: &[ConversationInfo]) -> Vec<&str> {

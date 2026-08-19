@@ -199,11 +199,16 @@ fn temp_db(tag: &str) -> (Arc<DbManager>, std::path::PathBuf) {
 }
 
 fn proxy_state(db: Arc<DbManager>) -> Arc<ProxyState> {
+    let direct_client = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
     Arc::new(ProxyState {
         agent_manager: Arc::new(crate::agent::AgentManager::new(Arc::clone(&db))),
         runtime_manager: Arc::new(crate::runtime_manager::RuntimeManager::new(Arc::clone(&db))),
         db,
         http_client: reqwest::Client::new(),
+        direct_client,
         request_counter: std::sync::atomic::AtomicUsize::new(0),
         concurrency_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
     })
@@ -1158,6 +1163,16 @@ async fn auto_routing_never_sends_the_literal_word_auto_upstream() {
         "要说清是 Auto 没选出模型，而不是把锅甩给上游：{message}"
     );
     let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn loopback_urls_are_routed_off_the_system_proxy() {
+    assert!(super::url_targets_loopback("http://127.0.0.1:11434/v1/chat"));
+    assert!(super::url_targets_loopback("http://localhost:11434/"));
+    assert!(super::url_targets_loopback("http://[::1]/v1"));
+    assert!(super::url_targets_loopback("http://[::ffff:127.0.0.1]:1421/v1"));
+    assert!(!super::url_targets_loopback("https://api.openai.com/v1/chat"));
+    assert!(!super::url_targets_loopback("https://api.anthropic.com/v1/messages"));
 }
 
 // ── 网关鉴权：穷举 ────────────────────────────

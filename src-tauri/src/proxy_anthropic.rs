@@ -329,7 +329,7 @@ pub(super) async fn handle_messages_impl(
         );
 
         let mut req_builder = state
-            .http_client
+            .client_for(&upstream_url)
             .post(&upstream_url)
             .header("Content-Type", "application/json")
             .header("anthropic-version", "2023-06-01")
@@ -484,7 +484,7 @@ pub(super) async fn handle_messages_impl(
         );
 
         let req_builder = state
-            .http_client
+            .client_for(&upstream_url)
             .post(&upstream_url)
             .header("Content-Type", "application/json")
             .json(&openai_req);

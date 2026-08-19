@@ -26,21 +26,42 @@ pub struct DbManager {
 /// 表名同时还是 SQL 注入的闸（拼进 `SELECT * FROM "…"`），所以这份清单必须是
 /// 白名单而不是「运行时扫 sqlite_master」——扫出来会把 `platform_api_keys`
 /// 这类不该进备份的表也带上。`backup_tables_all_exist` 保证名字不会再写错。
+///
+/// 刻意不进备份的：`platform_api_keys`、`oauth_accounts`、`oauth_pkce_sessions`
+/// （凭据；恢复后需在模型中心 / 授权中心重填）、`ssh_hosts`（私钥路径）。
+/// 已废弃空表也不进。
 pub const BACKUP_TABLES: &[&str] = &[
     "settings",
+    "agents",
     "conversations",
     "messages",
+    "conversation_goals",
+    "chat_knowledge_bindings",
     "skills",
+    "skill_targets",
+    "skill_sets",
+    "skill_set_items",
+    "skill_fusion_drafts",
+    "assistant_template_favorites",
     "memories",
     "agent_accounts",
+    "agent_platform_bindings",
+    "agent_configs",
+    "custom_models",
+    "custom_assistants",
     "model_platforms",
     "platform_models",
     "tasks",
     "cron_tasks",
     "cron_runs",
+    "autopilots",
+    "autopilot_runs",
+    "knowledge_bases",
     "kb_documents",
     "kb_chunks",
     "kb_embeddings",
+    "distillation_inbox",
+    "distillation_runs",
     "selection_history",
     "translation_history",
     "mcp_servers",
@@ -49,6 +70,22 @@ pub const BACKUP_TABLES: &[&str] = &[
     "prompt_library",
     "activity_log",
     "request_logs",
+    "notes",
+    "hooks",
+    "hook_runs",
+    "quick_actions",
+    "checkpoints",
+    "worktrees",
+    "workspace_profiles",
+    "subagents",
+    "media_tasks",
+    "decks",
+    "deck_versions",
+    "deck_brands",
+    "project_protocol_runs",
+    "project_protocol_events",
+    "evolution_proposals",
+    "protocol_actions",
 ];
 
 /// 启动失败时给用户看的那段话。
@@ -1213,33 +1250,8 @@ impl DbManager {
 
     pub fn get_table_row_counts(&self) -> Result<Vec<(String, i64)>> {
         let conn = self.get_connection()?;
-        let tables = [
-            "settings",
-            "agents",
-            "conversations",
-            "messages",
-            "skills",
-            "memories",
-            "agent_accounts",
-            "custom_models",
-            "model_platforms",
-            "platform_models",
-            "tasks",
-            "cron_tasks",
-            "cron_runs",
-            "kb_documents",
-            "kb_chunks",
-            "kb_embeddings",
-            "selection_history",
-            "translation_history",
-            "mcp_servers",
-            "prompt_library",
-            "search_providers",
-            "search_history",
-            "activity_log",
-        ];
         let mut result = Vec::new();
-        for table in &tables {
+        for table in BACKUP_TABLES {
             let sql = format!("SELECT COUNT(*) FROM {}", table);
             if let Ok(mut stmt) = conn.prepare(&sql) {
                 if let Ok(count) = stmt.query_row([], |r| r.get::<_, i64>(0)) {
@@ -1423,6 +1435,41 @@ mod tests {
             .filter(|t| !real.contains(*t))
             .collect();
         assert!(missing.is_empty(), "备份清单里这些表在新库里不存在：{missing:?}");
+    }
+
+    /// 用户能看见的产品数据必须在备份里。漏掉 `knowledge_bases` 时文档在、
+    /// 库元数据不在，恢复出来是一堆孤儿。密钥表必须继续排除。
+    #[test]
+    fn backup_covers_product_tables_and_excludes_secrets() {
+        for required in [
+            "knowledge_bases",
+            "notes",
+            "hooks",
+            "autopilots",
+            "decks",
+            "checkpoints",
+            "worktrees",
+            "custom_assistants",
+            "conversation_goals",
+            "chat_knowledge_bindings",
+            "media_tasks",
+        ] {
+            assert!(
+                crate::db::BACKUP_TABLES.contains(&required),
+                "备份漏了产品表 {required}"
+            );
+        }
+        for secret in [
+            "platform_api_keys",
+            "oauth_accounts",
+            "oauth_pkce_sessions",
+            "ssh_hosts",
+        ] {
+            assert!(
+                !crate::db::BACKUP_TABLES.contains(&secret),
+                "备份不该带走凭据表 {secret}"
+            );
+        }
     }
 
     /// 白名单和默认导出必须是同一份，否则「能导的」和「要导的」又会漂开。

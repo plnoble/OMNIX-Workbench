@@ -156,6 +156,7 @@ export function ChatTab({ surface, onSuggestTeam }: ChatTabProps) {
   const [fullAccessConfirmed, setFullAccessConfirmed] = useState(false);
   const [webSearchEnabled, setWebSearchEnabled] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
+  const [isSending, setIsSending] = useState(false);
   const [workspacePanelOpen, setWorkspacePanelOpen] = useState(
     chatWorkspace !== "direct" && window.innerWidth >= 1000
   );
@@ -388,6 +389,7 @@ export function ChatTab({ surface, onSuggestTeam }: ChatTabProps) {
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (isSending || isAwaitingResponse) return;
     if ((!chatInput.trim() && attachments.length === 0) || !runtimeAgentId || !selectedModel) return;
     if (needsWorkspace) {
       onOpenWorkspaceModal?.();
@@ -401,6 +403,7 @@ export function ChatTab({ surface, onSuggestTeam }: ChatTabProps) {
       setFullAccessConfirmed(true);
     }
 
+    setIsSending(true);
     setIsSearching(webSearchEnabled || selectedKnowledgeIds.length > 0);
     let context: string | undefined;
     try {
@@ -417,13 +420,17 @@ export function ChatTab({ surface, onSuggestTeam }: ChatTabProps) {
     const permission: RuntimePermissionPolicy = permissionPolicy === "full_access"
       ? { kind: "full_access", confirmed }
       : { kind: permissionPolicy };
-    onSendMessage(event, {
-      model: selectedModel.selection,
-      permission,
-      workMode,
-    }, context, attachments.length > 0 ? attachments : undefined);
-    setAttachments([]);
-    setReferences([]);
+    try {
+      await onSendMessage(event, {
+        model: selectedModel.selection,
+        permission,
+        workMode,
+      }, context, attachments.length > 0 ? attachments : undefined);
+      setAttachments([]);
+      setReferences([]);
+    } finally {
+      setIsSending(false);
+    }
   };
 
   // Builds a send config from the composer's current model/permission/mode, for
@@ -1162,8 +1169,8 @@ export function ChatTab({ surface, onSuggestTeam }: ChatTabProps) {
                     停止
                   </Button>
                 )}
-                <Button type="submit" disabled={isSearching || !chatInput.trim() || !runtimeAgentId || !selectedModel?.compatibility.selectable || needsWorkspace}>
-                  {isSearching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                <Button type="submit" disabled={isSending || isSearching || isAwaitingResponse || !chatInput.trim() || !runtimeAgentId || !selectedModel?.compatibility.selectable || needsWorkspace}>
+                  {isSearching || isSending || isAwaitingResponse ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                   发送
                 </Button>
               </div>

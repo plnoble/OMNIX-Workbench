@@ -534,6 +534,11 @@ fn is_private_ip(ip: std::net::IpAddr) -> bool {
             v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified()
         }
         std::net::IpAddr::V6(v6) => {
+            // IPv4-mapped (`::ffff:127.0.0.1`) is not `::1`, so `is_loopback()`
+            // is false — treating it as public punched a hole in this cage.
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_private_ip(std::net::IpAddr::V4(v4));
+            }
             // `is_unique_local` / `is_unicast_link_local` 还没稳定，手动判前缀。
             v6.is_loopback()
                 || v6.is_unspecified()
@@ -725,6 +730,9 @@ mod tests {
             "http://172.16.3.4/",
             "http://169.254.169.254/latest/meta-data/", // 云元数据服务
             "http://[::1]/",
+            "http://[::ffff:127.0.0.1]:1421/v1/messages",
+            "http://[::ffff:169.254.169.254]/latest/meta-data/",
+            "http://[::ffff:10.0.0.1]/",
             "http://[fd00::1]/",
             "http://[fe80::1]/",
             "http://0.0.0.0/",

@@ -100,7 +100,14 @@ fn first_enabled_chat_model(db: &DbManager) -> Option<String> {
         "SELECT pm.platform_id, pm.model_name FROM platform_models pm
          JOIN model_platforms mp ON pm.platform_id = mp.id
          WHERE pm.is_enabled = 1 AND mp.is_enabled = 1
-           AND (TRIM(mp.api_key) != '' OR mp.api_type = 'ollama')
+           AND (
+             mp.api_type = 'ollama'
+             OR EXISTS (
+                 SELECT 1 FROM platform_api_keys k
+                 WHERE k.platform_id = mp.id AND TRIM(k.encrypted_key) != ''
+             )
+             OR TRIM(mp.api_key) != ''
+           )
          ORDER BY mp.priority DESC, mp.weight DESC
          LIMIT 1",
         [],

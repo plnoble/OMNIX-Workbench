@@ -66,7 +66,10 @@ fn load_host(db: &DbManager, id: &str) -> Result<SshHost, String> {
 /// 改成 `yes`：未知主机直接拒。用户要先自己确认指纹并 `ssh-keyscan` 入
 /// known_hosts（错误信息里给了命令），之后 OMNIX 才连得上。多一步，但那一步
 /// 正是信任的建立点，不该由程序替他跳过。
-fn ssh_args(h: &SshHost) -> Vec<String> {
+fn ssh_args(h: &SshHost) -> Result<Vec<String>, String> {
+    // Validate destination up front so a host like `-oProxyCommand=…` never
+    // reaches the argv as an OpenSSH option.
+    let _ = ssh_destination(h)?;
     let mut a = vec![
         "-o".into(), "BatchMode=yes".into(),
         "-o".into(), "ConnectTimeout=10".into(),
@@ -77,18 +80,37 @@ fn ssh_args(h: &SshHost) -> Vec<String> {
         a.push("-i".into());
         a.push(h.key_path.trim().into());
     }
-    a.push(if h.user.trim().is_empty() {
-        h.host.clone()
+    Ok(a)
+}
+
+fn ssh_destination(h: &SshHost) -> Result<String, String> {
+    let host = h.host.trim();
+    let user = h.user.trim();
+    if host.is_empty() {
+        return Err("主机名不能为空".into());
+    }
+    if host.starts_with('-') || user.starts_with('-') {
+        return Err("主机名和用户名不能以 '-' 开头（会被 ssh 当成选项）".into());
+    }
+    if host.contains([' ', '@', '\n', '\r']) || user.contains([' ', '@', '\n', '\r']) {
+        return Err("主机名和用户名不能包含空格或 @".into());
+    }
+    Ok(if user.is_empty() {
+        host.to_string()
     } else {
-        format!("{}@{}", h.user.trim(), h.host)
-    });
-    a
+        format!("{user}@{host}")
+    })
 }
 
 /// Run one remote command (non-interactive) and capture stdout/stderr.
 async fn ssh_capture(h: &SshHost, remote_cmd: &str) -> Result<(String, String, bool), String> {
     let mut cmd = tokio::process::Command::new("ssh");
-    cmd.args(ssh_args(h)).arg("--").arg("sh").arg("-lc").arg(remote_cmd);
+    cmd.args(ssh_args(h)?)
+        .arg("--")
+        .arg(ssh_destination(h)?)
+        .arg("sh")
+        .arg("-lc")
+        .arg(remote_cmd);
     cmd.no_window();
     let out = cmd
         .output()
@@ -415,11 +437,15 @@ pub async fn start_remote_run(
     let script = format!("{cd}{env}{agent_cmd} 2>&1");
 
     let mut cmd = tokio::process::Command::new("ssh");
-    cmd.args(ssh_args(&h));
+    cmd.args(ssh_args(&h)?);
     if use_gateway {
         cmd.arg("-R").arg(format!("{REMOTE_GATEWAY_PORT}:127.0.0.1:1421"));
     }
-    cmd.arg("--").arg("sh").arg("-lc").arg(&script);
+    cmd.arg("--")
+        .arg(ssh_destination(&h)?)
+        .arg("sh")
+        .arg("-lc")
+        .arg(&script);
     cmd.no_window().stdout(Stdio::piped()).stderr(Stdio::piped()).stdin(Stdio::null());
 
     let mut child = cmd.spawn().map_err(|e| format!("ssh 启动失败: {e}"))?;
@@ -506,7 +532,7 @@ mod host_key_tests {
     /// 首连不能自动接受主机密钥——那正是中间人能插进来的那一步。
     #[test]
     fn unknown_hosts_are_refused_not_auto_accepted() {
-        let args = ssh_args(&host()).join(" ");
+        let args = ssh_args(&host()).expect("valid fixture host").join(" ");
         assert!(
             args.contains("StrictHostKeyChecking=yes"),
             "首连必须拒绝未知主机：{args}"
@@ -531,5 +557,15 @@ mod host_key_tests {
     fn unrelated_errors_pass_through_untouched() {
         let original = "Permission denied (publickey).";
         assert_eq!(augment_host_key_error(original, &host()), original);
+    }
+
+    /// 目的地以 `-` 开头会被 OpenSSH 当成选项（`-oProxyCommand=…` 即任意执行），
+    /// 所以校验必须在拼 argv 之前，而不是靠 `--` ——`--` 只保护它后面的参数。
+    #[test]
+    fn a_leading_dash_host_is_refused() {
+        let mut evil = host();
+        evil.host = "-oProxyCommand=calc.exe".into();
+        assert!(ssh_destination(&evil).is_err());
+        assert!(ssh_args(&evil).is_err());
     }
 }

@@ -83,7 +83,7 @@ export function BackupSubTab() {
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
           <div className="flex justify-between items-center mb-1">
-            <span className="text-xs text-muted-foreground">选择要导出的数据表：</span>
+            <span className="text-xs text-muted-foreground">选择要导出的数据表（不含 API Key / OAuth 令牌，恢复后需在「模型」和「授权中心」重填）：</span>
             <div className="flex gap-1">
               <Button size="sm" variant="ghost" onClick={onSelectAllBackupTables}>全选</Button>
               <Button size="sm" variant="ghost" onClick={onDeselectAllBackupTables}>全不选</Button>

@@ -101,27 +101,32 @@ pub fn media_model_suggestions() -> MediaModelSuggestions {
     }
 }
 
-/// Resolves an enabled platform's decrypted key + base address (same pattern
-/// as `knowledge::resolve_embedding_platform` / proxy key handling).
+/// Resolves an enabled platform's decrypted key + base address.
+/// Keys come from `platform_keys` (the only resolver). The legacy
+/// `model_platforms.api_key` column is emptied at startup.
 pub(crate) fn resolve_media_platform(
     db: &DbManager,
     platform_id: &str,
 ) -> Result<(String, String), String> {
     let conn = db.get_connection().map_err(|error| error.to_string())?;
-    let row: Option<(String, String)> = conn
+    let api_address: String = conn
         .query_row(
-            "SELECT api_key, api_address FROM model_platforms WHERE id = ?1 AND is_enabled = 1",
+            "SELECT api_address FROM model_platforms WHERE id = ?1 AND is_enabled = 1",
             params![platform_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| row.get(0),
         )
         .optional()
-        .map_err(|error| error.to_string())?;
-    let (api_key, api_address) =
-        row.ok_or_else(|| format!("平台未启用或不存在: {platform_id}"))?;
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("平台未启用或不存在: {platform_id}"))?;
     if api_address.trim().is_empty() {
         return Err(format!("平台 {platform_id} 未配置 API 地址"));
     }
-    Ok((crate::crypto::decrypt(&api_key), api_address))
+    let api_key = crate::commands::platform_keys(db, platform_id)
+        .0
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    Ok((api_key, api_address))
 }
 
 pub(crate) fn insert_task(
@@ -670,4 +675,41 @@ async fn download_video(
     path.push(format!("{task_id}.mp4"));
     std::fs::write(&path, &bytes).map_err(|error| format!("保存视频失败: {error}"))?;
     Ok(path.to_string_lossy().into_owned())
+}
+
+#[cfg(test)]
+mod resolve_key_tests {
+    use super::resolve_media_platform;
+    use crate::db::DbManager;
+    use rusqlite::params;
+
+    #[test]
+    fn media_reads_keys_from_the_encrypted_table() {
+        let path = std::env::temp_dir().join(format!(
+            "omnix_media_key_{}_{}.sqlite",
+            std::process::id(),
+            chrono::Utc::now().timestamp_micros()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let db = DbManager::new_with_path(path.clone());
+        let conn = db.get_connection().unwrap();
+        conn.execute(
+            "INSERT INTO model_platforms (id, name, api_type, api_key, api_address, is_enabled)
+             VALUES ('p-media', 'P', 'openai', '', 'https://api.example/v1', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO platform_api_keys (id, platform_id, encrypted_key, label, is_active)
+             VALUES ('k1', 'p-media', ?1, 'x', 1)",
+            params![crate::crypto::encrypt("sk-studio-secret")],
+        )
+        .unwrap();
+        drop(conn);
+
+        let (key, address) = resolve_media_platform(&db, "p-media").expect("resolve");
+        assert_eq!(key, "sk-studio-secret");
+        assert_eq!(address, "https://api.example/v1");
+        let _ = std::fs::remove_file(path);
+    }
 }

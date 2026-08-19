@@ -826,10 +826,21 @@ pub fn run() {
                 }
             }
             tauri::RunEvent::Exit => {
-                let state: tauri::State<'_, std::sync::Mutex<proxy::ProxyServer>> =
+                {
+                    let state: tauri::State<'_, std::sync::Mutex<proxy::ProxyServer>> =
+                        app_handle.state();
+                    let mut server = state.lock().expect("Failed to lock proxy server mutex");
+                    server.stop();
+                }
+                // 上面这段**必须**留在自己的作用域里：`server` 是 std MutexGuard，
+                // 下面要 `block_on`，跨 await 持有 std 锁就是 CLAUDE.md 坑点2。
+                //
+                // 只停代理不收会话，库里的状态就会撒谎：会话永远停在 running，
+                // 下次打开同一对话可能把早已没有进程的会话当活的 resume。子进程
+                // 光靠 drop 收也不够——print 类会话根本没存 Child，drop 杀不掉。
+                let runtime_manager: tauri::State<'_, Arc<runtime_manager::RuntimeManager>> =
                     app_handle.state();
-                let mut server = state.lock().expect("Failed to lock proxy server mutex");
-                server.stop();
+                tauri::async_runtime::block_on(runtime_manager.stop_all_sessions());
             }
             _ => {}
         }

@@ -140,21 +140,23 @@ pub fn select_platform_api_key(
     key_id: String,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<(), String> {
+    select_platform_api_key_core(&db, &key_id)
+}
+
+pub(crate) fn select_platform_api_key_core(db: &DbManager, key_id: &str) -> Result<(), String> {
     let conn = db.get_connection().map_err(|e| e.to_string())?;
 
-    // Get the key's platform_id and decrypted value
-    let (platform_id, decrypted): (String, String) = conn
+    // Keep the ciphertext. The old column is a leftover compatibility slot;
+    // writing the decrypted secret here put live keys back on disk (and into
+    // backups that export `model_platforms`) after startup had already cleared it.
+    let (platform_id, encrypted): (String, String) = conn
         .query_row(
             "SELECT platform_id, encrypted_key FROM platform_api_keys WHERE id = ?1",
             params![key_id],
-            |row| {
-                let enc: String = row.get(1)?;
-                Ok((row.get(0)?, crate::crypto::decrypt(&enc)))
-            },
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .map_err(|e| e.to_string())?;
 
-    // Deactivate all keys for this platform, then activate the selected one
     conn.execute(
         "UPDATE platform_api_keys SET is_active = 0 WHERE platform_id = ?1",
         params![platform_id],
@@ -166,10 +168,9 @@ pub fn select_platform_api_key(
     )
     .map_err(|e| e.to_string())?;
 
-    // Write the active key to model_platforms.api_key for backward compat
     conn.execute(
         "UPDATE model_platforms SET api_key = ?1 WHERE id = ?2",
-        params![decrypted, platform_id],
+        params![encrypted, platform_id],
     )
     .map_err(|e| e.to_string())?;
 
@@ -215,7 +216,7 @@ pub fn delete_platform_api_key(
                 params![pid], |r| r.get(0),
             ).ok();
             if let Some(nid) = next_id {
-                let _ = select_platform_api_key(nid, db);
+                let _ = select_platform_api_key_core(&db, &nid);
             } else {
                 // No keys left — clear the active key
                 let _ = conn.execute(
@@ -402,5 +403,35 @@ mod key_storage_tests {
             !body.contains("api_key, api_address"),
             "get_model_platforms 又把 api_key 查回来了"
         );
+    }
+
+    /// 选中一条 Key 绝不能把明文写回旧列。备份会导出 `model_platforms`，
+    /// 启动迁移刚清空的明文如果在这里回来，加密等于没做。
+    #[test]
+    fn selecting_a_key_does_not_write_plaintext_to_the_legacy_column() {
+        let db = temp_db("select-plain");
+        seed_legacy(&db, "p5", "");
+        let secret = "sk-must-stay-encrypted-on-select";
+        let conn = db.get_connection().unwrap();
+        conn.execute(
+            "INSERT INTO platform_api_keys (id, platform_id, encrypted_key, label, is_active)
+             VALUES ('k-sel', 'p5', ?1, 'x', 0)",
+            params![crate::crypto::encrypt(secret)],
+        )
+        .unwrap();
+        drop(conn);
+
+        select_platform_api_key_core(&db, "k-sel").expect("选择");
+        let stored = legacy_column(&db, "p5");
+        assert!(
+            stored.starts_with("ENC:"),
+            "旧列必须仍是密文，实际：{stored}"
+        );
+        assert!(
+            !stored.contains(secret),
+            "选择 Key 把明文写回了旧列：{stored}"
+        );
+        let (keys, _) = platform_keys(&db, "p5");
+        assert_eq!(keys, vec![secret.to_string()]);
     }
 }

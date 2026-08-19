@@ -207,6 +207,7 @@ export function useConversations(
   const runtimeSessionByConversationRef = useRef<Record<string, string>>({});
   const conversationByRuntimeSessionRef = useRef<Record<string, string>>({});
   const activeRuntimeConversationsRef = useRef(runtimeActiveConversations);
+  const sendInFlightRef = useRef(false);
   currentConvIdRef.current = currentConvId;
   activeRuntimeConversationsRef.current = runtimeActiveConversations;
 
@@ -623,6 +624,9 @@ export function useConversations(
     config: RuntimeSendConfig,
     images?: ChatImageAttachment[],
   ) => {
+    if (sendInFlightRef.current) return;
+    sendInFlightRef.current = true;
+    try {
     // Append user message immediately (display original question). Attachment
     // previews ride in metadata so the bubble shows thumbnails right away; the
     // persisted row later carries file paths instead.
@@ -677,6 +681,12 @@ export function useConversations(
         sessionId = session?.id;
       }
 
+      const sessionDead = !!session && (
+        session.status === "cancelled"
+        || session.status === "failed"
+        || session.status === "completed"
+        || session.status === "stopping"
+      );
       const configChanged = !!session && (
         session.config.agent !== agent
         || session.config.work_mode !== config.workMode
@@ -689,7 +699,7 @@ export function useConversations(
       const priorAgent = session?.config.agent;
       const handoffEnabled = (localStorage.getItem("omnix_agent_handoff") ?? "true") !== "false";
       const isHandoff = handoffEnabled && !!priorAgent && priorAgent !== agent;
-      if (!session || configChanged || !sessionId) {
+      if (!session || sessionDead || configChanged || !sessionId) {
         if (configChanged && sessionId && activeRuntimeConversationsRef.current.includes(convId)) {
           await runtimeApi.stopSession(sessionId).catch((error) => {
             console.warn("[useConversations] Failed to stop superseded runtime session:", error);
@@ -731,6 +741,9 @@ export function useConversations(
         },
       ]);
       throw err;
+    }
+    } finally {
+      sendInFlightRef.current = false;
     }
   }, [activeAgent, chatWorkspace]);
 
@@ -807,7 +820,7 @@ export function useConversations(
       toast.error("当前 Agent 尚未完成真实运行适配");
       return;
     }
-    const branchId = `conv_${Date.now()}`;
+    const branchId = `conv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const title = `↳ ${question.length > 14 ? question.slice(0, 14) + "…" : question}`;
     try {
       await conversationApi.create({
@@ -946,7 +959,7 @@ export function useConversations(
   // ── Helper: Create conversation from first prompt ──
 
   async function createConversationFromPrompt(prompt: string): Promise<string> {
-    const convId = `conv_${Date.now()}`;
+    const convId = `conv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const title = prompt.length > 15 ? prompt.slice(0, 15) + "..." : prompt;
 
     await conversationApi.create({

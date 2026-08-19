@@ -37,9 +37,52 @@ pub struct ProxyState {
     pub db: Arc<DbManager>,
     pub agent_manager: Arc<crate::agent::AgentManager>,
     pub runtime_manager: Arc<crate::runtime_manager::RuntimeManager>,
+    /// Cloud upstreams. Must keep the system proxy so users behind Clash can
+    /// reach api.anthropic.com / OpenAI-compatible hosts.
     pub http_client: Client,
+    /// Loopback upstreams (Ollama, local vLLM, wire-test fakes). Windows
+    /// reqwest ignores WinINET ProxyOverride, so a system proxy such as
+    /// Clash `127.0.0.1:7897` turns `http://127.0.0.1:…` into an empty 502.
+    pub direct_client: Client,
     pub request_counter: AtomicUsize,
     pub concurrency_semaphore: Arc<tokio::sync::Semaphore>,
+}
+
+impl ProxyState {
+    /// Pick the client that will actually reach `url`.
+    pub fn client_for(&self, url: &str) -> &Client {
+        if url_targets_loopback(url) {
+            &self.direct_client
+        } else {
+            &self.http_client
+        }
+    }
+}
+
+/// Hosts that must never be sent through the system HTTP proxy.
+pub(crate) fn url_targets_loopback(url: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    let host = host.trim_matches(['[', ']']).to_ascii_lowercase();
+    if host == "localhost" || host.ends_with(".localhost") {
+        return true;
+    }
+    let Ok(ip) = host.parse::<std::net::IpAddr>() else {
+        return false;
+    };
+    match ip {
+        std::net::IpAddr::V4(v4) => v4.is_loopback(),
+        std::net::IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || v6
+                    .to_ipv4_mapped()
+                    .is_some_and(|mapped| mapped.is_loopback())
+        }
+    }
 }
 
 // Wire DTOs (Anthropic/OpenAI request & response shapes) live in
@@ -112,12 +155,24 @@ impl ProxyServer {
             .timeout(std::time::Duration::from_secs(300))
             .build()
             .unwrap_or_else(|_| Client::new());
+        let direct_client = Client::builder()
+            .no_proxy()
+            .connect_timeout(std::time::Duration::from_secs(15))
+            .timeout(std::time::Duration::from_secs(300))
+            .build()
+            .unwrap_or_else(|_| {
+                Client::builder()
+                    .no_proxy()
+                    .build()
+                    .unwrap_or_else(|_| Client::new())
+            });
 
         let state = Arc::new(ProxyState {
             db,
             agent_manager,
             runtime_manager,
             http_client: client,
+            direct_client,
             request_counter: AtomicUsize::new(0),
             concurrency_semaphore: Arc::new(tokio::sync::Semaphore::new(20)), // max 20 concurrent proxy requests
         });
@@ -887,7 +942,7 @@ async fn handle_embeddings(
 
     // Forward the request
     let mut req = state
-        .http_client
+        .client_for(&upstream_url)
         .post(&upstream_url)
         .json(&forwarded_payload);
     // 嵌入这条路没有走 `send_with_key_failover`，取活跃的那个（列表首位）。
