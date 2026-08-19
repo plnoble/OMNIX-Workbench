@@ -131,6 +131,13 @@ export function AutopilotsTab() {
             <p className="mt-0.5 text-sm text-muted-foreground">
               定时把一个任务派给 Agent，在工作区自动执行——每次运行都是一条可回看的会话。
             </p>
+            {/* 这条必须写出来。自动驾驶的调度跑在界面里（认领、开会话、标完成都在
+                前端），和「定时任务」那套跑在后端的**可靠性完全不同**；用户看到两个
+                都叫「定时」，很容易以为关掉窗口它照跑。 */}
+            <p className="mt-1 text-xs text-warning">
+              ⚠️ 需要保持 OMNIX 主窗口运行（可最小化到托盘，但不能退出）。与「定时任务」不同，
+              自动驾驶的调度在界面里执行；退出应用后不会触发，已认领未跑完的任务会在下次启动时放回队列。
+            </p>
           </div>
           <div className="flex items-center gap-2">
             <button

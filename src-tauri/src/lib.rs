@@ -141,6 +141,8 @@ pub fn run() {
     // 上次崩溃 / 被强杀时留下的 running 会话在这里收敛——`RunEvent::Exit`
     // 只覆盖正常退出。
     commands::reconcile_stale_sessions_on_startup(&db);
+    // 自动驾驶跑在 WebView 里，关窗即停；卡在 claimed 的放回队列。
+    commands::requeue_stale_autopilot_runs_on_startup(&db);
 
     match &migration_error {
         Some(err) => { let _ = db.set_setting("key_migration_alert", err); }

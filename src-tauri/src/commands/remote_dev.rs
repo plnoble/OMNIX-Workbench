@@ -336,12 +336,85 @@ pub struct RemoteModelHostTest {
     pub error: String,
 }
 
+/// 这个功能的用途是**探测局域网里的 Ollama / vLLM**，所以不能套用
+/// `search.rs::guard_public_url`（那条只放行公网）——RFC1918 必须放行。
+///
+/// 但也不能什么都放行：它接受任意 URL、把响应原样回渲染进程，等于一个
+/// IPC 版 SSRF。至少要挡住三类：
+/// - **回环**：本机 1421 网关对回环是免令牌的，探到就等于绕过鉴权；
+/// - **链路本地**：`169.254.169.254` 是各家云的元数据端点（临时凭据）；
+/// - **未指定地址**：`0.0.0.0` / `::` 在部分栈上等价于回环。
+///
+/// 主机名要**解析之后**再判，否则一个指向 127.0.0.1 的域名就能长驱直入。
+/// 和 `guard_public_url` 一样，解析与连接之间的 DNS rebinding 窗口仍在，
+/// 堵死它要接管连接层——那是另一层机器，这里先把大路封掉，窗口写在注释里。
+fn guard_lan_url(base: &str) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(base).map_err(|e| format!("地址解析失败：{e}"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(format!("只支持 http/https，收到 {}", parsed.scheme()));
+    }
+    let host = parsed.host_str().unwrap_or("").to_ascii_lowercase();
+    if host.is_empty() {
+        return Err("地址里没有主机名".into());
+    }
+    if host == "localhost" || host.ends_with(".localhost") {
+        return Err("拒绝探测本机地址：本机网关对回环免鉴权，这里放行等于开后门".into());
+    }
+
+    let deny = |ip: std::net::IpAddr| -> Option<String> {
+        let v4 = match ip {
+            std::net::IpAddr::V4(v4) => Some(v4),
+            std::net::IpAddr::V6(v6) => {
+                if v6.is_loopback() || v6.is_unspecified() {
+                    return Some(format!("拒绝探测本机地址：{ip}"));
+                }
+                if (v6.segments()[0] & 0xffc0) == 0xfe80 {
+                    return Some(format!("拒绝探测链路本地地址：{ip}"));
+                }
+                v6.to_ipv4_mapped()
+            }
+        };
+        let v4 = v4?;
+        if v4.is_loopback() || v4.is_unspecified() {
+            return Some(format!("拒绝探测本机地址：{v4}"));
+        }
+        if v4.is_link_local() {
+            return Some(format!("拒绝探测链路本地地址（云元数据端点）：{v4}"));
+        }
+        None
+    };
+
+    if let Ok(ip) = host.trim_matches(['[', ']']).parse::<std::net::IpAddr>() {
+        return match deny(ip) {
+            Some(message) => Err(message),
+            None => Ok(()),
+        };
+    }
+
+    let port = parsed.port_or_known_default().unwrap_or(80);
+    let resolved: Vec<std::net::IpAddr> =
+        std::net::ToSocketAddrs::to_socket_addrs(&(host.as_str(), port))
+            .map_err(|e| format!("无法解析主机名 {host}：{e}"))?
+            .map(|addr| addr.ip())
+            .collect();
+    if resolved.is_empty() {
+        return Err(format!("主机名 {host} 没有解析出任何地址"));
+    }
+    for ip in resolved {
+        if let Some(message) = deny(ip) {
+            return Err(format!("{message}（{host} 解析到这里）"));
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn test_remote_model_host(url: String) -> Result<RemoteModelHostTest, String> {
     let base = url.trim().trim_end_matches('/').to_string();
     if !base.starts_with("http") {
         return Err("请输入完整地址，例如 http://192.168.1.10:11434/v1".into());
     }
+    guard_lan_url(&base)?;
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(8))
         .build()
@@ -567,5 +640,78 @@ mod host_key_tests {
         evil.host = "-oProxyCommand=calc.exe".into();
         assert!(ssh_destination(&evil).is_err());
         assert!(ssh_args(&evil).is_err());
+    }
+}
+
+/// `test_remote_model_host` 的 SSRF 笼。
+///
+/// 这条命令接受任意 URL 并把响应回渲染进程。它的**用途**是探测局域网里的
+/// Ollama / vLLM，所以不能照搬「只放行公网」；但回环、链路本地、未指定地址
+/// 必须挡住——本机 1421 网关对回环免鉴权，`169.254.169.254` 是云元数据端点。
+#[cfg(test)]
+mod lan_guard_tests {
+    use super::*;
+
+    #[test]
+    fn loopback_is_refused() {
+        for url in [
+            "http://127.0.0.1:11434/v1",
+            "http://127.5.5.5:8080",
+            "http://localhost:11434/v1",
+            "http://[::1]:1421",
+            "http://[::ffff:127.0.0.1]:1421",
+            "http://0.0.0.0:1421",
+        ] {
+            assert!(
+                guard_lan_url(url).is_err(),
+                "{url} 应当被拒——本机网关对回环免鉴权"
+            );
+        }
+    }
+
+    #[test]
+    fn link_local_and_cloud_metadata_are_refused() {
+        for url in [
+            "http://169.254.169.254/latest/meta-data/",
+            "http://169.254.1.1:8080",
+            "http://[fe80::1]:8080",
+        ] {
+            assert!(guard_lan_url(url).is_err(), "{url} 应当被拒");
+        }
+    }
+
+    /// **这一条是反向的**：局域网地址必须**放行**，否则功能本身就没了。
+    /// 笼子收得过紧和不收一样是 bug。
+    #[test]
+    fn private_lan_addresses_are_allowed_because_that_is_the_point() {
+        for url in [
+            "http://192.168.1.10:11434/v1",
+            "http://10.0.0.5:8000",
+            "http://172.16.3.4:11434",
+        ] {
+            assert!(
+                guard_lan_url(url).is_ok(),
+                "{url} 被误拒了——探测局域网模型主机正是这个功能的用途"
+            );
+        }
+    }
+
+    #[test]
+    fn non_http_schemes_are_refused() {
+        assert!(guard_lan_url("file:///etc/passwd").is_err());
+        assert!(guard_lan_url("ftp://192.168.1.10/").is_err());
+    }
+
+    /// **命令必须真的调这个笼子。**
+    ///
+    /// 上面几条只测纯函数——把 `guard_lan_url(&base)?` 从命令里删掉，它们照样全绿。
+    /// 反向验证当场暴露了这一点：笼子造好了、没接上，和没造一样。
+    /// 这条直接调命令本身（它不吃 State，能在测试里调）。
+    #[tokio::test]
+    async fn the_command_itself_refuses_loopback() {
+        let err = test_remote_model_host("http://127.0.0.1:1421/v1".into())
+            .await
+            .expect_err("命令没有调用 guard_lan_url——回环被放行了");
+        assert!(err.contains("本机"), "错误信息没说清原因：{err}");
     }
 }

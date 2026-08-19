@@ -323,7 +323,8 @@ mod loopback_client_wiring {
         ("skill_library.rs", 2),
         // OAuth 授权端点，来自各家供应商的固定配置。
         ("commands/oauth.rs", 1),
-        // 局域网模型主机连通性测试——**故意**打非回环地址，走代理反而是对的。
+        // 局域网模型主机连通性测试。目标**必定不是回环**——`guard_lan_url` 会
+        // 拒掉回环/链路本地（见 `lan_guard_tests`），所以走系统代理反而是对的。
         ("commands/remote_dev.rs", 1),
         // 联网搜索与 fetch_url，均先过 `guard_public_url`（只放行公网）。
         ("commands/search.rs", 3),

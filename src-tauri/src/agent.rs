@@ -505,6 +505,16 @@ impl AgentManager {
 }
 
 impl AgentManager {
+    /// 托管安装的单次上限。
+    ///
+    /// 死锁那一条早就修了（`wait_with_output` 排空管道），但**挂住**没修：脚本
+    /// 等一个永远不来的输入、或者网络卡在半路，`wait_with_output()` 就会一直等，
+    /// 安装按钮转到用户放弃为止，而且没有任何错误信息。
+    ///
+    /// 同一文件的 cron 路径早有范式（`tokio::time::timeout` + `Stdio::null()`），
+    /// 这里照搬。10 分钟是给网络慢的机器留的余量——npm 装一个 CLI 正常不到 1 分钟。
+    const INSTALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
     pub async fn install_agent(&self, agent_name: &str) -> Result<(), String> {
         if agent_name == "Qwen Code" {
             return Err("Qwen Code managed installation is not supported yet; OMNIX will not create a mock CLI".into());
@@ -527,6 +537,13 @@ impl AgentManager {
                 c
             };
             cmd.no_window()
+                // stdin 显式置空：不设的话 tokio 默认继承，脚本碰到交互提示时的
+                // 行为就取决于应用是怎么被启动的。置空 = 等输入的地方立刻拿到
+                // EOF，快速失败而不是挂住。
+                .stdin(Stdio::null())
+                // 超时后 future 被 drop，得真能把进程带走，否则装到一半的
+                // powershell 会留在后台。
+                .kill_on_drop(true)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
             let child = cmd
@@ -535,9 +552,14 @@ impl AgentManager {
                 // wait_with_output 会持续排空管道。只 wait() 不读时，安装脚本输出
                 // 一旦超过管道缓冲区（Windows 4-64KB），子进程阻塞在写端，父进程
                 // 等它退出 -> 双向死锁，UI 永久卡死（历史事故）。
-            let output = child
-                .wait_with_output()
+            let output = tokio::time::timeout(Self::INSTALL_TIMEOUT, child.wait_with_output())
                 .await
+                .map_err(|_| {
+                    format!(
+                        "Antigravity 安装器超过 {} 分钟仍未结束，已中止。请检查网络，或按官方文档手动安装。",
+                        Self::INSTALL_TIMEOUT.as_secs() / 60
+                    )
+                })?
                 .map_err(|e| format!("Antigravity installer run error: {}", e))?;
             if output.status.success() {
                 return Ok(());
@@ -618,6 +640,10 @@ impl AgentManager {
         let mut cmd = Command::new(&install_command.program);
         cmd.args(&install_command.args)
             .no_window()
+            // 同 Antigravity 安装器：stdin 置空免得卡在交互提示（npm 会问
+            // 覆盖确认之类），kill_on_drop 让超时能真正带走进程。
+            .stdin(Stdio::null())
+            .kill_on_drop(true)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
@@ -626,9 +652,14 @@ impl AgentManager {
             .map_err(|e| format!("Failed to run npm command: {}", e))?;
             // 同 Antigravity 安装器：wait_with_output 排空管道，防止 npm 输出
             // 超过管道缓冲区时双向死锁。
-        let output = child
-            .wait_with_output()
+        let output = tokio::time::timeout(Self::INSTALL_TIMEOUT, child.wait_with_output())
             .await
+            .map_err(|_| {
+                format!(
+                    "安装超过 {} 分钟仍未结束，已中止。请检查网络或 npm 代理设置。",
+                    Self::INSTALL_TIMEOUT.as_secs() / 60
+                )
+            })?
             .map_err(|e| format!("Npm install process error: {}", e))?;
         let status = output.status;
 

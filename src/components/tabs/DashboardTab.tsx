@@ -238,6 +238,11 @@ export function DashboardTab({
             <div className="mb-3 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs leading-5 text-warning">
               ⚠️ 高风险：服务已绑定 0.0.0.0（监听地址 {remoteInfo?.ip || "本机局域网 IP"}:{DEFAULT_PROXY_PORT}），
               同一网络内已配对的设备可访问你的会话与模型网关。仅在可信网络开启；怀疑设备丢失时立即轮换令牌。
+              <br />
+              <strong>连接是明文 HTTP，没有加密。</strong>同一网络上能抓包的人可以直接读到你的对话内容，
+              并拿走会话 Cookie——那等于拿到<strong>最长 24 小时</strong>的面板权限（可发消息、批准操作、改定时任务），
+              轮换令牌也收不回已经发出去的 Cookie。请勿在公共 / 不可信 Wi-Fi 上开启；跨网络请走 Tailscale 这类自带加密的通道，
+              而不是直接把端口暴露出去。
             </div>
           )}
           {remoteEnabled ? (

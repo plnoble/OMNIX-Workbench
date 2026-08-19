@@ -240,7 +240,11 @@ pub fn autopilot_run_now(id: String, db: State<'_, Arc<DbManager>>) -> Result<St
 #[tauri::command]
 pub fn autopilot_take_queued_runs(db: State<'_, Arc<DbManager>>) -> Result<Vec<QueuedAutopilotRun>, String> {
     let conn = db.get_connection().map_err(|e| e.to_string())?;
-    let mut stmt = conn
+    // 「查出来」和「标记已认领」必须在同一个事务里。分开做的话，两个窗口
+    // （或一次双击）能各自查到同一批 queued，然后各跑一遍——同一个自动驾驶
+    // 任务被执行两次。
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    let mut stmt = tx
         .prepare(
             "SELECT r.id, r.autopilot_id, a.title, r.conversation_id, a.prompt, a.agent_name,
                     a.workspace_path, a.permission, a.work_mode
@@ -265,13 +269,39 @@ pub fn autopilot_take_queued_runs(db: State<'_, Arc<DbManager>>) -> Result<Vec<Q
         .map_err(|e| e.to_string())?
         .flatten()
         .collect();
+    drop(stmt);
     for run in &runs {
-        let _ = conn.execute(
+        tx.execute(
             "UPDATE autopilot_runs SET status = 'claimed' WHERE id = ?1",
             params![run.run_id],
-        );
+        )
+        .map_err(|e| e.to_string())?;
     }
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(runs)
+}
+
+/// 启动时把上次遗留的 `claimed` 放回队列。
+///
+/// 自动驾驶的执行整个跑在 WebView 里（认领、开会话、标完成都在前端）。所以
+/// **关掉主窗口 = 执行停止**，而那些已经认领、还没跑完的 run 会永远停在
+/// `claimed`：既不会再被认领，也不会有人把它标完成——用户看到的是「任务不跑了」，
+/// 而界面上它显示为正在执行。
+///
+/// 应用重启后前端那一轮肯定已经没了，所以启动时放回 `queued` 是安全的。
+/// 这只是止血：真正的修法是把调度下沉到 Rust（和 cron 同一套），那是另一件事。
+pub fn requeue_stale_autopilot_runs_on_startup(db: &DbManager) {
+    let Ok(conn) = db.get_connection() else {
+        return;
+    };
+    match conn.execute(
+        "UPDATE autopilot_runs SET status = 'queued' WHERE status = 'claimed'",
+        [],
+    ) {
+        Ok(0) => {}
+        Ok(n) => log::info!("启动回收：{n} 个卡在 claimed 的自动驾驶任务已放回队列"),
+        Err(e) => log::warn!("回收 claimed 自动驾驶任务失败：{e}"),
+    }
 }
 
 /// Marks a claimed run done / failed after the frontend executed it.
@@ -313,4 +343,71 @@ pub fn autopilot_list_runs(autopilot_id: String, db: State<'_, Arc<DbManager>>) 
         })
         .map_err(|e| e.to_string())?;
     Ok(rows.flatten().collect())
+}
+
+/// 自动驾驶跑在 WebView 里，关窗即停——卡在 `claimed` 的必须能回到队列。
+#[cfg(test)]
+mod stale_run_tests {
+    use super::*;
+    use crate::db::DbManager;
+
+    fn test_db(tag: &str) -> DbManager {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "omnix_autopilot_{tag}_{}_{}.db",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_file(&path);
+        DbManager::new_with_path(path)
+    }
+
+    fn seed(db: &DbManager, id: &str, status: &str) {
+        db.get_connection()
+            .unwrap()
+            .execute(
+                "INSERT INTO autopilot_runs (id, autopilot_id, conversation_id, status)
+                 VALUES (?1, 'ap1', 'c1', ?2)",
+                params![id, status],
+            )
+            .unwrap();
+    }
+
+    fn status_of(db: &DbManager, id: &str) -> String {
+        db.get_connection()
+            .unwrap()
+            .query_row(
+                "SELECT status FROM autopilot_runs WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn claimed_runs_go_back_to_the_queue() {
+        let db = test_db("claimed");
+        seed(&db, "r-claimed", "claimed");
+        requeue_stale_autopilot_runs_on_startup(&db);
+        assert_eq!(
+            status_of(&db, "r-claimed"),
+            "queued",
+            "认领了却没跑完的任务卡死了：既不会再被认领，也没人标完成"
+        );
+    }
+
+    /// **已经有结论的不许翻回队列。** 把 done 放回 queued 等于让任务重跑一遍
+    /// ——自动驾驶会真的去改工作区文件，重跑的代价不是刷新一下界面。
+    #[test]
+    fn finished_runs_are_not_requeued() {
+        let db = test_db("done");
+        seed(&db, "r-done", "done");
+        seed(&db, "r-failed", "failed");
+        seed(&db, "r-queued", "queued");
+        requeue_stale_autopilot_runs_on_startup(&db);
+        assert_eq!(status_of(&db, "r-done"), "done");
+        assert_eq!(status_of(&db, "r-failed"), "failed");
+        assert_eq!(status_of(&db, "r-queued"), "queued");
+    }
 }
