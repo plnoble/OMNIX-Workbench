@@ -413,6 +413,32 @@ pub(crate) fn cleanup_request_logs_core(db: &DbManager, keep_days: u32) -> Resul
 ///
 /// 放在启动而不是定时器：这是维护动作，用户不该为它操心，也不值得为它常驻一个
 /// 任务。失败只记日志不拦启动——修剪不掉顶多是表大一点，崩在启动是所有功能都没了。
+/// 启动时收敛上一次运行遗留的「活」会话。
+///
+/// 进程一退，所有 Agent 子进程都没了——但库里的状态不会自己改。正常退出走
+/// `RunEvent::Exit` 的 `stop_all_sessions`；**崩溃、任务管理器强杀、断电都不会**。
+/// 于是下次启动时库里躺着一批 `running`：界面显示会话还活着，前端还可能按
+/// 「配置没变就复用」把它当活会话 resume，而那边根本没有进程在听。
+///
+/// 落 `failed` 而不是 `cancelled`：`cancelled` 表示用户主动停的，这里不是。
+pub fn reconcile_stale_sessions_on_startup(db: &DbManager) {
+    let Ok(conn) = db.get_connection() else {
+        return;
+    };
+    match conn.execute(
+        "UPDATE agent_sessions
+            SET status = 'failed',
+                last_error = COALESCE(last_error, '应用上次未正常退出，该会话已中断'),
+                ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP)
+          WHERE status IN ('created', 'starting', 'running', 'awaiting_approval', 'stopping')",
+        [],
+    ) {
+        Ok(0) => {}
+        Ok(n) => log::info!("启动收敛：{n} 个上次遗留的会话标记为已中断"),
+        Err(e) => log::warn!("启动收敛遗留会话失败：{e}"),
+    }
+}
+
 pub fn prune_request_logs_on_startup(db: &DbManager) {
     let days = db
         .get_setting(LOG_RETENTION_SETTING)
@@ -938,5 +964,133 @@ mod log_retention_tests {
         seed(&db, 1);
         prune_request_logs_on_startup(&db);
         assert_eq!(count(&db), 1, "应按设置的 7 天清理，而不是默认 90 天");
+    }
+}
+
+/// 启动收敛：上次没正常退出留下的「活」会话不能继续装作活着。
+#[cfg(test)]
+mod stale_session_tests {
+    use super::*;
+    use crate::db::DbManager;
+
+    fn test_db(tag: &str) -> DbManager {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "omnix_stale_{tag}_{}_{}.db",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_file(&path);
+        let db = DbManager::new_with_path(path);
+        // agent_sessions.conversation_id 有外键，父行必须先在。
+        // `workspace_path` / `active_agent` 是 NOT NULL——夹具漏了这两列会
+        // 直接撞约束，本轮已经踩过一次。
+        db.get_connection()
+            .unwrap()
+            .execute(
+                "INSERT INTO conversations (id, title, workspace_path, active_agent)
+                 VALUES ('c1', 't', 'w', 'a1')",
+                [],
+            )
+            .unwrap();
+        db
+    }
+
+    fn seed(db: &DbManager, id: &str, status: &str) {
+        db.get_connection()
+            .unwrap()
+            .execute(
+                "INSERT INTO agent_sessions
+                   (id, conversation_id, agent_id, adapter_kind, executable_path,
+                    workspace_path, model_json, permission_json, work_mode, status)
+                 VALUES (?1, 'c1', 'a1', 'acp', 'x', 'w', '{}', '{}', 'direct', ?2)",
+                params![id, status],
+            )
+            .unwrap();
+    }
+
+    fn status_of(db: &DbManager, id: &str) -> String {
+        db.get_connection()
+            .unwrap()
+            .query_row(
+                "SELECT status FROM agent_sessions WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn live_sessions_from_a_crashed_run_are_marked_interrupted() {
+        let db = test_db("live");
+        for (id, st) in [
+            ("s-created", "created"),
+            ("s-starting", "starting"),
+            ("s-running", "running"),
+            ("s-approval", "awaiting_approval"),
+            ("s-stopping", "stopping"),
+        ] {
+            seed(&db, id, st);
+        }
+
+        reconcile_stale_sessions_on_startup(&db);
+
+        for id in [
+            "s-created",
+            "s-starting",
+            "s-running",
+            "s-approval",
+            "s-stopping",
+        ] {
+            assert_eq!(
+                status_of(&db, id),
+                "failed",
+                "{id} 还停在活状态——界面会显示它活着，前端还可能拿它 resume"
+            );
+        }
+    }
+
+    /// **已经收尾的会话不许被改写。** 收敛只该动「活」状态，把 completed 改成
+    /// failed 等于把历史记录改坏。
+    #[test]
+    fn finished_sessions_are_left_alone() {
+        let db = test_db("done");
+        seed(&db, "s-done", "completed");
+        seed(&db, "s-cancel", "cancelled");
+        seed(&db, "s-fail", "failed");
+
+        reconcile_stale_sessions_on_startup(&db);
+
+        assert_eq!(status_of(&db, "s-done"), "completed");
+        assert_eq!(status_of(&db, "s-cancel"), "cancelled");
+        assert_eq!(status_of(&db, "s-fail"), "failed");
+    }
+
+    /// 用户主动停的原因不该被这条覆盖掉。
+    #[test]
+    fn an_existing_error_message_is_kept() {
+        let db = test_db("msg");
+        seed(&db, "s-1", "running");
+        db.get_connection()
+            .unwrap()
+            .execute(
+                "UPDATE agent_sessions SET last_error = '上游 429' WHERE id = 's-1'",
+                [],
+            )
+            .unwrap();
+
+        reconcile_stale_sessions_on_startup(&db);
+
+        let msg: String = db
+            .get_connection()
+            .unwrap()
+            .query_row(
+                "SELECT last_error FROM agent_sessions WHERE id = 's-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(msg, "上游 429", "原有的失败原因被通用文案覆盖了");
     }
 }

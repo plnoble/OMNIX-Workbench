@@ -485,18 +485,26 @@ pub async fn media_create_video_task(
     // 上游地址是用户配置的，可能是 localhost：回环绕开系统代理，公网保留。
     let client = crate::storage::client_for_url(&api_address, std::time::Duration::from_secs(60));
     let url = format!("{}/videos", api_address.trim_end_matches('/'));
-    let response = client
-        .post(&url)
-        .bearer_auth(&api_key)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|error| format!("提交视频任务失败: {error}"))?;
+    // 这里的两处失败**必须当场落 failed**：任务行已经 insert 了，而它没有
+    // external_id——轮询的 `WHERE external_id IS NOT NULL` 永远扫不到它，
+    // 直接 `?` 返回的话画廊里那条会一直转圈到关应用为止。
+    let fail = |message: String| {
+        let _ = update_task(&db, &task_id, MediaTaskStatus::Failed, None, None, None, Some(&message));
+        message
+    };
+    let response = match client.post(&url).bearer_auth(&api_key).json(&body).send().await {
+        Ok(response) => response,
+        Err(error) => return Err(fail(format!("提交视频任务失败: {error}"))),
+    };
     let status = response.status();
-    let payload: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|error| format!("视频任务响应不是 JSON（HTTP {status}）: {error}"))?;
+    let payload: serde_json::Value = match response.json().await {
+        Ok(payload) => payload,
+        Err(error) => {
+            return Err(fail(format!(
+                "视频任务响应不是 JSON（HTTP {status}）: {error}"
+            )))
+        }
+    };
     let raw = truncate_raw(&payload);
 
     match parse_video_create_response(&payload) {
@@ -589,6 +597,35 @@ async fn poll_one_video(app: &AppHandle, db: &Arc<DbManager>, item: &PendingVide
     let Ok(response) = client.get(&url).bearer_auth(&api_key).send().await else {
         return; // transient network error — retry next tick
     };
+
+    // **先看状态码。** `parse_video_poll_response` 缺 `status` 字段时默认返回
+    // Running，所以把 401 / 404 的错误体直接喂进去，任务就永远是「进行中」——
+    // 画廊转圈转到关应用，而 Key 早就失效了。
+    //
+    // 4xx 是终态（Key 错、任务不存在、权限没了），5xx / 429 当瞬时故障重试。
+    let http = response.status();
+    match crate::media::classify_poll_http(http.as_u16()) {
+        // 5xx / 429：瞬时故障，下一轮再试。
+        crate::media::PollHttpAction::Retry => return,
+        crate::media::PollHttpAction::Parse => {}
+        // 终态失败：Key 错、任务不存在、权限没了——再轮询一万次也是这个结果。
+        crate::media::PollHttpAction::Terminal => {
+            let body = response.text().await.unwrap_or_default();
+            let snippet: String = body.chars().take(200).collect();
+            let _ = update_task(
+                db,
+                &item.task_id,
+                MediaTaskStatus::Failed,
+                None,
+                None,
+                Some(&truncate_raw(&serde_json::Value::String(body))),
+                Some(&format!("上游返回 HTTP {http}：{snippet}")),
+            );
+            push_task_update(app, db, &item.task_id);
+            return;
+        }
+    }
+
     let Ok(payload) = response.json::<serde_json::Value>().await else {
         return;
     };
@@ -643,8 +680,15 @@ async fn poll_one_video(app: &AppHandle, db: &Arc<DbManager>, item: &PendingVide
         }
     }
 
-    // Push the fresh row state to the Studio (best effort).
-    if let Ok(task) = get_task(db, &item.task_id) {
+    push_task_update(app, db, &item.task_id);
+}
+
+/// 把最新行状态推给 Studio（尽力而为）。
+///
+/// 抽出来是因为 4xx 那条提前返回也必须推——否则任务在库里已经是 failed，
+/// 界面上却还转着圈，直到用户手动刷新才发现。
+fn push_task_update(app: &AppHandle, db: &Arc<DbManager>, task_id: &str) {
+    if let Ok(task) = get_task(db, task_id) {
         let _ = app.emit("media-task-update", &task);
     }
 }

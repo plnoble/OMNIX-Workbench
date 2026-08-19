@@ -386,3 +386,56 @@ mod tests {
         assert_eq!(MediaTaskStatus::from_provider("weird"), MediaTaskStatus::Running);
     }
 }
+
+/// 轮询拿到 HTTP 响应后该怎么办。
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum PollHttpAction {
+    /// 解析正文，按里面的 status 决定。
+    Parse,
+    /// 终态失败：Key 错、任务不存在、权限没了——再轮询一万次也是这个结果。
+    Terminal,
+    /// 瞬时故障，下一轮再试。
+    Retry,
+}
+
+/// **必须先看状态码再解析正文。**
+///
+/// `parse_video_poll_response` 在载荷里找不到 `status` 字段时默认返回
+/// `Running`（见上面的实现）。于是把 401 / 404 的错误正文直接喂进去，任务就永远
+/// 停在「进行中」——画廊转圈转到关应用，而 Key 其实早就失效了。
+pub fn classify_poll_http(status: u16) -> PollHttpAction {
+    match status {
+        200..=299 => PollHttpAction::Parse,
+        // 429 名义上是 4xx，但它明确表示「等会儿再来」，不是终态。
+        429 => PollHttpAction::Retry,
+        400..=499 => PollHttpAction::Terminal,
+        _ => PollHttpAction::Retry,
+    }
+}
+
+#[cfg(test)]
+mod poll_http_tests {
+    use super::*;
+
+    #[test]
+    fn client_errors_are_terminal_and_server_errors_retry() {
+        assert_eq!(classify_poll_http(200), PollHttpAction::Parse);
+        assert_eq!(classify_poll_http(401), PollHttpAction::Terminal);
+        assert_eq!(classify_poll_http(404), PollHttpAction::Terminal);
+        assert_eq!(classify_poll_http(429), PollHttpAction::Retry, "限流不是终态");
+        assert_eq!(classify_poll_http(500), PollHttpAction::Retry);
+        assert_eq!(classify_poll_http(502), PollHttpAction::Retry);
+    }
+
+    /// 这条钉住的是**为什么需要上面那个分流**：解析器对错误正文会给出 Running。
+    /// 哪天有人改了解析器的默认值，这条会提醒他 poll 那边的假设变了。
+    #[test]
+    fn the_parser_calls_an_error_payload_running_which_is_why_status_comes_first() {
+        let err = serde_json::json!({"error": {"message": "invalid api key"}});
+        assert_eq!(
+            parse_video_poll_response(&err).status,
+            MediaTaskStatus::Running,
+            "解析器不再默认 Running 了——commands/media.rs 里的状态码分流要跟着复核"
+        );
+    }
+}
