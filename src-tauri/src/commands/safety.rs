@@ -1036,18 +1036,35 @@ mod compaction_tests {
     fn originals_are_backed_up_in_full_before_deletion() {
         let db = test_db("backup");
         let long = format!("0{}", "x".repeat(500));
-        seed(&db, "c3", 25, 500);
 
-        let before = std::time::SystemTime::now();
-        compact_core(&db, "c3", 20).expect("压缩");
+        // 备份目录是**全局共享**的（`~/.omnix/backups/compaction`），所以要有办法
+        // 认出「这一轮写的那个文件」。
+        //
+        // 第一版靠 mtime：先取 `SystemTime::now()`，再只认 mtime 不早于它的文件。
+        // 那样会**随机变红**——文件时间戳的更新粒度比系统时钟粗，机器够快时压缩
+        // 在同一个刻度内完成，mtime 向下取整就落到基准之前，文件被自己的过滤条件
+        // 排掉，于是报「应写出本次压缩的备份文件」。本地十几轮都碰不到，v0.33.0
+        // 的 CI 上红了。
+        //
+        // 改成会话 id 每次运行唯一，按文件名前缀认——不再和时钟有任何关系。
+        // （备份文件名是 `{conv}_{到秒}.json`，秒级时间戳本来也不足以区分两次运行。）
+        let conv = format!(
+            "c3-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
+        seed(&db, &conv, 25, 500);
+
+        compact_core(&db, &conv, 20).expect("压缩");
 
         let dir = crate::storage::backups_dir().join("compaction");
+        let prefix = format!("{conv}_");
         let mut found: Option<String> = None;
         for entry in std::fs::read_dir(&dir).expect("备份目录应已建立").flatten() {
-            let meta = entry.metadata().unwrap();
-            if meta.modified().map(|m| m >= before).unwrap_or(false)
-                && entry.file_name().to_string_lossy().starts_with("c3_")
-            {
+            if entry.file_name().to_string_lossy().starts_with(&prefix) {
                 found = std::fs::read_to_string(entry.path()).ok();
             }
         }
