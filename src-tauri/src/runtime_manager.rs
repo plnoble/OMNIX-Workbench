@@ -1816,6 +1816,99 @@ mod tests {
         let _ = std::fs::remove_dir_all(workspace);
     }
 
+    /// paseo 指出的那种死法：agent **跑完一轮之后**、闲着的时候进程没了。
+    ///
+    /// 这种死法最难发现——没有任何一轮在飞，没有人在等它的输出，界面上那个会话
+    /// 看起来完全正常。它托管的后台工作（后台 Bash、watch、workflow）随进程一起
+    /// 消失，而本该唤醒它的完成通知永远不会来。
+    ///
+    /// 既有的 `agent_process_crash_marks_session_failed` 测的是「启动即死」——
+    /// 那时一轮都还没跑过。这一条补的是「答完一轮之后才死」，两者走的是同一段
+    /// 代码但**前提不同**：只要哪天有人为了省内存在「一轮结束」时把会话从
+    /// active 表里摘掉，启动即死那条依然全绿，而这一条会红。
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_runtime_that_dies_while_idle_is_reported_as_a_failure() {
+        let suffix = chrono::Utc::now().timestamp_micros();
+        let db_path = std::env::temp_dir().join(format!("omnix_idle_death_{suffix}.sqlite"));
+        let script_path = std::env::temp_dir().join(format!("omnix_fake_idle_{suffix}.cmd"));
+        // 答完一轮脚本就自己结束——正是 agent 在两轮之间死掉的样子。
+        std::fs::write(&script_path, "@echo off\r\nset /p OMNIX_INPUT=\r\necho {\"type\":\"assistant\",\"session_id\":\"idle-death-session\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}\r\n").expect("idle-death script");
+
+        let db = Arc::new(DbManager::new_runtime_test(db_path.clone()));
+        let conn = db.get_connection().expect("db connection");
+        conn.execute(
+            "INSERT INTO conversations (id, title, workspace_path, active_agent) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["conv-idle", "Idle", "D:/work/project", "Claude Code"],
+        )
+        .expect("conversation seed");
+        drop(conn);
+
+        let manager = RuntimeManager::new(Arc::clone(&db));
+        let session = manager
+            .start_session(AgentSessionConfig {
+                conversation_id: "conv-idle".into(),
+                agent: AgentId::ClaudeCode,
+                executable_path: script_path.to_string_lossy().into_owned(),
+                workspace_path: std::env::temp_dir().to_string_lossy().into_owned(),
+                model: ModelSelection::AgentDefault,
+                permission: PermissionPolicy::AskOnRisk,
+                work_mode: WorkMode::Direct,
+            })
+            .await
+            .expect("start idle-death session");
+        manager
+            .send_message(&session.id, "one turn please")
+            .await
+            .expect("send task");
+
+        // 先确认这一轮**真的成功了**——否则这条测的就退化成了「启动即死」。
+        let mut answered = false;
+        for _ in 0..60 {
+            answered = manager
+                .list_events(&session.id)
+                .expect("list events")
+                .iter()
+                .any(|event| event.kind == RuntimeEventKind::AssistantMessage);
+            if answered {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(answered, "这一轮应当先正常答完，之后进程才死");
+
+        // 没有人调用 stop/complete：进程是自己没的。
+        let mut reloaded = manager.get_session(&session.id).expect("reload session");
+        for _ in 0..60 {
+            reloaded = manager.get_session(&session.id).expect("reload session");
+            if reloaded.status == AgentSessionStatus::Failed {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert_eq!(
+            reloaded.status,
+            AgentSessionStatus::Failed,
+            "闲置期进程死掉必须落到 failed；停在 idle 就是那种「看起来很健康、其实托管的活已经没了」的状态"
+        );
+        assert!(
+            manager
+                .list_events(&session.id)
+                .expect("list events")
+                .iter()
+                .any(|event| {
+                    event.kind == RuntimeEventKind::Error
+                        && event.text.as_deref().is_some_and(|t| t.contains("意外退出"))
+                }),
+            "时间线上要留下一条，用户才看得见它是怎么没的"
+        );
+
+        drop(manager);
+        drop(db);
+        let _ = std::fs::remove_file(script_path);
+        let _ = std::fs::remove_file(db_path);
+    }
+
     #[cfg(windows)]
     #[tokio::test]
     async fn agent_process_crash_marks_session_failed() {

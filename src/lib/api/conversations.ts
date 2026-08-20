@@ -186,7 +186,7 @@ export const teamRunApi = {
   generatePlan: (goal: string, workspacePath: string, managerAgent: string) =>
     invoke<TeamRunDetail>("team_generate_plan", { goal, workspacePath, managerAgent }),
   // 编排预设（借鉴 paseo）：不经 AI 队长，直接构造 handoff / advisor 计划，仍进批准
-  buildPreset: (preset: "handoff" | "advisor", task: string, workspacePath: string, plannerAgent: string, workerAgent: string) =>
+  buildPreset: (preset: "handoff" | "advisor" | "fusion", task: string, workspacePath: string, plannerAgent: string, workerAgent: string) =>
     invoke<TeamRunDetail>("team_build_preset", { preset, task, workspacePath, plannerAgent, workerAgent }),
   getDetail: (runId: string) =>
     invoke<TeamRunDetail>("team_get_run_detail", { runId }),

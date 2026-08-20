@@ -158,28 +158,32 @@ export function TeamTab() {
     }
   };
 
-  /** 编排预设：交接（planner→worker）/ 顾问（只读第二意见）。落进批准流程。 */
-  const buildPreset = async (preset: "handoff" | "advisor") => {
+  /**
+   * 编排预设：交接（planner→worker）/ 顾问（只读第二意见）/ 合议（两份独立方案 + 合成）。
+   * 都不经 AI 队长，直接构造固定形状，仍走批准流程。
+   */
+  const buildPreset = async (preset: "handoff" | "advisor" | "fusion") => {
     if (!collabStdin.trim() || !workspacePath || !activeAgent) {
       toast.warning("请填写任务，并选择工作区和主 Agent");
       return;
     }
-    // 交接需要两个 agent：主 Agent 当规划者，另一个已装的当实现者。
+    // 交接和合议都需要第二个 agent：交接是规划者→实现者，合议是两份**独立**的方案。
     const worker =
-      preset === "handoff"
-        ? supported.find((a) => a.name !== activeAgent)?.name ?? activeAgent
-        : activeAgent;
+      preset === "advisor"
+        ? activeAgent
+        : supported.find((a) => a.name !== activeAgent)?.name ?? activeAgent;
     setBusy(preset);
     try {
       const created = await teamRunApi.buildPreset(preset, collabStdin, workspacePath, activeAgent, worker);
       setDetail(created);
       setSelectedRunId(created.run.id);
       await loadRuns();
-      toast.success(
-        preset === "handoff"
-          ? `已构造交接计划：${activeAgent} 规划 → ${worker} 实现，确认后启动`
-          : `已构造顾问计划：${activeAgent} 只读给第二意见，确认后启动`,
-      );
+      const built = {
+        handoff: `已构造交接计划：${activeAgent} 规划 → ${worker} 实现，确认后启动`,
+        advisor: `已构造顾问计划：${activeAgent} 只读给第二意见，确认后启动`,
+        fusion: `已构造合议计划：${activeAgent} 与 ${worker} 各出一版方案 → ${activeAgent} 合成，确认后启动`,
+      }[preset];
+      toast.success(built);
     } catch (error) {
       toast.error(`预设构造失败：${error}`);
     } finally {
@@ -318,8 +322,21 @@ export function TeamTab() {
                 >
                   {busy === "advisor" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null} 顾问
                 </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void buildPreset("fusion")}
+                  disabled={busy !== "" || supported.length < 2}
+                  title={
+                    supported.length < 2
+                      ? "合议需要两个不同的 Agent 各自独立出方案；只装了一个的话用「顾问」"
+                      : "两个 Agent 互相看不见地各出一版方案，再由主 Agent 逐条比对分歧后合成。三步全只读。"
+                  }
+                >
+                  {busy === "fusion" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null} 合议
+                </Button>
                 <span className="text-[11px] text-muted-foreground/70">
-                  交接=规划→实现；顾问=只读第二意见。都会先出计划让你确认。
+                  交接=规划→实现；顾问=只读第二意见；合议=两版独立方案再合成。都会先出计划让你确认。
                 </span>
               </div>
             )}

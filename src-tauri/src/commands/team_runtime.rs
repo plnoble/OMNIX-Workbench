@@ -287,31 +287,22 @@ fn store_plan(
     Ok(())
 }
 
-/// 编排预设（借鉴 paseo）：不经 AI 队长，直接按固定形状构造计划，仍落进
-/// 「待批准」状态——用户批准后才跑，审批闸门不变。
-/// - `handoff`：planner_agent 先规划 → worker_agent 依赖其产出再实现（依赖上下文
-///   自动透传，见 run_worker）。两步都可写。
-/// - `advisor`：单个 worker_agent 以**只读/计划模式**给第二意见，不接管、不改文件。
-#[tauri::command]
-pub async fn team_build_preset(
-    preset: String,
-    task: String,
-    workspace_path: String,
-    planner_agent: String,
-    worker_agent: String,
-    db: State<'_, Arc<DbManager>>,
-) -> Result<TeamRunDetail, String> {
-    crate::input_validation::validate_workspace_path(&workspace_path, "workspace_path")?;
-    if task.trim().is_empty() {
-        return Err("请先描述任务".into());
-    }
-    let title: String = task.chars().take(60).collect();
-    let default_mode = super::runs::default_work_mode();
-
-    let (manager_display, assignments) = match preset.as_str() {
+/// 把预设摊成一组分工。**纯函数**，不碰数据库——形状才测得到。
+///
+/// 抽出来的直接原因是合议：它的正确性全在形状上（两份方案必须**互不依赖**，
+/// 否则第二个 agent 会在依赖上下文里看见第一个的答案，「独立意见」就没了），
+/// 而这件事在一个要 `State<DbManager>` 的 tauri command 里根本测不到。
+fn preset_assignments(
+    preset: &str,
+    task: &str,
+    planner_agent: &str,
+    worker_agent: &str,
+    default_mode: &str,
+) -> Result<(String, Vec<TeamAssignment>), String> {
+    let built = match preset {
         "handoff" => {
-            let planner = parse_agent(&planner_agent)?;
-            let worker = parse_agent(&worker_agent)?;
+            let planner = parse_agent(planner_agent)?;
+            let worker = parse_agent(worker_agent)?;
             (
                 planner.display_name().to_string(),
                 vec![
@@ -333,13 +324,13 @@ pub async fn team_build_preset(
                         depends_on: vec!["plan".into()],
                         acceptance_criteria: vec!["实现符合方案且通过验证".into()],
                         max_retries: 1,
-                        work_mode: default_mode.clone(),
+                        work_mode: default_mode.to_string(),
                     },
                 ],
             )
         }
         "advisor" => {
-            let advisor = parse_agent(&worker_agent)?;
+            let advisor = parse_agent(worker_agent)?;
             (
                 advisor.display_name().to_string(),
                 vec![TeamAssignment {
@@ -356,8 +347,88 @@ pub async fn team_build_preset(
                 }],
             )
         }
+        "fusion" => {
+            let first = parse_agent(planner_agent)?;
+            let second = parse_agent(worker_agent)?;
+            if first == second {
+                return Err("合议需要两个**不同**的 Agent 各自独立出方案；只装了一个的话用「顾问」".into());
+            }
+            let proposal = |id: &str, who: &AgentId| TeamAssignment {
+                id: id.into(),
+                agent_name: who.display_name().to_string(),
+                task_title: format!(
+                    "独立给出你自己的方案：{task}。先看清现状再回答，**不要改任何文件**。\
+                     只写方案、理由和你不确定的地方。"
+                ),
+                status: "planned".into(),
+                depends_on: vec![],
+                acceptance_criteria: vec!["给出完整方案与理由".into()],
+                max_retries: 0,
+                work_mode: "plan".into(),
+            };
+            (
+                first.display_name().to_string(),
+                vec![
+                    proposal("draft_a", &first),
+                    proposal("draft_b", &second),
+                    TeamAssignment {
+                        id: "merge".into(),
+                        agent_name: first.display_name().to_string(),
+                        task_title: format!(
+                            "上面两份方案针对的是同一个任务：{task}。\
+                             先逐条列出它们的**分歧**，再判断每一处哪一边更可信、为什么，\
+                             最后合成一份最终方案。分歧点必须写出来——两份都同意的地方\
+                             不需要复述，有价值的正是它们不一致的部分。**不要改任何文件**。"
+                        ),
+                        status: "planned".into(),
+                        depends_on: vec!["draft_a".into(), "draft_b".into()],
+                        acceptance_criteria: vec![
+                            "逐条列出两份方案的分歧".into(),
+                            "给出合成后的最终方案".into(),
+                        ],
+                        max_retries: 1,
+                        work_mode: "plan".into(),
+                    },
+                ],
+            )
+        }
         other => return Err(format!("未知编排预设: {other}")),
     };
+    validate_assignments(&built.1)?;
+    Ok(built)
+}
+
+/// 编排预设（借鉴 paseo）：不经 AI 队长，直接按固定形状构造计划，仍落进
+/// 「待批准」状态——用户批准后才跑，审批闸门不变。
+/// - `handoff`：planner_agent 先规划 → worker_agent 依赖其产出再实现（依赖上下文
+///   自动透传，见 run_worker）。两步都可写。
+/// - `advisor`：单个 worker_agent 以**只读/计划模式**给第二意见，不接管、不改文件。
+/// - `fusion`（合议）：两个 agent 各自**独立**给方案（互不依赖、互相看不见），
+///   第三步依赖它俩做合成。借鉴 opensquilla 的 C3 多模型融合（Apache-2.0），
+///   但**不做成路由的一档**：融合一轮要跑多次模型，成本方向和「省钱路由」是反的，
+///   而 OMNIX 本来就有多 Agent 团队这套机器——调度、依赖透传、审批闸门、验收
+///   一个都不用新写，合议只是它们的一种摆法。
+///
+///   三步全部只读。N 个 agent 同时改同一个工作区会互相踩，那是要隔离工作树才
+///   能做的事，不属于一个预设的范围。
+#[tauri::command]
+pub async fn team_build_preset(
+    preset: String,
+    task: String,
+    workspace_path: String,
+    planner_agent: String,
+    worker_agent: String,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<TeamRunDetail, String> {
+    crate::input_validation::validate_workspace_path(&workspace_path, "workspace_path")?;
+    if task.trim().is_empty() {
+        return Err("请先描述任务".into());
+    }
+    let title: String = task.chars().take(60).collect();
+    let default_mode = super::runs::default_work_mode();
+
+    let (manager_display, assignments) =
+        preset_assignments(&preset, &task, &planner_agent, &worker_agent, &default_mode)?;
 
     let run = create_workspace_run_core(&db, &title, &workspace_path, &manager_display)?;
     store_plan(&db, &run.id, &task, &assignments)?;
@@ -947,5 +1018,94 @@ mod tests {
 
         let workers = list_agent_runs_core(&db, &run.id).expect("workers should list");
         assert!(workers.iter().all(|worker| worker.status == "queued"));
+    }
+}
+
+
+/// 编排预设的**形状**。
+///
+/// 合议的正确性几乎全在形状上：两份方案必须互不依赖、都只读、合成那步必须同时
+/// 依赖两份。这里面每一条错了都不会报错，只会让「合议」悄悄退化成别的东西——
+/// 两份方案串起来就成了「第二个 agent 抄第一个」，合成那步少依赖一个就成了
+/// 「只看了一半」。
+#[cfg(test)]
+mod preset_tests {
+    use super::*;
+
+    fn build(preset: &str, a: &str, b: &str) -> Result<(String, Vec<TeamAssignment>), String> {
+        preset_assignments(preset, "把登录改成 OAuth", a, b, "direct")
+    }
+
+    fn find<'a>(items: &'a [TeamAssignment], id: &str) -> &'a TeamAssignment {
+        items.iter().find(|item| item.id == id).expect(id)
+    }
+
+    #[test]
+    fn fusion_drafts_are_independent_of_each_other() {
+        let (_, items) = build("fusion", "Claude Code", "Codex").expect("合议");
+        let a = find(&items, "draft_a");
+        let b = find(&items, "draft_b");
+        assert!(
+            a.depends_on.is_empty() && b.depends_on.is_empty(),
+            "两份方案一旦有依赖，后一个就会在依赖上下文里看见前一个的答案——\
+             那不是两份独立意见，是一份意见加一次附和"
+        );
+        assert_ne!(a.agent_name, b.agent_name, "两份方案得出自不同的 Agent");
+    }
+
+    #[test]
+    fn the_merge_step_sees_both_drafts() {
+        let (_, items) = build("fusion", "Claude Code", "Codex").expect("合议");
+        let merge = find(&items, "merge");
+        let mut deps = merge.depends_on.clone();
+        deps.sort();
+        assert_eq!(
+            deps,
+            vec!["draft_a".to_string(), "draft_b".to_string()],
+            "合成那步少依赖一份，就等于只看了一半"
+        );
+    }
+
+    #[test]
+    fn every_fusion_step_is_read_only() {
+        let (_, items) = build("fusion", "Claude Code", "Codex").expect("合议");
+        assert_eq!(items.len(), 3);
+        for item in &items {
+            assert_eq!(
+                item.work_mode, "plan",
+                "合议的 {} 步不是只读的——两个 Agent 同时改同一个工作区会互相踩，\
+                 那要隔离工作树才能做",
+                item.id
+            );
+        }
+    }
+
+    #[test]
+    fn fusion_needs_two_different_agents() {
+        let err = build("fusion", "Claude Code", "Claude Code").expect_err("同一个 Agent 应当被拒");
+        assert!(err.contains("不同"), "错误得说清为什么：{err}");
+    }
+
+    /// 反向对照：已有的两个预设形状没被这次改动带歪。
+    #[test]
+    fn handoff_still_chains_and_advisor_stays_read_only() {
+        let (_, handoff) = build("handoff", "Claude Code", "Codex").expect("交接");
+        assert_eq!(
+            find(&handoff, "impl").depends_on,
+            vec!["plan".to_string()],
+            "交接就是要串起来——实现那步必须依赖规划那步"
+        );
+        assert_eq!(find(&handoff, "plan").work_mode, "plan");
+        assert_eq!(find(&handoff, "impl").work_mode, "direct");
+
+        let (_, advisor) = build("advisor", "Claude Code", "Codex").expect("顾问");
+        assert_eq!(advisor.len(), 1);
+        assert_eq!(advisor[0].work_mode, "plan", "顾问不接管、不改文件");
+    }
+
+    #[test]
+    fn an_unknown_preset_is_refused_by_name() {
+        let err = build("ensemble", "Claude Code", "Codex").expect_err("未知预设");
+        assert!(err.contains("ensemble"), "错误里要带上那个名字：{err}");
     }
 }
