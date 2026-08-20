@@ -929,8 +929,22 @@ impl DbManager {
         // These are added AFTER all table creation to avoid FK ordering issues.
         // Each uses IF NOT EXISTS so they're safe to run on every startup.
         let indexes = [
-            // Most critical: messages by conversation (chat loads messages per-conversation)
-            "CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id)",
+            // 最要紧的一条：按会话取消息。
+            //
+            // **必须是 `(conversation_id, timestamp)` 复合索引**，不能只有
+            // `conversation_id`。查询是 `WHERE conversation_id = ? ORDER BY timestamp`，
+            // 单列索引只能定位到会话，排序还得走 `USE TEMP B-TREE FOR ORDER BY`
+            // ——也就是把该会话的**全部**消息排一遍。将来加 LIMIT 分页时，省下的
+            // 只是传输量，扫描和排序一点没少。
+            //
+            // 复合索引把 `conversation_id` 放在前面，所以它同时覆盖了原来那条
+            // 单列索引的全部用途；旧索引已 DROP（见下面的 `stale_indexes`）。
+            "CREATE INDEX IF NOT EXISTS idx_messages_conversation_timestamp
+             ON messages(conversation_id, timestamp)",
+            // 会话列表：`WHERE is_archived = ? ORDER BY created_at DESC`。
+            // 原来是全表 `SCAN` + 临时 B 树排序。
+            "CREATE INDEX IF NOT EXISTS idx_conversations_archived_created
+             ON conversations(is_archived, created_at)",
             // Platform models by platform (settings page loads models per-platform)
             "CREATE INDEX IF NOT EXISTS idx_platform_models_platform_id ON platform_models(platform_id)",
             // Request logs by timestamp (dashboard analytics sort by time)
@@ -959,6 +973,18 @@ impl DbManager {
         ];
         for idx_sql in &indexes {
             let _ = conn.execute(idx_sql, []);
+        }
+
+        // 被上面的复合索引完全取代的旧索引。留着不会出错，但每次写入都要多维护
+        // 一棵 B 树，而它能服务的查询新索引都能服务（前导列相同）。
+        //
+        // 只删**确认被覆盖**的，不做无差别清理：判据是「旧索引的列是新索引列的前缀」。
+        let stale_indexes = [
+            // 被 idx_messages_conversation_timestamp 覆盖
+            "DROP INDEX IF EXISTS idx_messages_conversation_id",
+        ];
+        for drop_sql in &stale_indexes {
+            let _ = conn.execute(drop_sql, []);
         }
 
         // Seed default settings if empty

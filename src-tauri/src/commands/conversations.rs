@@ -17,18 +17,31 @@ pub struct ConversationInfo {
 /// 列表体。归档与未归档只差一个 `is_archived` 取值，以前是两份逐字重复的函数。
 ///
 /// 抽成 `_core` 还有第二个理由：`State<…>` 在单测里构造不出来，命令本身测不到。
+/// 会话列表的查询。
+///
+/// **提成常量是为了让查询计划测试测到真货。** 测试里抄一份 SQL 的话，代码改了
+/// 测试照样绿——那种「守卫」守的是自己的副本。
+///
+/// 不能写 `COALESCE(is_archived, 0) = ?1`：条件列被函数包住就不可 sarg，索引用不上，
+/// 计划退回全表 `SCAN`。该列本身是 `INTEGER NOT NULL DEFAULT 0`（建表与 ALTER 两处
+/// 都是），不可能为 NULL——那个 COALESCE 是多余的防御，代价却是整张表扫一遍。
+pub(crate) const LIST_CONVERSATIONS_SQL: &str = "SELECT id, title, workspace_path, active_agent, created_at
+     FROM conversations
+     WHERE is_archived = ?1
+     ORDER BY created_at DESC";
+
+/// 单会话的消息。靠 `idx_messages_conversation_timestamp` 复合索引直接出有序结果，
+/// 不再 `USE TEMP B-TREE FOR ORDER BY`（那是把整个会话排一遍）。
+pub(crate) const CONVERSATION_MESSAGES_SQL: &str = "SELECT id, conversation_id, role, content, timestamp, metadata_json
+     FROM messages WHERE conversation_id = ?1 ORDER BY timestamp ASC";
+
 pub(crate) fn list_conversations_core(
     db: &DbManager,
     archived: bool,
 ) -> Result<Vec<ConversationInfo>, String> {
     let conn = db.get_connection().map_err(|e| e.to_string())?;
     let mut stmt = conn
-        .prepare(
-            "SELECT id, title, workspace_path, active_agent, created_at
-         FROM conversations
-         WHERE COALESCE(is_archived, 0) = ?1
-         ORDER BY created_at DESC",
-        )
+        .prepare(LIST_CONVERSATIONS_SQL)
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map(params![if archived { 1 } else { 0 }], |row| {
@@ -121,7 +134,8 @@ pub(crate) fn get_conversation_messages_core(
 ) -> Result<Vec<MessageInfo>, String> {
     input_validation::validate_id(conversation_id, "conversation_id")?;
     let conn = db.get_connection().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare("SELECT id, conversation_id, role, content, timestamp, metadata_json FROM messages WHERE conversation_id = ?1 ORDER BY timestamp ASC")
+    let mut stmt = conn
+        .prepare(CONVERSATION_MESSAGES_SQL)
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map(params![conversation_id], |row| {
@@ -591,4 +605,98 @@ mod tests {
         assert!(create_conversation_core(&db, "c", "t", &ws(), "a", Some("")).is_err());
     }
 
+}
+
+/// 查询计划守卫：会话列表与消息列表不许退回全表扫描或临时排序。
+///
+/// 这两条是应用里跑得最勤的查询——每开一个会话、每收一个 agent 事件都会打一次。
+/// 它们原来的计划是：
+///
+/// ```text
+/// messages:      SEARCH USING INDEX idx_messages_conversation_id (conversation_id=?)
+///                USE TEMP B-TREE FOR ORDER BY        ← 把整个会话排一遍
+/// conversations: SCAN conversations                   ← 全表扫
+///                USE TEMP B-TREE FOR ORDER BY
+/// ```
+///
+/// 现在靠 `(conversation_id, timestamp)` 与 `(is_archived, created_at)` 两条复合
+/// 索引直接出有序结果。**这是将来做分页的前提**：没有它，加了 LIMIT 也只省传输量，
+/// 扫描和排序一点没少（见 `docs/分页方案-W18.md` 阶段 0）。
+///
+/// 索引被删掉、或者查询被改回不可 sarg 的写法（比如给条件列包一层 `COALESCE`），
+/// 这条会红。
+#[cfg(test)]
+mod query_plan_tests {
+    use super::*;
+    use crate::db::DbManager;
+
+    fn test_db(tag: &str) -> DbManager {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "omnix_qplan_{tag}_{}_{}.db",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_file(&path);
+        DbManager::new_with_path(path)
+    }
+
+    fn plan(db: &DbManager, sql: &str) -> String {
+        let conn = db.get_connection().unwrap();
+        let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+        // 绑个占位值：查询计划不依赖参数的**取值**，但 `?1` 必须有东西绑上，
+        // 否则 prepare 出来的语句执行时报 InvalidParameterCount。
+        let rows: Vec<String> = stmt
+            .query_map(params!["0"], |r| r.get::<_, String>(3))
+            .unwrap()
+            .flatten()
+            .collect();
+        rows.join(" | ")
+    }
+
+    #[test]
+    fn messages_come_out_sorted_by_the_index_not_a_temp_btree() {
+        let db = test_db("msg");
+        let p = plan(&db, CONVERSATION_MESSAGES_SQL);
+        assert!(
+            p.contains("idx_messages_conversation_timestamp"),
+            "没走复合索引，实际计划：{p}"
+        );
+        assert!(
+            !p.contains("TEMP B-TREE"),
+            "还在临时排序（等于把整个会话排一遍）：{p}"
+        );
+    }
+
+    #[test]
+    fn the_conversation_list_does_not_scan_the_whole_table() {
+        let db = test_db("conv");
+        let p = plan(&db, LIST_CONVERSATIONS_SQL);
+        assert!(
+            !p.contains("SCAN conversations"),
+            "会话列表退回全表扫描了：{p}"
+        );
+        assert!(
+            !p.contains("TEMP B-TREE"),
+            "会话列表还在临时排序：{p}"
+        );
+    }
+
+    /// 被复合索引完全覆盖的旧单列索引应当已被删除——留着只是每次写入多维护一棵
+    /// B 树。这条同时钉住「新库不会再建它」。
+    #[test]
+    fn the_superseded_single_column_index_is_gone() {
+        let db = test_db("stale");
+        let conn = db.get_connection().unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'index' AND name = 'idx_messages_conversation_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 0, "旧的单列索引还在，被复合索引覆盖了却没删");
+    }
 }
