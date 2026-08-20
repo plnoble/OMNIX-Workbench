@@ -220,6 +220,9 @@ fn proxy_state(db: Arc<DbManager>) -> Arc<ProxyState> {
 /// 又**优先于** `target_model` 设置。不清就会打到 localhost:11434 而不是假上游——
 /// 第一版测试就是这么全绿不了的。测路由就得先让路由只有一条路。
 fn reset_routing(db: &DbManager) {
+    // 防降档是**进程内**状态，不在库里。不清的话上一个用例选中的模型会粘到
+    // 下一个用例（600 秒窗口远长于一次测试跑批），表现是「选型莫名其妙不对」。
+    super::clear_route_stickiness();
     let conn = db.get_connection().expect("db");
     for sql in [
         "DELETE FROM agent_accounts",
@@ -362,6 +365,82 @@ async fn auto_routing_refuses_rather_than_silently_downgrading() {
     set_target(&db, "Auto");
 
     let response = drive(proxy_state(Arc::clone(&db)), request_with_tools()).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(
+        upstream.seen.lock().unwrap().is_empty(),
+        "既然选不出合格模型，就不该把请求发出去"
+    );
+
+    drop(db);
+    let _ = std::fs::remove_file(path);
+}
+
+/// 同一条门槛在 **OpenAI 形状**那条路上也得成立。
+///
+/// 它以前只长在 Anthropic 那半边：两条路各抄了一份打分，抄的时候把
+/// 「声明了 tools 就只在支持工具的模型里选」这条漏掉了。于是同一个请求
+/// 走 `/v1/chat/completions` 就可能被派给一个不会调工具的模型。
+/// 现在两条路共用 `proxy::pick_auto_model`，这两条测的是**接线**——
+/// 光有共享函数不够，还得证明这条路真的把 `payload.tools` 传进去了。
+#[tokio::test]
+async fn openai_auto_routing_picks_a_tool_capable_model_when_tools_are_declared() {
+    let upstream = start_fake_upstream(json!({
+        "id": "c1", "object": "chat.completion",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 3, "completion_tokens": 1}
+    }))
+    .await;
+    let (db, path) = temp_db("oai_auto_tools");
+    reset_routing(&db);
+    install_model(&db, "notools", "openai", &upstream.base_url, "plain-model", 0);
+    install_model(&db, "withtools", "openai", &upstream.base_url, "tool-model", 1);
+    set_target(&db, "Auto");
+
+    let response = super::handle_openai_forward_impl(
+        proxy_state(Arc::clone(&db)),
+        None,
+        axum::http::HeaderMap::new(),
+        json!({
+            "model": "whatever",
+            "messages": [{"role": "user", "content": "看一下 a.txt"}],
+            "tools": [{"type": "function", "function": {"name": "Read", "parameters": {}}}]
+        }),
+    )
+    .await
+    .into_response();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        upstream.first_request()["model"], "tool-model",
+        "OpenAI 这条路把带工具的请求派给了不支持工具的模型"
+    );
+
+    drop(db);
+    let _ = std::fs::remove_file(path);
+}
+
+/// 一个支持工具的都没有时同样要明确报错，不能挑一个凑合上。
+#[tokio::test]
+async fn openai_auto_routing_refuses_rather_than_silently_downgrading() {
+    let upstream = start_fake_upstream(json!({"choices": []})).await;
+    let (db, path) = temp_db("oai_auto_none");
+    reset_routing(&db);
+    install_model(&db, "notools", "openai", &upstream.base_url, "plain-model", 0);
+    set_target(&db, "Auto");
+
+    let response = super::handle_openai_forward_impl(
+        proxy_state(Arc::clone(&db)),
+        None,
+        axum::http::HeaderMap::new(),
+        json!({
+            "model": "whatever",
+            "messages": [{"role": "user", "content": "看一下 a.txt"}],
+            "tools": [{"type": "function", "function": {"name": "Read", "parameters": {}}}]
+        }),
+    )
+    .await
+    .into_response();
+
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert!(
         upstream.seen.lock().unwrap().is_empty(),

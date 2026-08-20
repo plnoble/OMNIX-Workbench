@@ -54,6 +54,21 @@ impl AnthropicMessageContent {
         }
     }
 
+    /// 这段内容里有没有图片块。
+    ///
+    /// 视觉需求**只能从结构上看**：`to_string_content()` 只保留 text 块，
+    /// 图片块（`{type:"image", source:{...}}`）在它的输出里完全不存在。
+    /// 路由曾经靠正文里出现 "image" 来判断要不要视觉模型，那个方向是反的——
+    /// 真带图的请求判不出来，正文里提一句 "docker image" 反而会误判。
+    pub fn has_image_block(&self) -> bool {
+        match self {
+            AnthropicMessageContent::String(_) => false,
+            AnthropicMessageContent::Blocks(blocks) => {
+                blocks.iter().any(|b| b.block_type == "image")
+            }
+        }
+    }
+
     // 曾经这里还有个 `to_openai_content`：把块数组压成 OpenAI 的 content。
     // R1 之后整条 Anthropic→OpenAI 的消息翻译（含 tool_use / tool_result 要
     // 拆成独立消息）都归 `crate::tool_translate::messages_to_openai`，

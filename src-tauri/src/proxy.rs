@@ -305,104 +305,262 @@ use auth::guard_gateway_access;
 pub(crate) use auth::PanelAuthed;
 
 
-fn classify_request_capabilities(messages: &[OpenAIRequestMessage]) -> (bool, bool, bool, bool) {
-    let mut need_vision = false;
+/// 分类只看**最近这么多条**消息。
+///
+/// 以前扫的是整段 `messages`——而客户端每一轮都把完整历史发上来，于是两个后果：
+/// `need_coding` 被历史里任意一条带 ``` 的消息触发之后就**再也变不回 false**；
+/// `total_len` 算的是整段对话的长度，聊过两三轮 `need_speedy` 就永远触发不了。
+/// Auto 的省钱效果在长对话里因此归零，而且只会单向往「能力强」爬。
+const CLASSIFY_RECENT_MESSAGES: usize = 4;
+
+/// `need_speedy` 的长度阈值，按**字符**算，不是字节。
+///
+/// 原来用的是 `.len()`（字节数）。一个汉字 3 字节，所以 300 这个阈值对中文
+/// 实际只有 100 字——同一句话，中文比英文更难被判成「短问题」。
+const SPEEDY_MAX_CHARS: usize = 300;
+
+const REASONING_KEYWORDS: &[&str] = &[
+    "prove",
+    "proof",
+    "math",
+    "算法",
+    "algorithm",
+    "deadlock",
+    "死锁",
+    "性能优化",
+    "explain step-by-step",
+    "思维链",
+];
+
+const CODING_KEYWORDS: &[&str] = &[
+    "```",
+    "code",
+    "代码",
+    "write a",
+    "refactor",
+    "重构",
+    "implement",
+    "编写",
+    ".rs",
+    ".tsx",
+    ".ts",
+    ".js",
+    ".py",
+];
+
+const VISION_KEYWORDS: &[&str] = &["data:image/", "[image]", "图片", "图像"];
+
+/// 两条协议路径共用的能力分类。
+///
+/// `texts` 已经是**最近几条**消息的文本（见 [`CLASSIFY_RECENT_MESSAGES`]），
+/// `has_image` 由调用方按各自协议判定——Anthropic 那边图片是独立的内容块，
+/// 文本里根本看不到，见 [`AnthropicMessageContent::has_image_block`]。
+///
+/// 合成一份是因为两边各抄一份之后长歪了：OpenAI 那份认 `explain step-by-step`
+/// 和 `.rs/.ts/.py` 这些文件后缀，Anthropic 那份不认。这类分叉不是设计，是抄漏。
+fn classify_texts(texts: &[String], has_image: bool) -> (bool, bool, bool, bool) {
+    let mut need_vision = has_image;
     let mut need_reasoning = false;
     let mut need_coding = false;
 
-    for msg in messages {
-        let content_lower = msg.content.to_lowercase();
-        if content_lower.contains("data:image/")
-            || content_lower.contains("[image]")
-            || content_lower.contains("图片")
-            || content_lower.contains("图像")
-        {
+    for text in texts {
+        let lower = text.to_lowercase();
+        if VISION_KEYWORDS.iter().any(|k| lower.contains(k)) {
             need_vision = true;
         }
-        if content_lower.contains("prove")
-            || content_lower.contains("proof")
-            || content_lower.contains("math")
-            || content_lower.contains("算法")
-            || content_lower.contains("algorithm")
-            || content_lower.contains("deadlock")
-            || content_lower.contains("死锁")
-            || content_lower.contains("性能优化")
-            || content_lower.contains("explain step-by-step")
-            || content_lower.contains("思维链")
-        {
+        if REASONING_KEYWORDS.iter().any(|k| lower.contains(k)) {
             need_reasoning = true;
         }
-        if content_lower.contains("```")
-            || content_lower.contains("code")
-            || content_lower.contains("代码")
-            || content_lower.contains("write a")
-            || content_lower.contains("refactor")
-            || content_lower.contains("重构")
-            || content_lower.contains("implement")
-            || content_lower.contains("编写")
-            || content_lower.contains(".rs")
-            || content_lower.contains(".tsx")
-            || content_lower.contains(".ts")
-            || content_lower.contains(".js")
-            || content_lower.contains(".py")
-        {
+        if CODING_KEYWORDS.iter().any(|k| lower.contains(k)) {
             need_coding = true;
         }
     }
 
-    let total_len: usize = messages.iter().map(|m| m.content.len()).sum();
-    let need_speedy = !need_reasoning && !need_vision && total_len < 300;
+    let total_chars: usize = texts.iter().map(|t| t.chars().count()).sum();
+    let need_speedy = !need_reasoning && !need_vision && total_chars < SPEEDY_MAX_CHARS;
 
     (need_vision, need_reasoning, need_coding, need_speedy)
 }
 
-fn classify_anthropic_capabilities(payload: &AnthropicRequest) -> (bool, bool, bool, bool) {
-    let mut need_vision = false;
-    let mut need_reasoning = false;
-    let mut need_coding = false;
+fn classify_request_capabilities(messages: &[OpenAIRequestMessage]) -> (bool, bool, bool, bool) {
+    let start = messages.len().saturating_sub(CLASSIFY_RECENT_MESSAGES);
+    let texts: Vec<String> = messages[start..].iter().map(|m| m.content.clone()).collect();
+    // 这条路上带图的消息是 parts 数组，调用方把它 `to_string()` 塞进 content，
+    // 所以 `data:image/` 在文本里看得到——不需要额外的结构判断。
+    classify_texts(&texts, false)
+}
 
-    for msg in &payload.messages {
-        let content_str = msg.content.to_string_content();
-        let content_lower = content_str.to_lowercase();
-        if content_lower.contains("image")
-            || content_lower.contains("图片")
-            || content_lower.contains("图像")
-        {
-            need_vision = true;
+fn classify_anthropic_capabilities(payload: &AnthropicRequest) -> (bool, bool, bool, bool) {
+    let start = payload
+        .messages
+        .len()
+        .saturating_sub(CLASSIFY_RECENT_MESSAGES);
+    let recent = &payload.messages[start..];
+    // 图片在 Anthropic 这边是独立的内容块，而 `to_string_content()` **只留 text
+    // 块**——真图片在文本里根本看不到。原来靠正文里出现 "image" 来判断视觉需求，
+    // 方向正好是反的：带图的请求判不出来，正文里提一句 "docker image" 反而会被
+    // 判成需要视觉模型。
+    let has_image = recent.iter().any(|m| m.content.has_image_block());
+    let texts: Vec<String> = recent
+        .iter()
+        .map(|m| m.content.to_string_content())
+        .collect();
+    classify_texts(&texts, has_image)
+}
+
+/// 这一轮请求需要什么。工具是**资格**（硬门槛），其余是**偏好**（打分）。
+pub(crate) struct RouteNeeds {
+    pub vision: bool,
+    pub reasoning: bool,
+    pub coding: bool,
+    pub speedy: bool,
+    pub tools: bool,
+}
+
+pub(crate) enum AutoRouteError {
+    /// 请求声明了工具，但候选里一个支持工具的模型都没有。
+    NoToolCapableModel,
+    /// 一个可用的对话模型都没挑出来。
+    NoUsableModel,
+}
+
+/// Auto 打分时的价格口径：把 `estimate_cost` 的费率表按「输入输出各 100 万
+/// token」折算成一个可比的数。
+///
+/// 定价表本来就在（仪表盘和用量统计都在读），**只有路由这条路一直没读过它**：
+/// 两个都标了 reasoning 的模型，一个 $0.55/M 一个 $15/M，在原来的打分里得分
+/// 完全相同，最后由平台优先级和模型名排序决定——跟贵不贵毫无关系。
+///
+/// 表里没有的模型走 `estimate_cost` 的默认费率，看起来是中等价位。
+fn blended_price(model: &str) -> f64 {
+    crate::circuit_breaker::estimate_cost(model, 1_000_000, 1_000_000)
+}
+
+/// 防降档窗口：这段时间内不往**更便宜**的模型上切。
+///
+/// 中途换模型会作废上游的 prompt cache——省下的那点钱通常不如丢掉的缓存贵，
+/// 而且答案风格会在一段对话里突变。硬性需求（工具、视觉）当前模型满足不了时
+/// 例外：那种情况下不换才是错的。
+const STICKY_WINDOW: std::time::Duration = std::time::Duration::from_secs(600);
+
+type StickyMap = std::collections::HashMap<String, (String, std::time::Instant)>;
+static ROUTE_STICKINESS: std::sync::OnceLock<std::sync::Mutex<StickyMap>> =
+    std::sync::OnceLock::new();
+
+fn stickiness() -> &'static std::sync::Mutex<StickyMap> {
+    ROUTE_STICKINESS.get_or_init(Default::default)
+}
+
+/// 读上一轮为这个会话选中的模型。窗口外的当作没有。
+///
+/// **锁只在这个同步函数里持有，绝不跨 await**（CLAUDE.md 坑点 2）。下面的
+/// `remember_sticky_model` 同理。
+fn sticky_model(route_key: Option<&str>) -> Option<String> {
+    let key = route_key?;
+    let guard = stickiness().lock().ok()?;
+    let (model, at) = guard.get(key)?;
+    (at.elapsed() < STICKY_WINDOW).then(|| model.clone())
+}
+
+fn remember_sticky_model(route_key: Option<&str>, model: &str) {
+    let Some(key) = route_key else { return };
+    let Ok(mut guard) = stickiness().lock() else {
+        return;
+    };
+    // 顺手清掉过期项，免得这张表随会话数无限长。
+    guard.retain(|_, (_, at)| at.elapsed() < STICKY_WINDOW);
+    guard.insert(key.to_string(), (model.to_string(), std::time::Instant::now()));
+}
+
+/// 清空防降档状态。测试之间必须清，否则上一个用例选中的模型会粘到下一个。
+#[cfg(test)]
+pub(crate) fn clear_route_stickiness() {
+    if let Ok(mut guard) = stickiness().lock() {
+        guard.clear();
+    }
+}
+
+/// Auto 路由的唯一实现。两条协议路径（Anthropic / OpenAI）共用。
+///
+/// 以前这段打分在 `proxy_anthropic.rs` 和 `proxy_openai.rs` 里各抄了一份，
+/// 于是各自长歪：**只有 Anthropic 那份有「声明了 tools 就必须选支持工具的模型」
+/// 这条硬门槛**，OpenAI 那份没有——同一个请求走 `/v1/chat/completions` 就可能
+/// 被派给一个不会调工具的模型，产出是废的，而且失败得很隐蔽。
+///
+/// `route_key` 是防降档的粘性键：Anthropic 那边是会话身份，OpenAI 那边只有
+/// agent 名（那条路没有会话标识），所以粒度更粗——同一个 agent 的两段对话在
+/// 600 秒内会共用一次选型。代价是可能多花一轮的钱，不是错路由。
+pub(crate) fn pick_auto_model(
+    db: &DbManager,
+    needs: &RouteNeeds,
+    route_key: Option<&str>,
+) -> Result<String, AutoRouteError> {
+    // (模型标识, 得分, 价格, 有没有视觉)
+    let scored: Vec<(String, i32, f64, bool)> = auto_route_candidates(db)
+        .into_iter()
+        .filter(|c| c.has_key || c.api_type == "ollama")
+        // R0：请求声明了工具，就**只在支持工具的模型里选**。
+        .filter(|c| !needs.tools || c.has_tool_use)
+        .map(|c| {
+            let mut score = 0;
+            if needs.vision && c.has_vision {
+                score += 10;
+            }
+            if needs.reasoning && c.has_reasoning {
+                score += 10;
+            }
+            if needs.coding && c.has_coding {
+                score += 5;
+            }
+            if needs.speedy && c.has_speedy {
+                score += 8;
+            }
+            if !needs.vision && !needs.reasoning && !needs.coding && !needs.speedy && c.has_vision {
+                score -= 2;
+            }
+            let price = blended_price(&c.model_name);
+            (
+                format!("{}:{}", c.platform_id, c.model_name),
+                score,
+                price,
+                c.has_vision,
+            )
+        })
+        .collect();
+
+    let Some(best) = scored.iter().reduce(|acc, c| {
+        // 候选已按 priority DESC, weight DESC, name 排好（见 auto_route_candidates）。
+        // 得分高的赢；同分时**选便宜的**；价格也一样才回到原来的顺序。
+        if c.1 > acc.1 || (c.1 == acc.1 && c.2 < acc.2) {
+            c
+        } else {
+            acc
         }
-        if content_lower.contains("prove")
-            || content_lower.contains("proof")
-            || content_lower.contains("math")
-            || content_lower.contains("算法")
-            || content_lower.contains("algorithm")
-            || content_lower.contains("deadlock")
-            || content_lower.contains("死锁")
-            || content_lower.contains("性能优化")
-            || content_lower.contains("思维链")
-        {
-            need_reasoning = true;
-        }
-        if content_lower.contains("```")
-            || content_lower.contains("code")
-            || content_lower.contains("代码")
-            || content_lower.contains("write a")
-            || content_lower.contains("refactor")
-            || content_lower.contains("重构")
-            || content_lower.contains("implement")
-            || content_lower.contains("编写")
-        {
-            need_coding = true;
+    }) else {
+        return Err(if needs.tools {
+            AutoRouteError::NoToolCapableModel
+        } else {
+            AutoRouteError::NoUsableModel
+        });
+    };
+
+    // 防降档：窗口内不往更便宜的模型上切。
+    let mut chosen = best.0.clone();
+    if let Some(prev) = sticky_model(route_key) {
+        if prev != chosen {
+            // 上一轮那个模型还在池子里（没被停用/熔断/掉 Key，且过得了工具门槛），
+            // 这一轮的硬性需求它也满足，而新选出来的只是更便宜——那就别换。
+            if let Some(p) = scored.iter().find(|c| c.0 == prev) {
+                let serves_hard_needs = !needs.vision || p.3;
+                if serves_hard_needs && best.2 < p.2 {
+                    chosen = prev;
+                }
+            }
         }
     }
 
-    let total_len: usize = payload
-        .messages
-        .iter()
-        .map(|m| m.content.to_string_content().len())
-        .sum();
-    let need_speedy = !need_reasoning && !need_vision && total_len < 300;
-
-    (need_vision, need_reasoning, need_coding, need_speedy)
+    remember_sticky_model(route_key, &chosen);
+    Ok(chosen)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1336,5 +1494,304 @@ async fn handle_mcp(
         Some(resp) => Json(resp).into_response(),
         // 通知按规范不能回 body
         None => StatusCode::ACCEPTED.into_response(),
+    }
+}
+
+
+/// Auto 路由：分类、比价、防降档。
+///
+/// 这一组守的是三件**已经在线上错了很久**的事：分类扫整段历史导致 need_coding
+/// 一旦触发就再也变不回来、长度按字节算让中文更难被判成短问题、以及视觉需求
+/// 在 Anthropic 那条路上判反了（真图片看不见、正文提一句 "image" 反而中招）。
+#[cfg(test)]
+mod router_tests {
+    use super::*;
+    use crate::db::DbManager;
+
+    fn router_db(tag: &str) -> (DbManager, std::path::PathBuf) {
+        let path = std::env::temp_dir().join(format!(
+            "omnix_router_{tag}_{}_{}.sqlite",
+            std::process::id(),
+            chrono::Utc::now().timestamp_micros()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let db = DbManager::new_with_path(path.clone());
+        {
+            // `init_schema` 会种一批默认平台（含 Ollama）。不清就不是在测路由，
+            // 是在测「默认数据长什么样」。
+            let conn = db.get_connection().expect("db");
+            conn.execute("DELETE FROM platform_models", []).unwrap();
+            conn.execute("DELETE FROM model_platforms", []).unwrap();
+        }
+        (db, path)
+    }
+
+    /// `caps` = (vision, reasoning, coding, speedy, tool_use)。
+    fn install(
+        db: &DbManager,
+        platform: &str,
+        priority: i32,
+        model: &str,
+        caps: (i32, i32, i32, i32, i32),
+    ) {
+        let conn = db.get_connection().expect("db");
+        conn.execute(
+            "INSERT INTO model_platforms (id, name, api_type, api_key, api_address, is_enabled, priority)
+             VALUES (?1, ?1, 'openai', 'k', 'https://x', 1, ?2)",
+            params![platform, priority],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO platform_models
+               (id, platform_id, model_name, is_enabled,
+                has_vision, has_reasoning, has_coding, has_speedy, has_tool_use)
+             VALUES (?1, ?2, ?3, 1, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                format!("{platform}:{model}"),
+                platform,
+                model,
+                caps.0,
+                caps.1,
+                caps.2,
+                caps.3,
+                caps.4
+            ],
+        )
+        .unwrap();
+    }
+
+    fn needs(vision: bool, reasoning: bool, coding: bool, speedy: bool, tools: bool) -> RouteNeeds {
+        RouteNeeds { vision, reasoning, coding, speedy, tools }
+    }
+
+    fn anthropic_with(texts: &[&str]) -> AnthropicRequest {
+        AnthropicRequest {
+            messages: texts
+                .iter()
+                .map(|t| AnthropicMessage {
+                    role: "user".into(),
+                    content: AnthropicMessageContent::String((*t).into()),
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    // ---------- 分类器 ----------
+
+    /// 历史里出现过一次代码，不该让**后面每一轮**都按编码路由。
+    ///
+    /// 客户端每轮都把完整历史发上来，而原来的分类扫的是整段 `messages`：
+    /// `need_coding` 被第一条带 ``` 的消息点亮之后就**再也变不回 false**。
+    /// 长对话里 Auto 因此单向往「能力强」爬，省钱效果归零。
+    #[test]
+    fn coding_no_longer_latches_from_distant_history() {
+        let payload = anthropic_with(&[
+            "帮我看看这段 ```rust fn main() {}```",
+            "好的，看完了",
+            "谢谢",
+            "今天天气不错",
+            "是啊",
+            "那就这样吧",
+        ]);
+        let (_, _, need_coding, _) = classify_anthropic_capabilities(&payload);
+        assert!(
+            !need_coding,
+            "最近 4 条里一个编码信号都没有，不该还按编码路由——这正是历史锁死的症状"
+        );
+    }
+
+    /// 同一条消息还在窗口里时，当然要认出来。上一条测的是「会松开」，
+    /// 这条测的是「该抓住的时候抓得住」——少了它，把窗口设成 0 也能全绿。
+    #[test]
+    fn coding_is_still_detected_inside_the_window() {
+        let payload = anthropic_with(&["随便聊聊", "帮我重构一下这个函数"]);
+        let (_, _, need_coding, _) = classify_anthropic_capabilities(&payload);
+        assert!(need_coding, "「重构」就在最近的消息里，必须认出来");
+    }
+
+    /// 长度阈值按**字符**算，不是字节。
+    ///
+    /// 原来用 `.len()`：一个汉字 3 字节，300 的阈值对中文实际只有 100 字。
+    /// 同样一句短问话，中文比英文更难被判成「短问题」，于是拿不到便宜的快模型。
+    #[test]
+    fn a_short_chinese_question_counts_as_short() {
+        let text: String = "好".repeat(120); // 120 字 = 360 字节
+        let payload = anthropic_with(&[text.as_str()]);
+        let (_, _, _, need_speedy) = classify_anthropic_capabilities(&payload);
+        assert!(
+            need_speedy,
+            "120 个汉字是短问题；按字节算成 360 就会被判成长请求"
+        );
+    }
+
+    /// 真图片是**独立的内容块**，`to_string_content()` 只留 text 块，
+    /// 所以它在文本里根本不存在——视觉需求只能从结构上看。
+    #[test]
+    fn a_real_image_block_is_detected_even_though_text_never_shows_it() {
+        let payload = AnthropicRequest {
+            messages: vec![AnthropicMessage {
+                role: "user".into(),
+                content: AnthropicMessageContent::Blocks(vec![
+                    AnthropicContentBlock {
+                        block_type: "image".into(),
+                        source: Some(serde_json::json!({
+                            "type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="
+                        })),
+                        ..Default::default()
+                    },
+                    AnthropicContentBlock {
+                        block_type: "text".into(),
+                        text: Some("这是什么".into()),
+                        ..Default::default()
+                    },
+                ]),
+            }],
+            ..Default::default()
+        };
+        let (need_vision, ..) = classify_anthropic_capabilities(&payload);
+        assert!(
+            need_vision,
+            "请求里真的带了图片块，却判成不需要视觉模型——这会把图片发给一个看不懂图的模型"
+        );
+    }
+
+    /// 反过来：正文里提一句 "image" 不该逼出视觉模型。
+    ///
+    /// 原来的判据是「正文里出现 image」，方向正好是反的——带图的判不出来，
+    /// 聊 docker 的反而中招。
+    #[test]
+    fn the_word_image_in_prose_no_longer_forces_a_vision_model() {
+        let payload = anthropic_with(&["rebuild the docker image and push it"]);
+        let (need_vision, ..) = classify_anthropic_capabilities(&payload);
+        assert!(!need_vision, "「docker image」不是视觉需求");
+    }
+
+    // ---------- 选型 ----------
+
+    /// 同分时选便宜的。
+    ///
+    /// 定价表一直在（仪表盘和用量统计都在读），只有路由这条路没读过它：两个都
+    /// 标了 reasoning 的模型，一个 $0.55/M 一个 $2.5/M，原来得分完全相同，
+    /// 最后由平台优先级决定——跟贵不贵毫无关系。这里故意把**贵的**排在前面。
+    #[test]
+    fn a_tie_on_score_is_broken_by_price() {
+        let (db, path) = router_db("price");
+        clear_route_stickiness();
+        install(&db, "pricey", 10, "gpt-4o", (0, 1, 0, 0, 1));
+        install(&db, "cheap", 0, "deepseek-reasoner", (0, 1, 0, 0, 1));
+
+        let picked = pick_auto_model(&db, &needs(false, true, false, false, false), None)
+            .ok()
+            .expect("应当选出模型");
+        assert_eq!(
+            picked, "cheap:deepseek-reasoner",
+            "两个模型得分相同，该选便宜的那个；选中贵的说明价格根本没参与决策"
+        );
+
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// 防降档：窗口内不往更便宜的模型上切。
+    ///
+    /// 中途换模型会作废上游的 prompt cache，省下的那点钱通常不如丢掉的缓存贵。
+    #[test]
+    fn anti_downgrade_keeps_the_model_within_the_window() {
+        let (db, path) = router_db("sticky");
+        clear_route_stickiness();
+        install(&db, "big", 0, "gpt-4o", (1, 1, 0, 0, 1));
+        install(&db, "small", 0, "deepseek-chat", (0, 0, 0, 1, 1));
+
+        let first = pick_auto_model(&db, &needs(false, true, false, false, false), Some("sess-A"))
+            .ok()
+            .expect("第一轮");
+        assert_eq!(first, "big:gpt-4o", "第一轮要推理，选强的");
+
+        // 第二轮只是一句短问话：单看这一轮该选便宜的快模型。
+        let second = pick_auto_model(&db, &needs(false, false, false, true, false), Some("sess-A"))
+            .ok()
+            .expect("第二轮");
+        assert_eq!(
+            second, "big:gpt-4o",
+            "窗口内不该为了省钱换模型——换一次就把上游的 prompt cache 全作废了"
+        );
+
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// 但硬性需求满足不了时必须换。
+    ///
+    /// 这一轮带了图片，而粘住的那个模型没有视觉能力——此时「更便宜」不是拒绝
+    /// 换的理由，不换才是错的。少了这条，带图请求会被死死粘在看不懂图的模型上。
+    #[test]
+    fn anti_downgrade_yields_when_the_turn_actually_needs_vision() {
+        let (db, path) = router_db("vision");
+        clear_route_stickiness();
+        // 贵、能推理、**没有视觉**。
+        install(&db, "text", 0, "claude-sonnet-4-20250514", (0, 1, 0, 0, 1));
+        // 便宜、有视觉。
+        install(&db, "eyes", 0, "gemini-2.5-flash", (1, 0, 0, 0, 1));
+
+        let first = pick_auto_model(&db, &needs(false, true, false, false, false), Some("sess-B"))
+            .ok()
+            .expect("第一轮");
+        assert_eq!(first, "text:claude-sonnet-4-20250514");
+
+        let second = pick_auto_model(&db, &needs(true, false, false, false, false), Some("sess-B"))
+            .ok()
+            .expect("第二轮");
+        assert_eq!(
+            second, "eyes:gemini-2.5-flash",
+            "这一轮带图，粘住的模型看不懂图；防降档不能拦住这种切换"
+        );
+
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// 粘性是按会话的，不能串台。
+    #[test]
+    fn stickiness_does_not_leak_across_sessions() {
+        let (db, path) = router_db("leak");
+        clear_route_stickiness();
+        install(&db, "big", 0, "gpt-4o", (1, 1, 0, 0, 1));
+        install(&db, "small", 0, "deepseek-chat", (0, 0, 0, 1, 1));
+
+        let _ = pick_auto_model(&db, &needs(false, true, false, false, false), Some("sess-C"));
+        let other = pick_auto_model(&db, &needs(false, false, false, true, false), Some("sess-D"))
+            .ok()
+            .expect("另一个会话");
+        assert_eq!(
+            other, "small:deepseek-chat",
+            "另一个会话不该继承上一个会话的选型"
+        );
+
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// 声明了工具就**只在支持工具的模型里选**，一个都没有时要明说，
+    /// 不能挑一个不会调工具的顶上——那种失败很隐蔽。
+    #[test]
+    fn declaring_tools_refuses_a_model_that_cannot_call_them() {
+        let (db, path) = router_db("tools");
+        clear_route_stickiness();
+        install(&db, "notools", 0, "deepseek-chat", (0, 0, 0, 1, 0));
+
+        let err = pick_auto_model(&db, &needs(false, false, false, true, true), None);
+        assert!(
+            matches!(err, Err(AutoRouteError::NoToolCapableModel)),
+            "池子里没有支持工具的模型，必须直说，不能随便挑一个"
+        );
+
+        // 同一个池子，不声明工具时照样能选出来——证明上面那条拦的是工具门槛，
+        // 不是「这个池子本来就选不出东西」。
+        let ok = pick_auto_model(&db, &needs(false, false, false, true, false), None);
+        assert!(ok.is_ok(), "不声明工具时这个模型是可用的");
+
+        drop(db);
+        let _ = std::fs::remove_file(path);
     }
 }

@@ -243,49 +243,26 @@ pub(super) async fn handle_messages_impl(
         let need_tools = payload.extra.contains_key("tools");
         println!("OMNIX Router: Classification result -> Need Vision: {}, Reasoning: {}, Coding: {}, Speedy: {}", need_vis, need_reas, need_cod, need_spd);
 
-        // 候选池和「有没有 Key」的判断都在 proxy::auto_route_candidates 里——见 openai 侧注释。
-        {
-            let mut best_model = None;
-            let mut highest_score = -1;
-            for c in crate::proxy::auto_route_candidates(&state.db) {
-                if !c.has_key && c.api_type != "ollama" {
-                    continue;
-                }
-                // R0：请求声明了工具，就**只在支持工具的模型里选**。视觉/推理/编码
-                // 是偏好（打分），工具支持是资格——挑一个不会调工具的模型去跑工具
-                // 任务，产出是废的，而且失败得很隐蔽。
-                if need_tools && !c.has_tool_use {
-                    continue;
-                }
-                let mut score = 0;
-                if need_vis && c.has_vision { score += 10; }
-                if need_reas && c.has_reasoning { score += 10; }
-                if need_cod && c.has_coding { score += 5; }
-                if need_spd && c.has_speedy { score += 8; }
-                if !need_vis && !need_reas && !need_cod && !need_spd && c.has_vision { score -= 2; }
-
-                if score > highest_score {
-                    highest_score = score;
-                    best_model = Some(format!("{}:{}", c.platform_id, c.model_name));
-                }
+        // 候选池、打分、比价、防降档全在 `proxy::pick_auto_model` 里，两条协议
+        // 路径共用一份。以前各抄一份，于是只有这边有「声明了 tools 就必须选
+        // 支持工具的模型」这条硬门槛，OpenAI 那边没有。
+        let needs = RouteNeeds {
+            vision: need_vis,
+            reasoning: need_reas,
+            coding: need_cod,
+            speedy: need_spd,
+            tools: need_tools,
+        };
+        match pick_auto_model(&state.db, &needs, session_key.as_deref()) {
+            Ok(model) => resolved_model = model,
+            Err(AutoRouteError::NoToolCapableModel) => {
+                return anthropic_error(StatusCode::BAD_REQUEST, "这次请求需要工具调用，但当前启用的模型里没有一个标记为支持工具。请到「模型中心」为要用的模型勾上「工具调用」，或改用支持工具的平台。");
             }
-            match best_model {
-                Some(m) => resolved_model = m,
-                None if need_tools => {
-                    return anthropic_error(
-                        StatusCode::BAD_REQUEST,
-                        "这次请求需要工具调用，但当前启用的模型里没有一个标记为支持工具。请到「模型中心」为要用的模型勾上「工具调用」，或改用支持工具的平台。",
-                    );
-                }
-                // 挑不出模型时绝不能把字面量 "Auto" 当模型名发上去——上游会回
-                // 一句「Model does not exist」，把「一个可聊天的模型都没有」
-                // 伪装成「模型名写错了」。
-                None => {
-                    return anthropic_error(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "Auto 路由没能选出可用的对话模型：请到「模型中心」确认至少有一个已启用、带 API Key 且非嵌入/语音类的模型，或在「设置 → 内置功能默认模型」直接指定一个。",
-                    );
-                }
+            // 挑不出模型时绝不能把字面量 "Auto" 当模型名发上去——上游会回一句
+            // 「Model does not exist」，把「一个可聊天的模型都没有」伪装成
+            // 「模型名写错了」。
+            Err(AutoRouteError::NoUsableModel) => {
+                return anthropic_error(StatusCode::SERVICE_UNAVAILABLE, "Auto 路由没能选出可用的对话模型：请到「模型中心」确认至少有一个已启用、带 API Key 且非嵌入/语音类的模型，或在「设置 → 内置功能默认模型」直接指定一个。");
             }
         }
     }

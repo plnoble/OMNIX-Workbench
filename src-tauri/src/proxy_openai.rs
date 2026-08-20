@@ -342,45 +342,37 @@ pub(super) async fn handle_openai_forward_impl(
         }
 
         let (need_vis, need_reas, need_cod, need_spd) = classify_request_capabilities(&messages);
+        // 声明了 tools 就是要用工具。**这条门槛以前只有 Anthropic 那边有**，
+        // 于是同一个请求走 /v1/chat/completions 就可能被派给一个不会调工具的
+        // 模型——产出是废的，而且失败得很隐蔽。
+        let need_tools = payload
+            .get("tools")
+            .is_some_and(|tools| !tools.is_null() && tools.as_array().is_none_or(|a| !a.is_empty()));
         println!("OMNIX OpenAI Router: Classification result -> Need Vision: {}, Reasoning: {}, Coding: {}, Speedy: {}", need_vis, need_reas, need_cod, need_spd);
 
-        // 候选池和「有没有 Key」的判断都在 proxy::auto_route_candidates 里——
-        // 两侧共用一份，免得再各自漏掉同一件事（上一次漏的是：Key 迁走之后
-        // 旧列被清空，而这里还在拿旧列判断有没有 Key）。
-        {
-            let mut best_model = None;
-            let mut highest_score = -1;
-            for c in crate::proxy::auto_route_candidates(&state.db) {
-                if !c.has_key && c.api_type != "ollama" {
-                    continue;
-                }
-                let mut score = 0;
-                if need_vis && c.has_vision { score += 10; }
-                if need_reas && c.has_reasoning { score += 10; }
-                if need_cod && c.has_coding { score += 5; }
-                if need_spd && c.has_speedy { score += 8; }
-                if !need_vis && !need_reas && !need_cod && !need_spd && c.has_vision { score -= 2; }
-
-                if score > highest_score {
-                    highest_score = score;
-                    best_model = Some(format!("{}:{}", c.platform_id, c.model_name));
-                }
+        let needs = RouteNeeds {
+            vision: need_vis,
+            reasoning: need_reas,
+            coding: need_cod,
+            speedy: need_spd,
+            tools: need_tools,
+        };
+        // 这条路没有会话标识，能拿到的最细身份就是 agent 名——防降档因此按
+        // agent 粘，粒度比 Anthropic 那边粗一档（见 `pick_auto_model` 的注释）。
+        let route_key = format!("agent:{agent_name_for_routing}");
+        match pick_auto_model(&state.db, &needs, Some(&route_key)) {
+            Ok(model) => resolved_model = model,
+            Err(AutoRouteError::NoToolCapableModel) => {
+                return openai_error(StatusCode::BAD_REQUEST, "这次请求需要工具调用，但当前启用的模型里没有一个标记为支持工具。请到「模型中心」为要用的模型勾上「工具调用」，或改用支持工具的平台。");
             }
-            if let Some(m) = best_model {
-                resolved_model = m;
+            // 绝不能把字面量 "Auto" 当模型名发给上游：以前会一路落到
+            // `resolve_model_upstream_for_agent` 的兜底分支原样塞进请求，上游
+            // 回一句「Model does not exist」——真正的问题（一个可聊天的模型都
+            // 没挑出来）被伪装成了模型名写错。
+            Err(AutoRouteError::NoUsableModel) => {
+                return openai_error(StatusCode::SERVICE_UNAVAILABLE, "Auto 路由没能选出可用的对话模型：请到「模型中心」确认至少有一个已启用、带 API Key 且非嵌入/语音类的模型，或在「设置 → 内置功能默认模型」直接指定一个。");
             }
         }
-    }
-
-    // Auto 没能解析成一个真实模型时，绝不能把字面量 "Auto" 当模型名发给上游。
-    // 以前会一路落到 `resolve_model_upstream_for_agent` 的兜底分支，把 "Auto"
-    // 原样塞进请求，上游回一句「Model does not exist」——真正的问题（一个可聊天
-    // 的模型都没挑出来）被伪装成了模型名写错。
-    if resolved_model == "Auto" {
-        return openai_error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Auto 路由没能选出可用的对话模型：请到「模型中心」确认至少有一个已启用、             带 API Key 且非嵌入/语音类的模型，或在「设置 → 内置功能默认模型」直接指定一个。",
-        );
     }
 
     let (api_keys, api_host, api_type, actual_model_name, circuit_platform_id) =
