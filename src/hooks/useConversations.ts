@@ -44,6 +44,15 @@ import type {
 /// 消息，手上这条也就该清掉了。
 const OPTIMISTIC_ID_PREFIX = "msg_u_";
 
+/// 会话列表一次取多少。
+///
+/// **不做无限滚动**：侧栏按 agent 分组渲染，分页会打断分组语义（翻页可能整组消失）。
+/// 所以是「最近 N + 搜索」，超出的靠搜索够到，界面上把总数说出来。
+export const CONVERSATION_PAGE_SIZE = 100;
+
+/// 消息一页多少条。60 条大约几屏，往回翻一次够看一阵。
+export const MESSAGE_PAGE_SIZE = 60;
+
 /// 手上最后一条**持久化**消息的 id，用作增量游标。
 ///
 /// 乐观气泡从不入库，拿它当游标后端一定查不到，会退回全量——那就等于没做增量。
@@ -53,6 +62,21 @@ export function lastPersistedMessageId(messages: ConversationMessage[]): string 
     if (!messages[i].id.startsWith(OPTIMISTIC_ID_PREFIX)) return messages[i].id;
   }
   return null;
+}
+
+/// 把往回翻到的一页拼在**顶部**。
+///
+/// 抽成纯函数和 `mergeMessagesDelta` 同理：去重错了只表现为「界面上多了几条重复
+/// 的历史」，不报任何错。并发点两次「加载更早」就会拿到同一页。
+export function prependOlderMessages(
+  current: ConversationMessage[],
+  older: ConversationMessage[],
+): ConversationMessage[] {
+  if (older.length === 0) return current;
+  const seen = new Set(current.map((m) => m.id));
+  const fresh = older.filter((m) => !seen.has(m.id));
+  if (fresh.length === 0) return current;
+  return [...fresh, ...current];
 }
 
 /// 把增量并进当前列表。
@@ -169,6 +193,15 @@ export interface UseConversationsReturn {
   conversations: ConversationInfo[];
   currentConvId: string;
   messages: ConversationMessage[];
+  /// 已加载的最早一条**之上**还剩多少条。界面必须把它显示出来——只截断不说
+  /// 剩余数，用户会以为历史丢了。
+  olderRemaining: number;
+  /// 往上翻一页历史。滚动位置补偿由调用方负责。
+  loadOlderMessages: () => Promise<void>;
+  /// 会话总数（含未加载的），用于「显示最近 100 个 / 共 N 个」。
+  conversationTotal: number;
+  /// 按标题搜索会话（走后端；前端过滤需要全量在手，等于没分页）。
+  searchConversations: (query: string) => Promise<ConversationInfo[]>;
   chatInput: string;
   chatWorkspace: string;
   detectedAgents: DetectedAgent[];
@@ -220,6 +253,10 @@ export function useConversations(
 ): UseConversationsReturn {
   const [conversations, setConversations] = useState<ConversationInfo[]>([]);
   const [archivedConversations, setArchivedConversations] = useState<ConversationInfo[]>([]);
+  /// 会话总数（含未加载的）。界面要写「显示最近 100 个 / 共 N 个」。
+  const [conversationTotal, setConversationTotal] = useState(0);
+  /// 当前会话里，已加载的最早一条**之上**还有多少条。界面要写「上面还有 X 条」。
+  const [olderRemaining, setOlderRemaining] = useState(0);
   const [currentConvId, setCurrentConvId] = useState("");
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
   const [activeGoal, setActiveGoal] = useState<ConversationGoal | null>(null);
@@ -444,21 +481,61 @@ export function useConversations(
 
   const loadConversations = useCallback(async () => {
     try {
-      const list = await conversationApi.list();
-      setConversations(list);
+      const page = await conversationApi.list(CONVERSATION_PAGE_SIZE);
+      setConversations(page.conversations);
+      setConversationTotal(page.total);
     } catch (e) {
       console.error("[useConversations] Failed to load conversations:", e);
+    }
+  }, []);
+
+  /// 往上翻一页历史。
+  ///
+  /// 保持滚动位置由调用方负责（记加载前的 `scrollHeight`，加载后补差值）——
+  /// 不补的话视野会跳，用户刚读到的那段会被顶走。
+  const loadOlderMessages = useCallback(async () => {
+    const current = messagesRef.current;
+    // 往回翻的锚点是**最早**一条持久化消息。乐观气泡永远在最新一端，不会是它。
+    const oldest = current.find((m) => !m.id.startsWith(OPTIMISTIC_ID_PREFIX));
+    if (!oldest) return;
+    try {
+      const page = await conversationApi.getMessagesPage(
+        currentConvIdRef.current,
+        oldest.id,
+        MESSAGE_PAGE_SIZE,
+      );
+      if (page.messages.length === 0) {
+        setOlderRemaining(0);
+        return;
+      }
+      setOlderRemaining(page.older_remaining);
+      setMessages((prev) => prependOlderMessages(prev, page.messages));
+    } catch (e) {
+      console.error("[useConversations] Failed to load older messages:", e);
+      toast.error(`加载更早的消息失败：${e}`);
+    }
+  }, []);
+
+  const searchConversations = useCallback(async (query: string) => {
+    try {
+      return await conversationApi.search(query, false, CONVERSATION_PAGE_SIZE);
+    } catch (e) {
+      console.error("[useConversations] Failed to search conversations:", e);
+      return [];
     }
   }, []);
 
   const selectConversation = useCallback(async (id: string) => {
     setCurrentConvId(id);
     try {
-      const msgs = await conversationApi.getMessages(id);
-      setMessages(msgs);
+      // 只取**最近**一页。聊天是从最新往回看的，不是从最早往后翻。
+      const page = await conversationApi.getMessagesPage(id, null, MESSAGE_PAGE_SIZE);
+      setMessages(page.messages);
+      setOlderRemaining(page.older_remaining);
     } catch (e) {
       console.error("[useConversations] Failed to load messages:", id, e);
       setMessages([]);
+      setOlderRemaining(0);
     }
 
     // Load this conversation's long-term goal (/goal) so the badge
@@ -629,8 +706,8 @@ export function useConversations(
     }
     await loadConversations();
     try {
-      const list = await conversationApi.listArchived();
-      setArchivedConversations(list);
+      const page = await conversationApi.listArchived(CONVERSATION_PAGE_SIZE);
+      setArchivedConversations(page.conversations);
     } catch (e) {
       console.error("[useConversations] Failed to reload archived list:", e);
     }
@@ -638,8 +715,8 @@ export function useConversations(
 
   const loadArchivedConversations = useCallback(async () => {
     try {
-      const list = await conversationApi.listArchived();
-      setArchivedConversations(list);
+      const page = await conversationApi.listArchived(CONVERSATION_PAGE_SIZE);
+      setArchivedConversations(page.conversations);
     } catch (e) {
       console.error("[useConversations] Failed to load archived conversations:", e);
     }
@@ -1042,6 +1119,7 @@ export function useConversations(
 
   return {
     conversations, currentConvId, messages, chatInput, chatWorkspace,
+    olderRemaining, loadOlderMessages, conversationTotal, searchConversations,
     detectedAgents, activeAgent, activeSessions,
     collabStdin, pendingApproval, startingConversations,
     enterSurface,

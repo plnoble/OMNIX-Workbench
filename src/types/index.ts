@@ -87,6 +87,21 @@ export interface ConversationInfo {
 }
 
 /** A single message within a conversation */
+/// 一页消息（升序，老 → 新）。
+///
+/// `older_remaining` 就是界面上那句「上面还有 X 条」。只截断不显示剩余数，用户会
+/// 以为历史丢了——那比慢更糟，是这一版分页的硬约束。
+export interface MessagePage {
+  messages: ConversationMessage[];
+  older_remaining: number;
+}
+
+/// 一页会话 + 总数。`total` 用于「显示最近 100 个 / 共 N 个」。
+export interface ConversationPage {
+  conversations: ConversationInfo[];
+  total: number;
+}
+
 /// 增量拉取的结果。
 ///
 /// `is_full` 为真表示这是**全量替换**（没给游标，或游标那条已经不在了），

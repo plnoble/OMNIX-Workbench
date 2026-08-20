@@ -9,6 +9,8 @@ import type {
   ConversationInfo,
   ConversationMessage,
   MessagesDelta,
+  MessagePage,
+  ConversationPage,
   CronTask,
   CronRun,
   WorkspaceRun,
@@ -39,7 +41,7 @@ export interface ConversationGoal {
 }
 
 export const conversationApi = {
-  list: () => invoke<ConversationInfo[]>("get_all_conversations"),
+  list: (limit: number) => invoke<ConversationPage>("get_all_conversations", { limit }),
   create: (params: { id: string; title: string; workspacePath: string; activeAgent: string; parentConversationId?: string }) =>
     invoke("create_conversation", params),
   delete: (id: string) => invoke("delete_conversation", { conversationId: id }),
@@ -54,7 +56,8 @@ export const conversationApi = {
   clearGoal: (conversationId: string) =>
     invoke("clear_conversation_goal", { conversationId }),
   unarchive: (id: string) => invoke("unarchive_conversation", { conversationId: id }),
-  listArchived: () => invoke<ConversationInfo[]>("get_archived_conversations"),
+  listArchived: (limit: number) =>
+    invoke<ConversationPage>("get_archived_conversations", { limit }),
   getMessages: (conversationId: string) =>
     invoke<ConversationMessage[]>("get_conversation_messages", { conversationId }),
   /**
@@ -66,6 +69,15 @@ export const conversationApi = {
    */
   getMessagesSince: (conversationId: string, afterMessageId: string | null) =>
     invoke<MessagesDelta>("get_messages_since", { conversationId, afterMessageId }),
+  /**
+   * 取一页消息：不给 `beforeMessageId` 就是**最近** N 条（聊天从最新往回看），
+   * 给了就是那条之前的 N 条。返回值里的 `older_remaining` 必须显示出来。
+   */
+  getMessagesPage: (conversationId: string, beforeMessageId: string | null, limit: number) =>
+    invoke<MessagePage>("get_messages_page", { conversationId, beforeMessageId, limit }),
+  /** 按标题搜索会话。搜索走后端——前端过滤需要全量在手，等于没分页。 */
+  search: (query: string, archived: boolean, limit: number) =>
+    invoke<ConversationInfo[]>("search_conversations", { query, archived, limit }),
   addMessage: (params: { id: string; conversationId: string; role: string; content: string }) =>
     invoke("add_conversation_message", params),
 };

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { toast } from "sonner";
@@ -13,6 +13,7 @@ import {
   GitBranch,
   AtSign,
   Globe,
+  ChevronUp,
   Loader2,
   PanelRightClose,
   PanelRightOpen,
@@ -57,6 +58,7 @@ import type {
 import { AttachmentStrip, MessageContent } from "./chat/MessageParts";
 import { AgentStrip, FirstScreen, KnowledgePicker, formatKnowledgeContext, ApprovalCard } from "./chat/ChatParts";
 import type { RuntimeSendConfig } from "@/hooks/useConversations";
+import { CONVERSATION_PAGE_SIZE, MESSAGE_PAGE_SIZE } from "@/hooks/useConversations";
 import { useConversationsStore } from "@/store/AppStore";
 
 export interface ChatTabProps {
@@ -90,6 +92,8 @@ export function ChatTab({ surface, onSuggestTeam }: ChatTabProps) {
     activeAgent,
     detectedAgents,
     messages,
+    olderRemaining,
+    loadOlderMessages,
     chatInput,
     chatWorkspace,
     currentConvId,
@@ -126,11 +130,56 @@ export function ChatTab({ surface, onSuggestTeam }: ChatTabProps) {
     const el = scrollRef.current;
     if (!el) return;
     stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+    // 滚到顶自动补一页，但**每个会话只自动一次**——之后要按钮。无限自动加载会
+    // 让「往回找一段旧对话」变成不停地被新内容推着走。
+    if (
+      el.scrollTop < 80
+      && olderRemainingRef.current > 0
+      && autoLoadedForConvRef.current !== currentConvId
+    ) {
+      autoLoadedForConvRef.current = currentConvId;
+      void handleLoadOlder();
+    }
   };
   useEffect(() => {
     if (stickToBottomRef.current && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
+  }, [messages]);
+
+  // ── 往回翻历史 ────────────────────────────────────────────────
+  // 新内容加在**顶部**，不补偿的话视野会整个跳走——用户刚读到的那段被顶出屏幕。
+  // 记「距底部的距离」而不是 scrollTop：前者在内容前置插入时是不变量。
+  // 滚动回调不是 useCallback，每次渲染重建；但它读 olderRemaining 时仍可能拿到
+  // 注册那一刻的值（React 把 onScroll 绑在 DOM 上）。走 ref 稳妥。
+  const olderRemainingRef = useRef(olderRemaining);
+  olderRemainingRef.current = olderRemaining;
+  const loadingOlderRef = useRef(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const scrollAnchorRef = useRef<number | null>(null);
+  const autoLoadedForConvRef = useRef("");
+
+  const handleLoadOlder = useCallback(async () => {
+    const el = scrollRef.current;
+    if (!el || loadingOlderRef.current) return;
+    loadingOlderRef.current = true;
+    setLoadingOlder(true);
+    scrollAnchorRef.current = el.scrollHeight - el.scrollTop;
+    try {
+      await loadOlderMessages();
+    } finally {
+      loadingOlderRef.current = false;
+      setLoadingOlder(false);
+    }
+  }, [loadOlderMessages]);
+
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    const anchor = scrollAnchorRef.current;
+    if (!el || anchor === null) return;
+    // 用 layout effect：要在浏览器绘制**之前**改回来，否则会看见一帧的跳动。
+    el.scrollTop = el.scrollHeight - anchor;
+    scrollAnchorRef.current = null;
   }, [messages]);
   // A fresh conversation always starts pinned to the bottom.
   useEffect(() => {
@@ -195,7 +244,11 @@ export function ChatTab({ surface, onSuggestTeam }: ChatTabProps) {
   const [refConversations, setRefConversations] = useState<ConversationInfo[]>([]);
   const openRefPicker = () => {
     setRefPickerOpen((open) => !open);
-    conversationApi.list().then(setRefConversations).catch(() => setRefConversations([]));
+    // 引用选择器只列最近的一批——它是个下拉，本来也不该塞进上千条。
+    conversationApi
+      .list(CONVERSATION_PAGE_SIZE)
+      .then((page) => setRefConversations(page.conversations))
+      .catch(() => setRefConversations([]));
   };
   const addReference = (conv: ConversationInfo) => {
     setReferences((prev) => prev.some((r) => r.id === conv.id) ? prev : [...prev, { id: conv.id, label: conv.title }]);
@@ -693,6 +746,27 @@ export function ChatTab({ surface, onSuggestTeam }: ChatTabProps) {
             />
           ) : (
             <div className="mx-auto flex max-w-4xl flex-col gap-5">
+              {/* 只截断不说剩余数，用户会以为历史丢了——那比慢更糟。这个数字是
+                  分页的硬约束，不是装饰（见 docs/分页方案-W18.md 阶段 2）。 */}
+              {olderRemaining > 0 && (
+                <div className="flex items-center justify-center gap-3 py-1 text-xs text-muted-foreground">
+                  <span>上面还有 {olderRemaining.toLocaleString()} 条更早的消息</span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2"
+                    disabled={loadingOlder}
+                    onClick={() => void handleLoadOlder()}
+                  >
+                    {loadingOlder ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <ChevronUp className="h-3.5 w-3.5" />
+                    )}
+                    加载更早 {MESSAGE_PAGE_SIZE} 条
+                  </Button>
+                </div>
+              )}
               {messages.map((message) => (
                 <div key={message.id} className={cn("flex", message.role === "user" ? "justify-end" : "justify-start")}>
                   <div

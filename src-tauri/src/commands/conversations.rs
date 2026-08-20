@@ -14,24 +14,31 @@ pub struct ConversationInfo {
     pub created_at: String,
 }
 
-/// 列表体。归档与未归档只差一个 `is_archived` 取值，以前是两份逐字重复的函数。
+/// 单会话的消息（不分页的全量版，仍用于打开会话时的一次性加载之外的场景）。
+/// 靠 `idx_messages_conversation_timestamp` 复合索引直接出有序结果，
+/// 不再 `USE TEMP B-TREE FOR ORDER BY`（那是把整个会话排一遍）。
+/// 会话列表只取最近 N 条。
 ///
-/// 抽成 `_core` 还有第二个理由：`State<…>` 在单测里构造不出来，命令本身测不到。
-/// 会话列表的查询。
-///
-/// **提成常量是为了让查询计划测试测到真货。** 测试里抄一份 SQL 的话，代码改了
-/// 测试照样绿——那种「守卫」守的是自己的副本。
-///
-/// 不能写 `COALESCE(is_archived, 0) = ?1`：条件列被函数包住就不可 sarg，索引用不上，
-/// 计划退回全表 `SCAN`。该列本身是 `INTEGER NOT NULL DEFAULT 0`（建表与 ALTER 两处
-/// 都是），不可能为 NULL——那个 COALESCE 是多余的防御，代价却是整张表扫一遍。
-pub(crate) const LIST_CONVERSATIONS_SQL: &str = "SELECT id, title, workspace_path, active_agent, created_at
+/// **不做无限滚动**：侧栏是按 agent 分组渲染的，分页会打断分组语义——翻到第二页
+/// 可能整组消失。所以是「最近 N + 搜索」，而搜索走 SQL（见 `SEARCH_CONVERSATIONS_SQL`），
+/// 不是前端过滤——前端过滤需要全量在手，等于没分页。
+pub(crate) const LIST_CONVERSATIONS_PAGE_SQL: &str = "SELECT id, title, workspace_path, active_agent, created_at
      FROM conversations
      WHERE is_archived = ?1
-     ORDER BY created_at DESC";
+     ORDER BY created_at DESC
+     LIMIT ?2";
 
-/// 单会话的消息。靠 `idx_messages_conversation_timestamp` 复合索引直接出有序结果，
-/// 不再 `USE TEMP B-TREE FOR ORDER BY`（那是把整个会话排一遍）。
+pub(crate) const COUNT_CONVERSATIONS_SQL: &str =
+    "SELECT COUNT(*) FROM conversations WHERE is_archived = ?1";
+
+/// 标题搜索。`LIKE` 前面带通配符用不上索引，但搜索是用户主动触发的低频操作，
+/// 而且结果有上限——比「把全部会话拉到前端再 filter」好得多。
+pub(crate) const SEARCH_CONVERSATIONS_SQL: &str = "SELECT id, title, workspace_path, active_agent, created_at
+     FROM conversations
+     WHERE is_archived = ?1 AND title LIKE ?2 ESCAPE '\\'
+     ORDER BY created_at DESC
+     LIMIT ?3";
+
 pub(crate) const CONVERSATION_MESSAGES_SQL: &str = "SELECT id, conversation_id, role, content, timestamp, metadata_json
      FROM messages WHERE conversation_id = ?1 ORDER BY timestamp ASC, rowid ASC";
 
@@ -52,16 +59,23 @@ pub(crate) const MESSAGES_SINCE_SQL: &str = "SELECT id, conversation_id, role, c
        AND (timestamp > ?2 OR (timestamp = ?2 AND rowid > ?3))
      ORDER BY timestamp ASC, rowid ASC";
 
-pub(crate) fn list_conversations_core(
-    db: &DbManager,
-    archived: bool,
+
+/// 一页会话 + 总数。
+///
+/// `total` 是给界面写「显示最近 100 个 / 共 1,240 个」用的。只截断不告诉用户
+/// 总数，和消息那边静默截断是同一个毛病。
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct ConversationPage {
+    pub conversations: Vec<ConversationInfo>,
+    pub total: i64,
+}
+
+fn read_conversations(
+    stmt: &mut rusqlite::Statement<'_>,
+    params: impl rusqlite::Params,
 ) -> Result<Vec<ConversationInfo>, String> {
-    let conn = db.get_connection().map_err(|e| e.to_string())?;
-    let mut stmt = conn
-        .prepare(LIST_CONVERSATIONS_SQL)
-        .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map(params![if archived { 1 } else { 0 }], |row| {
+        .query_map(params, |row| {
             Ok(ConversationInfo {
                 id: row.get(0)?,
                 title: row.get(1)?,
@@ -71,27 +85,78 @@ pub(crate) fn list_conversations_core(
             })
         })
         .map_err(|e| e.to_string())?;
+    Ok(rows.flatten().collect())
+}
 
-    let mut result = Vec::new();
-    for conv in rows.flatten() {
-        result.push(conv);
+pub(crate) fn list_conversations_page_core(
+    db: &DbManager,
+    archived: bool,
+    limit: u32,
+) -> Result<ConversationPage, String> {
+    let limit = limit.clamp(1, 1000);
+    let conn = db.get_connection().map_err(|e| e.to_string())?;
+    let flag = i32::from(archived);
+    let mut stmt = conn
+        .prepare(LIST_CONVERSATIONS_PAGE_SQL)
+        .map_err(|e| e.to_string())?;
+    let conversations = read_conversations(&mut stmt, params![flag, limit])?;
+    let total: i64 = conn
+        .query_row(COUNT_CONVERSATIONS_SQL, params![flag], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    Ok(ConversationPage { conversations, total })
+}
+
+/// 按标题搜索。`%` `_` 要转义，否则用户输入的下划线会变成通配符。
+pub(crate) fn search_conversations_core(
+    db: &DbManager,
+    query: &str,
+    archived: bool,
+    limit: u32,
+) -> Result<Vec<ConversationInfo>, String> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Ok(Vec::new());
     }
-    Ok(result)
+    let limit = limit.clamp(1, 1000);
+    let escaped = query
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    let conn = db.get_connection().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(SEARCH_CONVERSATIONS_SQL)
+        .map_err(|e| e.to_string())?;
+    read_conversations(
+        &mut stmt,
+        params![i32::from(archived), format!("%{escaped}%"), limit],
+    )
+}
+
+#[tauri::command]
+pub fn search_conversations(
+    query: String,
+    archived: bool,
+    limit: u32,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<Vec<ConversationInfo>, String> {
+    search_conversations_core(&db, &query, archived, limit)
 }
 
 #[tauri::command]
 pub fn get_all_conversations(
+    limit: u32,
     db: State<'_, Arc<DbManager>>,
-) -> Result<Vec<ConversationInfo>, String> {
-    // Exclude archived conversations from the main list — they show in a separate view
-    list_conversations_core(&db, false)
+) -> Result<ConversationPage, String> {
+    // 归档的走单独的视图，不进主列表。
+    list_conversations_page_core(&db, false, limit)
 }
 
 #[tauri::command]
 pub fn get_archived_conversations(
+    limit: u32,
     db: State<'_, Arc<DbManager>>,
-) -> Result<Vec<ConversationInfo>, String> {
-    list_conversations_core(&db, true)
+) -> Result<ConversationPage, String> {
+    list_conversations_page_core(&db, true, limit)
 }
 
 pub(crate) fn set_conversation_archived_core(
@@ -145,6 +210,40 @@ pub fn get_conversation_messages(
     get_conversation_messages_core(&db, &conversation_id)
 }
 
+/// 消息分页：**最近 N 条**，往回翻。
+///
+/// 聊天的语义是从最新往回看，不是从最早往后翻，所以初次加载取尾部。
+/// 倒着取再反转，靠的是 SQLite 能反向扫索引——`ORDER BY timestamp DESC, rowid DESC`
+/// 用的还是 `idx_messages_conversation_timestamp`，不产生临时排序。
+pub(crate) const MESSAGES_TAIL_SQL: &str = "SELECT id, conversation_id, role, content, timestamp, metadata_json
+     FROM messages WHERE conversation_id = ?1
+     ORDER BY timestamp DESC, rowid DESC LIMIT ?2";
+
+/// 往回翻一页：取排在 `(?2, ?3)` **之前**的最后 N 条。
+pub(crate) const MESSAGES_BEFORE_SQL: &str = "SELECT id, conversation_id, role, content, timestamp, metadata_json
+     FROM messages
+     WHERE conversation_id = ?1
+       AND (timestamp < ?2 OR (timestamp = ?2 AND rowid < ?3))
+     ORDER BY timestamp DESC, rowid DESC LIMIT ?4";
+
+/// 某条消息**之前**还剩多少条。界面要把这个数说出来。
+pub(crate) const OLDER_COUNT_SQL: &str = "SELECT COUNT(*) FROM messages
+     WHERE conversation_id = ?1
+       AND (timestamp < ?2 OR (timestamp = ?2 AND rowid < ?3))";
+
+/// 一页消息。
+///
+/// `older_remaining` 不是可选的装饰——它就是界面上那句「上面还有 X 条」。
+/// 只加 LIMIT 不显示剩余数，用户会以为历史丢了，那比慢更糟；这是这一版分页
+/// 的硬约束（见 `docs/分页方案-W18.md`）。
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct MessagePage {
+    /// 升序（老 → 新），可以直接接在界面顶部。
+    pub messages: Vec<MessageInfo>,
+    /// 这一页**之上**还有多少条没加载。0 表示到头了。
+    pub older_remaining: i64,
+}
+
 /// 增量拉取的结果。
 ///
 /// `is_full` 不是装饰：游标失效（比如那条消息已被压缩删掉）时后端会退回全量，
@@ -173,6 +272,81 @@ fn read_messages(
         })
         .map_err(|e| e.to_string())?;
     Ok(rows.flatten().collect())
+}
+
+/// 取一页消息：不给游标就是最近 N 条，给了就是那条**之前**的 N 条。
+///
+/// 返回的 `messages` 是升序的（老 → 新），前端直接往顶上接即可。
+pub(crate) fn get_messages_page_core(
+    db: &DbManager,
+    conversation_id: &str,
+    before_message_id: Option<&str>,
+    limit: u32,
+) -> Result<MessagePage, String> {
+    input_validation::validate_id(conversation_id, "conversation_id")?;
+    // 上限兜底：limit 来自前端，别让一个笔误把整张表拉出来——那正是这次要消掉的
+    // 行为。下限 1，否则一页零条会让「加载更早」永远点不动。
+    let limit = limit.clamp(1, 500);
+    let conn = db.get_connection().map_err(|e| e.to_string())?;
+
+    // 游标失效（那条已被压缩删掉等）就退回尾部。这里退回是安全的：用户看到的仍是
+    // 最新的一页，而不是一段接不上的历史。
+    let cursor: Option<(String, i64)> = match before_message_id {
+        Some(id) if !id.is_empty() => conn
+            .query_row(
+                "SELECT timestamp, rowid FROM messages WHERE id = ?1 AND conversation_id = ?2",
+                params![id, conversation_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok(),
+        _ => None,
+    };
+
+    let mut descending = match &cursor {
+        Some((ts, rowid)) => {
+            let mut stmt = conn.prepare(MESSAGES_BEFORE_SQL).map_err(|e| e.to_string())?;
+            read_messages(&mut stmt, params![conversation_id, ts, rowid, limit])?
+        }
+        None => {
+            let mut stmt = conn.prepare(MESSAGES_TAIL_SQL).map_err(|e| e.to_string())?;
+            read_messages(&mut stmt, params![conversation_id, limit])?
+        }
+    };
+    // 查询是倒着取的（为了拿到「最后 N 条」），返回给界面要正过来。
+    descending.reverse();
+    let messages = descending;
+
+    // 这一页最老的一条之前还剩多少。空页就是 0——没有更老的了。
+    let older_remaining: i64 = match messages.first() {
+        Some(first) => {
+            let (ts, rowid): (String, i64) = conn
+                .query_row(
+                    "SELECT timestamp, rowid FROM messages WHERE id = ?1",
+                    params![first.id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .map_err(|e| e.to_string())?;
+            conn.query_row(
+                OLDER_COUNT_SQL,
+                params![conversation_id, ts, rowid],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?
+        }
+        None => 0,
+    };
+
+    Ok(MessagePage { messages, older_remaining })
+}
+
+#[tauri::command]
+pub fn get_messages_page(
+    conversation_id: String,
+    before_message_id: Option<String>,
+    limit: u32,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<MessagePage, String> {
+    get_messages_page_core(&db, &conversation_id, before_message_id.as_deref(), limit)
 }
 
 /// 只取「前端还没有的那几条」。
@@ -489,15 +663,15 @@ mod tests {
         seed(&db, "c_archived");
         set_conversation_archived_core(&db, "c_archived", true).unwrap();
 
-        let main = list_conversations_core(&db, false).unwrap();
-        let archived = list_conversations_core(&db, true).unwrap();
+        let main = list_conversations_page_core(&db, false, 100).unwrap().conversations;
+        let archived = list_conversations_page_core(&db, true, 100).unwrap().conversations;
         assert_eq!(ids(&main), vec!["c_kept"], "归档的还留在主列表里");
         assert_eq!(ids(&archived), vec!["c_archived"]);
 
         set_conversation_archived_core(&db, "c_archived", false).unwrap();
-        let main = list_conversations_core(&db, false).unwrap();
+        let main = list_conversations_page_core(&db, false, 100).unwrap().conversations;
         assert_eq!(main.len(), 2, "取消归档后要回到主列表");
-        assert!(list_conversations_core(&db, true).unwrap().is_empty());
+        assert!(list_conversations_page_core(&db, true, 100).unwrap().conversations.is_empty());
     }
 
     /// 外键必须是开的，而且级联要真的连着跑。
@@ -630,7 +804,7 @@ mod tests {
                 .unwrap();
             assert_eq!(others, 1, "{table} 误删了别的会话的行");
         }
-        assert_eq!(ids(&list_conversations_core(&db, false).unwrap()), vec!["c2"]);
+        assert_eq!(ids(&list_conversations_page_core(&db, false, 100).unwrap().conversations), vec!["c2"]);
     }
 
     /// 接线守卫：schema 里每张带 `conversation_id` 的表，都必须在
@@ -741,13 +915,17 @@ mod query_plan_tests {
         DbManager::new_with_path(path)
     }
 
+    /// 查询计划不依赖参数的**取值**，但每个 `?N` 都得绑上东西，否则执行时报
+    /// `InvalidParameterCount`。所以按 SQL 里出现的最大占位符号数补齐。
     fn plan(db: &DbManager, sql: &str) -> String {
+        let n = (1..=9)
+            .filter(|i| sql.contains(&format!("?{i}")))
+            .count();
+        let binds: Vec<String> = (0..n).map(|_| "0".to_string()).collect();
         let conn = db.get_connection().unwrap();
         let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
-        // 绑个占位值：查询计划不依赖参数的**取值**，但 `?1` 必须有东西绑上，
-        // 否则 prepare 出来的语句执行时报 InvalidParameterCount。
         let rows: Vec<String> = stmt
-            .query_map(params!["0"], |r| r.get::<_, String>(3))
+            .query_map(rusqlite::params_from_iter(binds), |r| r.get::<_, String>(3))
             .unwrap()
             .flatten()
             .collect();
@@ -771,7 +949,7 @@ mod query_plan_tests {
     #[test]
     fn the_conversation_list_does_not_scan_the_whole_table() {
         let db = test_db("conv");
-        let p = plan(&db, LIST_CONVERSATIONS_SQL);
+        let p = plan(&db, LIST_CONVERSATIONS_PAGE_SQL);
         assert!(
             !p.contains("SCAN conversations"),
             "会话列表退回全表扫描了：{p}"
@@ -780,6 +958,27 @@ mod query_plan_tests {
             !p.contains("TEMP B-TREE"),
             "会话列表还在临时排序：{p}"
         );
+    }
+
+    /// 分页与增量的三条查询同样不许临时排序。
+    ///
+    /// 往回翻页是 `ORDER BY timestamp DESC, rowid DESC`——靠 SQLite 反向扫同一条
+    /// 索引实现。哪天索引没了、或者次序键被改动，这里会红。
+    #[test]
+    fn the_paging_queries_also_ride_the_index() {
+        let db = test_db("paging");
+        for (name, sql) in [
+            ("尾部一页", MESSAGES_TAIL_SQL),
+            ("往回翻页", MESSAGES_BEFORE_SQL),
+            ("增量拉取", MESSAGES_SINCE_SQL),
+        ] {
+            let p = plan(&db, sql);
+            assert!(
+                p.contains("idx_messages_conversation_timestamp"),
+                "{name}没走索引：{p}"
+            );
+            assert!(!p.contains("TEMP B-TREE"), "{name}还在临时排序：{p}");
+        }
     }
 
     /// 被复合索引完全覆盖的旧单列索引应当已被删除——留着只是每次写入多维护一棵
@@ -809,7 +1008,7 @@ mod messages_delta_tests {
     use super::*;
     use crate::db::DbManager;
 
-    fn test_db(tag: &str) -> DbManager {
+    pub(super) fn test_db(tag: &str) -> DbManager {
         use std::sync::atomic::{AtomicU32, Ordering};
         static N: AtomicU32 = AtomicU32::new(0);
         let path = std::env::temp_dir().join(format!(
@@ -831,7 +1030,7 @@ mod messages_delta_tests {
     }
 
     /// 显式指定 timestamp，好造出「同一秒」的并列。
-    fn add(db: &DbManager, id: &str, ts: &str) {
+    pub(super) fn add(db: &DbManager, id: &str, ts: &str) {
         db.get_connection()
             .unwrap()
             .execute(
@@ -937,5 +1136,182 @@ mod messages_delta_tests {
 
         let d = get_messages_since_core(&db, "c1", Some("m1")).unwrap();
         assert!(d.messages.is_empty(), "串会话了：{:?}", ids(&d));
+    }
+}
+
+/// 消息分页：最近 N 条，往回翻。
+#[cfg(test)]
+mod messages_page_tests {
+    use super::messages_delta_tests::{add, test_db};
+    use super::*;
+
+    fn ids(p: &MessagePage) -> Vec<String> {
+        p.messages.iter().map(|m| m.id.clone()).collect()
+    }
+
+    fn seed(db: &DbManager, n: usize) {
+        for i in 1..=n {
+            add(db, &format!("m{i:02}"), &format!("2026-01-01 10:{:02}:00", i));
+        }
+    }
+
+    /// 初次加载取的是**最新**的一页，不是最早的——聊天是从最新往回看的。
+    #[test]
+    fn the_first_page_is_the_newest_messages_not_the_oldest() {
+        let db = test_db("tail");
+        seed(&db, 10);
+        let p = get_messages_page_core(&db, "c1", None, 3).unwrap();
+        assert_eq!(ids(&p), ["m08", "m09", "m10"], "取成最早的三条了");
+        assert_eq!(p.older_remaining, 7, "上面还有 7 条没说");
+    }
+
+    #[test]
+    fn paging_back_walks_towards_the_oldest() {
+        let db = test_db("back");
+        seed(&db, 10);
+        let p = get_messages_page_core(&db, "c1", Some("m08"), 3).unwrap();
+        assert_eq!(ids(&p), ["m05", "m06", "m07"]);
+        assert_eq!(p.older_remaining, 4);
+    }
+
+    /// 翻到头时 `older_remaining` 必须是 0——界面靠它决定还显不显示「加载更早」。
+    #[test]
+    fn reaching_the_top_reports_zero_remaining() {
+        let db = test_db("top");
+        seed(&db, 5);
+        let p = get_messages_page_core(&db, "c1", Some("m03"), 10).unwrap();
+        assert_eq!(ids(&p), ["m01", "m02"]);
+        assert_eq!(p.older_remaining, 0, "已经到顶却还说上面有货");
+    }
+
+    /// 同秒并列在分页这边一样会出错：游标不带 rowid 的话，往回翻会跳过或重复。
+    #[test]
+    fn ties_within_one_second_page_correctly() {
+        let db = test_db("pagetie");
+        let same = "2026-01-01 10:00:00";
+        for id in ["a1", "a2", "a3", "a4"] {
+            add(&db, id, same);
+        }
+        let p = get_messages_page_core(&db, "c1", None, 2).unwrap();
+        assert_eq!(ids(&p), ["a3", "a4"]);
+        assert_eq!(p.older_remaining, 2);
+
+        let p = get_messages_page_core(&db, "c1", Some("a3"), 2).unwrap();
+        assert_eq!(ids(&p), ["a1", "a2"], "同秒内往回翻错位了");
+        assert_eq!(p.older_remaining, 0);
+    }
+
+    /// limit 来自前端，笔误不能把整张表拉出来——那正是这次要消掉的行为。
+    #[test]
+    fn the_limit_is_clamped_on_both_ends() {
+        let db = test_db("clamp");
+        seed(&db, 3);
+        assert_eq!(
+            get_messages_page_core(&db, "c1", None, 0).unwrap().messages.len(),
+            1,
+            "0 会让「加载更早」永远点不动"
+        );
+        assert!(
+            get_messages_page_core(&db, "c1", None, 999_999).unwrap().messages.len() <= 500
+        );
+    }
+
+    /// 游标那条已被压缩删掉时退回最新一页——用户看到的仍是接得上的内容，
+    /// 而不是一段悬空的历史。
+    #[test]
+    fn a_dead_cursor_falls_back_to_the_newest_page() {
+        let db = test_db("deadpage");
+        seed(&db, 5);
+        let p = get_messages_page_core(&db, "c1", Some("compacted_away"), 2).unwrap();
+        assert_eq!(ids(&p), ["m04", "m05"]);
+    }
+}
+
+/// 会话列表：最近 N + 后端搜索（**不做无限滚动**，见 docs/分页方案-W18.md 阶段 3）。
+#[cfg(test)]
+mod conversation_page_tests {
+    use super::*;
+    use crate::db::DbManager;
+
+    fn test_db(tag: &str) -> DbManager {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "omnix_convpage_{tag}_{}_{}.db",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_file(&path);
+        DbManager::new_with_path(path)
+    }
+
+    fn add_conv(db: &DbManager, id: &str, title: &str, archived: bool) {
+        db.get_connection()
+            .unwrap()
+            .execute(
+                "INSERT INTO conversations (id, title, workspace_path, active_agent, is_archived)
+                 VALUES (?1, ?2, 'w', 'a', ?3)",
+                params![id, title, i32::from(archived)],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn the_list_is_capped_but_the_total_is_still_reported() {
+        let db = test_db("cap");
+        for i in 0..10 {
+            add_conv(&db, &format!("c{i}"), &format!("会话 {i}"), false);
+        }
+        let page = list_conversations_page_core(&db, false, 3).unwrap();
+        assert_eq!(page.conversations.len(), 3);
+        assert_eq!(
+            page.total, 10,
+            "只截断不报总数，用户会以为会话丢了——和消息那边静默截断是同一个毛病"
+        );
+    }
+
+    #[test]
+    fn archived_and_active_do_not_mix() {
+        let db = test_db("arch");
+        add_conv(&db, "a", "活的", false);
+        add_conv(&db, "b", "归档的", true);
+        assert_eq!(list_conversations_page_core(&db, false, 10).unwrap().total, 1);
+        assert_eq!(list_conversations_page_core(&db, true, 10).unwrap().total, 1);
+    }
+
+    #[test]
+    fn search_matches_on_title() {
+        let db = test_db("search");
+        add_conv(&db, "c1", "修复登录接口", false);
+        add_conv(&db, "c2", "写周报", false);
+        let hits = search_conversations_core(&db, "登录", false, 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, "c1");
+    }
+
+    /// 用户输入里的 `%` / `_` 是**字面量**，不是通配符。不转义的话搜一个下划线
+    /// 会把所有会话都搜出来。
+    #[test]
+    fn wildcards_typed_by_the_user_are_literal() {
+        let db = test_db("wild");
+        add_conv(&db, "c1", "a_b", false);
+        add_conv(&db, "c2", "axb", false);
+        add_conv(&db, "c3", "100%完成", false);
+
+        let hits = search_conversations_core(&db, "_", false, 10).unwrap();
+        assert_eq!(hits.len(), 1, "下划线被当成通配符了：{:?}",
+            hits.iter().map(|c| &c.title).collect::<Vec<_>>());
+        assert_eq!(hits[0].id, "c1");
+
+        let hits = search_conversations_core(&db, "%", false, 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, "c3");
+    }
+
+    #[test]
+    fn an_empty_query_returns_nothing_rather_than_everything() {
+        let db = test_db("empty");
+        add_conv(&db, "c1", "x", false);
+        assert!(search_conversations_core(&db, "   ", false, 10).unwrap().is_empty());
     }
 }

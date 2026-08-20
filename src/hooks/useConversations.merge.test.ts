@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ConversationMessage, MessagesDelta } from "../types";
-import { lastPersistedMessageId, mergeMessagesDelta } from "./useConversations";
+import { lastPersistedMessageId, mergeMessagesDelta, prependOlderMessages } from "./useConversations";
 
 /**
  * 增量合并。
@@ -88,5 +88,28 @@ describe("增量合并", () => {
     const current = [msg("a"), msg("b")];
     const out = mergeMessagesDelta(current, delta([msg("b"), msg("c")]));
     expect(out.map((m) => m.id)).toEqual(["a", "b", "c"]);
+  });
+});
+
+describe("往回翻页拼接", () => {
+  it("新拿到的一页拼在顶部（更早的在前）", () => {
+    const out = prependOlderMessages([msg("c")], [msg("a"), msg("b")]);
+    expect(out.map((m) => m.id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("并发点两次「加载更早」不会拼出重复", () => {
+    const current = [msg("b"), msg("c")];
+    const out = prependOlderMessages(current, [msg("a"), msg("b")]);
+    expect(out.map((m) => m.id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("整页都已经有了就不动原数组（避免无谓重渲染）", () => {
+    const current = [msg("a"), msg("b")];
+    expect(prependOlderMessages(current, [msg("a")])).toBe(current);
+  });
+
+  it("空页不动原数组", () => {
+    const current = [msg("a")];
+    expect(prependOlderMessages(current, [])).toBe(current);
   });
 });

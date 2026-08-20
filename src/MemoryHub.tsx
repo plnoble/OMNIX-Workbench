@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { CONVERSATION_PAGE_SIZE } from "@/hooks/useConversations";
 import { invoke } from "@tauri-apps/api/core";
 import {
   AlertTriangle,
@@ -113,12 +114,13 @@ export function MemoryHub() {
   };
 
   useEffect(() => {
-    Promise.all([loadMemories(), conversationApi.list(), modelApi.getActive(), distillationApi.list("pending")])
-      .then(([, conversationList, modelList, inbox]) => {
-        setConversations(conversationList);
+    // 这里只是给下拉列个近期会话，取最近一批就够。
+    Promise.all([loadMemories(), conversationApi.list(CONVERSATION_PAGE_SIZE), modelApi.getActive(), distillationApi.list("pending")])
+      .then(([, conversationPage, modelList, inbox]) => {
+        setConversations(conversationPage.conversations);
         setModels(modelList);
         setCandidates(inbox);
-        if (conversationList[0]) setSelectedConversation(conversationList[0].id);
+        if (conversationPage.conversations[0]) setSelectedConversation(conversationPage.conversations[0].id);
         if (modelList[0]) setSelectedModel(`${modelList[0].platform_id}:${modelList[0].model_name}`);
       })
       .catch((error) => toast.error(`读取记忆数据失败：${error}`));

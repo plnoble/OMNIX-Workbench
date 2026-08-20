@@ -1,5 +1,6 @@
-import { useMemo, useState, type MouseEvent, type ReactNode } from "react";
+import { type MouseEvent, type ReactNode, useEffect, useMemo, useState } from "react";
 import { useConversationsStore, useSettingsStore } from "@/store/AppStore";
+import { CONVERSATION_PAGE_SIZE } from "@/hooks/useConversations";
 import { createPortal } from "react-dom";
 import {
   Archive,
@@ -35,7 +36,11 @@ export function AppSidebar({
 }: AppSidebarProps) {
   // 会话与网关状态直接取 store，不再从 App.tsx 逐个透传。
   const convs = useConversationsStore();
-  const { conversations, activeAgent, currentConvId, activeSessions } = convs;
+  const { conversations, activeAgent, currentConvId, activeSessions, conversationTotal } = convs;
+  const searchConversations = convs.searchConversations;
+  // 搜索走后端。前端过滤需要全量在手，那就等于没分页——列表本来就只有最近一批。
+  const [convQuery, setConvQuery] = useState("");
+  const [convHits, setConvHits] = useState<ConversationInfo[] | null>(null);
   const { gatewayStatus } = useSettingsStore();
   const onSelectConversation = convs.selectConversation;
   const onDeleteConversation = convs.deleteConversation;
@@ -48,16 +53,32 @@ export function AppSidebar({
 
   // Each Agent keeps an independent chat history, so the work context only
   // lists conversations belonging to the currently active Agent.
+  useEffect(() => {
+    const q = convQuery.trim();
+    if (!q) {
+      setConvHits(null);
+      return;
+    }
+    // 200ms 防抖：每敲一个字打一次库没必要，而且中文输入法组字阶段会连打好几次。
+    const timer = setTimeout(() => {
+      void searchConversations(q).then(setConvHits);
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [convQuery, searchConversations]);
+
+  /// 搜索命中时用命中结果，否则用已加载的那一批。
+  const listSource = convHits ?? conversations;
+
   const grouped = useMemo(() => {
     const direct: ConversationInfo[] = [];
     const workspace: ConversationInfo[] = [];
-    for (const conv of conversations) {
+    for (const conv of listSource) {
       if (conv.active_agent !== activeAgent) continue;
       if (conv.workspace_path && conv.workspace_path !== "direct") workspace.push(conv);
       else direct.push(conv);
     }
     return { direct, workspace };
-  }, [conversations, activeAgent]);
+  }, [listSource, activeAgent]);
 
   const statusText = {
     idle: "空闲",
@@ -121,6 +142,30 @@ export function AppSidebar({
 
           <Separator />
 
+          {/* 列表只有最近一批，超出的靠这个框够到——搜索走后端 SQL，不是前端过滤。
+              前端过滤需要全量在手，那就等于没分页。 */}
+          {isWorkSurface && (
+            <div className="px-3 pt-3">
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                <input
+                  type="text"
+                  value={convQuery}
+                  onChange={(e) => setConvQuery(e.target.value)}
+                  placeholder="搜索全部会话标题…"
+                  className="w-full rounded-md border border-border bg-background py-1.5 pl-8 pr-2 text-xs outline-none placeholder:text-muted-foreground focus:border-ring"
+                />
+              </div>
+              {convHits !== null && (
+                <div className="mt-1.5 px-0.5 text-[11px] text-muted-foreground">
+                  {convHits.length === 0
+                    ? "没有匹配的会话"
+                    : `找到 ${convHits.length} 个匹配（最多显示 ${CONVERSATION_PAGE_SIZE} 个）`}
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
             {showWorkspaceList && (
               <ConversationSection
@@ -147,6 +192,14 @@ export function AppSidebar({
               onDelete={(conv) => setPendingDelete({ id: conv.id, title: conv.title })}
               onArchiveConversation={onArchiveConversation}
             />
+            )}
+            {/* 只截断不报总数，用户会以为会话丢了——和消息那边静默截断是同一个
+                毛病。所以列表被截断时必须说出来。 */}
+            {convHits === null && conversationTotal > conversations.length && (
+              <div className="mx-3 mb-2 rounded-md bg-muted/20 px-3 py-2 text-[11px] leading-4 text-muted-foreground">
+                显示最近 {conversations.length} 个会话，共 {conversationTotal.toLocaleString()} 个。
+                更早的用上面的搜索框找。
+              </div>
             )}
             {/* Explicit entry: archived conversations live in the fullscreen
                 history view — an icon-only entry point proved undiscoverable. */}
