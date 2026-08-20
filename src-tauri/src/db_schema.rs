@@ -489,6 +489,31 @@ impl DbManager {
             [],
         )?;
 
+        // 6a-2. Router Decisions —— 每一次 Auto 选型留一行。
+        //
+        // **隐私契约：这张表没有任何自由文本列。** prompt 永远不进来；`needs`
+        // 是一组枚举 token（vision/reasoning/coding/speedy/tools），`route_key`
+        // 是会话 id 或 agent 名，不是用户写的东西。`router_decisions_carry_no_prose`
+        // 守着这条线。
+        //
+        // 存在的理由是回答两个原来答不上来的问题：上周那轮为什么选了这个模型，
+        // 以及 Auto 到底有没有在省钱。读取端是「用量成本看板」。
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS router_decisions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                route_key TEXT NULL,
+                needs TEXT NOT NULL DEFAULT '',
+                candidate_count INTEGER NOT NULL DEFAULT 0,
+                chosen_model TEXT NOT NULL,
+                chosen_price REAL NOT NULL DEFAULT 0,
+                baseline_model TEXT NOT NULL,
+                baseline_price REAL NOT NULL DEFAULT 0,
+                anti_downgrade INTEGER NOT NULL DEFAULT 0
+            )",
+            [],
+        )?;
+
         // 6b. Agent Accounts Table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS agent_accounts (
@@ -984,6 +1009,7 @@ impl DbManager {
             "CREATE INDEX IF NOT EXISTS idx_platform_models_platform_id ON platform_models(platform_id)",
             // Request logs by timestamp (dashboard analytics sort by time)
             "CREATE INDEX IF NOT EXISTS idx_request_logs_timestamp ON request_logs(timestamp)",
+            "CREATE INDEX IF NOT EXISTS idx_router_decisions_created_at ON router_decisions(created_at)",
             // Cron runs by task (history view per-task)
             "CREATE INDEX IF NOT EXISTS idx_cron_runs_task_id ON cron_runs(task_id)",
             // Tasks by conversation (PlanTree loads tasks per-conversation)

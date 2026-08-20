@@ -218,6 +218,96 @@ pub fn get_request_logs(
     Ok(result)
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RouterDecisionRow {
+    pub id: i64,
+    pub created_at: String,
+    /// 逗号分隔的枚举 token（vision/reasoning/coding/speedy/tools）。**不是自由文本。**
+    pub needs: String,
+    pub chosen_model: String,
+    pub chosen_price: f64,
+    pub baseline_model: String,
+    pub baseline_price: f64,
+    pub anti_downgrade: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RouterDecisionReport {
+    pub total: i64,
+    pub anti_downgrade_count: i64,
+    pub cheaper_than_baseline: i64,
+    /// 相对基线的平均费率降幅（0~1）。只统计基线费率大于 0 的那些。
+    pub avg_rate_cut: f64,
+    pub recent: Vec<RouterDecisionRow>,
+}
+
+/// Auto 路由的决策记录。
+///
+/// 回答两个原来答不上来的问题：上周那轮为什么选了这个模型，以及 Auto 到底有没有
+/// 在省钱。这里给的是**费率**口径（$/百万 token 的输入+输出合计），不是实际花销——
+/// 决策发生在请求之前，那时还不知道会用掉多少 token。真实花销在同一页的
+/// `request_logs` 里。
+#[tauri::command]
+pub fn get_router_decisions(db: State<'_, Arc<DbManager>>) -> Result<RouterDecisionReport, String> {
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
+
+    let total: i64 = conn
+        .query_row("SELECT COUNT(*) FROM router_decisions", [], |r| r.get(0))
+        .unwrap_or(0);
+    let anti_downgrade_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM router_decisions WHERE anti_downgrade = 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    let cheaper_than_baseline: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM router_decisions WHERE chosen_price < baseline_price",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    let avg_rate_cut: f64 = conn
+        .query_row(
+            "SELECT COALESCE(AVG(1.0 - chosen_price / baseline_price), 0)
+             FROM router_decisions WHERE baseline_price > 0",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0.0);
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, created_at, needs, chosen_model, chosen_price,
+                    baseline_model, baseline_price, anti_downgrade
+             FROM router_decisions ORDER BY id DESC LIMIT 30",
+        )
+        .map_err(|e: rusqlite::Error| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(RouterDecisionRow {
+                id: row.get(0)?,
+                created_at: row.get(1)?,
+                needs: row.get(2)?,
+                chosen_model: row.get(3)?,
+                chosen_price: row.get(4)?,
+                baseline_model: row.get(5)?,
+                baseline_price: row.get(6)?,
+                anti_downgrade: row.get::<_, i32>(7)? != 0,
+            })
+        })
+        .map_err(|e: rusqlite::Error| e.to_string())?;
+
+    Ok(RouterDecisionReport {
+        total,
+        anti_downgrade_count,
+        cheaper_than_baseline,
+        avg_rate_cut,
+        recent: rows.flatten().collect(),
+    })
+}
+
 /// Get usage statistics summary
 #[tauri::command]
 pub fn get_usage_stats(db: State<'_, Arc<DbManager>>) -> Result<UsageStats, String> {

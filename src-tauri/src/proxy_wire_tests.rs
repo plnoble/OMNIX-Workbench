@@ -220,9 +220,9 @@ fn proxy_state(db: Arc<DbManager>) -> Arc<ProxyState> {
 /// 又**优先于** `target_model` 设置。不清就会打到 localhost:11434 而不是假上游——
 /// 第一版测试就是这么全绿不了的。测路由就得先让路由只有一条路。
 fn reset_routing(db: &DbManager) {
-    // 防降档是**进程内**状态，不在库里。不清的话上一个用例选中的模型会粘到
-    // 下一个用例（600 秒窗口远长于一次测试跑批），表现是「选型莫名其妙不对」。
-    super::clear_route_stickiness();
+    // 这里**不清**防降档的进程内状态：它是全局的，而测试并行跑，一个用例的清空
+    // 会打断另一个用例。隔离靠的是「上一轮那个模型必须还在**本用例的**候选池里
+    // 才会被粘住」——各用例各自的库，跨不过去。
     let conn = db.get_connection().expect("db");
     for sql in [
         "DELETE FROM agent_accounts",

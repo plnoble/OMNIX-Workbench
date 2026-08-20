@@ -92,6 +92,31 @@ export const requestLogApi = {
  * 同批曾有 getAll / reset 两条读健康状态的，已删：健康展示由网关健康卡承担
  * （熔断器实时状态 + 主动探测），再放一份「另一套口径的健康」只会让人问哪个准。
  */
+export interface RouterDecisionRow {
+  id: number;
+  created_at: string;
+  /** 逗号分隔的枚举 token（vision/reasoning/coding/speedy/tools）。不是自由文本。 */
+  needs: string;
+  chosen_model: string;
+  chosen_price: number;
+  baseline_model: string;
+  baseline_price: number;
+  anti_downgrade: boolean;
+}
+
+export interface RouterDecisionReport {
+  total: number;
+  anti_downgrade_count: number;
+  cheaper_than_baseline: number;
+  /** 相对基线的平均费率降幅（0~1）。 */
+  avg_rate_cut: number;
+  recent: RouterDecisionRow[];
+}
+
+export const routerDecisionApi = {
+  get: () => invoke<RouterDecisionReport>("get_router_decisions"),
+};
+
 export const platformRoutingApi = {
   update: (platformId: string, weight: number, priority: number) =>
     invoke("update_platform_routing", { platformId, weight, priority }),

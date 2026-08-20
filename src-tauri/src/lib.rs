@@ -634,6 +634,7 @@ pub fn run() {
             // Request Logs & Usage Stats
             commands::get_request_logs,
             commands::get_usage_stats,
+            commands::get_router_decisions,
             commands::get_platform_usage,
             commands::get_usage_timeseries,
             commands::cleanup_request_logs,

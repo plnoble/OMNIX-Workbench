@@ -472,14 +472,6 @@ fn remember_sticky_model(route_key: Option<&str>, model: &str) {
     guard.insert(key.to_string(), (model.to_string(), std::time::Instant::now()));
 }
 
-/// 清空防降档状态。测试之间必须清，否则上一个用例选中的模型会粘到下一个。
-#[cfg(test)]
-pub(crate) fn clear_route_stickiness() {
-    if let Ok(mut guard) = stickiness().lock() {
-        guard.clear();
-    }
-}
-
 /// Auto 路由的唯一实现。两条协议路径（Anthropic / OpenAI）共用。
 ///
 /// 以前这段打分在 `proxy_anthropic.rs` 和 `proxy_openai.rs` 里各抄了一份，
@@ -546,6 +538,7 @@ pub(crate) fn pick_auto_model(
 
     // 防降档：窗口内不往更便宜的模型上切。
     let mut chosen = best.0.clone();
+    let mut anti_downgrade = false;
     if let Some(prev) = sticky_model(route_key) {
         if prev != chosen {
             // 上一轮那个模型还在池子里（没被停用/熔断/掉 Key，且过得了工具门槛），
@@ -554,13 +547,93 @@ pub(crate) fn pick_auto_model(
                 let serves_hard_needs = !needs.vision || p.3;
                 if serves_hard_needs && best.2 < p.2 {
                     chosen = prev;
+                    anti_downgrade = true;
                 }
             }
         }
     }
 
     remember_sticky_model(route_key, &chosen);
+    record_decision(db, needs, route_key, &scored, &chosen, anti_downgrade);
     Ok(chosen)
+}
+
+/// 基线：**不比价、不粘性**的那个选择，也就是这次改动之前的路由会挑谁。
+///
+/// 记它是为了让「路由到底有没有在做事」变成一个能查的问题，而不是一句感觉。
+/// 原来的规则是严格大于才换（`score > highest`），所以平局时第一个赢——候选
+/// 已按 priority DESC, weight DESC, name 排好，`max_by_key` 会取**最后**一个
+/// 最大值，方向正好相反，所以这里手写。
+fn naive_baseline(scored: &[(String, i32, f64, bool)]) -> Option<&(String, i32, f64, bool)> {
+    scored.iter().reduce(|acc, c| if c.1 > acc.1 { c } else { acc })
+}
+
+/// 把这一次选型记下来。**尽力而为**：记不上不能影响请求本身。
+///
+/// 隐私契约见 `db_schema.rs` 里这张表的注释——写进去的每一样东西要么是枚举
+/// token，要么是模型/会话标识，没有一个字来自用户的输入。
+fn record_decision(
+    db: &DbManager,
+    needs: &RouteNeeds,
+    route_key: Option<&str>,
+    scored: &[(String, i32, f64, bool)],
+    chosen: &str,
+    anti_downgrade: bool,
+) {
+    let Some(baseline) = naive_baseline(scored) else {
+        return;
+    };
+    let chosen_price = scored
+        .iter()
+        .find(|c| c.0 == chosen)
+        .map(|c| c.2)
+        .unwrap_or(0.0);
+    let mut tokens: Vec<&str> = Vec::new();
+    if needs.vision {
+        tokens.push("vision");
+    }
+    if needs.reasoning {
+        tokens.push("reasoning");
+    }
+    if needs.coding {
+        tokens.push("coding");
+    }
+    if needs.speedy {
+        tokens.push("speedy");
+    }
+    if needs.tools {
+        tokens.push("tools");
+    }
+
+    let Ok(conn) = db.get_connection() else {
+        return;
+    };
+    let _ = conn.execute(
+        "INSERT INTO router_decisions
+           (route_key, needs, candidate_count, chosen_model, chosen_price,
+            baseline_model, baseline_price, anti_downgrade)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            route_key,
+            tokens.join(","),
+            scored.len() as i64,
+            chosen,
+            chosen_price,
+            baseline.0,
+            baseline.2,
+            i32::from(anti_downgrade),
+        ],
+    );
+    // 留存窗口。一行/次请求，不剪会无限长。
+    //
+    // 按**时间**剪而不是按行数剪，有个额外好处：按行数要写
+    // `WHERE id <= (SELECT MAX(id) - N FROM router_decisions)`，那个子查询会让
+    // 「只写不读的表」守卫把这张表误判成有读取端——写入方自己的清理语句冒充了
+    // 读取端，守卫就再也保护不了它了。
+    let _ = conn.execute(
+        "DELETE FROM router_decisions WHERE created_at < datetime('now', '-30 days')",
+        [],
+    );
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1508,12 +1581,16 @@ mod router_tests {
     use super::*;
     use crate::db::DbManager;
 
-    fn router_db(tag: &str) -> (DbManager, std::path::PathBuf) {
-        let path = std::env::temp_dir().join(format!(
-            "omnix_router_{tag}_{}_{}.sqlite",
-            std::process::id(),
-            chrono::Utc::now().timestamp_micros()
-        ));
+    /// 一个用例一套：临时库 + **独一无二的粘性键**。
+    ///
+    /// 这里**故意没有**「清空粘性状态」的钩子。防降档的状态是进程内全局的，而
+    /// 测试并行跑：一个用例的清空会把另一个用例两次选型**之间**的状态抹掉。
+    /// 第一版就是这么写的，`an_anti_downgrade_hold_is_marked_in_the_record`
+    /// 在 12 次里红了 4 次——而且每次红的是「被别人清掉的那个」，看起来像随机。
+    /// 隔离靠键唯一，不靠清空。
+    fn router_db(tag: &str) -> (DbManager, std::path::PathBuf, String) {
+        let unique = format!("{tag}_{}_{}", std::process::id(), chrono::Utc::now().timestamp_micros());
+        let path = std::env::temp_dir().join(format!("omnix_router_{unique}.sqlite"));
         let _ = std::fs::remove_file(&path);
         let db = DbManager::new_with_path(path.clone());
         {
@@ -1523,7 +1600,7 @@ mod router_tests {
             conn.execute("DELETE FROM platform_models", []).unwrap();
             conn.execute("DELETE FROM model_platforms", []).unwrap();
         }
-        (db, path)
+        (db, path, format!("case-{unique}"))
     }
 
     /// `caps` = (vision, reasoning, coding, speedy, tool_use)。
@@ -1676,8 +1753,7 @@ mod router_tests {
     /// 最后由平台优先级决定——跟贵不贵毫无关系。这里故意把**贵的**排在前面。
     #[test]
     fn a_tie_on_score_is_broken_by_price() {
-        let (db, path) = router_db("price");
-        clear_route_stickiness();
+        let (db, path, _key) = router_db("price");
         install(&db, "pricey", 10, "gpt-4o", (0, 1, 0, 0, 1));
         install(&db, "cheap", 0, "deepseek-reasoner", (0, 1, 0, 0, 1));
 
@@ -1698,18 +1774,17 @@ mod router_tests {
     /// 中途换模型会作废上游的 prompt cache，省下的那点钱通常不如丢掉的缓存贵。
     #[test]
     fn anti_downgrade_keeps_the_model_within_the_window() {
-        let (db, path) = router_db("sticky");
-        clear_route_stickiness();
+        let (db, path, key) = router_db("sticky");
         install(&db, "big", 0, "gpt-4o", (1, 1, 0, 0, 1));
         install(&db, "small", 0, "deepseek-chat", (0, 0, 0, 1, 1));
 
-        let first = pick_auto_model(&db, &needs(false, true, false, false, false), Some("sess-A"))
+        let first = pick_auto_model(&db, &needs(false, true, false, false, false), Some(&key))
             .ok()
             .expect("第一轮");
         assert_eq!(first, "big:gpt-4o", "第一轮要推理，选强的");
 
         // 第二轮只是一句短问话：单看这一轮该选便宜的快模型。
-        let second = pick_auto_model(&db, &needs(false, false, false, true, false), Some("sess-A"))
+        let second = pick_auto_model(&db, &needs(false, false, false, true, false), Some(&key))
             .ok()
             .expect("第二轮");
         assert_eq!(
@@ -1727,19 +1802,18 @@ mod router_tests {
     /// 换的理由，不换才是错的。少了这条，带图请求会被死死粘在看不懂图的模型上。
     #[test]
     fn anti_downgrade_yields_when_the_turn_actually_needs_vision() {
-        let (db, path) = router_db("vision");
-        clear_route_stickiness();
+        let (db, path, key) = router_db("vision");
         // 贵、能推理、**没有视觉**。
         install(&db, "text", 0, "claude-sonnet-4-20250514", (0, 1, 0, 0, 1));
         // 便宜、有视觉。
         install(&db, "eyes", 0, "gemini-2.5-flash", (1, 0, 0, 0, 1));
 
-        let first = pick_auto_model(&db, &needs(false, true, false, false, false), Some("sess-B"))
+        let first = pick_auto_model(&db, &needs(false, true, false, false, false), Some(&key))
             .ok()
             .expect("第一轮");
         assert_eq!(first, "text:claude-sonnet-4-20250514");
 
-        let second = pick_auto_model(&db, &needs(true, false, false, false, false), Some("sess-B"))
+        let second = pick_auto_model(&db, &needs(true, false, false, false, false), Some(&key))
             .ok()
             .expect("第二轮");
         assert_eq!(
@@ -1754,13 +1828,12 @@ mod router_tests {
     /// 粘性是按会话的，不能串台。
     #[test]
     fn stickiness_does_not_leak_across_sessions() {
-        let (db, path) = router_db("leak");
-        clear_route_stickiness();
+        let (db, path, key) = router_db("leak");
         install(&db, "big", 0, "gpt-4o", (1, 1, 0, 0, 1));
         install(&db, "small", 0, "deepseek-chat", (0, 0, 0, 1, 1));
 
-        let _ = pick_auto_model(&db, &needs(false, true, false, false, false), Some("sess-C"));
-        let other = pick_auto_model(&db, &needs(false, false, false, true, false), Some("sess-D"))
+        let _ = pick_auto_model(&db, &needs(false, true, false, false, false), Some(&key));
+        let other = pick_auto_model(&db, &needs(false, false, false, true, false), Some(&format!("{key}-other")))
             .ok()
             .expect("另一个会话");
         assert_eq!(
@@ -1772,12 +1845,130 @@ mod router_tests {
         let _ = std::fs::remove_file(path);
     }
 
+    // ---------- 决策记录 ----------
+
+    fn decisions(db: &DbManager) -> Vec<(String, String, f64, String, f64, i32)> {
+        let conn = db.get_connection().expect("db");
+        let mut stmt = conn
+            .prepare(
+                "SELECT needs, chosen_model, chosen_price, baseline_model, baseline_price, anti_downgrade
+                 FROM router_decisions ORDER BY id",
+            )
+            .expect("查询");
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
+            })
+            .expect("行");
+        rows.flatten().collect()
+    }
+
+    /// 每一次 Auto 选型都要留下一行，而且基线得是**不比价时**的那个选择——
+    /// 否则「Auto 到底有没有在省钱」还是答不上来。
+    #[test]
+    fn every_auto_pick_is_recorded_with_the_price_blind_baseline() {
+        let (db, path, key) = router_db("record");
+        // 贵的排在前面：不比价的话它会赢（原来的规则是严格大于才换）。
+        install(&db, "pricey", 10, "gpt-4o", (0, 1, 0, 0, 1));
+        install(&db, "cheap", 0, "deepseek-reasoner", (0, 1, 0, 0, 1));
+
+        let picked = pick_auto_model(&db, &needs(false, true, false, false, false), Some(&key))
+            .ok()
+            .expect("选型");
+
+        let rows = decisions(&db);
+        assert_eq!(rows.len(), 1, "一次选型应当留下一行");
+        let (needs_tokens, chosen, chosen_price, baseline, baseline_price, _) = &rows[0];
+        assert_eq!(chosen, &picked);
+        assert_eq!(chosen, "cheap:deepseek-reasoner");
+        assert_eq!(
+            baseline, "pricey:gpt-4o",
+            "基线该是不比价时会选的那个，否则看不出比价改变了什么"
+        );
+        assert!(
+            chosen_price < baseline_price,
+            "选中的比基线便宜，费率也得如实记下来：{chosen_price} vs {baseline_price}"
+        );
+        assert_eq!(needs_tokens, "reasoning");
+
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// 防降档触发时要在记录里标出来——不然界面上会显示成「路由多花了钱」，
+    /// 而实际上那是为了保住 prompt cache 的有意选择。
+    #[test]
+    fn an_anti_downgrade_hold_is_marked_in_the_record() {
+        let (db, path, key) = router_db("recordhold");
+        install(&db, "big", 0, "gpt-4o", (1, 1, 0, 0, 1));
+        install(&db, "small", 0, "deepseek-chat", (0, 0, 0, 1, 1));
+
+        let _ = pick_auto_model(&db, &needs(false, true, false, false, false), Some(&key));
+        let _ = pick_auto_model(&db, &needs(false, false, false, true, false), Some(&key));
+
+        let rows = decisions(&db);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].5, 0, "第一轮没有可粘的东西");
+        assert_eq!(rows[1].5, 1, "第二轮被防降档拦下了，记录里必须标出来");
+        assert_eq!(rows[1].1, "big:gpt-4o");
+
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// 隐私契约：`router_decisions` 里不能出现自由文本。
+    ///
+    /// 现在成立的原因是结构性的——`pick_auto_model` 根本拿不到 prompt，它只收
+    /// `RouteNeeds`。但结构会漂：哪天有人为了「便于排查」把用户第一句话塞进来，
+    /// 这条测试就是那一刻的拦截点。所以它校验的是**形状**，不是「有没有人写坏」。
+    #[test]
+    fn router_decisions_carry_no_prose() {
+        let (db, path, key) = router_db("privacy");
+        install(&db, "p", 0, "deepseek-chat", (1, 1, 1, 1, 1));
+        let _ = pick_auto_model(&db, &needs(true, true, true, false, true), Some(&key));
+
+        // 表里所有 TEXT 列，逐个校验形状。
+        let rows: Vec<(Option<String>, String, String, String)> = {
+            let conn = db.get_connection().expect("db");
+            let mut stmt = conn
+                .prepare(
+                    "SELECT route_key, needs, chosen_model, baseline_model FROM router_decisions",
+                )
+                .expect("查询");
+            let collected = stmt
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+                .expect("行")
+                .flatten()
+                .collect();
+            collected
+        };
+        assert_eq!(rows.len(), 1);
+        let (route_key, needs_tokens, chosen, baseline) = &rows[0];
+
+        assert_eq!(route_key.as_deref(), Some(key.as_str()), "只存传进来的会话标识");
+        const ALLOWED: &[&str] = &["vision", "reasoning", "coding", "speedy", "tools"];
+        for token in needs_tokens.split(',').filter(|t| !t.is_empty()) {
+            assert!(
+                ALLOWED.contains(&token),
+                "needs 里出现了枚举之外的东西：{token}——这一列只能放固定 token"
+            );
+        }
+        for model in [chosen, baseline] {
+            assert_eq!(
+                model, "p:deepseek-chat",
+                "模型列只能是 platform:model，不能带别的内容：{model}"
+            );
+        }
+
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
     /// 声明了工具就**只在支持工具的模型里选**，一个都没有时要明说，
     /// 不能挑一个不会调工具的顶上——那种失败很隐蔽。
     #[test]
     fn declaring_tools_refuses_a_model_that_cannot_call_them() {
-        let (db, path) = router_db("tools");
-        clear_route_stickiness();
+        let (db, path, _key) = router_db("tools");
         install(&db, "notools", 0, "deepseek-chat", (0, 0, 0, 1, 0));
 
         let err = pick_auto_model(&db, &needs(false, false, false, true, true), None);

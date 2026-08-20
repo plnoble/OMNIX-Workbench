@@ -1,18 +1,25 @@
 /**
  * UsageDashboardTab — 用量成本看板.
  *
- * 只回答一个问题：花了多少。token/成本活动、按平台开销、最近请求，全部读
- * 已采集的 `request_logs`，不新增遥测。
+ * 只回答一个问题：花了多少。token/成本活动、按平台开销、最近请求都读已采集的
+ * `request_logs`；「Auto 路由」那一格读 `router_decisions`——那是唯一一处新增的
+ * 采集，每次 Auto 选型一行，表里没有任何自由文本（建表处有隐私契约说明）。
  *
  * 网关健康（各平台熔断状态）不在这里——它的唯一去处是「模型」页，那里它就
  * 贴在平台列表上方，看到谁熔断了往下一格就能改 key / 停用。
  */
 import { useCallback, useEffect, useState } from "react";
-import { BarChart3, RefreshCw, Server } from "lucide-react";
+import { BarChart3, RefreshCw, Route, Server } from "lucide-react";
 
 import { TokenActivityPanel } from "@/components/TokenActivityPanel";
 import { cn } from "@/lib/utils";
-import { requestLogApi, type PlatformUsage, type RequestLogEntry } from "@/lib/tauri-api";
+import {
+  requestLogApi,
+  routerDecisionApi,
+  type PlatformUsage,
+  type RequestLogEntry,
+  type RouterDecisionReport,
+} from "@/lib/tauri-api";
 
 function fmtTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
@@ -23,6 +30,11 @@ function fmtCost(n: number): string {
   if (n === 0) return "$0";
   if (n < 0.01) return "<$0.01";
   return `$${n.toFixed(2)}`;
+}
+/** 费率：$/百万 token（输入+输出合计）。和 fmtCost 不是一个口径，别混用。 */
+function fmtRate(n: number): string {
+  if (n === 0) return "—";
+  return `$${n.toFixed(2)}/M`;
 }
 function fmtTime(iso: string): string {
   try {
@@ -37,17 +49,20 @@ function fmtTime(iso: string): string {
 export function UsageDashboardTab() {
   const [platforms, setPlatforms] = useState<PlatformUsage[]>([]);
   const [logs, setLogs] = useState<RequestLogEntry[]>([]);
+  const [router, setRouter] = useState<RouterDecisionReport | null>(null);
   const [loading, setLoading] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [p, l] = await Promise.all([
+      const [p, l, r] = await Promise.all([
         requestLogApi.platformUsage(),
         requestLogApi.getLogs(1, 40),
+        routerDecisionApi.get(),
       ]);
       setPlatforms(p);
       setLogs(l);
+      setRouter(r);
     } catch {
       /* transient */
     } finally {
@@ -82,6 +97,84 @@ export function UsageDashboardTab() {
 
       <div className="flex flex-col gap-5 overflow-y-auto p-6">
         <TokenActivityPanel />
+
+        {/* Auto 路由：选了谁、比不比价前便宜、防降档拦了几次 */}
+        <div className="rounded-lg border border-border glass-surface p-4">
+          <div className="mb-1 flex items-center gap-2 text-sm font-semibold">
+            <Route className="h-4 w-4 text-primary" /> Auto 路由
+          </div>
+          <p className="mb-3 text-xs text-muted-foreground">
+            基线 = 不比价、不粘性时会选的那个模型。费率是 $/百万 token（输入+输出合计），
+            不是实际花销——选型发生在请求之前，那时还不知道会用掉多少 token。
+          </p>
+          {!router || router.total === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              还没有 Auto 选型记录。把「设置 → 内置功能默认模型」设成 Auto 之后，这里会记下每一次选型的依据。
+            </p>
+          ) : (
+            <>
+              <div className="mb-3 grid grid-cols-3 gap-3">
+                <div className="rounded border border-border/60 p-2">
+                  <div className="text-xs text-muted-foreground">选型次数</div>
+                  <div className="text-lg font-semibold">{router.total}</div>
+                </div>
+                <div className="rounded border border-border/60 p-2">
+                  <div className="text-xs text-muted-foreground">比基线便宜</div>
+                  <div className="text-lg font-semibold text-success">
+                    {router.cheaper_than_baseline}
+                    {router.avg_rate_cut > 0 && (
+                      <span className="ml-1 text-xs font-normal text-muted-foreground">
+                        均降 {(router.avg_rate_cut * 100).toFixed(0)}%
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div className="rounded border border-border/60 p-2">
+                  <div className="text-xs text-muted-foreground">防降档拦下</div>
+                  <div className="text-lg font-semibold">{router.anti_downgrade_count}</div>
+                </div>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead className="text-muted-foreground">
+                    <tr className="border-b border-border/60 text-left">
+                      <th className="py-1.5 pr-3 font-medium">时间</th>
+                      <th className="py-1.5 pr-3 font-medium">这轮需要</th>
+                      <th className="py-1.5 pr-3 font-medium">选中</th>
+                      <th className="py-1.5 pr-3 text-right font-medium">费率</th>
+                      <th className="py-1.5 pr-3 font-medium">基线</th>
+                      <th className="py-1.5 font-medium">备注</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {router.recent.map((d) => (
+                      <tr key={d.id} className="border-b border-border/30">
+                        <td className="py-1.5 pr-3 whitespace-nowrap text-muted-foreground">{fmtTime(d.created_at)}</td>
+                        <td className="py-1.5 pr-3 text-muted-foreground">{d.needs || "—"}</td>
+                        <td className="py-1.5 pr-3 max-w-[180px] truncate" title={d.chosen_model}>{d.chosen_model}</td>
+                        <td className="py-1.5 pr-3 text-right whitespace-nowrap">{fmtRate(d.chosen_price)}</td>
+                        <td
+                          className={cn(
+                            "py-1.5 pr-3 max-w-[180px] truncate",
+                            d.chosen_model === d.baseline_model ? "text-muted-foreground" : "",
+                          )}
+                          title={d.baseline_model}
+                        >
+                          {d.chosen_model === d.baseline_model ? "同上" : d.baseline_model}
+                        </td>
+                        <td className="py-1.5">
+                          {d.anti_downgrade && (
+                            <span className="rounded bg-primary/15 px-1.5 py-0.5 font-medium text-primary">防降档</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </div>
 
         {/* Per-platform cost breakdown */}
         <div className="rounded-lg border border-border glass-surface p-4">

@@ -165,10 +165,25 @@ mod table_wiring {
             // 文件（含 `get_setting` 的 `FROM settings`）全丢掉——这条守卫第一版就是
             // 这么把 `settings` 误报成只写不读的。
             let text = std::fs::read_to_string(&entry).unwrap_or_default();
-            src.push_str(production_part(&text));
+            src.push_str(&strip_comment_lines(production_part(&text)));
             src.push('\n');
         }
         src
+    }
+
+    /// 整行注释里的 SQL 不算数。
+    ///
+    /// `record_decision` 里一句「留存别写成 `... FROM router_decisions`」的解释性
+    /// 注释，就足以让守卫把那张表当成有读取端——**守卫会被讲述它自己的注释骗过去**。
+    /// 发现的经过：把 `router_decisions` 的读取端整个拆掉做反向验证，守卫依然全绿。
+    ///
+    /// 只丢弃「整行都是注释」的行（trim 后以 `//` 开头）。行尾注释保留：SQL 字符串
+    /// 不会以 `//` 起行，误伤不了生产语句。
+    fn strip_comment_lines(text: &str) -> String {
+        text.lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// 截到第一个**测试模块**为止，返回生产段。
@@ -223,10 +238,19 @@ mod table_wiring {
     }
 
     /// 抓任何读法：`FROM <table>` 与 `UPDATE <table> SET`。
+    ///
+    /// **`DELETE FROM x` 不算读 x。** 删除是写入方的清理动作，不是消费。算进去
+    /// 的后果是：任何自带留存清理的表都会被这条清理语句冒充成「有读取端」，守卫
+    /// 对它彻底失效。`router_decisions` 就是第一个这样的表——它的留存语句一度写成
+    /// `DELETE ... WHERE id <= (SELECT MAX(id) - N FROM router_decisions)`，
+    /// 那个自引用子查询让守卫在读取端被整个拆掉时依然全绿。
     fn read_tables(src: &str) -> HashSet<String> {
         let mut out = HashSet::new();
         for kw in ["FROM ", "UPDATE "] {
             for (i, _) in src.match_indices(kw) {
+                if kw == "FROM " && src[..i].trim_end().to_uppercase().ends_with("DELETE") {
+                    continue;
+                }
                 let name: String = src[i + kw.len()..]
                     .trim_start()
                     .chars()
@@ -238,6 +262,34 @@ mod table_wiring {
             }
         }
         out
+    }
+
+    /// 守卫的自检：`DELETE FROM x` 单独出现时不能把 x 算成有读取端。
+    ///
+    /// 这条守的是守卫自己。上一次它失效的方式是「读取端」其实是写入方的清理
+    /// 语句——那种失效不会报错，只会安静地不再保护任何东西。
+    #[test]
+    fn deleting_from_a_table_is_not_reading_it() {
+        let only_delete = "conn.execute(\"DELETE FROM lonely_table WHERE created_at < x\", []);";
+        assert!(
+            !read_tables(only_delete).contains("lonely_table"),
+            "只有 DELETE 的表被当成了有读取端——守卫对所有自带清理的表都会失效"
+        );
+        let real_read = "conn.query_row(\"SELECT COUNT(*) FROM lonely_table\", [], |r| r.get(0))";
+        assert!(
+            read_tables(real_read).contains("lonely_table"),
+            "真正的 SELECT 读取反而没认出来"
+        );
+    }
+
+    /// 注释里提到一句 SQL，不该让守卫以为那张表有人读。
+    #[test]
+    fn a_comment_that_mentions_a_query_is_not_a_read() {
+        let commented = "    // 别写成 SELECT x FROM lonely_table，那会骗过守卫\n    let x = 1;";
+        assert!(
+            !read_tables(&strip_comment_lines(commented)).contains("lonely_table"),
+            "注释里的 SQL 被当成了读取端——守卫会被讲述它自己的注释骗过去"
+        );
     }
 
     #[test]
