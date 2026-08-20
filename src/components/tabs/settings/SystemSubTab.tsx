@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { FileText, Save, Settings } from "lucide-react";
+import { Save } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/sonner";
 import { modelApi, statusDockApi } from "@/lib/tauri-api";
@@ -66,36 +66,20 @@ export function SystemSubTab() {
       .catch(e => console.error("[Settings] Failed to load available models:", e));
   }, []);
 
-  // ── Left-side group nav: one long mixed page → focused groups ──
-  type SystemGroup = "general" | "selection" | "translate" | "docs";
-  const [group, setGroup] = useState<SystemGroup>("general");
-  const GROUPS: { id: SystemGroup; label: string; icon: React.ReactNode }[] = [
-    { id: "general", label: "常规", icon: <Settings className="h-3.5 w-3.5" /> },
-    { id: "docs", label: "文档处理", icon: <FileText className="h-3.5 w-3.5" /> },
-  ];
+  /* 这里以前有一条左侧分组导航（常规 / 划词 / 翻译 / 文档处理）。四个组陆续
+     搬走或删掉之后只剩「常规」一个，导航整条留着——而「文档处理」那一项**点进去
+     是一片空白**：卡片删了，导航项没跟着删。
+
+     这是这个项目反复出现的那一类：读的一半迁走了，写的一半留着。表现不是报错，
+     是一个点了没反应的入口——比缺功能更糟，用户会以为是自己没配好。
+
+     所以整条导航一起删。一个组的导航是个假选择。各组现在的去处：
+     - 划词、翻译、搜索：都在宫格里各自的页
+     - 文档处理：在「Office」页。OfficeCLI 的安装、版本、引擎状态本来就在那里
+       （`officeApi.status()` / `install()`），配置跑到设置里来是同一张表切两半 */
 
   return (
     <div className="mx-auto flex w-full max-w-5xl gap-4">
-      <nav className="w-36 shrink-0">
-        <div className="sticky top-0 flex flex-col gap-1">
-          {GROUPS.map((g) => (
-            <button
-              key={g.id}
-              onClick={() => setGroup(g.id)}
-              className={cn(
-                "flex items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition",
-                group === g.id
-                  ? "bg-accent/10 text-accent border border-accent/30"
-                  : "text-muted-foreground hover:bg-muted/20 hover:text-foreground border border-transparent"
-              )}
-            >
-              {g.icon}
-              {g.label}
-            </button>
-          ))}
-        </div>
-      </nav>
-
       <div className="flex min-w-0 flex-1 flex-col gap-4">
       {/* Theme selector lives in the title bar. */}
       {false && (
@@ -136,7 +120,6 @@ export function SystemSubTab() {
           agent，误启用的代价还很高（活跃账号会覆盖网关的目标模型）。 */}
 
       {/* System Configuration */}
-      {group === "general" && (
       <Card>
         <CardContent className="p-5 flex flex-col gap-3">
           <div className="space-y-3">
@@ -205,7 +188,6 @@ export function SystemSubTab() {
           </Button>
         </CardContent>
       </Card>
-      )}
 
       {/* ── Selection Assistant ─────────────────────── */}
 
