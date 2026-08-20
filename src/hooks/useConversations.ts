@@ -64,6 +64,48 @@ export function lastPersistedMessageId(messages: ConversationMessage[]): string 
   return null;
 }
 
+/// 会话接不上时，先试哪条路。
+///
+/// `sessionDead` 涵盖了两种完全不同的情况：用户主动停掉 / 应用重启后被收敛。
+/// 后者在 CLI 那边往往还留着 session，`external_session_id` 就是用来拉回来的
+/// ——直接起新会话等于把几天的上下文扔掉。
+///
+/// 配置变了（换模型/换权限/换工作模式）则不能 resume：resume 会按**旧**配置
+/// 重新拉起。
+export function shouldTryResume(input: {
+  sessionDead: boolean;
+  hasExternalSessionId: boolean;
+  configChanged: boolean;
+}): boolean {
+  return input.sessionDead && input.hasExternalSessionId && !input.configChanged;
+}
+
+/// 这一轮要不要把此前的对话交接给新会话。
+///
+/// **两种情况都要交接，第二种曾经漏掉过**：
+/// 1. 用户把会话换了另一个 agent —— 新 agent 没有任何上下文；
+/// 2. 旧会话接不上、只能起新会话 —— 哪怕**还是同一个 agent**。
+///
+/// 漏掉第 2 种的后果是静默的：同一个 agent 不触发交接，新会话完全空白，而
+/// 用户看到的还是那条连续的对话，只会觉得「它怎么把刚才说的都忘了」。原文一直
+/// 在 OMNIX 自己库里，没有理由不注入。
+export function shouldHandoff(input: {
+  handoffEnabled: boolean;
+  priorAgent?: string;
+  agent: string;
+  /// resume 成功了就不用交接——agent 自己的上下文还在。
+  resumed: boolean;
+  hadSession: boolean;
+  sessionDead: boolean;
+  configChanged: boolean;
+}): boolean {
+  if (!input.handoffEnabled) return false;
+  const agentChanged = !!input.priorAgent && input.priorAgent !== input.agent;
+  const rebuildingContext =
+    !input.resumed && input.hadSession && input.sessionDead && !input.configChanged;
+  return agentChanged || rebuildingContext;
+}
+
 /// 把往回翻到的一页拼在**顶部**。
 ///
 /// 抽成纯函数和 `mergeMessagesDelta` 同理：去重错了只表现为「界面上多了几条重复
@@ -840,12 +882,56 @@ export function useConversations(
       // persisted toggle; the backend no-ops if there's no prior transcript.
       const priorAgent = session?.config.agent;
       const handoffEnabled = (localStorage.getItem("omnix_agent_handoff") ?? "true") !== "false";
-      const isHandoff = handoffEnabled && !!priorAgent && priorAgent !== agent;
-      if (!session || sessionDead || configChanged || !sessionId) {
+
+      // 会话「死了」不等于「接不上了」。
+      //
+      // 应用重启（崩溃、强杀、正常退出）之后，启动收敛会把遗留会话标成 failed
+      // ——但 Agent CLI 自己往往还留着那个 session，`external_session_id` 就是
+      // 用来把它拉回来的。直接起新会话等于把几天的上下文扔掉，而且用户毫无察觉：
+      // 同一个 agent 不触发交接，新会话是**完全空白**的。
+      //
+      // 所以顺序是：能 resume 就 resume；resume 不上（CLI 把 session 清了）
+      // 才起新会话，并且**强制走交接**——OMNIX 自己库里存着全部原文，没有理由
+      // 让新会话从零开始。
+      const canResume = shouldTryResume({
+        sessionDead,
+        hasExternalSessionId: !!session?.external_session_id,
+        configChanged,
+      });
+      let resumed = false;
+      if (canResume && sessionId) {
+        resumed = await runtimeApi
+          .resumeSession(sessionId)
+          .then(() => true)
+          .catch(() => false);
+        if (resumed) {
+          runtimeSessionByConversationRef.current[convId] = sessionId;
+          conversationByRuntimeSessionRef.current[sessionId] = convId;
+          setRuntimeActiveConversations((current) =>
+            current.includes(convId) ? current : [...current, convId]
+          );
+        }
+      }
+
+      const rebuildingContext = !resumed && !!session && sessionDead && !configChanged;
+      const isHandoff = shouldHandoff({
+        handoffEnabled,
+        priorAgent,
+        agent,
+        resumed,
+        hadSession: !!session,
+        sessionDead,
+        configChanged,
+      });
+
+      if (!resumed && (!session || sessionDead || configChanged || !sessionId)) {
         if (configChanged && sessionId && activeRuntimeConversationsRef.current.includes(convId)) {
           await runtimeApi.stopSession(sessionId).catch((error) => {
             console.warn("[useConversations] Failed to stop superseded runtime session:", error);
           });
+        }
+        if (rebuildingContext) {
+          toast.info("此前的 Agent 会话已无法恢复，正在用 OMNIX 保存的记录重建上下文");
         }
         session = await startRuntimeSession();
         sessionId = session.id;
@@ -861,13 +947,26 @@ export function useConversations(
       try {
         await runtimeApi.sendMessage(sessionId, inputMsg, displayContent, isHandoff, wireImages);
       } catch (error) {
-        const canResume = !!session.external_session_id;
-        if (!canResume || !String(error).includes("not running")) throw error;
-        await runtimeApi.resumeSession(sessionId);
-        setRuntimeActiveConversations((current) =>
-          current.includes(convId) ? current : [...current, convId]
-        );
-        await runtimeApi.sendMessage(sessionId, inputMsg, displayContent, isHandoff, wireImages);
+        // 复用的会话在库里看着是活的，实际进程已经没了（上次没走到收敛，
+        // 或者被外部杀掉）。和上面同一套顺序：先 resume，接不上就新会话 + 交接。
+        if (!String(error).includes("not running")) throw error;
+        const recovered = session.external_session_id
+          ? await runtimeApi
+              .resumeSession(sessionId)
+              .then(() => true)
+              .catch(() => false)
+          : false;
+        if (recovered) {
+          setRuntimeActiveConversations((current) =>
+            current.includes(convId) ? current : [...current, convId]
+          );
+          await runtimeApi.sendMessage(sessionId, inputMsg, displayContent, isHandoff, wireImages);
+        } else {
+          toast.info("此前的 Agent 会话已无法恢复，正在用 OMNIX 保存的记录重建上下文");
+          const fresh = await startRuntimeSession();
+          // 强制交接：新会话是空白的，而原文就在 OMNIX 库里。
+          await runtimeApi.sendMessage(fresh.id, inputMsg, displayContent, true, wireImages);
+        }
       }
     } catch (err) {
       console.error("[useConversations] Failed to send runtime message:", err);

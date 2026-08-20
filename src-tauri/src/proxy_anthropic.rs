@@ -98,7 +98,31 @@ fn inject_official_skills(db: &DbManager, payload: &mut AnthropicRequest) {
 /// 记忆自动召回注入：取最近一条用户消息，词法匹配相关历史经验/教训，追加到
 /// system。默认关（`memory_gateway_recall`）、最多 3 条、无命中不注——与技能注入
 /// 同一套克制策略。借鉴 jcode 的「相关记忆自动浮现」，用 OMNIX 已有的记忆库实现。
-fn inject_recalled_memory(db: &DbManager, payload: &mut AnthropicRequest) {
+/// 从会话身份顺出工作区路径。查不到就 None——直接打网关的请求没有会话身份。
+fn session_workspace(db: &DbManager, session_key: &str) -> Option<String> {
+    let conn = db.get_connection().ok()?;
+    conn.query_row(
+        "SELECT workspace_path FROM agent_sessions
+         WHERE id = ?1 OR conversation_id = ?1
+         ORDER BY created_at DESC LIMIT 1",
+        rusqlite::params![session_key],
+        |r| r.get::<_, Option<String>>(0),
+    )
+    .ok()
+    .flatten()
+    .filter(|w| !w.trim().is_empty() && w != "direct")
+}
+
+/// 记忆按当前工作区加权——在项目 A 记下的教训不该在项目 B 抢名额。
+///
+/// 工作区从 `session_key` 顺出来（它能查到 `agent_sessions`，那张表带
+/// `workspace_path`）。拿不到就传 None，退回不分域的老行为——**不知道**不等于
+/// 可以乱降权。
+fn inject_recalled_memory(
+    db: &DbManager,
+    payload: &mut AnthropicRequest,
+    workspace: Option<&str>,
+) {
     let Some(user_text) = payload
         .messages
         .iter()
@@ -108,7 +132,7 @@ fn inject_recalled_memory(db: &DbManager, payload: &mut AnthropicRequest) {
     else {
         return;
     };
-    let injection = crate::memory_recall::recall_injection(db, &user_text);
+    let injection = crate::memory_recall::recall_injection(db, &user_text, workspace);
     if injection.is_empty() {
         return;
     }
@@ -193,7 +217,12 @@ pub(super) async fn handle_messages_impl(
 
     // 正式池技能注入 + 记忆自动召回——在进入两条上游分支前统一改写 system。
     inject_official_skills(&state.db, &mut payload);
-    inject_recalled_memory(&state.db, &mut payload);
+    // 会话身份能顺出工作区：`session_key` 查得到 `agent_sessions`，那张表带
+    // `workspace_path`。没有会话身份的请求（直接打网关的）拿不到，传 None。
+    let workspace = session_key
+        .as_deref()
+        .and_then(|key| session_workspace(&state.db, key));
+    inject_recalled_memory(&state.db, &mut payload, workspace.as_deref());
 
     let target_model_name = if let Some(ref upstream) = session_upstream {
         upstream.model_name.clone()

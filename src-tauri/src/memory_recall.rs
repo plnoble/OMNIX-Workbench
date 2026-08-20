@@ -87,11 +87,41 @@ fn is_generic(keyword: &str) -> bool {
 /// 记忆本身仍在库里、仍带着「失效 ×N」徽章——留给用户改写，而不是替他删掉。
 const VERACITY_FLOOR: f32 = 0.25;
 
+/// 一行记忆的原始字段。起别名是因为 clippy 嫌八元组太复杂——它说得对，
+/// 只是这里换成结构体会把 `query_map` 那段搅得更长，别名足够。
+type MemoryRow = (String, String, String, String, f64, i64, String, Option<String>);
+
+/// 记忆按工作区加权。
+///
+/// **不是硬过滤。** 有些教训是跨项目的（CLAUDE.md 里那三条就是），把它们按工作区
+/// 挡掉比不分域更糟。所以：本工作区的加权、别的工作区的降权、没标工作区的按全局
+/// 教训原样通过。
+///
+/// 拿不到当前工作区时（网关请求没带会话身份）一律 1.0——退回改动前的行为，
+/// 不因为「不知道」就乱降权。
+fn workspace_weight(current: Option<&str>, memory: Option<&str>) -> f32 {
+    let Some(current) = current.map(str::trim).filter(|w| !w.is_empty()) else {
+        return 1.0;
+    };
+    match memory.map(str::trim).filter(|w| !w.is_empty()) {
+        // 没标工作区 = 全局教训，不加不减。
+        None => 1.0,
+        Some(w) if w.eq_ignore_ascii_case(current) => 1.3,
+        // 别的项目的教训：留在候选里，但排在本项目的后面。
+        Some(_) => 0.5,
+    }
+}
+
 /// 词法打分：用户消息 vs 记忆的 关键词 / 现象描述 / 危险模式。
 /// 关键词命中权重最高（它就是为召回而设的标签），其次现象与模式。
 /// 最后乘 [`veracity`] × [`evidence_weight`]——一直没拦住的、以及没有一手
 /// 动作证据的，都应当往后排。
-pub fn match_memories_for_message(db: &DbManager, message: &str, limit: usize) -> Vec<MemoryMatch> {
+pub fn match_memories_for_message(
+    db: &DbManager,
+    message: &str,
+    limit: usize,
+    workspace: Option<&str>,
+) -> Vec<MemoryMatch> {
     let Ok(conn) = db.get_connection() else {
         return Vec::new();
     };
@@ -99,14 +129,14 @@ pub fn match_memories_for_message(db: &DbManager, message: &str, limit: usize) -
         // 与 `consolidate_core` / `bump_repeated_lessons` 用同一个「还在生效」谓词，
         // 免得三处对「active」的理解各走各的。
         "SELECT incident_desc, code_pattern, remediation, keywords, confidence, repeated_count,
-                COALESCE(verified, 'claimed')
+                COALESCE(verified, 'claimed'), workspace_path
          FROM memories
          WHERE status = 'active' OR status IS NULL OR status = ''",
     ) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };
-    let rows: Vec<(String, String, String, String, f64, i64, String)> = match stmt.query_map([], |r| {
+    let rows: Vec<MemoryRow> = match stmt.query_map([], |r| {
         Ok((
             r.get(0)?,
             r.get(1)?,
@@ -115,6 +145,7 @@ pub fn match_memories_for_message(db: &DbManager, message: &str, limit: usize) -
             r.get::<_, Option<f64>>(4)?.unwrap_or(1.0),
             r.get::<_, Option<i64>>(5)?.unwrap_or(0),
             r.get::<_, String>(6)?,
+            r.get::<_, Option<String>>(7)?,
         ))
     }) {
         Ok(r) => r.flatten().collect(),
@@ -142,7 +173,7 @@ pub fn match_memories_for_message(db: &DbManager, message: &str, limit: usize) -
         .collect();
 
     let mut matches = Vec::new();
-    for (incident_desc, code_pattern, remediation, keywords, confidence, repeated_count, verified) in rows {
+    for (incident_desc, code_pattern, remediation, keywords, confidence, repeated_count, verified, memory_workspace) in rows {
         // 退场只看 veracity，**不看证据等级**。
         // 退场的含义是「这条教训反复没拦住，不该再占名额」；而 `claimed` 的含义
         // 只是「没有机器记录」——它已经过人工审核闸了，凭这个把它踢出注入
@@ -178,7 +209,7 @@ pub fn match_memories_for_message(db: &DbManager, message: &str, limit: usize) -
         }
 
         if score > 0.0 {
-            let score = score * rank_weight;
+            let score = score * rank_weight * workspace_weight(workspace, memory_workspace.as_deref());
             matches.push(MemoryMatch { incident_desc, code_pattern, remediation, score });
         }
     }
@@ -211,7 +242,7 @@ pub fn build_memory_injection(matches: &[MemoryMatch]) -> String {
 
 /// 网关注入入口：默认关（`memory_gateway_recall` 设为 "1" 才开），最多 3 条。
 /// 返回要追加到 system 的文本（空则不注）。
-pub fn recall_injection(db: &DbManager, user_text: &str) -> String {
+pub fn recall_injection(db: &DbManager, user_text: &str, workspace: Option<&str>) -> String {
     let enabled = db
         .get_setting("memory_gateway_recall")
         .unwrap_or(None)
@@ -220,7 +251,7 @@ pub fn recall_injection(db: &DbManager, user_text: &str) -> String {
     if !enabled || user_text.trim().is_empty() {
         return String::new();
     }
-    let matches = match_memories_for_message(db, user_text, 3);
+    let matches = match_memories_for_message(db, user_text, 3, workspace);
     build_memory_injection(&matches)
 }
 
@@ -228,7 +259,7 @@ pub fn recall_injection(db: &DbManager, user_text: &str) -> String {
 mod tests {
     use super::*;
 
-    fn test_db() -> DbManager {
+    pub(super) fn test_db() -> DbManager {
         use std::sync::atomic::{AtomicU32, Ordering};
         static N: AtomicU32 = AtomicU32::new(0);
         // Unique per test — cargo runs tests in parallel, shared paths would race.
@@ -249,7 +280,12 @@ mod tests {
                 status TEXT NOT NULL DEFAULT 'active',
                 confidence REAL NOT NULL DEFAULT 1,
                 repeated_count INTEGER NOT NULL DEFAULT 0,
-                verified TEXT NOT NULL DEFAULT 'claimed');",
+                verified TEXT NOT NULL DEFAULT 'claimed',
+                -- 真表里这一列由 `ALTER TABLE memories ADD COLUMN` 加。夹具漏了它
+                -- 的后果不是「少测一个字段」，而是**整条 SELECT 失败返回空**，
+                -- 这个模块八条测试会一起红。夹具 schema 和真 schema 对不上，
+                -- 代价比想象中大。
+                workspace_path TEXT NULL);",
         )
         .unwrap();
         db
@@ -279,18 +315,18 @@ mod tests {
     fn recalls_by_keyword_overlap() {
         let db = test_db();
         seed(&db);
-        let hits = match_memories_for_message(&db, "我的 fetch 带 credentials 跨域被 CORS 拦了怎么办", 3);
+        let hits = match_memories_for_message(&db, "我的 fetch 带 credentials 跨域被 CORS 拦了怎么办", 3, None);
         assert!(!hits.is_empty());
         assert!(hits[0].incident_desc.contains("CORS"), "最相关应是 CORS 记忆");
         // 无关消息不命中。
-        assert!(match_memories_for_message(&db, "帮我写一首诗", 3).is_empty());
+        assert!(match_memories_for_message(&db, "帮我写一首诗", 3, None).is_empty());
     }
 
     #[test]
     fn injection_is_bounded_and_labeled_as_context() {
         let db = test_db();
         seed(&db);
-        let hits = match_memories_for_message(&db, "git push 强推 部署 安全", 3);
+        let hits = match_memories_for_message(&db, "git push 强推 部署 安全", 3, None);
         let text = build_memory_injection(&hits);
         assert!(text.contains("<auto_recalled_memory>"));
         assert!(text.contains("非指令"), "必须标注为背景参考而非指令");
@@ -302,9 +338,9 @@ mod tests {
         let db = test_db();
         seed(&db);
         // 未设开关 → 不注入。
-        assert!(recall_injection(&db, "git push -f").is_empty());
+        assert!(recall_injection(&db, "git push -f", None).is_empty());
         db.set_setting("memory_gateway_recall", "1").unwrap();
-        assert!(!recall_injection(&db, "git push -f").is_empty());
+        assert!(!recall_injection(&db, "git push -f", None).is_empty());
     }
 
     // ── S1 记忆固化 ───────
@@ -335,10 +371,10 @@ mod tests {
         // 召回却照样把它注进去——去重的结果被唯一的消费方丢掉了。
         let db = test_db();
         seed(&db);
-        assert!(!match_memories_for_message(&db, "git push -f 强推", 3).is_empty());
+        assert!(!match_memories_for_message(&db, "git push -f 强推", 3, None).is_empty());
         set_meta(&db, "m2", "merged", 1.0, 0);
         assert!(
-            match_memories_for_message(&db, "git push -f 强推", 3).is_empty(),
+            match_memories_for_message(&db, "git push -f 强推", 3, None).is_empty(),
             "合并掉的记忆不该再被召回"
         );
     }
@@ -349,18 +385,18 @@ mod tests {
         seed(&db);
         // 失效一次：还在，但要排到没失效过的那条后面。
         set_meta(&db, "m2", "active", 1.0, 1);
-        let hits = match_memories_for_message(&db, "git push -f 部署 安全", 3);
+        let hits = match_memories_for_message(&db, "git push -f 部署 安全", 3, None);
         assert_eq!(hits.len(), 1);
         let weakened = hits[0].score;
 
         set_meta(&db, "m2", "active", 1.0, 0);
-        let full = match_memories_for_message(&db, "git push -f 部署 安全", 3)[0].score;
+        let full = match_memories_for_message(&db, "git push -f 部署 安全", 3, None)[0].score;
         assert!(weakened < full, "失效过的教训权重应当更低：{weakened} vs {full}");
 
         // 失效 4 次（超过 confidence 的三倍）→ 退出注入名额。
         set_meta(&db, "m2", "active", 1.0, 4);
         assert!(
-            match_memories_for_message(&db, "git push -f 部署 安全", 3).is_empty(),
+            match_memories_for_message(&db, "git push -f 部署 安全", 3, None).is_empty(),
             "反复没拦住的教训不该继续占名额"
         );
     }
@@ -372,7 +408,7 @@ mod tests {
         let db = test_db();
         seed(&db);
         set_meta(&db, "m2", "active", 1.0, 4);
-        assert!(match_memories_for_message(&db, "git push -f 部署 安全", 3).is_empty());
+        assert!(match_memories_for_message(&db, "git push -f 部署 安全", 3, None).is_empty());
 
         // 召回这条路径不写库：退场前后 status 原样是 active。
         let status: String = db
@@ -384,7 +420,7 @@ mod tests {
 
         // 合并加权到 confidence 2.0 后（4 < 3×2），它自己就回来了。
         set_meta(&db, "m2", "active", 2.0, 4);
-        assert!(!match_memories_for_message(&db, "git push -f 部署 安全", 3).is_empty());
+        assert!(!match_memories_for_message(&db, "git push -f 部署 安全", 3, None).is_empty());
     }
 
     // ── T1 证据等级 ───────
@@ -397,9 +433,9 @@ mod tests {
         seed(&db);
         let conn = db.get_connection().unwrap();
         conn.execute("UPDATE memories SET verified = 'claimed' WHERE id = 'm2'", []).unwrap();
-        let claimed = match_memories_for_message(&db, "git push -f 部署 安全", 3)[0].score;
+        let claimed = match_memories_for_message(&db, "git push -f 部署 安全", 3, None)[0].score;
         conn.execute("UPDATE memories SET verified = 'acted' WHERE id = 'm2'", []).unwrap();
-        let acted = match_memories_for_message(&db, "git push -f 部署 安全", 3)[0].score;
+        let acted = match_memories_for_message(&db, "git push -f 部署 安全", 3, None)[0].score;
         assert!(acted > claimed, "有一手动作证据的应当排前面：{acted} vs {claimed}");
     }
 
@@ -414,7 +450,7 @@ mod tests {
             .execute("UPDATE memories SET verified = 'claimed'", [])
             .unwrap();
         assert!(
-            !match_memories_for_message(&db, "git push -f 部署 安全", 3).is_empty(),
+            !match_memories_for_message(&db, "git push -f 部署 安全", 3, None).is_empty(),
             "未经机器验证 ≠ 不可用"
         );
     }
@@ -432,7 +468,7 @@ mod tests {
             .unwrap()
             .execute("UPDATE memories SET verified = 'claimed' WHERE id = 'm2'", [])
             .unwrap();
-        assert!(!match_memories_for_message(&db, "git push -f 部署 安全", 3).is_empty());
+        assert!(!match_memories_for_message(&db, "git push -f 部署 安全", 3, None).is_empty());
     }
 
     // ── T2 触发词质量 ───────
@@ -448,7 +484,7 @@ mod tests {
         conn.execute("UPDATE memories SET keywords = 'force-with-lease' WHERE id = 'm2'", []).unwrap();
 
         // 一句同时提到「配置问题」和那个反直觉触发词的话。
-        let hits = match_memories_for_message(&db, "force-with-lease 的配置问题", 3);
+        let hits = match_memories_for_message(&db, "force-with-lease 的配置问题", 3, None);
         assert!(
             hits[0].incident_desc.contains("git"),
             "带反直觉触发词的那条必须排在只有泛化词的前面：{:?}",
@@ -463,7 +499,7 @@ mod tests {
         let conn = db.get_connection().unwrap();
         conn.execute("UPDATE memories SET keywords = '配置,问题,代码,数据,文件' WHERE id = 'm1'", []).unwrap();
         conn.execute("UPDATE memories SET keywords = 'httponly cookie' WHERE id = 'm2'", []).unwrap();
-        let hits = match_memories_for_message(&db, "httponly cookie 的配置问题代码数据文件", 3);
+        let hits = match_memories_for_message(&db, "httponly cookie 的配置问题代码数据文件", 3, None);
         assert!(
             hits[0].incident_desc.contains("git"),
             "堆五个泛化词也不该盖过一个真触发词：{:?}",
@@ -529,7 +565,12 @@ mod recall_ranking_corpus {
                 status TEXT NOT NULL DEFAULT 'active',
                 confidence REAL NOT NULL DEFAULT 1,
                 repeated_count INTEGER NOT NULL DEFAULT 0,
-                verified TEXT NOT NULL DEFAULT 'claimed');",
+                verified TEXT NOT NULL DEFAULT 'claimed',
+                -- 真表里这一列由 `ALTER TABLE memories ADD COLUMN` 加。夹具漏了它
+                -- 的后果不是「少测一个字段」，而是**整条 SELECT 失败返回空**，
+                -- 这个模块八条测试会一起红。夹具 schema 和真 schema 对不上，
+                -- 代价比想象中大。
+                workspace_path TEXT NULL);",
         )
         .unwrap();
         for (id, desc, pattern, kw) in FIXTURE {
@@ -551,7 +592,7 @@ mod recall_ranking_corpus {
         let mut failures: Vec<String> = Vec::new();
 
         for (message, expected) in CASES {
-            let hits = match_memories_for_message(&db, message, 3);
+            let hits = match_memories_for_message(&db, message, 3, None);
             match hits.first() {
                 Some(top) if top.incident_desc == *expected => {}
                 Some(top) => failures.push(format!(
@@ -568,6 +609,113 @@ mod recall_ranking_corpus {
             failures.len(),
             CASES.len(),
             failures.join("\n")
+        );
+    }
+}
+
+/// 记忆按工作区加权：在项目 A 记下的教训不该在项目 B 抢名额。
+///
+/// `memories.workspace_path` 一直有人写（`project_protocol.rs` 的蒸馏），但网关
+/// 自动注入这条路**完全不看它**——关键词一撞就注入，不管是哪个项目的教训。
+/// 这就是「写了但没人读」的又一例：列写了，主消费方没接。
+#[cfg(test)]
+mod workspace_scoping_tests {
+    use super::*;
+
+    #[test]
+    fn same_workspace_outranks_another_project() {
+        assert!(workspace_weight(Some("D:/proj/a"), Some("D:/proj/a"))
+            > workspace_weight(Some("D:/proj/a"), Some("D:/proj/b")));
+    }
+
+    /// **不是硬过滤。** 别的项目的教训要留在候选里，只是排后面——跨项目的坑
+    /// 确实存在（CLAUDE.md 那三条就是），按工作区挡掉比不分域更糟。
+    #[test]
+    fn another_projects_lesson_is_demoted_not_dropped() {
+        let w = workspace_weight(Some("D:/proj/a"), Some("D:/proj/b"));
+        assert!(w > 0.0, "别的项目的教训被彻底挡掉了");
+        assert!(w < 1.0, "没有降权，等于没分域");
+    }
+
+    /// 没标工作区的是全局教训，不加不减。
+    #[test]
+    fn a_global_lesson_passes_through_unweighted() {
+        assert_eq!(workspace_weight(Some("D:/proj/a"), None), 1.0);
+        assert_eq!(workspace_weight(Some("D:/proj/a"), Some("   ")), 1.0);
+    }
+
+    /// **拿不到当前工作区时一律 1.0**——退回改动前的行为。「不知道」不等于
+    /// 可以乱降权：直接打网关的请求没有会话身份，那时降权会把所有记忆压掉一半。
+    #[test]
+    fn an_unknown_workspace_changes_nothing() {
+        assert_eq!(workspace_weight(None, Some("D:/proj/b")), 1.0);
+        assert_eq!(workspace_weight(None, None), 1.0);
+        assert_eq!(workspace_weight(Some(""), Some("D:/proj/b")), 1.0);
+    }
+
+    /// **加权必须真的进到排序里。**
+    ///
+    /// 上面几条只测纯函数——把 `workspace_weight(...)` 从打分那行删掉，它们照样
+    /// 全绿。W13 那次就是这么栽的：笼子造好了没接上，和没造一样。
+    /// 这条走真实的 `match_memories_for_message`。
+    #[test]
+    fn the_weight_actually_reaches_the_ranking() {
+        // 用全量 schema：`new_run_test` 的精简库跑不到那条
+        // `ALTER TABLE memories ADD COLUMN workspace_path`。
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "omnix_memws_{}_{}.db",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_file(&path);
+        let db = crate::db::DbManager::new_with_path(path);
+        db.set_setting("memory_gateway_recall", "1").unwrap();
+        let conn = db.get_connection().unwrap();
+        for (id, pattern, ws) in [
+            ("m-here", "alphapat", "D:/proj/a"),
+            ("m-there", "betapat", "D:/proj/b"),
+        ] {
+            conn.execute(
+                "INSERT INTO memories (id, incident_desc, code_pattern, remediation, keywords, type, workspace_path, status)
+                 VALUES (?1, '死锁', ?2, '改用 tokio::sync', ?2, 'pitfall', ?3, 'active')",
+                rusqlite::params![id, pattern, ws],
+            )
+            .unwrap();
+        }
+        drop(conn);
+
+        // 全量 schema 会种默认记忆（坑点2 正好也讲死锁），所以只看我造的这两条。
+        let score_of = |ms: &[MemoryMatch], pattern: &str| -> Option<f32> {
+            ms.iter()
+                .find(|m| m.code_pattern == pattern)
+                .map(|m| m.score)
+        };
+
+        // 不给工作区：两条同分——这是改动前的行为，也是「不知道就别乱降权」的基线。
+        let none = match_memories_for_message(&db, "deadlock alphapat betapat", 10, None);
+        let (a, b) = (
+            score_of(&none, "alphapat").expect("本项目那条没召回，后面的断言没意义"),
+            score_of(&none, "betapat").expect("另一项目那条没召回"),
+        );
+        assert!((a - b).abs() < f32::EPSILON, "不给工作区时不该有偏向：{a} vs {b}");
+
+        // 给了工作区：本项目的排前面，别的项目的**仍在候选里**（降权不是过滤）。
+        let scoped = match_memories_for_message(&db, "deadlock alphapat betapat", 10, Some("D:/proj/a"));
+        let here = score_of(&scoped, "alphapat").expect("本项目那条丢了");
+        let there = score_of(&scoped, "betapat").expect("别的项目的教训被彻底挡掉了——应当只是降权");
+        assert!(
+            here > there,
+            "工作区加权没进到排序里：here={here} there={there}"
+        );
+    }
+
+    #[test]
+    fn windows_paths_compare_case_insensitively() {
+        assert_eq!(
+            workspace_weight(Some("D:/Proj/A"), Some("d:/proj/a")),
+            workspace_weight(Some("D:/proj/a"), Some("D:/proj/a")),
         );
     }
 }
