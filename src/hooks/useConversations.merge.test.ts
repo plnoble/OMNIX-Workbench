@@ -93,23 +93,62 @@ describe("增量合并", () => {
 
 describe("往回翻页拼接", () => {
   it("新拿到的一页拼在顶部（更早的在前）", () => {
-    const out = prependOlderMessages([msg("c")], [msg("a"), msg("b")]);
+    const out = prependOlderMessages([msg("c")], [msg("a"), msg("b")], "c");
     expect(out.map((m) => m.id)).toEqual(["a", "b", "c"]);
   });
 
   it("并发点两次「加载更早」不会拼出重复", () => {
     const current = [msg("b"), msg("c")];
-    const out = prependOlderMessages(current, [msg("a"), msg("b")]);
+    const out = prependOlderMessages(current, [msg("a"), msg("b")], "b");
     expect(out.map((m) => m.id)).toEqual(["a", "b", "c"]);
   });
 
   it("整页都已经有了就不动原数组（避免无谓重渲染）", () => {
     const current = [msg("a"), msg("b")];
-    expect(prependOlderMessages(current, [msg("a")])).toBe(current);
+    expect(prependOlderMessages(current, [msg("a")], "a")).toBe(current);
   });
 
   it("空页不动原数组", () => {
     const current = [msg("a")];
-    expect(prependOlderMessages(current, [])).toBe(current);
+    expect(prependOlderMessages(current, [], "a")).toBe(current);
+  });
+
+  /**
+   * 相邻性校验。借鉴 paseo 的时间线契约：一个向后页只在与当前历史起点相邻时
+   * 才接受，来自过期范围的响应一律丢弃。
+   *
+   * 这两条守的都是**静默**的错——历史被撕成两段不连续的，界面不会报任何错，
+   * 只是中间少了一截，或者混进了别的会话的内容。
+   */
+  it("等这一页的时候用户切了会话——整页丢掉，不能混进新会话", () => {
+    // 请求发出时锚点是 c1 的 "b"；等待期间切到了 c2。
+    const otherConv: ConversationMessage[] = [
+      { ...msg("z1"), conversation_id: "c2" },
+      { ...msg("z2"), conversation_id: "c2" },
+    ];
+    const stalePage = [msg("a")]; // 属于 c1
+    const out = prependOlderMessages(otherConv, stalePage, "b");
+    expect(out).toBe(otherConv);
+    expect(out.map((m) => m.id)).toEqual(["z1", "z2"]);
+  });
+
+  it("等这一页的时候又前置过一页——锚点变了，整页丢掉", () => {
+    // 请求时锚点是 "c"；返回前另一页把 "b" 接了上去，现在最前面是 "b"。
+    const current = [msg("b"), msg("c")];
+    const stalePage = [msg("x")];
+    expect(prependOlderMessages(current, stalePage, "c")).toBe(current);
+  });
+
+  it("锚点没变时照常接上（证明上面两条拦的是过期，不是所有页）", () => {
+    const current = [msg("b"), msg("c")];
+    const out = prependOlderMessages(current, [msg("a")], "b");
+    expect(out.map((m) => m.id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("乐观气泡不参与锚点判定", () => {
+    // 乐观气泡在最新一端，列表最前面那条仍然是 "b"。
+    const current = [msg("b"), msg("c"), msg("msg_u_999", "user")];
+    const out = prependOlderMessages(current, [msg("a")], "b");
+    expect(out.map((m) => m.id)).toEqual(["a", "b", "c", "msg_u_999"]);
   });
 });

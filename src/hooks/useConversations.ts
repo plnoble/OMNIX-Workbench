@@ -110,11 +110,28 @@ export function shouldHandoff(input: {
 ///
 /// 抽成纯函数和 `mergeMessagesDelta` 同理：去重错了只表现为「界面上多了几条重复
 /// 的历史」，不报任何错。并发点两次「加载更早」就会拿到同一页。
+/// 把往回翻的一页接在顶部。
+///
+/// `requestedAnchorId` 是**发起这次请求时**列表最前面那条持久化消息的 id。
+/// 响应回来时如果最前面已经不是它了，这一页就是过期响应，整页丢掉。
+///
+/// 借鉴 paseo 的时间线契约（AGPL-3.0，只看思想没抄代码）：一个向后页只在与
+/// 当前历史起点**相邻**时才接受。少了这条校验，两种情况会把历史撕成两段不
+/// 连续的，而且都不报错：
+///
+/// 1. 等待期间用户切了会话——上一个会话的旧消息会被前置进新会话的视图里；
+/// 2. 等待期间又前置过一页——这一页接上去就跳过了中间那段。
+///
+/// 参数是必填的，不是可选的：可选的守卫等于没有守卫，调用方一不传就静默失效。
 export function prependOlderMessages(
   current: ConversationMessage[],
   older: ConversationMessage[],
+  requestedAnchorId: string,
 ): ConversationMessage[] {
   if (older.length === 0) return current;
+  // 锚点只能是持久化消息——乐观气泡永远在最新一端，不会是列表最前面那条。
+  const oldest = current.find((m) => !m.id.startsWith(OPTIMISTIC_ID_PREFIX));
+  if (oldest?.id !== requestedAnchorId) return current;
   const seen = new Set(current.map((m) => m.id));
   const fresh = older.filter((m) => !seen.has(m.id));
   if (fresh.length === 0) return current;
@@ -540,18 +557,22 @@ export function useConversations(
     // 往回翻的锚点是**最早**一条持久化消息。乐观气泡永远在最新一端，不会是它。
     const oldest = current.find((m) => !m.id.startsWith(OPTIMISTIC_ID_PREFIX));
     if (!oldest) return;
+    const anchorId = oldest.id;
+    const convId = currentConvIdRef.current;
     try {
       const page = await conversationApi.getMessagesPage(
-        currentConvIdRef.current,
-        oldest.id,
+        convId,
+        anchorId,
         MESSAGE_PAGE_SIZE,
       );
+      // 等这一页的时候用户切走了：它属于**上一个**会话，连「还剩多少条」都不能用。
+      if (currentConvIdRef.current !== convId) return;
       if (page.messages.length === 0) {
         setOlderRemaining(0);
         return;
       }
       setOlderRemaining(page.older_remaining);
-      setMessages((prev) => prependOlderMessages(prev, page.messages));
+      setMessages((prev) => prependOlderMessages(prev, page.messages, anchorId));
     } catch (e) {
       console.error("[useConversations] Failed to load older messages:", e);
       toast.error(`加载更早的消息失败：${e}`);
