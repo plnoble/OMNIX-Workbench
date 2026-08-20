@@ -61,6 +61,10 @@ const FETCH_TOOL: &str = "fetch_url";
 /// OMNIX 底下是 OfficeCLI 的 `batch`，本来就是通用的，没有理由拆成几十个。
 const OFFICE_READ_TOOL: &str = "office_read";
 const OFFICE_EDIT_TOOL: &str = "office_edit";
+// 深度研究三件套。搜索与抓取复用现成的 web_search / fetch_url，不另造。
+const RESEARCH_START_TOOL: &str = "research_start";
+const RESEARCH_NOTE_TOOL: &str = "research_note";
+const RESEARCH_REPORT_TOOL: &str = "research_report";
 
 /// 一次抓回多少字。给对面塞一整页 20 万字的文档只会把它的上下文撑爆。
 const FETCH_MAX_CHARS: usize = 20_000;
@@ -255,6 +259,51 @@ fn tool_definitions() -> Value {
             }
         },
         {
+            "name": RESEARCH_START_TOOL,
+            "description":
+                "开一次深度研究。深度研究 = 多跳检索 + 每条结论都带出处，                 适用于「单次搜索答不上、需要顺着线索再查」的问题。                 拿到 research_id 后按这个循环走：web_search / fetch_url 找材料 →                  research_note 记下带证据的结论 → 想清楚**还有哪个子问题没答上** →                  再搜。**新一轮问不出新子问题时就停**，别按固定轮数跑。                 最后用 research_report 出报告。                 问题一次就能搜到答案的，别用这个，直接 web_search。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "question": { "type": "string", "description": "要研究的问题，写具体" },
+                    "workspace_path": { "type": "string", "description": "可选：关联的工作区" }
+                },
+                "required": ["question"]
+            }
+        },
+        {
+            "name": RESEARCH_NOTE_TOOL,
+            "description":
+                "记一条**带证据**的结论。三个字段都必填：结论、来源 URL、原文片段。                 没有出处的结论不会被收录——那不是研究结果，是猜测。                 原文片段要能支撑这条结论：URL 会改会死，片段是留在本地的那份证据。                 一条结论记一次，别把整段网页塞进 claim。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "research_id": { "type": "string", "description": "research_start 返回的 id" },
+                    "claim": { "type": "string", "description": "一句话结论" },
+                    "source_url": { "type": "string", "description": "出处 URL（http/https）" },
+                    "snippet": { "type": "string", "description": "支撑这条结论的原文片段" },
+                    "tier": {
+                        "type": "string",
+                        "description": "来源等级：official（官方文档）/ repo（一手仓库）/                                         blog（技术博客）/ forum（论坛问答）/ unknown。                                        报告里等级高的排前面。",
+                        "enum": ["official", "repo", "blog", "forum", "unknown"]
+                    }
+                },
+                "required": ["research_id", "claim", "source_url", "snippet"]
+            }
+        },
+        {
+            "name": RESEARCH_REPORT_TOOL,
+            "description":
+                "把这次研究的全部结论汇成带引文的报告，并把研究标记为完成。                 报告是从已记录的笔记拼出来的——**你在这一步不能补充新内容**，                 想写进报告的东西必须先用 research_note 记下来（连同出处）。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "research_id": { "type": "string", "description": "research_start 返回的 id" }
+                },
+                "required": ["research_id"]
+            }
+        },
+        {
             "name": FETCH_TOOL,
             "description":
                 "抓一个网页的正文，去掉 HTML 标签后返回纯文本（过长会截断）。\
@@ -335,6 +384,34 @@ async fn call_tool(db: &Arc<DbManager>, params: &Value) -> Result<String, String
             load_capability(db, n)
         }
         DECK_TOOL => create_deck(&args),
+        RESEARCH_START_TOOL => {
+            let q = args.get("question").and_then(|v| v.as_str()).unwrap_or("");
+            let ws = args.get("workspace_path").and_then(|v| v.as_str()).unwrap_or("");
+            let id = crate::research::start(db, q, ws)?;
+            Ok(format!(
+                "已开始研究，research_id = {id}
+
+                 接下来：web_search / fetch_url 找材料 → research_note 记带证据的结论 →                  想清楚还有哪个子问题没答上 → 再搜。问不出新子问题时停，然后 research_report。"
+            ))
+        }
+        RESEARCH_NOTE_TOOL => {
+            let get = |k: &str| args.get(k).and_then(|v| v.as_str()).unwrap_or("");
+            crate::research::add_note(
+                db,
+                get("research_id"),
+                get("claim"),
+                get("source_url"),
+                get("snippet"),
+                get("tier"),
+            )?;
+            Ok("已记录（含出处）。".to_string())
+        }
+        RESEARCH_REPORT_TOOL => {
+            let id = args.get("research_id").and_then(|v| v.as_str()).unwrap_or("");
+            let out = crate::research::report(db, id)?;
+            crate::research::finish(db, id)?;
+            Ok(out)
+        }
         BOARD_TOOL => {
             let run = args.get("run_id").and_then(|v| v.as_str()).unwrap_or("").trim();
             crate::team_board::board(db, run)
@@ -788,6 +865,111 @@ mod tests {
         Arc::new(DbManager::new_with_path(p))
     }
 
+    /// 三个研究工具必须真的挂在 `tools/list` 上。
+    ///
+    /// 只测 `research::*` 那几个函数是不够的——工具造好了没登记，agent 根本
+    /// 看不见它。这个坑本仓库栽过（W13 的 SSRF 笼造好了没接进命令）。
+    #[tokio::test]
+    async fn the_research_tools_are_actually_listed() {
+        let d = db();
+        let r = handle_rpc(&d, req("tools/list", json!({}), Some(json!(1))))
+            .await
+            .unwrap();
+        let listed: Vec<&str> = r.result.as_ref().unwrap()["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .collect();
+        for tool in [RESEARCH_START_TOOL, RESEARCH_NOTE_TOOL, RESEARCH_REPORT_TOOL] {
+            assert!(listed.contains(&tool), "{tool} 没登记进 tools/list：{listed:?}");
+        }
+    }
+
+    /// 走完整的 `tools/call` 跑一遍研究闭环——验的是这条路通，而不是函数存在。
+    #[tokio::test]
+    async fn a_research_round_trip_goes_through_tools_call() {
+        let d = db();
+        let started = handle_rpc(
+            &d,
+            req(
+                "tools/call",
+                json!({"name": RESEARCH_START_TOOL, "arguments": {"question": "两跳才能答的问题"}}),
+                Some(json!(2)),
+            ),
+        )
+        .await
+        .unwrap();
+        let text = started.result.unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let id = text
+            .split("research_id = ")
+            .nth(1)
+            .and_then(|t| t.split_whitespace().next())
+            .expect("没返回 research_id");
+
+        // 没出处的结论：这条闸必须在 tools/call 这一层就拦住。
+        let refused = handle_rpc(
+            &d,
+            req(
+                "tools/call",
+                json!({"name": RESEARCH_NOTE_TOOL, "arguments": {
+                    "research_id": id, "claim": "凭空说法", "source_url": "", "snippet": "x"
+                }}),
+                Some(json!(3)),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            refused.result.unwrap()["isError"],
+            true,
+            "没出处的结论从 MCP 这条路溜进去了"
+        );
+
+        // 带出处的：收下。
+        for (claim, url, tier) in [
+            ("第一跳：A 里提到 B", "https://a.example", "repo"),
+            ("第二跳：答案在 B", "https://b.example", "official"),
+        ] {
+            let ok = handle_rpc(
+                &d,
+                req(
+                    "tools/call",
+                    json!({"name": RESEARCH_NOTE_TOOL, "arguments": {
+                        "research_id": id, "claim": claim, "source_url": url,
+                        "snippet": "证据片段", "tier": tier
+                    }}),
+                    Some(json!(4)),
+                ),
+            )
+            .await
+            .unwrap();
+            assert_ne!(ok.result.unwrap()["isError"], true, "带出处的结论被拒了");
+        }
+
+        let report = handle_rpc(
+            &d,
+            req(
+                "tools/call",
+                json!({"name": RESEARCH_REPORT_TOOL, "arguments": {"research_id": id}}),
+                Some(json!(5)),
+            ),
+        )
+        .await
+        .unwrap();
+        let md = report.result.unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(md.contains("第一跳") && md.contains("第二跳"), "{md}");
+        assert!(md.contains("https://a.example") && md.contains("https://b.example"));
+        // 官方文档那条排在前面。
+        assert!(md.find("第二跳").unwrap() < md.find("第一跳").unwrap());
+    }
+
     /// 通知（没有 id）按规范不能回响应。回了会让严格的客户端报协议错。
     #[tokio::test]
     async fn notifications_get_no_response() {
@@ -814,9 +996,20 @@ mod tests {
         let r = handle_rpc(&d, req("tools/list", json!({}), Some(json!(2)))).await.unwrap();
         let tools = r.result.unwrap()["tools"].as_array().unwrap().clone();
         // 每个工具都占着对面每一轮的上下文，所以数字写死在这里：多一个就要多一条理由。
-        // 现在的 9 个分四组——能力（查/取/出片）、团队协作（看板/上报）、联网（搜/读）、
-        // Office（读/改）。
-        assert_eq!(tools.len(), 9, "多一个工具就要多一条理由");
+        // 现在的 12 个分五组——能力（查/取/出片）、团队协作（看板/上报）、联网（搜/读）、
+        // Office（读/改）、深度研究（开/记/出报告）。
+        //
+        // 深度研究这三条为什么不能并进已有的：
+        // - `research_start` 不能并进 `web_search`：搜索是无状态的一次问答，
+        //   研究要有一条能挂笔记的主线（research_id），否则「哪条结论属于哪次研究」
+        //   只存在于模型的记忆里。
+        // - `research_note` 是**这套东西的支点**，必须是独立的一次调用：
+        //   出处和原文片段作为**必填参数**，模型想记一条没出处的结论就会被参数校验
+        //   拦下。并进别的工具就会退化成「可选字段」，那等于没有。
+        // - `research_report` 不能让模型自己写：报告从库里拼，模型在这一步补不进
+        //   任何没登记过出处的内容。这条约束靠「报告不由模型生成」实现，
+        //   所以它必须是一个工具而不是一句提示。
+        assert_eq!(tools.len(), 12, "多一个工具就要多一条理由");
         for t in &tools {
             assert!(t["name"].is_string());
             assert!(!t["description"].as_str().unwrap().is_empty());
@@ -825,7 +1018,8 @@ mod tests {
         }
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         for t in [SEARCH_TOOL, LOAD_TOOL, DECK_TOOL, BOARD_TOOL, REPORT_TOOL, WEB_SEARCH_TOOL,
-                  FETCH_TOOL, OFFICE_READ_TOOL, OFFICE_EDIT_TOOL] {
+                  FETCH_TOOL, OFFICE_READ_TOOL, OFFICE_EDIT_TOOL,
+                  RESEARCH_START_TOOL, RESEARCH_NOTE_TOOL, RESEARCH_REPORT_TOOL] {
             assert!(names.contains(&t), "{t} 不在工具清单里");
         }
     }

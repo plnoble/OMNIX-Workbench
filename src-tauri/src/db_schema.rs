@@ -347,6 +347,38 @@ impl DbManager {
             [],
         )?;
 
+        // 6d-2. 深度研究：一次研究 + 它的带证据笔记
+        //
+        // **两张表的读取端是 `research::report`，和写入端同一轮做完。** 这个仓库
+        // 最高产的 bug 模式就是「写了但没人读」——建表时不想清楚谁读，它就会变成
+        // 下一个只写不读的表（`tests.rs::write_only_tables_are_declared` 会拦）。
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS research_runs (
+                id TEXT PRIMARY KEY,
+                question TEXT NOT NULL,
+                workspace_path TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'running',   -- running | done | abandoned
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                finished_at DATETIME NULL
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS research_notes (
+                id TEXT PRIMARY KEY,
+                research_id TEXT NOT NULL,
+                claim TEXT NOT NULL,
+                source_url TEXT NOT NULL,
+                snippet TEXT NOT NULL,
+                -- 来源等级：官方文档 > 一手仓库 > 技术博客 > 论坛 > 未知。
+                -- 复用记忆库那套「分级可信度」的思路，不另造一套。
+                tier TEXT NOT NULL DEFAULT 'unknown',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(research_id) REFERENCES research_runs(id) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+
         // 6e. Skill Sets
         conn.execute(
             "CREATE TABLE IF NOT EXISTS skill_sets (
@@ -941,6 +973,9 @@ impl DbManager {
             // 单列索引的全部用途；旧索引已 DROP（见下面的 `stale_indexes`）。
             "CREATE INDEX IF NOT EXISTS idx_messages_conversation_timestamp
              ON messages(conversation_id, timestamp)",
+            // 研究笔记按次序取（出报告时要按记录顺序还原）。
+            "CREATE INDEX IF NOT EXISTS idx_research_notes_run
+             ON research_notes(research_id, created_at)",
             // 会话列表：`WHERE is_archived = ? ORDER BY created_at DESC`。
             // 原来是全表 `SCAN` + 临时 B 树排序。
             "CREATE INDEX IF NOT EXISTS idx_conversations_archived_created
@@ -1495,6 +1530,48 @@ impl DbManager {
         }
 
         let default_skills = vec![
+            (
+                "deep_research",
+                "多跳检索：搜 → 读 → 提炼还没答上的子问题 → 再搜，每条结论都带出处。单次搜索答不上的问题用它。",
+                "[]",
+                "### 什么时候用
+**多跳问题**——单次搜索答不上，需要顺着线索再查的那种：
+「A 的实现依赖 B，B 在什么条件下会失效」「这个行为在哪个版本改的，改成了什么」。
+一次搜索就能答的**别用**，直接 web_search。
+
+### 循环
+1. `research_start` 拿到 research_id。
+2. `web_search` / `fetch_url` 找材料。
+3. **每读到一条能支撑结论的东西，立刻 `research_note`**——带上 source_url 和原文片段。
+   不要读完一大堆再回头补出处，那时你已经记不清哪句话来自哪里了。
+4. 停下来问自己：**还有哪个子问题没答上？** 有就回第 2 步。
+5. `research_report` 出报告。
+
+### 什么时候停
+**新一轮问不出新子问题就停。** 不要按固定轮数跑——简单问题跑三轮是浪费，复杂问题三轮不够。
+找不到答案也要停，然后在报告里说清楚哪一环没查到，别用推测填上。
+
+### 硬规矩
+- **没有出处的结论不许记。** 没有引文的多轮搜索只是贵几倍的普通搜索。
+- **原文片段必须能支撑那条结论。** URL 会改会死，片段是留在本地的证据。
+- **报告里不能有没记录过的内容。** `research_report` 是从库里拼的；想写进报告就先 `research_note`。
+- 标好 tier：official（官方文档）> repo（一手仓库）> blog > forum。报告按这个排序。
+
+### 反模式
+- 🚫 先写结论再去找支持它的链接。
+- 🚫 把整页网页塞进 claim——claim 是一句话结论，长文放 snippet。
+- 🚫 查不到就用「一般来说」「通常」糊过去。查不到就说查不到。",
+                "### 循环
+1. research_start
+2. 搜 / 抓 → research_note（必须带出处）
+3. 还有子问题没答上就回第 2 步
+4. 问不出新子问题 → research_report",
+                "### 进阶
+- **交叉验证**：关键结论找两个独立来源。只有一个来源时在 claim 里写明「仅一处佐证」。
+- **冲突处理**：两个来源打架时两条都记下，各自标 tier，让报告把等级高的排前面——不要自己选一个然后把另一个丢掉。
+- **时效**：注意材料的日期。三年前的博客讲的行为可能早就改了，去一手仓库确认。
+- **子问题要具体**：「再查查 B」不是子问题，「B 在 Windows 上走不走系统代理」才是。"
+            ),
             (
                 "file_reader",
                 "读取本地文件内容，支持分块读取、按行读取及大文件流式读取。",

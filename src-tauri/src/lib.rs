@@ -19,6 +19,7 @@ mod office;
 mod pptx;
 mod proc;
 mod prompt_guard;
+mod research;
 mod proxy;
 mod proxy_types;
 mod remote_session;
