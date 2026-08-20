@@ -24,6 +24,7 @@ import type {
   ChatImageAttachment,
   ConversationInfo,
   ConversationMessage,
+  MessagesDelta,
   DetectedAgent,
   DevStatus,
   GatewayStatus,
@@ -35,6 +36,49 @@ import type {
   RuntimeSessionEvent,
   WorkMode,
 } from "@/types";
+
+/// 乐观气泡的 id 前缀。
+///
+/// 用户消息在界面上先以本地 id 出现，而**后端落库时会自己生成 `msg_agent_*`**
+/// ——前端这个 id 从不进库。所以它既不能当增量游标，增量里一旦出现真的 user
+/// 消息，手上这条也就该清掉了。
+const OPTIMISTIC_ID_PREFIX = "msg_u_";
+
+/// 手上最后一条**持久化**消息的 id，用作增量游标。
+///
+/// 乐观气泡从不入库，拿它当游标后端一定查不到，会退回全量——那就等于没做增量。
+/// 所以要跳过它们往前找。全是乐观气泡（刚发出第一句）时返回 null，让后端给全量。
+export function lastPersistedMessageId(messages: ConversationMessage[]): string | null {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (!messages[i].id.startsWith(OPTIMISTIC_ID_PREFIX)) return messages[i].id;
+  }
+  return null;
+}
+
+/// 把增量并进当前列表。
+///
+/// 抽成纯函数是为了测得到：这里有三件容易错的事，而它们错了都只表现为「界面上
+/// 消息重了一条」，不会报任何错。
+export function mergeMessagesDelta(
+  current: ConversationMessage[],
+  delta: MessagesDelta,
+): ConversationMessage[] {
+  // ① 全量就是替换。当成追加会把整段历史渲染两遍。
+  if (delta.is_full) return delta.messages;
+  if (delta.messages.length === 0) return current;
+
+  // ② 后端落用户消息时自己生成 id，前端那个乐观 id 从不入库。所以增量里一旦
+  //    出现 user 角色的消息，手上的乐观气泡就已经被取代——不清掉同一句话显示两遍。
+  const superseded = delta.messages.some((m) => m.role === "user");
+  const base = superseded
+    ? current.filter((m) => !m.id.startsWith(OPTIMISTIC_ID_PREFIX))
+    : current;
+
+  // ③ 按 id 去重：`INSERT OR REPLACE` 会让一条消息换个 rowid 重新排到游标之后，
+  //    那时它是「已有的」而不是新的。
+  const seen = new Set(base.map((m) => m.id));
+  return [...base, ...delta.messages.filter((m) => !seen.has(m.id))];
+}
 
 export interface RuntimeSendConfig {
   model: RuntimeModelSelection;
@@ -201,6 +245,9 @@ export function useConversations(
 
   // Refs for cross-render access
   const currentConvIdRef = useRef(currentConvId);
+  // 增量拉取要读「当前手上最后一条的 id」当游标。事件回调是在 effect 里注册的，
+  // 直接闭包 `messages` 会读到注册那一刻的旧值，所以走 ref。
+  const messagesRef = useRef(messages);
   // enterSurface 的去重依据。用 ref 不用 state：它要在同一轮事件里立刻反映
   // 最新值，而 setCurrentSurface 要等下一次渲染。
   const currentSurfaceRef = useRef<"chat" | "work">("chat");
@@ -209,6 +256,7 @@ export function useConversations(
   const activeRuntimeConversationsRef = useRef(runtimeActiveConversations);
   const sendInFlightRef = useRef(false);
   currentConvIdRef.current = currentConvId;
+  messagesRef.current = messages;
   activeRuntimeConversationsRef.current = runtimeActiveConversations;
 
   // ── Agent registry (backend-driven, mount once) ────
@@ -311,8 +359,15 @@ export function useConversations(
           conversationId === currentConvIdRef.current
           && ["assistant_message", "plan", "tool_completed"].includes(runtimeEvent.kind)
         ) {
-          const persisted = await conversationApi.getMessages(conversationId);
-          setMessages(persisted);
+          // 只拉「还没有的那几条」。原来这里是把**整个会话**重新拉一遍并整体
+          // 替换——而一轮对话会走到这里几十次，会话一长就是每个事件一次全量读
+          // 加一次全量重渲染。
+          //
+          // 游标用手上最后一条持久化消息的 id。乐观气泡（`msg_u_*`）从不入库，
+          // 不能当游标，所以要跳过它们往前找。
+          const cursor = lastPersistedMessageId(messagesRef.current);
+          const delta = await conversationApi.getMessagesSince(conversationId, cursor);
+          setMessages((current) => mergeMessagesDelta(current, delta));
         }
 
         if (runtimeEvent.kind === "approval_requested" && runtimeEvent.request_id) {
@@ -631,7 +686,7 @@ export function useConversations(
     // previews ride in metadata so the bubble shows thumbnails right away; the
     // persisted row later carries file paths instead.
     const userMsg: ConversationMessage = {
-      id: `msg_u_${Date.now()}`,
+      id: `${OPTIMISTIC_ID_PREFIX}${Date.now()}`,
       conversation_id: convId,
       role: "user",
       content: displayContent,

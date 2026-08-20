@@ -8,6 +8,7 @@ import type {
   ProfileStats,
   ConversationInfo,
   ConversationMessage,
+  MessagesDelta,
   CronTask,
   CronRun,
   WorkspaceRun,
@@ -56,6 +57,15 @@ export const conversationApi = {
   listArchived: () => invoke<ConversationInfo[]>("get_archived_conversations"),
   getMessages: (conversationId: string) =>
     invoke<ConversationMessage[]>("get_conversation_messages", { conversationId }),
+  /**
+   * 只取「我还没有的那几条」。
+   *
+   * `afterMessageId` 传手上最后一条的 id。后端找不到那条（比如它已被压缩删掉）
+   * 就退回全量并把 `is_full` 置真——**调用方必须看这个标志**：该替换的时候当成
+   * 追加，界面上会把一整段历史渲染两遍。
+   */
+  getMessagesSince: (conversationId: string, afterMessageId: string | null) =>
+    invoke<MessagesDelta>("get_messages_since", { conversationId, afterMessageId }),
   addMessage: (params: { id: string; conversationId: string; role: string; content: string }) =>
     invoke("add_conversation_message", params),
 };

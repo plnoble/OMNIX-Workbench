@@ -33,7 +33,24 @@ pub(crate) const LIST_CONVERSATIONS_SQL: &str = "SELECT id, title, workspace_pat
 /// 单会话的消息。靠 `idx_messages_conversation_timestamp` 复合索引直接出有序结果，
 /// 不再 `USE TEMP B-TREE FOR ORDER BY`（那是把整个会话排一遍）。
 pub(crate) const CONVERSATION_MESSAGES_SQL: &str = "SELECT id, conversation_id, role, content, timestamp, metadata_json
-     FROM messages WHERE conversation_id = ?1 ORDER BY timestamp ASC";
+     FROM messages WHERE conversation_id = ?1 ORDER BY timestamp ASC, rowid ASC";
+
+/// 增量拉取：只取排在 `(?2, ?3)` 之后的消息。
+///
+/// 次序键是 `(timestamp, rowid)` 而不是 timestamp 单独。`CURRENT_TIMESTAMP` 是
+/// **秒级**的，同一秒内落库的消息时间戳完全相同——实测库里 20 条消息就有 6 组并列。
+/// 只按 timestamp 做游标，同秒的那些要么被跳过、要么被重复拉。
+///
+/// 也不能用 `sequence` 列：它是按 **session** 算的，同一个会话跨多次会话时会重号
+/// （实测 18 条消息的会话只有 17 个 distinct sequence）。
+///
+/// `rowid` 对只追加的表是天然的总序，而且它正是 `idx_messages_conversation_timestamp`
+/// 里的隐式次序键——所以这条查询用的是同一个索引，不需要额外排序。
+pub(crate) const MESSAGES_SINCE_SQL: &str = "SELECT id, conversation_id, role, content, timestamp, metadata_json
+     FROM messages
+     WHERE conversation_id = ?1
+       AND (timestamp > ?2 OR (timestamp = ?2 AND rowid > ?3))
+     ORDER BY timestamp ASC, rowid ASC";
 
 pub(crate) fn list_conversations_core(
     db: &DbManager,
@@ -126,6 +143,88 @@ pub fn get_conversation_messages(
     db: State<'_, Arc<DbManager>>,
 ) -> Result<Vec<MessageInfo>, String> {
     get_conversation_messages_core(&db, &conversation_id)
+}
+
+/// 增量拉取的结果。
+///
+/// `is_full` 不是装饰：游标失效（比如那条消息已被压缩删掉）时后端会退回全量，
+/// 前端必须知道这次该**替换**还是**追加**——分不清就会重复渲染一整段历史。
+/// 这类「悄悄换了语义」正是这个项目反复在修的毛病，所以让它出现在类型里。
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct MessagesDelta {
+    pub messages: Vec<MessageInfo>,
+    pub is_full: bool,
+}
+
+fn read_messages(
+    stmt: &mut rusqlite::Statement<'_>,
+    params: impl rusqlite::Params,
+) -> Result<Vec<MessageInfo>, String> {
+    let rows = stmt
+        .query_map(params, |row| {
+            Ok(MessageInfo {
+                id: row.get(0)?,
+                conversation_id: row.get(1)?,
+                role: row.get(2)?,
+                content: row.get(3)?,
+                timestamp: row.get(4)?,
+                metadata_json: row.get(5).ok(),
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(rows.flatten().collect())
+}
+
+/// 只取「前端还没有的那几条」。
+///
+/// 原来每收到一个 agent 事件就把整个会话重新拉一遍并整体替换（一轮对话几十个
+/// 事件），会话一长就是每个事件一次全量读 + 全量重渲染。
+///
+/// `after_message_id` 传前端手上最后一条的 id；找不到那条（已被压缩删除等）就
+/// 退回全量，并把 `is_full` 置真——**不静默降级**。
+pub(crate) fn get_messages_since_core(
+    db: &DbManager,
+    conversation_id: &str,
+    after_message_id: Option<&str>,
+) -> Result<MessagesDelta, String> {
+    input_validation::validate_id(conversation_id, "conversation_id")?;
+    let conn = db.get_connection().map_err(|e| e.to_string())?;
+
+    // 游标是那条消息在 `(timestamp, rowid)` 上的位置。按主键查，代价可忽略。
+    let cursor: Option<(String, i64)> = match after_message_id {
+        Some(id) if !id.is_empty() => conn
+            .query_row(
+                "SELECT timestamp, rowid FROM messages WHERE id = ?1 AND conversation_id = ?2",
+                params![id, conversation_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok(),
+        _ => None,
+    };
+
+    match cursor {
+        Some((ts, rowid)) => {
+            let mut stmt = conn.prepare(MESSAGES_SINCE_SQL).map_err(|e| e.to_string())?;
+            let messages = read_messages(&mut stmt, params![conversation_id, ts, rowid])?;
+            Ok(MessagesDelta { messages, is_full: false })
+        }
+        None => {
+            let mut stmt = conn
+                .prepare(CONVERSATION_MESSAGES_SQL)
+                .map_err(|e| e.to_string())?;
+            let messages = read_messages(&mut stmt, params![conversation_id])?;
+            Ok(MessagesDelta { messages, is_full: true })
+        }
+    }
+}
+
+#[tauri::command]
+pub fn get_messages_since(
+    conversation_id: String,
+    after_message_id: Option<String>,
+    db: State<'_, Arc<DbManager>>,
+) -> Result<MessagesDelta, String> {
+    get_messages_since_core(&db, &conversation_id, after_message_id.as_deref())
 }
 
 pub(crate) fn get_conversation_messages_core(
@@ -698,5 +797,145 @@ mod query_plan_tests {
             )
             .unwrap();
         assert_eq!(n, 0, "旧的单列索引还在，被复合索引覆盖了却没删");
+    }
+}
+
+/// 增量拉取：只给前端它还没有的那几条。
+///
+/// 替代的是「每收一个 agent 事件就把整个会话重拉一遍并整体替换」——一轮对话有
+/// 几十个这种事件，会话一长就是每事件一次全量读 + 全量重渲染。
+#[cfg(test)]
+mod messages_delta_tests {
+    use super::*;
+    use crate::db::DbManager;
+
+    fn test_db(tag: &str) -> DbManager {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "omnix_delta_{tag}_{}_{}.db",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_file(&path);
+        let db = DbManager::new_with_path(path);
+        db.get_connection()
+            .unwrap()
+            .execute(
+                "INSERT INTO conversations (id, title, workspace_path, active_agent)
+                 VALUES ('c1', 't', 'w', 'a')",
+                [],
+            )
+            .unwrap();
+        db
+    }
+
+    /// 显式指定 timestamp，好造出「同一秒」的并列。
+    fn add(db: &DbManager, id: &str, ts: &str) {
+        db.get_connection()
+            .unwrap()
+            .execute(
+                "INSERT INTO messages (id, conversation_id, role, content, timestamp)
+                 VALUES (?1, 'c1', 'user', ?1, ?2)",
+                params![id, ts],
+            )
+            .unwrap();
+    }
+
+    fn ids(d: &MessagesDelta) -> Vec<String> {
+        d.messages.iter().map(|m| m.id.clone()).collect()
+    }
+
+    #[test]
+    fn without_a_cursor_it_returns_everything_and_says_so() {
+        let db = test_db("nocursor");
+        add(&db, "m1", "2026-01-01 10:00:00");
+        add(&db, "m2", "2026-01-01 10:00:01");
+
+        let d = get_messages_since_core(&db, "c1", None).unwrap();
+        assert!(d.is_full, "没有游标时必须标明这是全量，否则前端会当成追加");
+        assert_eq!(ids(&d), ["m1", "m2"]);
+    }
+
+    #[test]
+    fn a_cursor_returns_only_what_comes_after_it() {
+        let db = test_db("after");
+        add(&db, "m1", "2026-01-01 10:00:00");
+        add(&db, "m2", "2026-01-01 10:00:01");
+        add(&db, "m3", "2026-01-01 10:00:02");
+
+        let d = get_messages_since_core(&db, "c1", Some("m1")).unwrap();
+        assert!(!d.is_full, "有有效游标就该是追加");
+        assert_eq!(ids(&d), ["m2", "m3"]);
+    }
+
+    /// **这条是整个设计的支点。**
+    ///
+    /// `CURRENT_TIMESTAMP` 是秒级的，一轮对话里连着落库的消息时间戳完全相同
+    /// （实测真库 20 条里就有 6 组并列）。只按 timestamp 做游标的话：
+    /// `timestamp > ?` 会把同秒的后续消息全部**跳过**，`>=` 则会把游标那条自己
+    /// **重复**拉一遍。所以次序键必须是 `(timestamp, rowid)`。
+    #[test]
+    fn messages_sharing_one_second_are_neither_skipped_nor_repeated() {
+        let db = test_db("tie");
+        let same = "2026-01-01 10:00:00";
+        add(&db, "m1", same);
+        add(&db, "m2", same);
+        add(&db, "m3", same);
+        add(&db, "m4", "2026-01-01 10:00:01");
+
+        let d = get_messages_since_core(&db, "c1", Some("m2")).unwrap();
+        assert_eq!(
+            ids(&d),
+            ["m3", "m4"],
+            "同一秒内的次序没接住：m3 被跳过或 m2 被重复"
+        );
+
+        // 从并列里的第一条开始，同秒的两条都得来。
+        let d = get_messages_since_core(&db, "c1", Some("m1")).unwrap();
+        assert_eq!(ids(&d), ["m2", "m3", "m4"]);
+
+        // 从并列里的最后一条开始，只剩下一秒之后的。
+        let d = get_messages_since_core(&db, "c1", Some("m3")).unwrap();
+        assert_eq!(ids(&d), ["m4"]);
+    }
+
+    /// 游标那条被删了（压缩会删旧消息）就退回全量，并**明说**这是全量。
+    /// 悄悄退回去的话，前端会把一整段历史当增量追加，界面上直接翻倍。
+    #[test]
+    fn a_dead_cursor_falls_back_to_full_and_is_not_silent() {
+        let db = test_db("dead");
+        add(&db, "m1", "2026-01-01 10:00:00");
+        add(&db, "m2", "2026-01-01 10:00:01");
+
+        let d = get_messages_since_core(&db, "c1", Some("msg_that_was_compacted_away")).unwrap();
+        assert!(d.is_full, "退回全量却没说，前端会当成追加 → 历史翻倍");
+        assert_eq!(ids(&d), ["m1", "m2"]);
+    }
+
+    /// 别的会话的消息不能漏过来。
+    #[test]
+    fn the_cursor_is_scoped_to_its_own_conversation() {
+        let db = test_db("scope");
+        db.get_connection()
+            .unwrap()
+            .execute(
+                "INSERT INTO conversations (id, title, workspace_path, active_agent)
+                 VALUES ('c2', 't', 'w', 'a')",
+                [],
+            )
+            .unwrap();
+        add(&db, "m1", "2026-01-01 10:00:00");
+        db.get_connection()
+            .unwrap()
+            .execute(
+                "INSERT INTO messages (id, conversation_id, role, content, timestamp)
+                 VALUES ('other', 'c2', 'user', 'x', '2026-01-01 10:00:05')",
+                [],
+            )
+            .unwrap();
+
+        let d = get_messages_since_core(&db, "c1", Some("m1")).unwrap();
+        assert!(d.messages.is_empty(), "串会话了：{:?}", ids(&d));
     }
 }

@@ -87,6 +87,15 @@ export interface ConversationInfo {
 }
 
 /** A single message within a conversation */
+/// 增量拉取的结果。
+///
+/// `is_full` 为真表示这是**全量替换**（没给游标，或游标那条已经不在了），
+/// 为假才是追加。分不清就会把一整段历史渲染两遍。
+export interface MessagesDelta {
+  messages: ConversationMessage[];
+  is_full: boolean;
+}
+
 export interface ConversationMessage {
   id: string;
   conversation_id: string;

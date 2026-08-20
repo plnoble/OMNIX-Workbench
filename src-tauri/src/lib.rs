@@ -496,6 +496,7 @@ pub fn run() {
             commands::delete_platform_api_key,
             commands::reveal_platform_api_key,
             commands::get_conversation_messages,
+            commands::get_messages_since,
             commands::create_conversation,
             commands::get_conversation_goal,
             commands::set_conversation_goal,
