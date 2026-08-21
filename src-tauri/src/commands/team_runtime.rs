@@ -565,6 +565,65 @@ fn update_worker(
     Ok(())
 }
 
+/// 两次 agent CLI 拉起之间的最小间隔。
+///
+/// 用**确定性间隔**而不是随机抖动：随机是概率性的——几个同时就绪的 worker 可以
+/// 全都摇到小值，照样在同一瞬间打到同一个订阅上。间隔门让突发速率在**构造上**
+/// 是 1/interval。（借鉴 cumora 的 spawn pacer，MIT。）
+const MIN_SPAWN_INTERVAL: Duration = Duration::from_millis(500);
+
+/// 重试之间的等待。第 n 次重试等 `RETRY_BACKOFF[n-1]`。
+///
+/// 原来失败之后是 `continue` 直接重试，中间不等。而多 worker 跑批最可能的失败
+/// 就是上游限流（并发默认 2、上限 4，全打同一个 Claude Code / Codex 订阅）——
+/// 立即重试必然再撞一次，`max_retries` 在几秒内烧光，worker 判死。
+///
+/// 这张表**不区分失败原因**：agent CLI 的错误是非结构化文本，按串嗅探限流很脆，
+/// 而且会多一套要维护的机制。选的这组值两头都够：首次 5 秒对崩溃/超时是够用的
+/// 沉降时间；跑满三次重试累计等 65 秒，和限流冷却是一个量级。
+const RETRY_BACKOFF: [Duration; 3] = [
+    Duration::from_secs(5),
+    Duration::from_secs(15),
+    Duration::from_secs(45),
+];
+
+/// 第 `attempt` 次尝试失败后该等多久。
+///
+/// 抽成函数是为了测得到——内联在重试分支里的话，验证它就得跑一整个 agent 运行时。
+fn retry_backoff(attempt: i64) -> Duration {
+    let last = RETRY_BACKOFF[RETRY_BACKOFF.len() - 1];
+    usize::try_from(attempt)
+        .ok()
+        .and_then(|i| RETRY_BACKOFF.get(i).copied())
+        // 越界时取表里最长的那个，**不是零**：重试次数上限哪天放宽了，
+        // 多出来的那几次不能退化成立即重试。
+        .unwrap_or(last)
+}
+
+type SpawnGate = std::sync::Mutex<Option<std::time::Instant>>;
+static LAST_SPAWN: std::sync::OnceLock<SpawnGate> = std::sync::OnceLock::new();
+
+/// 预约下一个拉起时隙，返回还要等多久。
+///
+/// 关键是**向前预约**而不是回头检查：N 个并发调用者会各自拿到相隔
+/// `MIN_SPAWN_INTERVAL` 的时隙，而不是全都发现「上一次很久以前」然后一起冲。
+///
+/// **锁只在这个同步函数里持有，绝不跨 await**（CLAUDE.md 坑点 2）——调用方拿到
+/// 的是一个 Duration，等待发生在锁之外。
+fn reserve_spawn_slot() -> Duration {
+    let gate = LAST_SPAWN.get_or_init(Default::default);
+    let Ok(mut guard) = gate.lock() else {
+        return Duration::ZERO;
+    };
+    let now = std::time::Instant::now();
+    let slot = match *guard {
+        Some(prev) if prev + MIN_SPAWN_INTERVAL > now => prev + MIN_SPAWN_INTERVAL,
+        _ => now,
+    };
+    *guard = Some(slot);
+    slot.saturating_duration_since(now)
+}
+
 async fn run_worker(
     db: Arc<DbManager>,
     runtime: Arc<RuntimeManager>,
@@ -589,6 +648,11 @@ async fn run_worker(
     );
     let max_attempts = worker.max_retries + 1;
     for attempt in 0..max_attempts {
+        // 每一次拉起都过间隔门——**重试也算一次拉起**，它和首发抢的是同一个订阅。
+        let wait = reserve_spawn_slot();
+        if !wait.is_zero() {
+            tokio::time::sleep(wait).await;
+        }
         update_worker(&db, &worker.id, "running", None, None, attempt > 0)?;
         let conversation_id = format!(
             "team_worker_{}_{}_{}",
@@ -626,6 +690,8 @@ async fn run_worker(
                 }
                 if attempt + 1 < max_attempts {
                     update_worker(&db, &worker.id, "retrying", None, Some(&error), false)?;
+                    // 退避之后再回到循环顶部（那里还会再过一次间隔门）。
+                    tokio::time::sleep(retry_backoff(attempt)).await;
                     continue;
                 }
                 update_worker(&db, &worker.id, "failed", None, Some(&error), false)?;
@@ -1107,5 +1173,68 @@ mod preset_tests {
     fn an_unknown_preset_is_refused_by_name() {
         let err = build("ensemble", "Claude Code", "Codex").expect_err("未知预设");
         assert!(err.contains("ensemble"), "错误里要带上那个名字：{err}");
+    }
+}
+
+
+/// 拉起节流与重试退避。
+///
+/// 两件事守的是同一个失败：多个 worker 同时打同一个 Claude Code / Codex 订阅，
+/// 撞上短窗口突发限流。原来是「一次性全部拉起 + 失败立即重试」，两头都在往
+/// 伤口上撒盐。
+#[cfg(test)]
+mod pacing_tests {
+    use super::*;
+
+    /// 连续预约的时隙必须**错开**，不能都是「现在」。
+    ///
+    /// 这里不清全局状态，也不需要清：断言看的是相邻两次返回值的**差**，
+    /// 与门上原有的预约无关。上一轮那个 flake 的教训——测试里去清进程内全局
+    /// 状态，会打断并行跑的别的用例——不在这里重演。
+    #[test]
+    fn spawn_slots_are_staggered_not_simultaneous() {
+        let waits: Vec<Duration> = (0..4).map(|_| reserve_spawn_slot()).collect();
+
+        for pair in waits.windows(2) {
+            let delta = pair[1].saturating_sub(pair[0]);
+            assert!(
+                delta >= Duration::from_millis(400) && delta <= MIN_SPAWN_INTERVAL,
+                "相邻两个时隙只差 {delta:?}——回头检查『上次是不是很久以前』的写法会让\
+                 同时就绪的 worker 全都拿到 0，那等于没有节流。完整序列：{waits:?}"
+            );
+        }
+        assert!(
+            waits[3] > waits[0],
+            "第四个拉起不比第一个晚，说明预约没有向前推进：{waits:?}"
+        );
+    }
+
+    /// 退避必须逐次变长，而且**任何一次都不能是零**。
+    #[test]
+    fn retry_backoff_grows_and_is_never_zero() {
+        assert_eq!(retry_backoff(0), Duration::from_secs(5));
+        assert_eq!(retry_backoff(1), Duration::from_secs(15));
+        assert_eq!(retry_backoff(2), Duration::from_secs(45));
+
+        // 重试上限哪天放宽了，多出来的那几次不能退化成立即重试——
+        // 立即重试正是这次要修的那个 bug。
+        for attempt in [3, 7, 99] {
+            assert_eq!(
+                retry_backoff(attempt),
+                Duration::from_secs(45),
+                "第 {attempt} 次落到了表外，必须取最长的那个而不是零"
+            );
+        }
+        assert_eq!(retry_backoff(-1), Duration::from_secs(45), "负数也不能变成零");
+    }
+
+    /// 跑满重试的累计等待要和限流冷却是一个量级——否则退避只是装样子。
+    #[test]
+    fn the_full_retry_budget_waits_about_a_rate_limit_cooldown() {
+        let total: Duration = (0..3).map(retry_backoff).sum();
+        assert!(
+            total >= Duration::from_secs(60),
+            "跑满三次重试才等 {total:?}，短于常见的限流冷却，等于白等"
+        );
     }
 }

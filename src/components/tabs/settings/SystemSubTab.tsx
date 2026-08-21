@@ -1,13 +1,12 @@
 /** Split from SettingsTab.tsx — pure move, no behavior change. */
 import { useEffect, useState } from "react";
 import { useSettingsStore } from "@/store/AppStore";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Save } from "lucide-react";
-import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/sonner";
 import { modelApi, statusDockApi } from "@/lib/tauri-api";
 import type { AvailableModel } from "@/types";
@@ -43,8 +42,6 @@ export function SystemSubTab() {
     idleTimeout, setIdleTimeout,
     autoStart, setAutoStart,
     startToTray, setStartToTray,
-    themeMode,
-    setThemeMode: onSetThemeMode,
   } = s;
   // 这段提示原本在 App.tsx 的 `handleSaveSettings` 里。搬 store 时如果只取
   // `s.saveSettings`，保存成功/失败的反馈就会静默消失——所以连提示一起搬过来，
@@ -81,39 +78,11 @@ export function SystemSubTab() {
   return (
     <div className="mx-auto flex w-full max-w-5xl gap-4">
       <div className="flex min-w-0 flex-1 flex-col gap-4">
-      {/* Theme selector lives in the title bar. */}
-      {false && (
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm flex items-center gap-2">
-            🎨 外观主题
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="flex gap-2">
-            {([
-              { value: "dark" as const, label: "🌙 深色", desc: "默认暗色主题" },
-              { value: "light" as const, label: "☀️ 浅色", desc: "明亮简洁风格" },
-              { value: "auto" as const, label: "🔄 跟随系统", desc: "自动适配 OS 主题" },
-            ]).map((opt) => (
-              <button
-                key={opt.value}
-                onClick={() => onSetThemeMode(opt.value)}
-                className={cn(
-                  "flex-1 flex flex-col items-center gap-1 p-3 rounded-lg border transition-all",
-                  themeMode === opt.value
-                    ? "border-primary bg-primary/10 text-primary"
-                    : "border-border hover:border-primary/30"
-                )}
-              >
-                <span className="text-sm font-medium">{opt.label}</span>
-                <span className="text-xs text-muted-foreground">{opt.desc}</span>
-              </button>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
-      )}
+      {/* 「外观主题」那张卡片已删除：主题选择器在标题栏，这里是它被搬走之后
+          留下的一整块 `{false && ...}` —— 永远不渲染，但每次读这个文件的人都得
+          先跳过它，而且它是唯一让 cn / CardHeader / themeMode 看起来还有人用的
+          地方。留着不害人（没有入口指向它），但它把「这个文件还依赖什么」这件事
+          说谎了。 */}
 
       {/* 「云端账户」组已删除：它和「智能体 → 账号凭据」是同一张 agent_accounts
           表、同一个弹窗、同一份数据，只是这里平铺、看不出哪个账号属于哪个
