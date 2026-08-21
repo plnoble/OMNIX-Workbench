@@ -3133,7 +3133,7 @@ dependencies = [
 
 [[package]]
 name = "omnix-workbench"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "aes-gcm",
  "agent-client-protocol-schema",
