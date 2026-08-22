@@ -307,6 +307,38 @@ fn memory_pointer_block(sidecar_rel: &str) -> String {
     )
 }
 
+/// 把指针块并进已有内容：有标记就替换标记之间那段，没有就追加。
+///
+/// 抽成纯函数是因为这里有一个**每次改写都会多留一个空行**的 bug，而它只有在
+/// 「反复应用」时才看得出来——原来的写法把开头带 `\n` 的 pointer 直接
+/// `replace_range(start_idx..end)`，那个 `\n` 落在 START 标记**之前**，
+/// 于是每跑一次就往文件头堆一个空行。本仓库的 CLAUDE.md 攒到了 12 个。
+///
+/// 判据是 `pointer_upsert_is_idempotent`：应用一次和应用五次结果必须一模一样。
+fn upsert_pointer_block(content: &str, pointer: &str) -> String {
+    let mut content = content.to_string();
+    if let (Some(start_idx), Some(end_idx)) = (
+        content.find("<!--- OMNIX MEMORY START --->"),
+        content.find("<!--- OMNIX MEMORY END --->"),
+    ) {
+        let end_block_len = "<!--- OMNIX MEMORY END --->\n".len();
+        let actual_end = if end_idx + end_block_len <= content.len() {
+            end_idx + end_block_len
+        } else {
+            end_idx
+        };
+        // Replaces any previously inlined lessons too, so upgrading
+        // scrubs personal content out of an already-written file.
+        //
+        // 去掉 pointer 开头的换行：那是留给「追加到文件末尾」用的分隔，
+        // 替换既有块时它会变成累积的空行。
+        content.replace_range(start_idx..actual_end, pointer.trim_start_matches('\n'));
+    } else {
+        content.push_str(pointer);
+    }
+    content
+}
+
 /// Make sure the sidecar can't be committed. Appends to `.gitignore` only
 /// inside a git repo, only once, and never rewrites existing entries.
 fn ensure_sidecar_ignored(workspace_path: &Path) {
@@ -905,22 +937,7 @@ pub(crate) fn inject_workspace_memories(
 
         if file_path.exists() {
             if let Ok(mut content) = fs::read_to_string(&file_path) {
-                if let (Some(start_idx), Some(end_idx)) = (
-                    content.find("<!--- OMNIX MEMORY START --->"),
-                    content.find("<!--- OMNIX MEMORY END --->"),
-                ) {
-                    let end_block_len = "<!--- OMNIX MEMORY END --->\n".len();
-                    let actual_end = if end_idx + end_block_len <= content.len() {
-                        end_idx + end_block_len
-                    } else {
-                        end_idx
-                    };
-                    // Replaces any previously inlined lessons too, so upgrading
-                    // scrubs personal content out of an already-written file.
-                    content.replace_range(start_idx..actual_end, &pointer);
-                } else {
-                    content.push_str(&pointer);
-                }
+                content = upsert_pointer_block(&content, &pointer);
                 // 指针写不进去，agent 就不知道去哪找记忆——边车文件写成了也白写。
                 // 和上面同一个道理：只记日志，不中断启动。
                 if let Err(error) = fs::write(&file_path, content) {
@@ -2007,5 +2024,71 @@ mod memory_injection_wiring {
             "没有任何运行时入口调用 inject_workspace_memories——记忆回注又断了。
              它应该挂在会话启动路径上（当前是 RuntimeManager::start_session）。"
         );
+    }
+}
+
+
+/// 上下文文件里的记忆指针块。
+#[cfg(test)]
+mod pointer_block_tests {
+    use super::*;
+
+    const START: &str = "<!--- OMNIX MEMORY START --->";
+    const END: &str = "<!--- OMNIX MEMORY END --->";
+
+    /// 反复改写不能让文件长胖。
+    ///
+    /// 原来的写法把开头带换行的 pointer 直接 `replace_range` 进去，那个换行落在
+    /// START 标记**之前**——每跑一次就往文件头堆一个空行。这个 bug 不会报错、
+    /// 不改变任何语义，只是文件头慢慢变成一片空白；本仓库的 CLAUDE.md 攒到了 12 个。
+    /// 它只有在「应用多次」时才现形，所以判据写成幂等。
+    #[test]
+    fn pointer_upsert_is_idempotent() {
+        let pointer = memory_pointer_block(".workbuddy/memory.md");
+        let original = "# 项目说明\n\n正文若干。\n";
+
+        let once = upsert_pointer_block(original, &pointer);
+        let mut many = once.clone();
+        for _ in 0..4 {
+            many = upsert_pointer_block(&many, &pointer);
+        }
+
+        assert_eq!(
+            many, once,
+            "改写五次和改写一次结果不同——多出来的通常是标记前累积的空行，\n             它不报错、不改语义，只会让每个工作区的上下文文件头部慢慢长出一片空白"
+        );
+        assert_eq!(many.matches(START).count(), 1, "标记不能被复制成多份");
+        assert_eq!(many.matches(END).count(), 1);
+    }
+
+    /// 标记之外的内容一个字都不能动——手写的规约就住在那里。
+    #[test]
+    fn hand_written_content_outside_the_markers_survives() {
+        let pointer = memory_pointer_block(".workbuddy/memory.md");
+        let before = "# 抬头\n手写的前言。\n";
+        let after = "\n## 手写规约\n这一段必须活下来。\n";
+        let seeded = format!("{before}{START}\n旧的内联教训\n{END}\n{after}");
+
+        let out = upsert_pointer_block(&seeded, &pointer);
+        assert!(out.starts_with(before), "标记之前的内容被动了：{out}");
+        assert!(out.ends_with(after), "标记之后的手写区被动了：{out}");
+        assert!(
+            !out.contains("旧的内联教训"),
+            "标记之间的旧内联教训必须被清掉——那是升级时把个人内容洗出已提交文件的唯一机会"
+        );
+    }
+
+    /// 没有标记的文件走追加，此时开头那个换行是**要**的（和原有正文隔开）。
+    #[test]
+    fn a_file_without_markers_gets_the_block_appended_with_a_separator() {
+        let pointer = memory_pointer_block(".workbuddy/memory.md");
+        let out = upsert_pointer_block("# 已有内容\n", &pointer);
+        assert!(out.starts_with("# 已有内容\n"));
+        assert!(
+            out.contains("\n\n<!--- OMNIX MEMORY START --->")
+                || out.contains("\n<!--- OMNIX MEMORY START --->"),
+            "追加时应当和原有正文隔开：{out}"
+        );
+        assert_eq!(out.matches(START).count(), 1);
     }
 }
