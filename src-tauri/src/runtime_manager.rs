@@ -14,7 +14,7 @@ use serde_json::Value;
 use crate::db::DbManager;
 use crate::runtime::{
     agent_definition, build_branch_seed_context, build_claude_user_message,
-    build_codex_approval_response, build_conversation_handoff_context, build_codex_initialize_request,
+    build_codex_approval_response, build_handoff_context, build_codex_initialize_request,
     build_codex_thread_resume_request,
     build_codex_thread_start_request, build_codex_turn_start_request, build_goal_reminder,
     build_launch_spec, conversation_has_no_messages, conversation_parent_id,
@@ -392,10 +392,10 @@ impl RuntimeManager {
     /// current turn is recorded so they never include the message being sent
     /// right now. Order: handoff context (agent switch) → branch seed (`/btw`
     /// opening turn) → active `/goal` reminder.
-    fn compose_prompt_prefixes(&self, conversation_id: &str, with_handoff: bool) -> Vec<String> {
+    async fn compose_prompt_prefixes(&self, conversation_id: &str, with_handoff: bool) -> Vec<String> {
         let mut prefixes: Vec<String> = Vec::new();
         if with_handoff {
-            if let Some(context) = build_conversation_handoff_context(&self.db, conversation_id) {
+            if let Some(context) = build_handoff_context(&self.db, conversation_id).await {
                 prefixes.push(context);
             }
         }
@@ -430,7 +430,7 @@ impl RuntimeManager {
             ));
         }
         let conversation_id = print.config.conversation_id.clone();
-        let prefixes = self.compose_prompt_prefixes(&conversation_id, message.with_handoff);
+        let prefixes = self.compose_prompt_prefixes(&conversation_id, message.with_handoff).await;
         let prompt = if prefixes.is_empty() {
             message.prompt.to_string()
         } else {
@@ -584,7 +584,7 @@ impl RuntimeManager {
 
         let active = self.active_session(session_id).await?;
         let conversation_id = active.config.conversation_id.clone();
-        let prefixes = self.compose_prompt_prefixes(&conversation_id, message.with_handoff);
+        let prefixes = self.compose_prompt_prefixes(&conversation_id, message.with_handoff).await;
         let owned_prompt;
         let prompt: &str = if prefixes.is_empty() {
             message.prompt

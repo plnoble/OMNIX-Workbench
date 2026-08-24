@@ -869,6 +869,113 @@ pub fn build_conversation_handoff_context(
     ))
 }
 
+/// 交接摘要的等待上限。
+///
+/// 比 `chat_once` 内部的 180 秒短得多：用户刚切了 agent 又发了消息，正等着回话。
+/// 宁可降级回原文摘录，也不让他干等——降级路径是完整可用的，等待不是。
+const HANDOFF_SUMMARY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+type HandoffCache = std::sync::Mutex<std::collections::HashMap<String, (String, String)>>;
+/// `conversation_id -> (那时的最后一条消息 id, 摘要)`。
+///
+/// 键里带最后一条消息 id：会话推进一条，摘要就该重算；没推进就直接用，反复交接
+/// 不重复烧钱。
+///
+/// **不给测试留清空钩子**——那是进程内全局状态，而测试并行跑，一个用例的清空会
+/// 打断另一个用例（记忆库 `tests-must-not-clear-global-state`）。测试各用各的
+/// conversation_id 就够隔离了。
+static HANDOFF_SUMMARIES: std::sync::OnceLock<HandoffCache> = std::sync::OnceLock::new();
+
+fn handoff_cache() -> &'static HandoffCache {
+    HANDOFF_SUMMARIES.get_or_init(Default::default)
+}
+
+/// 这个会话最后一条消息的 id。拿不到就当没有缓存（宁可多算一次）。
+fn last_message_id(db: &DbManager, conversation_id: &str) -> Option<String> {
+    let conn = db.get_connection().ok()?;
+    conn.query_row(
+        "SELECT id FROM messages WHERE conversation_id = ?1
+         ORDER BY timestamp DESC, rowid DESC LIMIT 1",
+        params![conversation_id],
+        |row| row.get::<_, String>(0),
+    )
+    .ok()
+}
+
+/// **锁只在同步函数里持有，绝不跨 await**（CLAUDE.md 坑点 2）。
+fn cached_summary(conversation_id: &str, last_id: &str) -> Option<String> {
+    let guard = handoff_cache().lock().ok()?;
+    let (cached_id, summary) = guard.get(conversation_id)?;
+    (cached_id == last_id).then(|| summary.clone())
+}
+
+fn remember_summary(conversation_id: &str, last_id: &str, summary: &str) {
+    if let Ok(mut guard) = handoff_cache().lock() {
+        guard.insert(
+            conversation_id.to_string(),
+            (last_id.to_string(), summary.to_string()),
+        );
+    }
+}
+
+/// 把最近的对话压成交接说明。
+///
+/// 失败、超时、空回复一律返回 `None`，由调用方降级回原文摘录——**降级不能变成
+/// 静默丢失**，那条路必须始终可用。
+///
+/// 提示词按 `docs/设计规约.md` 规约 1 写成形状级：只说要哪三段，不给场景例子。
+async fn summarize_for_handoff(db: &DbManager, conversation_id: &str) -> Option<String> {
+    let lines = format_recent_transcript_lines(db, conversation_id)?;
+    let model = db
+        .get_setting("target_model")
+        .ok()
+        .flatten()
+        .filter(|m| !m.trim().is_empty())?;
+
+    let prompt = format!(
+        "你在为一次 Agent 交接写说明。下面是这段对话的最近内容。\n\n         压成三段，每段几句话：\n         1. 已完成什么\n         2. 还没解决的开放问题\n         3. 建议的下一步\n\n         不要复述细节，接手方要的是能立刻继续干活的信息。不要开场白。\n\n         ---\n{}",
+        lines.join("\n")
+    );
+
+    let answer = tokio::time::timeout(
+        HANDOFF_SUMMARY_TIMEOUT,
+        crate::knowledge::chat_once(db, &model, &prompt),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    let answer = answer.trim().to_string();
+    (!answer.is_empty()).then_some(answer)
+}
+
+/// 交接上下文：**优先摘要**，拿不到就退回原文摘录。
+///
+/// 原来只有原文摘录一条路。它有两个毛病：8000 字预算在长对话里必然截断；而且
+/// 原文里大量细节是接手方不需要的，它真正要的「还有什么没解决、下一步干什么」
+/// 反而得自己从原文里推。（借鉴 ai-memory，MIT。）
+pub async fn build_handoff_context(db: &DbManager, conversation_id: &str) -> Option<String> {
+    let last_id = last_message_id(db, conversation_id);
+    if let Some(ref id) = last_id {
+        if let Some(cached) = cached_summary(conversation_id, id) {
+            return Some(wrap_handoff_summary(&cached));
+        }
+    }
+    if let Some(summary) = summarize_for_handoff(db, conversation_id).await {
+        if let Some(ref id) = last_id {
+            remember_summary(conversation_id, id, &summary);
+        }
+        return Some(wrap_handoff_summary(&summary));
+    }
+    // 降级：原文摘录。这条路始终可用，摘要只是它的加强版。
+    build_conversation_handoff_context(db, conversation_id)
+}
+
+fn wrap_handoff_summary(summary: &str) -> String {
+    format!(
+        "【交接上下文】以下是本次对话此前与另一个 Agent 的工作摘要。请据此无缝接手继续，不要重复已完成的工作，也不要重新自我介绍：\n\n{summary}\n\n【以上为交接摘要，下面是用户发给你的新消息】"
+    )
+}
+
 /// Seeds a `/btw` side conversation with its parent's recent transcript so the
 /// same agent can continue a tangent with context. (`/btw`)
 pub fn build_branch_seed_context(db: &DbManager, parent_conversation_id: &str) -> Option<String> {
@@ -2562,5 +2669,170 @@ mod tests {
             ModelCompatibilityLevel::Unsupported
         );
         assert!(!compatibility.selectable);
+    }
+}
+
+
+/// 交接摘要：优先摘要、拿不到就降级回原文摘录。
+///
+/// `chat_once` 打的是 loopback 上的 **OMNIX 网关**（不是平台），所以这里立一个
+/// 假网关、把 `proxy_port` 指过去，就能在没有真实模型的情况下把整条路跑通。
+#[cfg(test)]
+mod handoff_summary_tests {
+    use super::*;
+    use crate::db::DbManager;
+    use std::sync::{Arc, Mutex};
+
+    struct FakeGateway {
+        port: u16,
+        hits: Arc<Mutex<usize>>,
+    }
+
+    /// `status` 非 200 时返回错误体，用来验降级。
+    async fn start_fake_gateway(status: u16, content: &'static str) -> FakeGateway {
+        let hits = Arc::new(Mutex::new(0usize));
+        let counter = Arc::clone(&hits);
+        let handler = move || {
+            let counter = Arc::clone(&counter);
+            async move {
+                {
+                    // 坑点2：lock → 改 → 出作用域，中间无 await。
+                    *counter.lock().expect("hit counter") += 1;
+                }
+                let body = serde_json::json!({
+                    "choices": [{"message": {"role": "assistant", "content": content}}]
+                });
+                axum::response::Response::builder()
+                    .status(status)
+                    .header("Content-Type", "application/json")
+                    .body(axum::body::Body::from(body.to_string()))
+                    .expect("响应")
+            }
+        };
+        let app = axum::Router::new().route("/v1/chat/completions", axum::routing::post(handler));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("绑定临时端口");
+        let port = listener.local_addr().expect("本地地址").port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        FakeGateway { port, hits }
+    }
+
+    /// 每个用例一个独立会话 id——缓存是进程内全局的，**靠键唯一隔离，不靠清空**
+    /// （记忆库 `tests-must-not-clear-global-state`）。
+    fn seed(tag: &str, port: u16, turns: &[(&str, &str)]) -> (DbManager, String, std::path::PathBuf) {
+        let unique = format!("{tag}_{}_{}", std::process::id(), chrono::Utc::now().timestamp_micros());
+        let path = std::env::temp_dir().join(format!("omnix_handoffsum_{unique}.sqlite"));
+        let _ = std::fs::remove_file(&path);
+        // 走完整建表路径：`new_runtime_test` 不建 `settings` 表，
+        // 而这条路要读 `proxy_port` / `target_model` 两个设置。
+        let db = DbManager::new_with_path(path.clone());
+        let conv = format!("conv-{unique}");
+        {
+            let conn = db.get_connection().expect("db");
+            conn.execute(
+                "INSERT INTO conversations (id, title, workspace_path, active_agent) VALUES (?1, 'H', 'D:/w', 'Claude Code')",
+                rusqlite::params![conv],
+            )
+            .expect("会话");
+            for (i, (role, content)) in turns.iter().enumerate() {
+                conn.execute(
+                    "INSERT INTO messages (id, conversation_id, role, content) VALUES (?1, ?2, ?3, ?4)",
+                    rusqlite::params![format!("{conv}-m{i}"), conv, role, content],
+                )
+                .expect("消息");
+            }
+        }
+        db.set_setting("proxy_port", &port.to_string()).expect("端口");
+        db.set_setting("target_model", "p:fake-model").expect("模型");
+        (db, conv, path)
+    }
+
+    const TURNS: [(&str, &str); 3] = [
+        ("user", "帮我把登录换成 OAuth"),
+        ("assistant", "已改完 handler，回调还没测"),
+        ("user", "那就先测回调"),
+    ];
+
+    #[tokio::test]
+    async fn a_working_model_turns_the_transcript_into_a_summary() {
+        let gw = start_fake_gateway(200, "已完成：OAuth handler。开放问题：回调未测。下一步：测回调。").await;
+        let (db, conv, path) = seed("ok", gw.port, &TURNS);
+
+        let context = build_handoff_context(&db, &conv).await.expect("交接块");
+        assert!(context.contains("开放问题：回调未测"), "没用上摘要：{context}");
+        assert!(
+            !context.contains("帮我把登录换成 OAuth"),
+            "摘要可用时不该再把原文摘录塞进去：{context}"
+        );
+
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// **降级不能变成静默丢失。** 模型打不通时交接块必须仍然存在，且是原文摘录。
+    #[tokio::test]
+    async fn an_upstream_failure_falls_back_to_the_transcript_instead_of_nothing() {
+        let gw = start_fake_gateway(500, "不该被用到").await;
+        let (db, conv, path) = seed("fail", gw.port, &TURNS);
+
+        let context = build_handoff_context(&db, &conv)
+            .await
+            .expect("上游挂了也必须有交接块——没有的话新 agent 就是一片空白");
+        assert!(
+            context.contains("帮我把登录换成 OAuth"),
+            "降级路径没给出原文摘录：{context}"
+        );
+
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// 会话没推进就复用缓存——反复交接不该反复烧钱。
+    #[tokio::test]
+    async fn a_second_handoff_on_an_unchanged_conversation_reuses_the_summary() {
+        let gw = start_fake_gateway(200, "摘要内容").await;
+        let (db, conv, path) = seed("cache", gw.port, &TURNS);
+
+        let first = build_handoff_context(&db, &conv).await.expect("第一次");
+        let second = build_handoff_context(&db, &conv).await.expect("第二次");
+        assert_eq!(first, second);
+        assert_eq!(
+            *gw.hits.lock().expect("hits"),
+            1,
+            "会话没变却又打了一次上游——缓存没生效"
+        );
+
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// 但会话推进一条就必须重算：缓存键里带着最后一条消息的 id。
+    #[tokio::test]
+    async fn one_more_message_invalidates_the_cached_summary() {
+        let gw = start_fake_gateway(200, "摘要内容").await;
+        let (db, conv, path) = seed("invalidate", gw.port, &TURNS);
+
+        let _ = build_handoff_context(&db, &conv).await.expect("第一次");
+        {
+            let conn = db.get_connection().expect("db");
+            conn.execute(
+                "INSERT INTO messages (id, conversation_id, role, content) VALUES (?1, ?2, 'user', '又想到一件事')",
+                rusqlite::params![format!("{conv}-新"), conv],
+            )
+            .expect("新消息");
+        }
+        let _ = build_handoff_context(&db, &conv).await.expect("第二次");
+
+        assert_eq!(
+            *gw.hits.lock().expect("hits"),
+            2,
+            "会话推进了一条却还在用旧摘要——接手的 agent 会漏掉最新那句"
+        );
+
+        drop(db);
+        let _ = std::fs::remove_file(path);
     }
 }
