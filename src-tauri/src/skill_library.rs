@@ -121,8 +121,8 @@ pub fn match_skills_for_message(
     // 复用知识库那套 CJK 二元切分（`segment_for_index`，已在 BM25 索引/查询两端
     // 用了很久）：「看这段代码」→「看这 这段 段代 代码 …」。描述那边不用切，
     // `contains` 本来就是子串匹配，二元组能直接命中。英文原样保留。
-    let segmented = crate::knowledge::segment_for_index(&message_lower);
-    let message_words: Vec<&str> = segmented.split_whitespace().collect();
+    // 切词和记忆召回共用一份实现（`knowledge::query_tokens`），长度门槛也在那里。
+    let message_words = crate::knowledge::query_tokens(&message_lower);
     let mut matches = Vec::new();
 
     for (name, description, category, file_path) in skills {
@@ -140,27 +140,18 @@ pub fn match_skills_for_message(
         }
 
         // Keyword matching against description
-        for word in &message_words {
-            // 旧写法 `word.len() < 3` 按**字节**算：任何中文 token 都 ≥3 字节，
-            // 等于对中文完全不设防；而切成二元组后又会把每个二元组都放行。
-            // 改按字符数，并且只对 ASCII 保留「跳过 1~2 个字母的虚词」这层意图。
-            let char_count = word.chars().count();
-            if char_count < 2 || (word.is_ascii() && char_count < 3) {
-                continue;
-            }
-
-            if desc_lower.contains(word) {
-                score += 2.0;
-                matched_keywords.push(word.to_string());
-            }
-            if cat_lower.contains(word) {
-                score += 3.0;
-                matched_keywords.push(format!("cat:{}", word));
-            }
-            if name_lower.contains(word) {
-                score += 5.0;
-                matched_keywords.push(format!("name:{}", word));
-            }
+        // 命中判定共用（长度门槛已在 `query_tokens` 里），**三档权重是这边自己的**。
+        for word in crate::knowledge::matching_tokens(&desc_lower, &message_words) {
+            score += 2.0;
+            matched_keywords.push(word.to_string());
+        }
+        for word in crate::knowledge::matching_tokens(&cat_lower, &message_words) {
+            score += 3.0;
+            matched_keywords.push(format!("cat:{}", word));
+        }
+        for word in crate::knowledge::matching_tokens(&name_lower, &message_words) {
+            score += 5.0;
+            matched_keywords.push(format!("name:{}", word));
         }
 
         for (keyword, boost_cat) in CATEGORY_BOOSTS {

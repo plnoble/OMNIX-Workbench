@@ -1211,6 +1211,41 @@ pub fn resolve_chat_platform(
 ///
 /// 走网关之后自动获得：统一的 Key 解析、失败落 `request_logs`、错误信封、
 /// 熔断计数、用量计费。
+/// 把一段查询切成可用于匹配的词。
+///
+/// 记忆召回和技能匹配都要做这件事，而它们曾各写各的——同一个「按字节判长度」的
+/// 中文分词 bug 因此在两处**各自独立复现**过（记忆库
+/// `cjk-tokenization-half-migrated`）。合并的是这一层；各自的领域权重
+/// （记忆的 veracity/证据等级/工作区、技能的名称/类别/加成）不合并，那些本来
+/// 就该不同。
+///
+/// 长度门槛按**字符**算，不是字节：一个汉字 3 字节，按字节判等于对中文不设防。
+/// 对 ASCII 额外要求 3 个字母——这是从技能那边取的更严的一档，为的是滤掉
+/// `in` / `to` / `is` 这类虚词。它们在 `contains` 这种子串匹配下噪声极大
+/// （`in` 能命中 incident、install、index）。
+pub fn query_tokens(message_lower: &str) -> Vec<String> {
+    segment_for_index(message_lower)
+        .split(|c: char| !c.is_alphanumeric() && !('\u{4e00}'..='\u{9fff}').contains(&c))
+        .filter(|w| {
+            let chars = w.chars().count();
+            chars >= 2 && !(w.is_ascii() && chars < 3)
+        })
+        .map(str::to_string)
+        .collect()
+}
+
+/// `tokens` 里有哪几个出现在 `haystack_lower` 中。
+///
+/// 调用方要计数就取 `.len()`，要留痕（技能那边的 `matched_keywords`）就用返回值
+/// 本身。两种用法共用一个实现，免得又长成两套。
+pub fn matching_tokens<'a>(haystack_lower: &str, tokens: &'a [String]) -> Vec<&'a str> {
+    tokens
+        .iter()
+        .filter(|t| haystack_lower.contains(t.as_str()))
+        .map(String::as_str)
+        .collect()
+}
+
 pub async fn chat_once(
     db: &DbManager,
     chat_model: &str,
@@ -1261,6 +1296,55 @@ pub async fn chat_once(
         ));
     }
     Ok(answer)
+}
+
+#[cfg(test)]
+mod query_token_tests {
+    use super::*;
+
+    /// 长度门槛按**字符**算。
+    ///
+    /// 这是同一个 bug 的第三次出手：按字节判长度时一个汉字就是 3 字节，
+    /// 中文完全不设防；而中文本来就没有空格，切完二元组之后每个都会被放行。
+    #[test]
+    fn the_length_gate_counts_characters_not_bytes() {
+        let tokens = query_tokens("看这段代码");
+        assert!(
+            tokens.iter().any(|t| t == "代码"),
+            "中文双字词应当留下：{tokens:?}"
+        );
+        assert!(
+            tokens.iter().all(|t| t.chars().count() >= 2),
+            "单字不该参与匹配（噪声太大）：{tokens:?}"
+        );
+    }
+
+    /// ASCII 虚词要滤掉：`contains` 是**子串**匹配，`in` 会命中 incident、
+    /// install、index，噪声极大。这一档以前只有技能那边有，记忆那边没有。
+    #[test]
+    fn two_letter_ascii_function_words_are_dropped() {
+        let tokens = query_tokens("put it in the index");
+        for noise in ["in", "it"] {
+            assert!(
+                !tokens.iter().any(|t| t == noise),
+                "「{noise}」这类虚词不该参与子串匹配：{tokens:?}"
+            );
+        }
+        assert!(
+            tokens.iter().any(|t| t == "index"),
+            "三个字母以上的实词要留下：{tokens:?}"
+        );
+    }
+
+    /// 命中判定返回的是**命中的那些词**，不只是个数——技能那边要拿它填
+    /// `matched_keywords`，记忆那边只要 `.len()`。一个实现供两种用法。
+    #[test]
+    fn matching_tokens_reports_which_ones_hit() {
+        let tokens = vec!["deadlock".to_string(), "cors".to_string()];
+        let hit = matching_tokens("tokio deadlock across await", &tokens);
+        assert_eq!(hit, vec!["deadlock"]);
+        assert!(matching_tokens("完全无关的一句话", &tokens).is_empty());
+    }
 }
 
 #[cfg(test)]

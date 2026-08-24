@@ -163,14 +163,10 @@ pub fn match_memories_for_message(
     // 中文提问一个都不含——捷径断了，就只剩这条断掉的路。实测三条纯中文提问
     // 对口的记忆一条都召不回，见 `recall_ranking_corpus`。
     //
-    // 和技能匹配用同一套 CJK 二元切分。`message_lower` 保持原样给关键词那条用，
-    // 只有分词这一路走 segmented。
-    let segmented = crate::knowledge::segment_for_index(&message_lower);
-    // 长度 >= 2 的词才参与（放过中文双字词，同时滤掉 the/a 这类噪声）。
-    let words: Vec<&str> = segmented
-        .split(|c: char| !c.is_alphanumeric() && !('\u{4e00}'..='\u{9fff}').contains(&c))
-        .filter(|w| w.chars().count() >= 2)
-        .collect();
+    // 切词和技能匹配共用一份实现（`knowledge::query_tokens`）。以前两边各写各的，
+    // 同一个「按字节判长度」的中文分词 bug 在两处各自复现过一次。
+    // `message_lower` 保持原样给关键词那条用，只有分词这一路走 tokens。
+    let words = crate::knowledge::query_tokens(&message_lower);
 
     let mut matches = Vec::new();
     for (incident_desc, code_pattern, remediation, keywords, confidence, repeated_count, verified, memory_workspace) in rows {
@@ -192,21 +188,16 @@ pub fn match_memories_for_message(
             let weight = if is_generic(&kw) { 0.1 } else { 1.0 };
             if message_lower.contains(&kw) {
                 score += 6.0 * weight;
-            } else if words.iter().any(|w| kw.contains(w)) {
+            } else if words.iter().any(|w| kw.contains(w.as_str())) {
                 score += 2.0 * weight;
             }
         }
-        // 现象描述 / 危险模式里的词命中。
+        // 现象描述 / 危险模式里的词命中。命中判定共用，**权重是这边自己的**。
         let incident_lower = incident_desc.to_lowercase();
         let pattern_lower = code_pattern.to_lowercase();
-        for w in &words {
-            if incident_lower.contains(w) {
-                score += 1.5;
-            }
-            if pattern_lower.contains(w) {
-                score += 2.5; // 命中具体危险模式，最相关
-            }
-        }
+        score += 1.5 * crate::knowledge::matching_tokens(&incident_lower, &words).len() as f32;
+        // 命中具体危险模式，最相关。
+        score += 2.5 * crate::knowledge::matching_tokens(&pattern_lower, &words).len() as f32;
 
         if score > 0.0 {
             let score = score * rank_weight * workspace_weight(workspace, memory_workspace.as_deref());
