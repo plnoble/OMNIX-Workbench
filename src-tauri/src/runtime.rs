@@ -813,8 +813,13 @@ fn format_recent_transcript_lines(db: &DbManager, conversation_id: &str) -> Opti
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })
         .ok()?;
-    let mut recent: Vec<(String, String)> = rows.filter_map(Result::ok).collect();
-    recent.reverse(); // oldest → newest
+    // 查询已经是 newest → oldest，**这里不要先反转**：整体预算要从最新那头开始花。
+    //
+    // 原来的写法是先 reverse 成 oldest → newest 再累加，超预算就 break——丢掉的
+    // 于是是**最新**的几轮，而接手的 agent 最需要的恰恰是「刚刚发生了什么」。
+    // 24 条 × 每条上限 1200 字最多 28800 字，预算只有 8000，真实长对话必然踩到。
+    // 这个 bug 一直没暴露，是因为唯一那条测试只有 3 条短消息，从没跑到截断分支。
+    let recent: Vec<(String, String)> = rows.filter_map(Result::ok).collect();
 
     let mut lines = Vec::new();
     let mut total = 0usize;
@@ -836,12 +841,16 @@ fn format_recent_transcript_lines(db: &DbManager, conversation_id: &str) -> Opti
         } else {
             content.to_string()
         };
-        total += snippet.chars().count();
-        lines.push(format!("{who}：{snippet}"));
-        if total >= HANDOFF_TOTAL_CHARS {
+        // 先判后加，块才真的在预算内（原来是先加后判，最多会超一整条）。
+        // `lines.is_empty()` 那半是兜底：哪怕最新一条自己就超预算，也得带上它。
+        let cost = snippet.chars().count();
+        if !lines.is_empty() && total + cost > HANDOFF_TOTAL_CHARS {
             break;
         }
+        total += cost;
+        lines.push(format!("{who}：{snippet}"));
     }
+    lines.reverse(); // 累加是 newest → oldest，展示仍要 oldest → newest
     if lines.is_empty() {
         None
     } else {
@@ -1900,6 +1909,57 @@ mod tests {
         );
         // A conversation with no messages yields no block.
         assert!(build_conversation_handoff_context(&db, "conv-empty").is_none());
+
+        drop(db);
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    /// 长对话交接时，**丢掉的必须是最老的几轮，不是最新的**。
+    ///
+    /// 上面那条测试只有 3 条短消息，总量远不到 `HANDOFF_TOTAL_CHARS`——预算截断
+    /// 那条分支从来没被跑到过。而真实对话一定会跑到：24 条 × 每条上限 1200 字
+    /// = 最多 28800 字，预算只有 8000。
+    ///
+    /// 接手的 agent 最需要的是**刚刚发生了什么**。丢最新的那几轮，交接看起来
+    /// 有内容、其实缺的正是关键那段——这种失败不报错，只表现为「新 agent 好像
+    /// 没跟上进度」。
+    #[test]
+    fn a_long_conversation_hands_off_the_newest_turns_not_the_oldest() {
+        let db_path = std::env::temp_dir().join(format!(
+            "omnix_handoff_budget_{}.sqlite",
+            chrono::Utc::now().timestamp_micros()
+        ));
+        let db = DbManager::new_runtime_test(db_path.clone());
+        let conn = db.get_connection().expect("db connection");
+        conn.execute(
+            "INSERT INTO conversations (id, title, workspace_path, active_agent) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["conv-long", "Long", "D:/work", "Claude Code"],
+        )
+        .expect("conversation seed");
+
+        // 24 轮，每轮都长到接近单条上限——总量远超整体预算。
+        for i in 0..24 {
+            let role = if i % 2 == 0 { "user" } else { "assistant" };
+            let content = format!("第{i}轮暗号{}", "填".repeat(1100));
+            conn.execute(
+                "INSERT INTO messages (id, conversation_id, role, content) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![format!("lm{i}"), "conv-long", role, content],
+            )
+            .expect("message seed");
+        }
+        drop(conn);
+
+        let context =
+            build_conversation_handoff_context(&db, "conv-long").expect("handoff context");
+
+        assert!(
+            context.contains("第23轮暗号"),
+            "最后一轮没进交接块——预算是从**最老**那头开始累加、超了就停，\n             于是被丢掉的是最新的几轮。接手的 agent 因此看不到刚刚发生了什么。"
+        );
+        assert!(
+            !context.contains("第0轮暗号"),
+            "预算有限时该丢的是最老的那几轮，它却留下了"
+        );
 
         drop(db);
         let _ = std::fs::remove_file(db_path);
