@@ -212,7 +212,11 @@ pub fn build_skill_injection(matches: &[SkillMatch], db: &DbManager) -> String {
     for m in matches {
         // Read full skill content — prefer the central store, fall back from the
         // profile file to plain SKILL.md so imported skills always inject.
-        let content: String = conn
+        //
+        // **读到的是哪个文件要留住**，不能像原来那样在 `and_then` 里用完就扔：
+        // 内容一旦被下面的上限截断，模型手里就是半份技能加一句「已截断」，
+        // 而没有路径它**没有任何办法读到剩下的**——截断成了死路。
+        let source: Option<(PathBuf, String)> = conn
             .query_row(
                 "SELECT CASE WHEN central_path != '' THEN central_path ELSE file_path END
                  FROM skills WHERE name = ?1",
@@ -222,11 +226,14 @@ pub fn build_skill_injection(matches: &[SkillMatch], db: &DbManager) -> String {
             .ok()
             .and_then(|fp: String| {
                 let dir = PathBuf::from(&fp);
-                std::fs::read_to_string(dir.join(format!("{}_core.md", m.skill_name)))
-                    .or_else(|_| std::fs::read_to_string(dir.join("SKILL.md")))
+                let core = dir.join(format!("{}_core.md", m.skill_name));
+                let full = dir.join("SKILL.md");
+                std::fs::read_to_string(&core)
+                    .map(|text| (core, text))
+                    .or_else(|_| std::fs::read_to_string(&full).map(|text| (full, text)))
                     .ok()
-            })
-            .unwrap_or_default();
+            });
+        let (source_path, content) = source.unwrap_or_default();
         if content.is_empty() {
             // 匹配器已经算出这条技能相关（有分数、也进了日志），注入却悄悄把它
             // 丢掉——用户看到的是「技能没生效」，而排查时**没有任何痕迹**指向
@@ -244,16 +251,29 @@ pub fn build_skill_injection(matches: &[SkillMatch], db: &DbManager) -> String {
         // **截断必须留标记。** 模型拿到半份技能时，若结尾看起来是完整的，它会
         // 当成完整指令照做——而缺掉的那半可能正是约束条件。本轮在 ntfy 推送那里
         // 刚修过同一个毛病，判断标准一样：宁可让下游知道信息不全。
+        //
+        // 光留标记还不够：**标记得可操作**。成熟技能远不止 6000 字（实测
+        // hallmark 的 SKILL.md 有 67 KB，到这里只剩 9%），而且它们普遍靠正文里
+        // 的 `references/*.md` 链接做渐进披露——那些链接在截断点之后，模型连
+        // 「还有补充文件」这件事都不知道。所以标头给出源文件路径，让模型能用
+        // 自己本来就有的读文件能力把剩下的取回来。
         const SKILL_INJECT_CAP: usize = 6000;
-        let capped: String = if content.chars().count() > SKILL_INJECT_CAP {
+        let truncated = content.chars().count() > SKILL_INJECT_CAP;
+        let capped: String = if truncated {
             let kept: String = content.chars().take(SKILL_INJECT_CAP).collect();
-            format!("{kept}\n\n…（技能内容过长，已截断）")
+            format!(
+                "{kept}\n\n…（技能内容过长，已截断。完整内容在上面「源文件」那一行给出的路径里，\
+                 需要细节时直接读它；同目录下可能还有 references/ 之类的补充文件。）"
+            )
         } else {
             content
         };
         injection.push_str(&format!(
-            "## Skill: {} (relevance: {:.1})\n{}\n\n",
-            m.skill_name, m.relevance_score, capped
+            "## Skill: {} (relevance: {:.1})\n源文件：{}\n{}\n\n",
+            m.skill_name,
+            m.relevance_score,
+            source_path.display(),
+            capped
         ));
     }
 
@@ -1111,6 +1131,69 @@ mod injection_visibility_tests {
             matched_keywords: vec!["长".into()],
             content_preview: String::new(),
         }]
+    }
+
+    /// 截断之后模型得**有办法读到剩下的**。
+    ///
+    /// 原来只留一句「已截断」，没有路径——那是死路。成熟技能远超 6000 字
+    /// （实测 hallmark 的 SKILL.md 有 67 KB，到这里只剩 9%），而且普遍靠正文里
+    /// 的 references 链接做渐进披露，那些链接就在截断点之后。
+    #[test]
+    fn a_truncated_skill_is_recoverable_through_the_source_path() {
+        let body = "尽".repeat(6500);
+        let (db, dir) = db_with_skill("recover", &body);
+        let out = build_skill_injection(&one_match(), &db);
+
+        let expected = dir.0.join("SKILL.md");
+        assert!(
+            out.contains(&expected.display().to_string()),
+            "注入块里没有源文件路径，模型拿到半份技能之后无路可走。\n实际输出开头：{}",
+            out.chars().take(200).collect::<String>()
+        );
+        assert!(
+            out.contains("已截断"),
+            "截断标记不能丢——它和路径是一对，缺一个模型都不会去读文件"
+        );
+    }
+
+    /// 没被截断的技能也给路径：`_core.md` 短不代表旁边没有更全的 SKILL.md
+    /// 和 references/。但**行为的其余部分一个字都不能变**。
+    #[test]
+    fn a_short_skill_gets_the_path_without_any_truncation_notice() {
+        let (db, dir) = db_with_skill("short_path", "很短的技能正文");
+        let out = build_skill_injection(&one_match(), &db);
+
+        assert!(out.contains("很短的技能正文"), "正文该原样注入");
+        assert!(
+            out.contains(&dir.0.join("SKILL.md").display().to_string()),
+            "短技能也要给路径"
+        );
+        assert!(
+            !out.contains("已截断"),
+            "没超上限却报了截断——那会让模型以为信息不全，白白去读文件"
+        );
+    }
+
+    /// 路径必须指向**真正读过的那个文件**。
+    ///
+    /// 读取端是「`{name}_core.md` 优先，读不到才退回 `SKILL.md`」。如果标头
+    /// 报的是 SKILL.md 而实际注入的是 `_core.md` 的内容，模型去读会拿到一份
+    /// 对不上的东西——比不给路径更糟。
+    #[test]
+    fn the_path_names_the_file_that_was_actually_read() {
+        let (db, dir) = db_with_skill("core_pref", "SKILL 正文");
+        std::fs::write(dir.0.join("长技能_core.md"), "CORE 正文").unwrap();
+        let out = build_skill_injection(&one_match(), &db);
+
+        assert!(out.contains("CORE 正文"), "有 _core.md 时该读它");
+        assert!(
+            out.contains(&dir.0.join("长技能_core.md").display().to_string()),
+            "读的是 _core.md，报的路径也必须是它"
+        );
+        assert!(
+            !out.contains(&dir.0.join("SKILL.md").display().to_string()),
+            "报了一个并没有读的文件，模型照着去读会拿到对不上的内容"
+        );
     }
 
     #[test]
