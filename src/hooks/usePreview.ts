@@ -7,9 +7,19 @@
  * 是一片空白。
  */
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { previewApi, workspaceApi, type PreviewFileEntry } from "@/lib/tauri-api";
 import type { PreviewType } from "@/types";
+
+/** Preview belongs to one workspace. Stale async results must not write. */
+export function previewRequestIsCurrent(
+  requestWorkspace: string,
+  requestSeq: number,
+  currentWorkspace: string,
+  currentSeq: number,
+): boolean {
+  return requestWorkspace === currentWorkspace && requestSeq === currentSeq;
+}
 
 export interface UsePreviewReturn {
   showPreviewPane: boolean;
@@ -33,17 +43,44 @@ export function usePreview(chatWorkspace: string): UsePreviewReturn {
   const [previewType, setPreviewType] = useState<PreviewType>("markdown");
   const [previewTextContent, setPreviewTextContent] = useState("");
   const [previewImageBase64, setPreviewImageBase64] = useState("");
+  const workspaceRef = useRef(chatWorkspace);
+  const requestSeqRef = useRef(0);
+  workspaceRef.current = chatWorkspace;
+
+  const resetPreview = useCallback(() => {
+    setPreviewFiles([]);
+    setSelectedPreviewFile("");
+    setPreviewType("markdown");
+    setPreviewTextContent("");
+    setPreviewImageBase64("");
+  }, []);
+
+  useEffect(() => {
+    requestSeqRef.current += 1;
+    resetPreview();
+  }, [chatWorkspace, resetPreview]);
 
   const loadPreviewFiles = useCallback(async () => {
-    if (!chatWorkspace || chatWorkspace === "direct") return;
-    try {
-      setPreviewFiles(await previewApi.listFiles(chatWorkspace));
-    } catch (e) {
-      console.error("[usePreview] Failed to load files:", e);
+    if (!chatWorkspace || chatWorkspace === "direct") {
+      resetPreview();
+      return;
     }
-  }, [chatWorkspace]);
+    const seq = ++requestSeqRef.current;
+    const workspace = chatWorkspace;
+    try {
+      const files = await previewApi.listFiles(workspace);
+      if (!previewRequestIsCurrent(workspace, seq, workspaceRef.current, requestSeqRef.current)) return;
+      setPreviewFiles(files);
+    } catch (e) {
+      if (!previewRequestIsCurrent(workspace, seq, workspaceRef.current, requestSeqRef.current)) return;
+      console.error("[usePreview] Failed to load files:", e);
+      setPreviewFiles([]);
+    }
+  }, [chatWorkspace, resetPreview]);
 
   const selectPreviewFile = useCallback(async (file: string) => {
+    const seq = ++requestSeqRef.current;
+    const workspace = chatWorkspace;
     setSelectedPreviewFile(file);
     const ext = file.split(".").pop()?.toLowerCase();
 
@@ -53,7 +90,8 @@ export function usePreview(chatWorkspace: string): UsePreviewReturn {
 
 
     try {
-      const preview = await workspaceApi.readFile(chatWorkspace, file);
+      const preview = await workspaceApi.readFile(workspace, file);
+      if (!previewRequestIsCurrent(workspace, seq, workspaceRef.current, requestSeqRef.current)) return;
       if (ext === "html" && preview.kind === "text") {
         // HTML 走**源码 + 沙箱 iframe**，不走 URL。
         //
@@ -86,6 +124,7 @@ export function usePreview(chatWorkspace: string): UsePreviewReturn {
         setPreviewTextContent(preview.truncated ? `${preview.content}\n\n…（内容过长，已截断）` : preview.content);
       }
     } catch (e) {
+      if (!previewRequestIsCurrent(workspace, seq, workspaceRef.current, requestSeqRef.current)) return;
       // 读不出来要说出来——以前只 console.error，面板留白，看上去像没反应。
       console.error("[usePreview] Failed to read file:", e);
       setPreviewType("markdown");
@@ -95,12 +134,16 @@ export function usePreview(chatWorkspace: string): UsePreviewReturn {
 
   const loadGitDiff = useCallback(async () => {
     if (!chatWorkspace || chatWorkspace === "direct") return;
+    const seq = ++requestSeqRef.current;
+    const workspace = chatWorkspace;
     setSelectedPreviewFile("Git Diff");
     setPreviewType("diff");
     try {
-      const diffText = await previewApi.getGitDiff(chatWorkspace);
+      const diffText = await previewApi.getGitDiff(workspace);
+      if (!previewRequestIsCurrent(workspace, seq, workspaceRef.current, requestSeqRef.current)) return;
       setPreviewTextContent(diffText);
     } catch (e) {
+      if (!previewRequestIsCurrent(workspace, seq, workspaceRef.current, requestSeqRef.current)) return;
       console.error("[usePreview] Failed to get git diff:", e);
       setPreviewTextContent(`读取失败：${String(e)}`);
     }

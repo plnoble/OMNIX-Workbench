@@ -30,12 +30,10 @@ pub struct PlatformApiKey {
     pub created_at: String,
 }
 
-/// Mask an API key for display: show first 4 and last 4 chars, middle with dots
+/// Mask an API key for display. Byte slicing panics on non-UTF-8 boundaries
+/// (Chinese / emoji pasted into the key field); character masking does not.
 fn mask_api_key(key: &str) -> String {
-    if key.len() <= 8 {
-        return "*".repeat(key.len());
-    }
-    format!("{}...{}", &key[..4], &key[key.len() - 4..])
+    crate::crypto::mask_secret(key)
 }
 
 /// Add an API key to a platform (encrypted)
@@ -337,6 +335,85 @@ mod key_storage_tests {
         assert_eq!(platform_keys(&db, "p3").0.len(), 1);
     }
 
+    /// R05：INSERT 失败必须回滚，旧列原值还在，不能只看迁移计数。
+    #[test]
+    fn insert_failure_does_not_clear_the_legacy_column() {
+        let db = temp_db("mig-fail");
+        seed_legacy(&db, "p-fail", "sk-must-survive");
+        let conn = db.get_connection().unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER reject_mig_key BEFORE INSERT ON platform_api_keys
+             BEGIN SELECT RAISE(ABORT, 'fixture key migration failure'); END;",
+        )
+        .unwrap();
+        drop(conn);
+
+        let error = migrate_legacy_plaintext_keys(&db).expect_err("写入失败应上报");
+        assert!(error.contains("fixture key migration failure"), "{error}");
+        assert_eq!(legacy_column(&db, "p-fail"), "sk-must-survive");
+        let stored: i64 = db
+            .get_connection()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM platform_api_keys WHERE platform_id = 'p-fail'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stored, 0, "失败后新表不能留下半成品");
+    }
+
+    /// R05：稳定 ID 冲突时也不能清空原值；修好后重试仍能搬。
+    #[test]
+    fn id_conflict_keeps_the_original_secret_and_retry_migrates() {
+        let db = temp_db("mig-id");
+        seed_legacy(&db, "p-id", "sk-original");
+        let conn = db.get_connection().unwrap();
+        conn.execute(
+            "INSERT INTO platform_api_keys (id, platform_id, encrypted_key, label, is_active)
+             VALUES ('key_mig_p-id_0', 'p-id', ?1, '占用', 1)",
+            params![crate::crypto::encrypt("sk-other")],
+        )
+        .unwrap();
+        drop(conn);
+
+        let error = migrate_legacy_plaintext_keys(&db).expect_err("ID 冲突应停止");
+        assert!(error.contains("校验失败") || error.contains("p-id"), "{error}");
+        assert_eq!(legacy_column(&db, "p-id"), "sk-original");
+
+        let conn = db.get_connection().unwrap();
+        conn.execute("DELETE FROM platform_api_keys WHERE id = 'key_mig_p-id_0'", [])
+            .unwrap();
+        drop(conn);
+
+        assert_eq!(migrate_legacy_plaintext_keys(&db).expect("重试"), 1);
+        assert_eq!(legacy_column(&db, "p-id"), "");
+        assert_eq!(platform_keys(&db, "p-id").0, vec!["sk-original".to_string()]);
+    }
+
+    /// R05：两个平台时后一个失败，前一个的写入也必须一起回滚。
+    #[test]
+    fn partial_migration_rolls_back_every_platform() {
+        let db = temp_db("mig-partial");
+        seed_legacy(&db, "p-a", "sk-a");
+        seed_legacy(&db, "p-b", "sk-b");
+        let conn = db.get_connection().unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER reject_second BEFORE INSERT ON platform_api_keys
+             WHEN new.platform_id = 'p-b'
+             BEGIN SELECT RAISE(ABORT, 'fixture second platform failure'); END;",
+        )
+        .unwrap();
+        drop(conn);
+
+        let error = migrate_legacy_plaintext_keys(&db).expect_err("部分失败应整批回滚");
+        assert!(error.contains("fixture second platform failure"), "{error}");
+        assert_eq!(legacy_column(&db, "p-a"), "sk-a");
+        assert_eq!(legacy_column(&db, "p-b"), "sk-b");
+        let stored: i64 = db
+            .get_connection()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM platform_api_keys", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stored, 0, "部分失败后两个平台的新表写入都必须回滚");
+    }
+
     /// **防复发的那一条。**
     ///
     /// `get_model_platforms` 的返回值会整个过 IPC 到前端。以后谁把 `api_key`
@@ -433,5 +510,14 @@ mod key_storage_tests {
         );
         let (keys, _) = platform_keys(&db, "p5");
         assert_eq!(keys, vec![secret.to_string()]);
+    }
+
+    #[test]
+    fn masking_non_ascii_input_does_not_panic() {
+        assert_eq!(mask_api_key(""), "");
+        assert_eq!(mask_api_key("short"), "••••");
+        assert_eq!(mask_api_key("sk-abcdefghijklmnop"), "sk-a...mnop");
+        assert_eq!(mask_api_key("这是一段用于掩码的密钥测试字符串"), "这是一段...试字符串");
+        let _ = mask_api_key("😀😁😂🤣密钥");
     }
 }

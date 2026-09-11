@@ -336,33 +336,30 @@ pub fn resolve_embedding_platform(
     let conn = db.get_connection().map_err(|e| e.to_string())?;
 
     if let Some(pid) = platform_id {
-        // Use specified platform
-        let (api_key, api_address, api_type) = conn
+        // Use specified platform. Decrypt through the shared resolver so we
+        // never send ENC:v2 ciphertext or an emptied legacy column.
+        let (api_address, api_type): (String, String) = conn
             .prepare(
-                "SELECT COALESCE(
-                    (SELECT encrypted_key FROM platform_api_keys
-                     WHERE platform_id = mp.id AND is_active = 1 AND is_enabled = 1
-                     ORDER BY priority DESC, created_at ASC LIMIT 1),
-                    mp.api_key
-                 ), mp.api_address, mp.api_type
-                 FROM model_platforms mp WHERE mp.id = ?1 AND mp.is_enabled = 1",
+                "SELECT api_address, api_type FROM model_platforms
+                 WHERE id = ?1 AND is_enabled = 1",
             )
             .map_err(|e| e.to_string())?
             .query_row(params![pid], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })
             .map_err(|e| format!("Platform '{}' not found or disabled: {}", pid, e))?;
+        let api_key = crate::commands::platform_keys(db, pid)
+            .0
+            .into_iter()
+            .next()
+            .unwrap_or_default();
         return Ok((api_key, api_address, api_type, model_name.to_string()));
     }
 
     // Auto-detect: find platform_models where has_embedding = 1
-    let result = conn
+    let (actual_model, pid, api_address, api_type): (String, String, String, String) = conn
         .prepare(
-            "SELECT pm.model_name, mp.id, mp.api_key, mp.api_address, mp.api_type
+            "SELECT pm.model_name, mp.id, mp.api_address, mp.api_type
              FROM platform_models pm
              JOIN model_platforms mp ON pm.platform_id = mp.id
              WHERE pm.has_embedding = 1 AND pm.is_enabled = 1 AND mp.is_enabled = 1
@@ -372,10 +369,10 @@ pub fn resolve_embedding_platform(
         .map_err(|e| e.to_string())?
         .query_row(params![model_name], |row| {
             Ok((
-                row.get::<_, String>(2)?, // api_key
-                row.get::<_, String>(3)?, // api_address
-                row.get::<_, String>(4)?, // api_type
-                row.get::<_, String>(0)?, // model_name
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
             ))
         })
         .map_err(|e| {
@@ -384,8 +381,12 @@ pub fn resolve_embedding_platform(
                 model_name, e
             )
         })?;
-
-    Ok(result)
+    let api_key = crate::commands::platform_keys(db, &pid)
+        .0
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    Ok((api_key, api_address, api_type, actual_model))
 }
 
 /// Generate embeddings for a batch of texts using the specified model.
@@ -1681,5 +1682,109 @@ mod search_scoping_tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].chunk_id, "plain");
         assert!(hits[0].vector_score.is_none());
+    }
+}
+
+#[cfg(test)]
+mod embedding_credential_tests {
+    use super::*;
+    use crate::commands::{migrate_legacy_plaintext_keys, save_model_platform_core, ModelPlatform};
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+
+    fn fixture(tag: &str) -> DbManager {
+        let path = std::env::temp_dir().join(format!(
+            "omnix_kb_auth_{tag}_{}_{}.sqlite",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let _ = std::fs::remove_file(&path);
+        DbManager::new_with_path(path)
+    }
+
+    fn platform(id: &str, key: &str, address: &str) -> ModelPlatform {
+        ModelPlatform {
+            id: id.into(),
+            name: "Embedding fixture".into(),
+            api_type: "openai".into(),
+            api_key: key.into(),
+            api_address: address.into(),
+            is_enabled: true,
+            weight: 1,
+            priority: 0,
+        }
+    }
+
+    fn capture_one_request() -> (String, Arc<Mutex<Option<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = format!("http://{}", listener.local_addr().expect("addr"));
+        let captured = Arc::new(Mutex::new(None));
+        let slot = Arc::clone(&captured);
+        thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 4096];
+                if let Ok(n) = stream.read(&mut buf) {
+                    *slot.lock().unwrap() = Some(String::from_utf8_lossy(&buf[..n]).into_owned());
+                }
+                let body = br#"{"data":[{"index":0,"embedding":[0.1,0.2]}]}"#;
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(header.as_bytes());
+                let _ = stream.write_all(body);
+            }
+        });
+        (addr, captured)
+    }
+
+    fn authorization(raw: &str) -> Option<String> {
+        raw.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            (name.eq_ignore_ascii_case("authorization")).then(|| value.trim().to_string())
+        })
+    }
+
+    #[test]
+    fn specified_and_auto_branches_decrypt_the_active_key() {
+        let db = fixture("resolve");
+        save_model_platform_core(&db, &platform("p-embed", "sk-embed-live", "https://provider.example/v1")).unwrap();
+        db.get_connection()
+            .unwrap()
+            .execute(
+                "INSERT INTO platform_models (id, platform_id, model_name, has_embedding, is_enabled)
+                 VALUES ('p-embed:embed-model', 'p-embed', 'embed-model', 1, 1)",
+                [],
+            )
+            .unwrap();
+        migrate_legacy_plaintext_keys(&db).unwrap();
+
+        let specified = resolve_embedding_platform(&db, "embed-model", Some("p-embed")).unwrap();
+        assert_eq!(specified.0, "sk-embed-live");
+        assert!(!specified.0.contains("ENC:"));
+
+        let auto = resolve_embedding_platform(&db, "embed-model", None).unwrap();
+        assert_eq!(auto.0, "sk-embed-live");
+        assert!(!auto.0.contains("ENC:"));
+    }
+
+    #[tokio::test]
+    async fn generate_embeddings_sends_plaintext_not_ciphertext() {
+        let (addr, captured) = capture_one_request();
+        let db = fixture("http");
+        save_model_platform_core(&db, &platform("p-embed-http", "sk-embed-http", &addr)).unwrap();
+        migrate_legacy_plaintext_keys(&db).unwrap();
+
+        let vectors = generate_embeddings(&db, vec!["hello".into()], "embed-model", Some("p-embed-http"))
+            .await
+            .unwrap();
+        assert_eq!(vectors.len(), 1);
+
+        let raw = captured.lock().unwrap().clone().expect("request");
+        let header = authorization(&raw).expect("Authorization");
+        assert_eq!(header, "Bearer sk-embed-http");
+        assert!(!header.contains("ENC:"));
     }
 }

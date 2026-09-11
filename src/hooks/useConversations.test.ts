@@ -58,9 +58,20 @@ describe("pickConversationForSurface", () => {
     expect(pick).toEqual({ kind: "blank" });
   });
 
-  it("工作界面永远从干净的工作区选择开始，不悄悄重开上一个工作区", () => {
+  it("工作界面恢复该 Agent 最近一条工作会话，不要求先布置空桌面", () => {
     expect(
       pickConversationForSurface({ agent: "claude", surface: "work", conversations: list, currentConvId: "" })
+    ).toEqual({ kind: "select", id: "w1" });
+  });
+
+  it("该 Agent 没有工作会话时才开空编辑器", () => {
+    expect(
+      pickConversationForSurface({
+        agent: "gemini",
+        surface: "work",
+        conversations: list,
+        currentConvId: "",
+      })
     ).toEqual({ kind: "blank" });
   });
 

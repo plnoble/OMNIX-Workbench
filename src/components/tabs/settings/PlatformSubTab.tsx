@@ -44,7 +44,7 @@ export function PlatformSubTab() {
   const p = usePlatformsStore();
   const {
     platforms, selectedPlatformId, platformModels, modelTestingState,
-    fetchingModels, batchTesting,
+    fetchingModels, batchTesting, platformModelsError,
     selectPlatform: onSelectPlatform,
     togglePlatform: onTogglePlatform,
     deletePlatform: onDeletePlatform,
@@ -510,7 +510,18 @@ export function PlatformSubTab() {
               </div>
 
               <div className="flex-1 overflow-y-auto flex flex-col gap-2">
-                {platformModels.length === 0 ? (
+                {platformModelsError ? (
+                  <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-3 text-xs text-destructive">
+                    模型列表加载失败：{platformModelsError}
+                    <button
+                      type="button"
+                      className="ml-2 underline"
+                      onClick={() => void onSelectPlatform(selectedPlatform.id)}
+                    >
+                      重试
+                    </button>
+                  </div>
+                ) : platformModels.length === 0 ? (
                   <div className="text-center text-muted-foreground py-10 text-xs">
                     暂无可用模型，请点击上方"获取模型"自动从服务商同步。
                   </div>

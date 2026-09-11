@@ -90,7 +90,21 @@ export function AgentStrip({
   );
 }
 
-export function FirstScreen({ activeAgent, installed, onPrompt, onRedetect }: { activeAgent: string; installed: boolean; onPrompt: (prompt: string) => void; onRedetect?: () => Promise<void> }) {
+export function FirstScreen({
+  activeAgent,
+  installed,
+  onPrompt,
+  onRedetect,
+  recentWork,
+  onContinueRecent,
+}: {
+  activeAgent: string;
+  installed: boolean;
+  onPrompt: (prompt: string) => void;
+  onRedetect?: () => Promise<void>;
+  recentWork?: { title: string; workspacePath: string } | null;
+  onContinueRecent?: () => void;
+}) {
   const [redetecting, setRedetecting] = useState(false);
   return (
     <div className="first-screen mx-auto flex min-h-full max-w-4xl flex-col items-center justify-center px-6 py-6 text-center">
@@ -101,6 +115,18 @@ export function FirstScreen({ activeAgent, installed, onPrompt, onRedetect }: { 
       <p className="first-screen-description mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">
         先选择 Agent，再直接输入任务。复杂任务可以转团队；普通问答可以手动接入知识库。
       </p>
+      {recentWork && onContinueRecent && (
+        <button
+          type="button"
+          className="mt-5 w-full max-w-xl rounded-md border border-primary/30 bg-primary/10 px-4 py-3 text-left hover:bg-primary/15"
+          onClick={onContinueRecent}
+        >
+          <div className="text-sm font-semibold text-primary">继续最近工作</div>
+          <div className="mt-1 truncate text-xs text-muted-foreground">
+            {recentWork.title} · {recentWork.workspacePath.split(/[\\/]/).pop()}
+          </div>
+        </button>
+      )}
       {!installed && (
         <div className="mt-4 flex items-center gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-warning">
           <AlertTriangle className="h-4 w-4" />

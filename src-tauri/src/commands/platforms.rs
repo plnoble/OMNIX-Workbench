@@ -5,6 +5,9 @@ use rusqlite::params;
 use std::sync::Arc;
 use tauri::State;
 
+#[cfg(test)]
+mod save_tests;
+
 #[derive(Debug, Deserialize)]
 struct OllamaResponse {
     models: Vec<OllamaModel>,
@@ -351,19 +354,29 @@ pub fn save_model_platform(
     db: State<'_, Arc<DbManager>>,
     platform: ModelPlatform,
 ) -> Result<(), String> {
-    let conn = db.get_connection().map_err(|e| e.to_string())?;
-    // **不写 api_key 旧列。** `platform.api_key` 仍然是入参（新建平台时表单里顺手
-    // 填的那个 Key 走这条命令过来），但它的归宿是 `platform_api_keys`——前端存完
-    // 平台紧接着就会调 `add_platform_api_key` 把它加密入库。
-    //
-    // 以前这里会把同一个 Key **再明文写一遍**到 `model_platforms.api_key`：
-    // 读的那一半早就迁到新表了（`platform_keys()` 优先查新表），写的这一半没迁，
-    // 于是每加一个平台，密钥就同时以密文和明文两份存在。而 `crypto::decrypt`
-    // 对没有 `ENC:` 前缀的值原样返回，明文照样能用——所以一切「工作正常」，
-    // 没有任何征兆。
-    conn.execute(
-        "INSERT INTO model_platforms (id, name, api_type, api_address, is_enabled)
-         VALUES (?1, ?2, ?3, ?4, ?5)
+    save_model_platform_core(&db, &platform)
+}
+
+pub(crate) fn save_model_platform_core(
+    db: &DbManager,
+    platform: &ModelPlatform,
+) -> Result<(), String> {
+    input_validation::validate_id(&platform.id, "platform_id")?;
+    if platform.name.trim().is_empty() || platform.api_address.trim().is_empty() {
+        return Err("请填写平台显示名称和 API 基底地址".into());
+    }
+    let mut conn = db.get_connection().map_err(|e| e.to_string())?;
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+
+    // Existing databases define api_key as NOT NULL without a default. Supply
+    // an empty compatibility value on INSERT, but never overwrite it on UPDATE.
+    // The initial encrypted key and platform are committed together so a key
+    // storage failure cannot leave a platform that only appears to be configured.
+    tx.execute(
+        "INSERT INTO model_platforms (id, name, api_type, api_key, api_address, is_enabled, weight, priority)
+         VALUES (?1, ?2, ?3, '', ?4, ?5, ?6, ?7)
          ON CONFLICT(id) DO UPDATE SET
             name = excluded.name,
             api_type = excluded.api_type,
@@ -371,14 +384,45 @@ pub fn save_model_platform(
             is_enabled = excluded.is_enabled",
         params![
             platform.id,
-            platform.name,
+            platform.name.trim(),
             platform.api_type,
-            platform.api_address,
-            if platform.is_enabled { 1 } else { 0 }
+            platform.api_address.trim(),
+            if platform.is_enabled { 1 } else { 0 },
+            platform.weight,
+            platform.priority,
         ],
     )
     .map_err(|e| e.to_string())?;
-    Ok(())
+
+    let key = platform.api_key.trim();
+    if !key.is_empty() && platform.api_type != "ollama" {
+        let existing: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM platform_api_keys WHERE platform_id = ?1",
+            params![platform.id],
+            |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+        // Metadata edits and enable/disable requests must preserve existing keys.
+        // Additional keys continue to use the dedicated key-management commands.
+        if existing == 0 {
+            let encrypted = crate::crypto::encrypt(key);
+            tx.execute(
+                "INSERT INTO platform_api_keys (id, platform_id, encrypted_key, label, is_active)
+                 VALUES (?1, ?2, ?3, '主 Key', 1)",
+                params![
+                    format!("key_initial_{}", platform.id),
+                    platform.id,
+                    encrypted,
+                ],
+            ).map_err(|e| e.to_string())?;
+            // Match add_platform_api_key's compatibility mirror for consumers
+            // that still read the old column. Never persist the plaintext key.
+            tx.execute(
+                "UPDATE model_platforms SET api_key = ?1 WHERE id = ?2",
+                params![encrypted, platform.id],
+            ).map_err(|e| e.to_string())?;
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())
 }
 
 /// 把存量的 `model_platforms.api_key` 搬进 `platform_api_keys` 并清空旧列。
@@ -432,11 +476,16 @@ pub fn migrate_plaintext_secrets_in_place(db: &DbManager) -> Result<usize, Strin
     Ok(done)
 }
 
+/// 每个平台的读取、加密写入、完整性校验和旧列清理必须在同一事务里。
+/// INSERT 失败时回滚，旧列原值必须还能读回来。
 pub fn migrate_legacy_plaintext_keys(db: &DbManager) -> Result<usize, String> {
-    let conn = db.get_connection().map_err(|e| e.to_string())?;
+    let mut conn = db.get_connection().map_err(|e| e.to_string())?;
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
 
     let rows: Vec<(String, String)> = {
-        let mut stmt = conn
+        let mut stmt = tx
             .prepare(
                 "SELECT id, api_key FROM model_platforms
                  WHERE api_key IS NOT NULL AND TRIM(api_key) <> ''",
@@ -448,6 +497,7 @@ pub fn migrate_legacy_plaintext_keys(db: &DbManager) -> Result<usize, String> {
         mapped.flatten().collect()
     };
     if rows.is_empty() {
+        tx.commit().map_err(|e| e.to_string())?;
         return Ok(0);
     }
 
@@ -465,7 +515,7 @@ pub fn migrate_legacy_plaintext_keys(db: &DbManager) -> Result<usize, String> {
             // 读旧列，而旧列装的正是我们此刻要搬的东西——于是每一条都被判成重复，
             // 一条都搬不动。（这个坑我踩进去过一次，测试才是发现它的原因。）
             let existing: Vec<String> = {
-                let mut stmt = conn
+                let mut stmt = tx
                     .prepare("SELECT encrypted_key FROM platform_api_keys WHERE platform_id = ?1")
                     .map_err(|e| e.to_string())?;
                 let mapped = stmt
@@ -477,41 +527,66 @@ pub fn migrate_legacy_plaintext_keys(db: &DbManager) -> Result<usize, String> {
                 continue;
             }
             let already = existing.len() as i64;
-            let id = format!("key_mig_{}_{index}", chrono::Utc::now().timestamp_millis());
-            if conn
-                .execute(
-                    "INSERT INTO platform_api_keys (id, platform_id, encrypted_key, label, is_active)
-                     VALUES (?1, ?2, ?3, ?4, ?5)",
-                    params![
-                        id,
-                        platform_id,
-                        crate::crypto::encrypt(&plaintext),
-                        "迁移自旧配置",
-                        if already == 0 && index == 0 { 1 } else { 0 }
-                    ],
+            let id = format!("key_mig_{platform_id}_{index}");
+            let encrypted = crate::crypto::encrypt(&plaintext);
+            tx.execute(
+                "INSERT INTO platform_api_keys (id, platform_id, encrypted_key, label, is_active)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(id) DO NOTHING",
+                params![
+                    id,
+                    platform_id,
+                    encrypted,
+                    "迁移自旧配置",
+                    if already == 0 && index == 0 { 1 } else { 0 }
+                ],
+            )
+            .map_err(|e| format!("平台 {platform_id} 的密钥迁移写入失败：{e}"))?;
+            let stored: String = tx
+                .query_row(
+                    "SELECT encrypted_key FROM platform_api_keys WHERE id = ?1",
+                    params![id],
+                    |row| row.get(0),
                 )
-                .is_ok()
-            {
-                moved += 1;
+                .map_err(|e| format!("平台 {platform_id} 的密钥迁移后无法读回：{e}"))?;
+            if crate::crypto::decrypt(&stored) != plaintext {
+                return Err(format!("平台 {platform_id} 的密钥迁移校验失败，已停止以免清空原值"));
             }
+            moved += 1;
         }
-        // 清空旧列。搬失败的话上面 `moved` 不会涨，但这里照样清——留着明文比丢一个
-        // Key 更糟，而 Key 本身用户还能重新填。
-        let _ = conn.execute(
+        // 只有这个平台的凭据都写入并校验成功后才清旧列。失败走上面的 Err，事务回滚。
+        tx.execute(
             "UPDATE model_platforms SET api_key = '' WHERE id = ?1",
             params![platform_id],
-        );
+        )
+        .map_err(|e| format!("平台 {platform_id} 清空旧密钥列失败：{e}"))?;
     }
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(moved)
 }
 
 #[tauri::command]
 pub fn delete_model_platform(db: State<'_, Arc<DbManager>>, id: String) -> Result<(), String> {
     input_validation::validate_id(&id, "id")?;
-    let conn = db.get_connection().map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM model_platforms WHERE id = ?1", params![id])
+    delete_model_platform_core(&db, &id)
+}
+
+pub(crate) fn delete_model_platform_core(db: &DbManager, id: &str) -> Result<(), String> {
+    let mut conn = db.get_connection().map_err(|e| e.to_string())?;
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
-    Ok(())
+    // `platform_api_keys` has no FK on upgraded databases. Delete keys in the
+    // same transaction as the platform so a vanished connection cannot leave
+    // encrypted credentials behind. `platform_models` already cascades.
+    tx.execute(
+        "DELETE FROM platform_api_keys WHERE platform_id = ?1",
+        params![id],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM model_platforms WHERE id = ?1", params![id])
+        .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1280,21 +1355,7 @@ pub async fn fetch_remote_models(
     db: State<'_, Arc<DbManager>>,
     platform_id: String,
 ) -> Result<Vec<PlatformModel>, String> {
-    let (api_type, api_key, api_address) = {
-        let conn = db.get_connection().map_err(|e| e.to_string())?;
-        let mut stmt = conn
-            .prepare("SELECT api_type, api_key, api_address FROM model_platforms WHERE id = ?1")
-            .map_err(|e| e.to_string())?;
-        stmt.query_row(params![platform_id], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        })
-        .map_err(|e| e.to_string())?
-    };
-    let api_key = crate::crypto::decrypt(&api_key);
+    let (api_type, api_key, api_address) = platform_connection_config(&db, &platform_id)?;
 
     // 同一个平台的 api_address 贯穿下面所有分支，所以在这里一次定客户端：
     // 地址是 localhost（Ollama / 本地 vLLM）就绕开系统代理，公网上游保留。
@@ -1793,21 +1854,7 @@ pub async fn batch_check_models(
     db: State<'_, Arc<DbManager>>,
     platform_id: String,
 ) -> Result<Vec<PlatformModel>, String> {
-    let (api_type, api_key, api_address) = {
-        let conn = db.get_connection().map_err(|e| e.to_string())?;
-        let mut stmt = conn
-            .prepare("SELECT api_type, api_key, api_address FROM model_platforms WHERE id = ?1")
-            .map_err(|e| e.to_string())?;
-        stmt.query_row(params![platform_id], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        })
-        .map_err(|e| e.to_string())?
-    };
-    let api_key = crate::crypto::decrypt(&api_key);
+    let (api_type, api_key, api_address) = platform_connection_config(&db, &platform_id)?;
 
     // No API Key → mark all models as no_api_key without making requests
     if api_type != "ollama" && api_key.trim().is_empty() {
@@ -2089,6 +2136,25 @@ mod available_model_tests {
     }
 }
 
+/// Discovery and batch checks use the same key source as routing and individual
+/// checks. Startup migration clears the legacy column, so reading it directly
+/// would make a configured platform lose authentication after every restart.
+pub(crate) fn platform_connection_config(
+    db: &DbManager,
+    platform_id: &str,
+) -> Result<(String, String, String), String> {
+    let (api_type, api_address): (String, String) = {
+        let conn = db.get_connection().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT api_type, api_address FROM model_platforms WHERE id = ?1",
+            params![platform_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).map_err(|e| e.to_string())?
+    };
+    let api_key = platform_keys(db, platform_id).0.into_iter().next().unwrap_or_default();
+    Ok((api_type, api_key, api_address))
+}
+
 /// 一个平台可用的 API Key，按使用顺序：活跃的在前。
 ///
 /// **这是唯一一处解析 Key 的地方。** 以前有三份各不相同的实现：会话网关读
@@ -2103,14 +2169,23 @@ pub fn platform_keys(db: &DbManager, platform_id: &str) -> (Vec<String>, Vec<Opt
         return (keys, key_ids);
     };
 
+    let mut found_new_table = false;
     if let Ok(mut statement) = conn.prepare(
-        "SELECT id, encrypted_key FROM platform_api_keys
+        "SELECT id, encrypted_key, COALESCE(is_enabled, 1) FROM platform_api_keys
          WHERE platform_id = ?1 ORDER BY is_active DESC, created_at ASC",
     ) {
         if let Ok(rows) = statement.query_map(params![platform_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
         }) {
-            for (id, encrypted) in rows.flatten() {
+            for (id, encrypted, enabled) in rows.flatten() {
+                found_new_table = true;
+                if enabled == 0 {
+                    continue;
+                }
                 let key = crate::crypto::decrypt(&encrypted);
                 if !key.trim().is_empty() && !keys.contains(&key) {
                     keys.push(key);
@@ -2121,7 +2196,9 @@ pub fn platform_keys(db: &DbManager, platform_id: &str) -> (Vec<String>, Vec<Opt
     }
 
     // 旧列作为回落：老配置还没迁到 platform_api_keys，逗号分隔的多 Key 也在这。
-    if keys.is_empty() {
+    // 新表已有记录时不要回落——禁用全部 Key 必须表现为没有凭据，而不是把
+    // 启动迁移清空前的密文/空串又发出去。
+    if keys.is_empty() && !found_new_table {
         if let Ok(legacy) = conn.query_row(
             "SELECT api_key FROM model_platforms WHERE id = ?1",
             params![platform_id],

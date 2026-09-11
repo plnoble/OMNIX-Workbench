@@ -297,34 +297,96 @@ pub fn restore_checkpoint(
     checkpoint_id: String,
     db: State<'_, Arc<DbManager>>,
 ) -> Result<Checkpoint, String> {
-    let (workspace_path, ref_name) = lookup_checkpoint(&db, &checkpoint_id)?;
+    restore_checkpoint_core(&db, &checkpoint_id)
+}
+
+/// Restore a checkpoint after a successful pre-restore backup.
+///
+/// Stages are named in errors so a failed rewind can be diagnosed without
+/// guessing whether the working tree was already overwritten.
+pub(crate) fn restore_checkpoint_core(
+    db: &DbManager,
+    checkpoint_id: &str,
+) -> Result<Checkpoint, String> {
+    let (workspace_path, ref_name) = lookup_checkpoint(db, checkpoint_id)?;
     let root = canonical_root(&workspace_path)?;
 
-    // Make the rewind itself undoable.
-    let _ = create_checkpoint_core(&db, &workspace_path, "", "回退前自动备份");
+    git(
+        &root,
+        &["rev-parse", "--verify", "--quiet", &ref_name],
+        None,
+        &[],
+    )
+    .map_err(|error| {
+        format!("验证目标检查点失败（{ref_name}），已停止恢复以免覆盖当前改动：{error}")
+    })?;
 
-    // Write every file from the checkpoint tree back to the working tree.
+    let backup = create_checkpoint_core(db, &workspace_path, "", "回退前自动备份").map_err(
+        |error| format!("回退前自动备份失败，已停止恢复以免丢失当前改动：{error}"),
+    )?;
+    if backup.skipped {
+        return Err(
+            "回退前自动备份未能创建（非 Git 工作区），已停止恢复以免丢失当前改动".into(),
+        );
+    }
+    git(
+        &root,
+        &["rev-parse", "--verify", "--quiet", &backup.ref_name],
+        None,
+        &[],
+    )
+    .map_err(|error| {
+        format!(
+            "回退前备份引用无法验证（{}），已停止恢复以免丢失当前改动：{error}",
+            backup.ref_name
+        )
+    })?;
+
     let index = temp_index();
     let _ = std::fs::remove_file(&index);
-    git(&root, &["read-tree", &ref_name], Some(&index), &[])?;
-    git(&root, &["checkout-index", "-a", "-f"], Some(&index), &[])?;
+    git(&root, &["read-tree", &ref_name], Some(&index), &[])
+        .map_err(|error| format!("恢复检查点失败（读取树）：{error}"))?;
+    git(&root, &["checkout-index", "-a", "-f"], Some(&index), &[])
+        .map_err(|error| format!("恢复检查点失败（检出文件）：{error}"))?;
 
-    // Remove files that exist now but were not in the checkpoint (newly created).
-    let checkpoint_files: HashSet<String> = git(&root, &["ls-tree", "-r", "--name-only", &ref_name], None, &[])?
-        .lines()
-        .map(str::to_string)
-        .collect();
-    let tracked = git(&root, &["ls-files"], None, &[]).unwrap_or_default();
-    let untracked = git(&root, &["ls-files", "--others", "--exclude-standard"], None, &[]).unwrap_or_default();
+    let checkpoint_files: HashSet<String> = git(
+        &root,
+        &["ls-tree", "-r", "--name-only", &ref_name],
+        None,
+        &[],
+    )
+    .map_err(|error| format!("恢复检查点失败（枚举检查点文件）：{error}"))?
+    .lines()
+    .map(str::to_string)
+    .collect();
+    let tracked = git(&root, &["ls-files"], None, &[])
+        .map_err(|error| format!("恢复检查点失败（枚举已跟踪文件）：{error}"))?;
+    let untracked = git(
+        &root,
+        &["ls-files", "--others", "--exclude-standard"],
+        None,
+        &[],
+    )
+    .map_err(|error| format!("恢复检查点失败（枚举未跟踪文件）：{error}"))?;
+    let mut delete_errors = Vec::new();
     for path in tracked.lines().chain(untracked.lines()) {
         if !path.is_empty() && !checkpoint_files.contains(path) {
-            let _ = std::fs::remove_file(root.join(path));
+            if let Err(error) = std::fs::remove_file(root.join(path)) {
+                delete_errors.push(format!("{path}: {error}"));
+            }
         }
     }
     let _ = std::fs::remove_file(&index);
 
+    if !delete_errors.is_empty() {
+        return Err(format!(
+            "检查点文件已检出，但删除多余文件时部分失败：{}",
+            delete_errors.join("; ")
+        ));
+    }
+
     Ok(Checkpoint {
-        id: checkpoint_id,
+        id: checkpoint_id.to_string(),
         workspace_path: root.to_string_lossy().into_owned(),
         session_id: String::new(),
         label: "已回退".into(),
@@ -409,7 +471,7 @@ mod tests {
         assert_eq!(n.status, "A");
 
         // Restore: a.txt reverts, new.txt is removed.
-        restore_for_test(&db, &cp.id).expect("restore");
+        restore_checkpoint_core(&db, &cp.id).expect("restore");
         // Normalize line endings — git autocrlf may rewrite LF to CRLF on Windows.
         let restored = std::fs::read_to_string(root.join("a.txt")).unwrap().replace("\r\n", "\n");
         assert_eq!(restored, "original\n");
@@ -420,24 +482,97 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    /// Mirrors `restore_checkpoint`'s body without a Tauri `State`.
-    fn restore_for_test(db: &DbManager, id: &str) -> Result<(), String> {
-        let (workspace_path, ref_name) = lookup_checkpoint(db, id)?;
-        let root = canonical_root(&workspace_path)?;
-        let index = temp_index();
-        let _ = std::fs::remove_file(&index);
-        git(&root, &["read-tree", &ref_name], Some(&index), &[])?;
-        git(&root, &["checkout-index", "-a", "-f"], Some(&index), &[])?;
-        let checkpoint_files: HashSet<String> = git(&root, &["ls-tree", "-r", "--name-only", &ref_name], None, &[])?
-            .lines().map(str::to_string).collect();
-        let tracked = git(&root, &["ls-files"], None, &[]).unwrap_or_default();
-        let untracked = git(&root, &["ls-files", "--others", "--exclude-standard"], None, &[]).unwrap_or_default();
-        for p in tracked.lines().chain(untracked.lines()) {
-            if !p.is_empty() && !checkpoint_files.contains(p) {
-                let _ = std::fs::remove_file(root.join(p));
-            }
+    fn git_available() -> bool {
+        Command::new("git").arg("--version").output().is_ok()
+    }
+
+    fn unique_path(prefix: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "{prefix}_{}_{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ))
+    }
+
+    fn seed_git_workspace(root: &Path) {
+        std::fs::create_dir_all(root).expect("root");
+        run(root, &["init", "-q"]);
+        std::fs::write(root.join("a.txt"), "original\n").expect("a");
+        run(root, &["add", "-A"]);
+        run(root, &["commit", "-qm", "init"]);
+    }
+
+    #[test]
+    fn restore_stops_when_pre_restore_backup_cannot_write_a_ref() {
+        if !git_available() {
+            return;
         }
-        let _ = std::fs::remove_file(&index);
-        Ok(())
+        let root = unique_path("omnix_cp_nobackup");
+        seed_git_workspace(&root);
+        let db_path = unique_path("omnix_cp_nobackup_db").with_extension("sqlite");
+        let db = DbManager::new_runtime_test(db_path.clone());
+        db.init_schema().expect("schema");
+
+        let cp = create_checkpoint_core(&db, root.to_string_lossy().as_ref(), "s1", "before edit")
+            .expect("checkpoint");
+        std::fs::write(root.join("a.txt"), "user work that must survive\n").expect("edit");
+        std::fs::write(root.join("keep.txt"), "untracked work\n").expect("untracked");
+
+        // Fail the pre-restore snapshot at the DB insert. The git ref for the
+        // original checkpoint stays valid, so this is specifically "backup
+        // failed", not "target checkpoint missing".
+        db.get_connection()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER reject_pre_restore_backup BEFORE INSERT ON checkpoints
+                 BEGIN SELECT RAISE(ABORT, 'fixture backup storage failure'); END;",
+            )
+            .unwrap();
+
+        let error = restore_checkpoint_core(&db, &cp.id).expect_err("backup must fail");
+        assert!(
+            error.contains("回退前自动备份失败") || error.contains("已停止恢复"),
+            "failure must stop restore before overwrite: {error}"
+        );
+        let kept = std::fs::read_to_string(root.join("a.txt"))
+            .unwrap()
+            .replace("\r\n", "\n");
+        assert_eq!(kept, "user work that must survive\n");
+        assert!(root.join("keep.txt").exists(), "untracked work must not be deleted");
+
+        drop(db);
+        let _ = std::fs::remove_file(db_path);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn restore_stops_when_the_target_checkpoint_ref_is_missing() {
+        if !git_available() {
+            return;
+        }
+        let root = unique_path("omnix_cp_missingref");
+        seed_git_workspace(&root);
+        let db_path = unique_path("omnix_cp_missingref_db").with_extension("sqlite");
+        let db = DbManager::new_runtime_test(db_path.clone());
+        db.init_schema().expect("schema");
+
+        let cp = create_checkpoint_core(&db, root.to_string_lossy().as_ref(), "s1", "before edit")
+            .expect("checkpoint");
+        git(&root, &["update-ref", "-d", &cp.ref_name], None, &[]).expect("drop ref");
+        std::fs::write(root.join("a.txt"), "do not overwrite me\n").expect("edit");
+
+        let error = restore_checkpoint_core(&db, &cp.id).expect_err("missing ref");
+        assert!(
+            error.contains("验证目标检查点失败"),
+            "must refuse before backup/overwrite: {error}"
+        );
+        let kept = std::fs::read_to_string(root.join("a.txt"))
+            .unwrap()
+            .replace("\r\n", "\n");
+        assert_eq!(kept, "do not overwrite me\n");
+
+        drop(db);
+        let _ = std::fs::remove_file(db_path);
+        let _ = std::fs::remove_dir_all(root);
     }
 }

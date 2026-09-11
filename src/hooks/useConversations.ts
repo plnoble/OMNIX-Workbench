@@ -208,15 +208,13 @@ export function pickConversationForSurface(args: {
   if (!current && args.currentConvId) {
     return { kind: "keep" };
   }
-  // 「对话」恢复该 Agent 最近一条普通会话；「工作」永远从干净的工作区选择开始，
-  // 而不是悄悄重开上一个工作区。
-  if (!wantWork) {
-    const candidates = args.conversations
-      .filter((conv) => conv.active_agent === args.agent && !conversationIsWork(conv))
-      .sort((a, b) => b.created_at.localeCompare(a.created_at));
-    if (candidates.length > 0) {
-      return { kind: "select", id: candidates[0].id };
-    }
+  // 「对话」恢复该 Agent 最近一条普通会话；「工作」恢复最近一条工作会话。
+  // 没有可恢复项才开空编辑器。进行中的会话靠上面的 keep 路径保住。
+  const candidates = args.conversations
+    .filter((conv) => conv.active_agent === args.agent && conversationIsWork(conv) === wantWork)
+    .sort((a, b) => b.created_at.localeCompare(a.created_at));
+  if (candidates.length > 0) {
+    return { kind: "select", id: candidates[0].id };
   }
   return { kind: "blank" };
 }

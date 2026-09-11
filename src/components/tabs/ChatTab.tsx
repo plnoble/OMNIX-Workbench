@@ -31,6 +31,7 @@ import {
   X,
 } from "lucide-react";
 import { WorkspaceCheckpoints } from "@/components/WorkspaceCheckpoints";
+import { TaskEvidenceShelf } from "@/components/TaskEvidenceShelf";
 import { buildDecisionReply, type DecisionSpec } from "@/lib/decisionBlock";
 import { WorktreePanel } from "@/components/WorktreePanel";
 import { FilePreviewPanel } from "@/components/FilePreviewPanel";
@@ -42,7 +43,7 @@ import { RequirementModal } from "@/components/modals/RequirementModal";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { knowledgeApi, promptGuardApi, runtimeApi, searchApi, shellApi, workspaceApi, notesApi, sddApi, upstreamAccountApi, conversationApi, type UpstreamAccountOption } from "@/lib/tauri-api";
+import { knowledgeApi, promptGuardApi, runtimeApi, searchApi, shellApi, workspaceApi, notesApi, sddApi, teamRunApi, upstreamAccountApi, conversationApi, type UpstreamAccountOption } from "@/lib/tauri-api";
 import type { ConversationInfo } from "@/types";
 import { getRuntimeAgentId, isAcpAgent } from "@/lib/agentRegistry";
 import type {
@@ -60,6 +61,22 @@ import { AgentStrip, FirstScreen, KnowledgePicker, formatKnowledgeContext, Appro
 import type { RuntimeSendConfig } from "@/hooks/useConversations";
 import { CONVERSATION_PAGE_SIZE, MESSAGE_PAGE_SIZE } from "@/hooks/useConversations";
 import { useConversationsStore } from "@/store/AppStore";
+import {
+  applyPanelRequest,
+  closePanel,
+  emptyEvidence,
+  emptyTaskLayout,
+  evidenceFromAgentRun,
+  evidenceStorageKey,
+  layoutStorageKey,
+  parseStoredEvidence,
+  parseStoredLayout,
+  pickRecentWork,
+  recordVerification,
+  upsertArtifact,
+  type TaskDesktopLayout,
+  type TaskEvidenceBundle,
+} from "@/lib/taskDesktop";
 
 export interface ChatTabProps {
   /** 当前是「对话」还是「工作」——顶层页签状态，不属于会话 store。 */
@@ -97,6 +114,7 @@ export function ChatTab({ surface, onSuggestTeam }: ChatTabProps) {
     chatInput,
     chatWorkspace,
     currentConvId,
+    conversations,
     activeSessions,
     pendingApproval,
     activeGoal,
@@ -219,6 +237,9 @@ export function ChatTab({ surface, onSuggestTeam }: ChatTabProps) {
   const [workspaceSnapshot, setWorkspaceSnapshot] = useState<WorkspaceSnapshot | null>(null);
   const [previewPath, setPreviewPath] = useState<string | null>(null);
   const [workspaceLoading, setWorkspaceLoading] = useState(false);
+  const [desktopLayout, setDesktopLayout] = useState<TaskDesktopLayout | null>(null);
+  const [taskEvidence, setTaskEvidence] = useState<TaskEvidenceBundle | null>(null);
+  const recentWork = surface === "work" ? pickRecentWork(conversations, activeAgent) : null;
   // F1: per-agent upstream account switcher (OAuth + api-key), switchable mid-chat.
   const [upstreamAccounts, setUpstreamAccounts] = useState<UpstreamAccountOption[]>([]);
   const loadUpstreamAccounts = useCallback(() => {
@@ -273,6 +294,94 @@ export function ChatTab({ surface, onSuggestTeam }: ChatTabProps) {
   useEffect(() => {
     setWorkspacePanelOpen(isWorkspaceMode && window.innerWidth >= 1000);
   }, [isWorkspaceMode]);
+
+  useEffect(() => {
+    if (surface !== "work" || !currentConvId || !isWorkspaceMode) {
+      setDesktopLayout(null);
+      setTaskEvidence(null);
+      return;
+    }
+    const restored = parseStoredLayout(localStorage.getItem(layoutStorageKey(currentConvId)), currentConvId);
+    const next = restored ?? emptyTaskLayout(currentConvId, chatWorkspace, currentConvId);
+    setDesktopLayout(next);
+    const restoredEvidence = parseStoredEvidence(localStorage.getItem(evidenceStorageKey(currentConvId)), currentConvId);
+    setTaskEvidence(restoredEvidence ?? emptyEvidence(currentConvId));
+    const preview = next.panels.find((panel) => panel.kind === "preview" || panel.kind === "files" || panel.kind === "diff");
+    setPreviewPath(preview?.resource ?? null);
+    setWorkspacePanelOpen(true);
+  }, [surface, currentConvId, isWorkspaceMode]); // chatWorkspace is the locator inside the stored layout, not a restore trigger
+
+  const persistDesktopLayout = useCallback((next: TaskDesktopLayout) => {
+    setDesktopLayout(next);
+    localStorage.setItem(layoutStorageKey(next.taskId), JSON.stringify(next));
+  }, []);
+
+  const persistEvidence = useCallback((next: TaskEvidenceBundle) => {
+    setTaskEvidence(next);
+    localStorage.setItem(evidenceStorageKey(next.taskId), JSON.stringify(next));
+  }, []);
+
+  const openTaskPanel = useCallback((
+    kind: "files" | "diff" | "logs" | "preview" | "tests",
+    resource: string,
+    stealFocus = false,
+  ) => {
+    if (!currentConvId || !isWorkspaceMode) return;
+    const base = desktopLayout ?? emptyTaskLayout(currentConvId, chatWorkspace, currentConvId);
+    persistDesktopLayout(applyPanelRequest(base, {
+      id: `${kind}:${resource}`,
+      kind,
+      taskId: currentConvId,
+      resource,
+      stealFocus,
+    }));
+    if (kind === "preview" || kind === "files" || kind === "diff") {
+      setPreviewPath(resource);
+      if (stealFocus) setWorkspacePanelOpen(true);
+    }
+  }, [currentConvId, isWorkspaceMode, desktopLayout, chatWorkspace, persistDesktopLayout]);
+
+  const closeTaskPanel = useCallback((panelId: string) => {
+    if (!desktopLayout) return;
+    persistDesktopLayout(closePanel(desktopLayout, panelId));
+  }, [desktopLayout, persistDesktopLayout]);
+
+  useEffect(() => {
+    if (!isRunning || !currentConvId || !isWorkspaceMode) return;
+    const resource = `session:${currentConvId}`;
+    setDesktopLayout((prev) => {
+      const base = prev ?? emptyTaskLayout(currentConvId, chatWorkspace, currentConvId);
+      if (base.panels.some((panel) => panel.kind === "logs" && panel.resource === resource)) return prev;
+      const next = applyPanelRequest(base, {
+        id: `logs:${resource}`,
+        kind: "logs",
+        taskId: currentConvId,
+        resource,
+      });
+      localStorage.setItem(layoutStorageKey(next.taskId), JSON.stringify(next));
+      return next;
+    });
+  }, [isRunning, currentConvId, isWorkspaceMode, chatWorkspace]);
+
+  useEffect(() => {
+    if (surface !== "work" || !currentConvId || !isWorkspaceMode) return;
+    let cancelled = false;
+    void teamRunApi.listRuns(true).then(async (runs) => {
+      const mine = runs.filter((run) => run.workspace_path === chatWorkspace);
+      const workers = (await Promise.all(mine.map((run) => teamRunApi.listAgentRuns(run.id).catch(() => [])))).flat();
+      if (cancelled || workers.length === 0) return;
+      setTaskEvidence((prev) => {
+        let next = prev ?? emptyEvidence(currentConvId);
+        for (const worker of workers) {
+          const mapped = evidenceFromAgentRun(worker);
+          next = recordVerification(upsertArtifact(next, mapped.artifact), mapped.verification);
+        }
+        localStorage.setItem(evidenceStorageKey(next.taskId), JSON.stringify(next));
+        return next;
+      });
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [surface, currentConvId, isWorkspaceMode, chatWorkspace]);
 
   useEffect(() => {
     setFullAccessConfirmed(false);
@@ -736,6 +845,11 @@ export function ChatTab({ surface, onSuggestTeam }: ChatTabProps) {
                 <FolderOpen className="h-4 w-4" />
                 选择工作区
               </Button>
+              {recentWork && (
+                <Button variant="outline" onClick={() => void onSelectConversation(recentWork.conversationId)}>
+                  继续最近工作
+                </Button>
+              )}
             </div>
           ) : messages.length === 0 ? (
             <FirstScreen
@@ -743,6 +857,8 @@ export function ChatTab({ surface, onSuggestTeam }: ChatTabProps) {
               installed={detectedAgents.find((agent) => agent.name === activeAgent)?.status === "installed"}
               onPrompt={setChatInput}
               onRedetect={onRedetectAgents}
+              recentWork={surface === "work" ? recentWork : null}
+              onContinueRecent={recentWork ? () => void onSelectConversation(recentWork.conversationId) : undefined}
             />
           ) : (
             <div className="mx-auto flex max-w-4xl flex-col gap-5">
@@ -1291,6 +1407,14 @@ export function ChatTab({ surface, onSuggestTeam }: ChatTabProps) {
                 </div>
               ) : workspaceSnapshot ? (
                 <div className="space-y-5">
+                  <TaskEvidenceShelf
+                    layout={desktopLayout}
+                    evidence={taskEvidence}
+                    running={isRunning}
+                    onOpenPanel={(kind, resource, stealFocus) => openTaskPanel(kind, resource, stealFocus)}
+                    onClosePanel={closeTaskPanel}
+                    onEvidenceChange={persistEvidence}
+                  />
                   <section>
                     <div className="mb-2 flex items-center justify-between text-xs font-semibold text-muted-foreground">
                       <span className="flex items-center gap-1.5"><GitBranch className="h-3.5 w-3.5" />分支</span>
@@ -1310,7 +1434,7 @@ export function ChatTab({ surface, onSuggestTeam }: ChatTabProps) {
                         <button
                           key={`${change.status}:${change.path}`}
                           className="flex w-full min-w-0 items-center gap-2 rounded px-1.5 py-1 text-left text-xs hover:bg-muted/25"
-                          onClick={() => setPreviewPath(change.path)}
+                          onClick={() => openTaskPanel("diff", change.path, true)}
                           title={change.path}
                         >
                           <span className="w-6 shrink-0 font-mono text-warning">{change.status || "M"}</span>
@@ -1356,7 +1480,7 @@ export function ChatTab({ surface, onSuggestTeam }: ChatTabProps) {
                           key={entry.path}
                           className="flex w-full min-w-0 items-center gap-1.5 rounded py-1 pr-1 text-left text-xs hover:bg-muted/25"
                           style={{ paddingLeft: `${entry.depth * 12 + 4}px` }}
-                          onClick={() => entry.is_dir ? void openWorkspaceEntry(entry.path) : setPreviewPath(entry.path)}
+                          onClick={() => entry.is_dir ? void openWorkspaceEntry(entry.path) : openTaskPanel("files", entry.path, true)}
                           title={entry.path}
                         >
                           {entry.is_dir ? <Folder className="h-3.5 w-3.5 shrink-0 text-warning" /> : <FileCode2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
@@ -1391,7 +1515,11 @@ export function ChatTab({ surface, onSuggestTeam }: ChatTabProps) {
         <FilePreviewPanel
           workspacePath={chatWorkspace}
           relativePath={previewPath}
-          onClose={() => setPreviewPath(null)}
+          onClose={() => {
+            const panel = desktopLayout?.panels.find((item) => item.resource === previewPath);
+            if (panel) closeTaskPanel(panel.id);
+            setPreviewPath(null);
+          }}
         />
       )}
 

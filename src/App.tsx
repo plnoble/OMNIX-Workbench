@@ -275,8 +275,8 @@ function MainAppShell() {
     try {
       const alert = await invoke<string | null>("get_app_setting", { key: "key_migration_alert" });
       if (alert && alert.trim()) {
-        toast.error("密钥加密迁移失败", {
-          description: alert + "。部分 API Key 可能仍以明文存储，请检查模型平台设置后重启应用重试。",
+        toast.error("密钥加密迁移未完成", {
+          description: alert + "。原密钥仍保留在旧列，不会被清空。请检查模型平台设置后重启应用重试。",
           duration: 30000,
         });
       }

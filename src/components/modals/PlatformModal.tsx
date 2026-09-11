@@ -5,7 +5,7 @@
  * Each platform can have multiple API keys; one is active at a time.
  */
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -56,6 +56,8 @@ export function PlatformModal({
   const [newKeyLabel, setNewKeyLabel] = useState("");
   const [revealedKeyId, setRevealedKeyId] = useState<string | null>(null);
   const [revealedKeyValue, setRevealedKeyValue] = useState("");
+  const [saving, setSaving] = useState(false);
+  const saveInFlight = useRef(false);
 
   // Load keys when editing an existing platform
   useEffect(() => {
@@ -131,10 +133,16 @@ export function PlatformModal({
   };
 
   const handleSave = async () => {
+    if (saveInFlight.current) return;
+    saveInFlight.current = true;
+    setSaving(true);
     try {
       await onSave();
     } catch (e) {
       toast.error("保存失败：" + e);
+    } finally {
+      saveInFlight.current = false;
+      setSaving(false);
     }
   };
 
@@ -149,7 +157,7 @@ export function PlatformModal({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(nextOpen) => { if (!saveInFlight.current) onOpenChange(nextOpen); }}>
       <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle>{editingPlatform ? "编辑模型平台" : "添加模型平台"}</DialogTitle>
@@ -277,8 +285,8 @@ export function PlatformModal({
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>取消</Button>
-          <Button onClick={handleSave}>保存</Button>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>取消</Button>
+          <Button onClick={handleSave} disabled={saving}>{saving ? "保存中…" : "保存"}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

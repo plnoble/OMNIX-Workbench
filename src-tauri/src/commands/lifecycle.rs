@@ -635,18 +635,27 @@ async fn fetch_upstream_models(api_address: &str, api_key: &str, api_type: &str)
 }
 
 /// Internal: sync upstream models for a single platform (shared logic)
-async fn sync_upstream_models_internal(
+pub(crate) async fn sync_upstream_models_internal(
     platform_id: &str,
     db: &std::sync::Arc<DbManager>,
 ) -> Result<ModelSyncResult, String> {
     let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
 
-    // Get platform config
-    let (name, api_type, api_key, api_address): (String, String, String, String) = conn.query_row(
-        "SELECT name, api_type, api_key, api_address FROM model_platforms WHERE id = ?1",
+    // Get platform config. Keys come from the same decrypted resolver as
+    // routing — the legacy column is emptied on startup migration, and sending
+    // its ciphertext as Authorization is worse than sending nothing.
+    let (name, api_type, api_address): (String, String, String) = conn.query_row(
+        "SELECT name, api_type, api_address FROM model_platforms WHERE id = ?1",
         params![platform_id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     ).map_err(|e| format!("Platform not found: {}", e))?;
+    drop(conn);
+    let api_key = crate::commands::platform_keys(db, platform_id)
+        .0
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
 
     // Fetch upstream models
     let upstream_models = match fetch_upstream_models(&api_address, &api_key, &api_type).await {
@@ -802,18 +811,23 @@ pub struct HealthCheckResult {
 pub async fn check_all_platform_health(
     db: State<'_, std::sync::Arc<DbManager>>,
 ) -> Result<Vec<HealthCheckResult>, String> {
-    let platforms: Vec<(String, String, String, String, String)> = {
+    check_all_platform_health_core(&db).await
+}
+
+pub(crate) async fn check_all_platform_health_core(
+    db: &std::sync::Arc<DbManager>,
+) -> Result<Vec<HealthCheckResult>, String> {
+    let platforms: Vec<(String, String, String, String)> = {
         let conn = db.get_connection().map_err(|e: rusqlite::Error| e.to_string())?;
         let mut stmt = conn.prepare(
-            "SELECT id, name, api_address, api_key, api_type FROM model_platforms WHERE is_enabled = 1"
+            "SELECT id, name, api_address, api_type FROM model_platforms WHERE is_enabled = 1"
         ).map_err(|e: rusqlite::Error| e.to_string())?;
-        let rows: Vec<(String, String, String, String, String)> = stmt.query_map([], |row| {
+        let rows: Vec<(String, String, String, String)> = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
             ))
         }).map_err(|e: rusqlite::Error| e.to_string())?
             .flatten()
@@ -822,7 +836,12 @@ pub async fn check_all_platform_health(
     };
 
     let mut results = Vec::new();
-    for (id, name, address, key, api_type) in platforms {
+    for (id, name, address, api_type) in platforms {
+        let key = crate::commands::platform_keys(db, &id)
+            .0
+            .into_iter()
+            .next()
+            .unwrap_or_default();
         let start = std::time::Instant::now();
         let url = if api_type == "ollama" {
             format!("{}/api/tags", address.trim_end_matches('/'))
@@ -1182,5 +1201,122 @@ mod stale_session_tests {
             )
             .unwrap();
         assert_eq!(msg, "上游 429", "原有的失败原因被通用文案覆盖了");
+    }
+}
+
+#[cfg(test)]
+mod credential_header_tests {
+    use super::*;
+    use crate::commands::{migrate_legacy_plaintext_keys, save_model_platform_core, ModelPlatform};
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc as StdArc, Mutex};
+    use std::thread;
+
+    fn fixture(tag: &str) -> std::sync::Arc<DbManager> {
+        let path = std::env::temp_dir().join(format!(
+            "omnix_lifecycle_auth_{tag}_{}_{}.sqlite",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let _ = std::fs::remove_file(&path);
+        std::sync::Arc::new(DbManager::new_with_path(path))
+    }
+
+    fn platform(id: &str, key: &str, address: &str) -> ModelPlatform {
+        ModelPlatform {
+            id: id.into(),
+            name: "Auth fixture".into(),
+            api_type: "openai".into(),
+            api_key: key.into(),
+            api_address: address.into(),
+            is_enabled: true,
+            weight: 1,
+            priority: 0,
+        }
+    }
+
+    fn capture_one_request() -> (String, StdArc<Mutex<Option<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = format!("http://{}", listener.local_addr().expect("addr"));
+        let captured = StdArc::new(Mutex::new(None));
+        let slot = StdArc::clone(&captured);
+        thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 2048];
+                if let Ok(n) = stream.read(&mut buf) {
+                    *slot.lock().unwrap() = Some(String::from_utf8_lossy(&buf[..n]).into_owned());
+                }
+                let _ = stream.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\n\r\n{\"data\":[]}",
+                );
+            }
+        });
+        (addr, captured)
+    }
+
+    fn authorization(raw: &str) -> Option<String> {
+        raw.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            (name.eq_ignore_ascii_case("authorization")).then(|| value.trim().to_string())
+        })
+    }
+
+    #[tokio::test]
+    async fn health_check_sends_the_decrypted_active_key_not_ciphertext() {
+        let (addr, captured) = capture_one_request();
+        let db = fixture("health");
+        save_model_platform_core(&db, &platform("p-health", "sk-live-health", &addr)).unwrap();
+        db.get_connection()
+            .unwrap()
+            .execute(
+                "UPDATE model_platforms SET is_enabled = 0 WHERE id != 'p-health'",
+                [],
+            )
+            .unwrap();
+        migrate_legacy_plaintext_keys(&db).unwrap();
+
+        let results = check_all_platform_health_core(&db).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_reachable, "{:?}", results[0]);
+
+        let raw = captured.lock().unwrap().clone().expect("request");
+        let header = authorization(&raw).expect("Authorization");
+        assert_eq!(header, "Bearer sk-live-health");
+        assert!(!header.contains("ENC:"));
+    }
+
+    #[tokio::test]
+    async fn upstream_sync_sends_the_selected_key_after_restart_migration() {
+        let (addr, captured) = capture_one_request();
+        let db = fixture("sync");
+        save_model_platform_core(&db, &platform("p-sync", "sk-first", &addr)).unwrap();
+        let conn = db.get_connection().unwrap();
+        conn.execute(
+            "UPDATE model_platforms SET is_enabled = 0 WHERE id != 'p-sync'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE platform_api_keys SET is_active = 0 WHERE platform_id = 'p-sync'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO platform_api_keys (id, platform_id, encrypted_key, is_active)
+             VALUES ('k-selected', 'p-sync', ?1, 1)",
+            params![crate::crypto::encrypt("sk-selected-sync")],
+        )
+        .unwrap();
+        drop(conn);
+        migrate_legacy_plaintext_keys(&db).unwrap();
+
+        let result = sync_upstream_models_internal("p-sync", &db).await.unwrap();
+        assert!(result.error.is_none(), "{result:?}");
+
+        let raw = captured.lock().unwrap().clone().expect("request");
+        let header = authorization(&raw).expect("Authorization");
+        assert_eq!(header, "Bearer sk-selected-sync");
+        assert!(!header.contains("ENC:"));
     }
 }

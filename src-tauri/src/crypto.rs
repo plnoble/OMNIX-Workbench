@@ -26,6 +26,7 @@ use aes_gcm::{
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use log::warn;
 use std::fs;
+#[cfg(not(test))]
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
@@ -41,6 +42,7 @@ static ENCRYPTION_KEY: OnceLock<[u8; 32]> = OnceLock::new();
 const DPAPI_PREFIX: &str = "DPAPI:v1:";
 
 /// Get or generate the encryption key using OS CSPRNG
+#[cfg(not(test))]
 fn get_key() -> &'static [u8; 32] {
     ENCRYPTION_KEY.get_or_init(|| {
         let key_path = key_path();
@@ -78,6 +80,17 @@ fn get_key() -> &'static [u8; 32] {
             .expect("[crypto] FATAL: OS CSPRNG (getrandom) failed — cannot securely generate encryption key. This should never happen on a modern OS.");
 
         write_key_file(&key_path, &key);
+        key
+    })
+}
+
+// Unit tests encrypt fixture credentials without reading or changing the user's
+// real key file. DPAPI persistence has separate tests using temporary paths.
+#[cfg(test)]
+fn get_key() -> &'static [u8; 32] {
+    ENCRYPTION_KEY.get_or_init(|| {
+        let mut key = [0u8; 32];
+        getrandom::getrandom(&mut key).expect("test encryption key");
         key
     })
 }
@@ -239,6 +252,7 @@ mod win_dpapi {
     }
 }
 
+#[cfg(not(test))]
 fn key_path() -> PathBuf {
     let home = dirs::home_dir().unwrap_or_default();
     home.join(".omnix").join(".encryption_key")
@@ -615,6 +629,16 @@ mod mask_tests {
     fn short_secrets_are_fully_hidden() {
         assert_eq!(mask_secret("12345678"), "••••");
         assert_eq!(mask_secret("abc"), "••••");
+        assert_eq!(mask_secret("密钥测试"), "••••");
+    }
+
+    #[test]
+    fn non_ascii_and_emoji_never_panic_and_do_not_leak_short_keys() {
+        assert_eq!(mask_secret("这是一段用于掩码的密钥测试字符串"), "这是一段...试字符串");
+        let emoji = mask_secret("😀😁😂🤣😃😄😅😆😉😊");
+        assert!(emoji.contains("..."), "{emoji}");
+        assert_ne!(emoji, "😀😁😂🤣😃😄😅😆😉😊");
+        assert_eq!(mask_secret("密钥"), "••••");
     }
 
     /// 这条守的是「脱敏 + 回写」组合出来的数据损坏。

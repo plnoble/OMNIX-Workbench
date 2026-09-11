@@ -969,7 +969,11 @@ impl DbManager {
         // 存在过，但两边都没有任何地方调用，表永远是空的。见 commands/automation.rs
         // 的说明。已存在的空表不删：删表不可逆，留着无害。
 
-        // Platform API Keys (multi-key per platform, encrypted storage)
+        // Platform API Keys (multi-key per platform, encrypted storage).
+        // New databases get the platform FK. Upgraded databases keep the older
+        // table and rely on delete_model_platform_core to clean keys in the
+        // same transaction — rebuilding this table would rewrite every stored
+        // ciphertext just to add a constraint.
         let _ = conn.execute(
             "CREATE TABLE IF NOT EXISTS platform_api_keys (
                 id TEXT PRIMARY KEY,
@@ -977,8 +981,16 @@ impl DbManager {
                 encrypted_key TEXT NOT NULL,
                 label TEXT DEFAULT '',
                 is_active INTEGER DEFAULT 0,
-                created_at TEXT DEFAULT (datetime('now'))
+                created_at TEXT DEFAULT (datetime('now')),
+                FOREIGN KEY(platform_id) REFERENCES model_platforms(id) ON DELETE CASCADE
             )",
+            [],
+        );
+        // Drop leftover credentials whose platform is already gone. Safe on
+        // both new and upgraded databases; no-op when there are no orphans.
+        let _ = conn.execute(
+            "DELETE FROM platform_api_keys
+             WHERE platform_id NOT IN (SELECT id FROM model_platforms)",
             [],
         );
 

@@ -25,11 +25,11 @@ pub struct TakeoverTarget {
     pub model: Option<String>,
 }
 
-struct ResolvedTarget {
-    base_url: String,
-    token: String,
-    model: Option<String>,
-    label: String,
+pub(crate) struct ResolvedTarget {
+    pub base_url: String,
+    pub token: String,
+    pub model: Option<String>,
+    pub label: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -106,7 +106,7 @@ fn oauth_api_base(kind: OAuthProviderKind) -> &'static str {
     }
 }
 
-fn resolve_target(db: &Arc<DbManager>, target: &TakeoverTarget) -> Result<ResolvedTarget, String> {
+pub(crate) fn resolve_target(db: &Arc<DbManager>, target: &TakeoverTarget) -> Result<ResolvedTarget, String> {
     match target.kind.as_str() {
         "gateway" => {
             let port = db
@@ -124,19 +124,22 @@ fn resolve_target(db: &Arc<DbManager>, target: &TakeoverTarget) -> Result<Resolv
         "platform" => {
             let platform_id = target.ref_id.clone().ok_or("缺少平台 id")?;
             let conn = db.get_connection().map_err(|e| e.to_string())?;
-            let (name, address, key): (String, String, String) = conn
+            let (name, address): (String, String) = conn
                 .query_row(
-                    "SELECT name, api_address, api_key FROM model_platforms WHERE id = ?1",
+                    "SELECT name, api_address FROM model_platforms WHERE id = ?1",
                     rusqlite::params![platform_id],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .map_err(|_| "平台不存在".to_string())?;
-            let token = crate::crypto::decrypt(&key)
-                .split(',')
+            drop(conn);
+            // Same decrypted active-key path as routing / health checks.
+            // Reading the legacy column after startup migration yields an empty
+            // token, and sending the stored ciphertext as Authorization is worse.
+            let token = crate::commands::platform_keys(db, &platform_id)
+                .0
+                .into_iter()
                 .next()
-                .unwrap_or("")
-                .trim()
-                .to_string();
+                .unwrap_or_default();
             Ok(ResolvedTarget {
                 base_url: address,
                 token,
@@ -344,4 +347,82 @@ pub fn cli_takeover_status() -> Result<Vec<AgentTakeoverState>, String> {
             has_backup: !crate::backup::list_backups(&backup_category("gemini")).is_empty(),
         },
     ])
+}
+
+#[cfg(test)]
+mod platform_credential_tests {
+    use super::*;
+    use crate::commands::{migrate_legacy_plaintext_keys, save_model_platform_core, ModelPlatform};
+
+    fn fixture(tag: &str) -> Arc<DbManager> {
+        let path = std::env::temp_dir().join(format!(
+            "omnix_takeover_{tag}_{}_{}.sqlite",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let _ = std::fs::remove_file(&path);
+        Arc::new(DbManager::new_with_path(path))
+    }
+
+    fn platform(id: &str, key: &str) -> ModelPlatform {
+        ModelPlatform {
+            id: id.into(),
+            name: "Takeover provider".into(),
+            api_type: "openai".into(),
+            api_key: key.into(),
+            api_address: "https://provider.example/v1".into(),
+            is_enabled: true,
+            weight: 1,
+            priority: 0,
+        }
+    }
+
+    #[test]
+    fn platform_takeover_uses_the_decrypted_active_key_after_migration() {
+        let db = fixture("active");
+        save_model_platform_core(&db, &platform("p-takeover", "sk-live-secret")).unwrap();
+        migrate_legacy_plaintext_keys(&db).unwrap();
+        let resolved = resolve_target(
+            &db,
+            &TakeoverTarget {
+                kind: "platform".into(),
+                ref_id: Some("p-takeover".into()),
+                model: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(resolved.token, "sk-live-secret");
+        assert!(!resolved.token.contains("ENC:"));
+        assert_eq!(resolved.base_url, "https://provider.example/v1");
+    }
+
+    #[test]
+    fn platform_takeover_does_not_send_ciphertext_from_the_legacy_column() {
+        let db = fixture("cipher");
+        save_model_platform_core(&db, &platform("p-cipher", "sk-real")).unwrap();
+        let conn = db.get_connection().unwrap();
+        conn.execute(
+            "UPDATE model_platforms SET api_key = ?1 WHERE id = 'p-cipher'",
+            rusqlite::params![crate::crypto::encrypt("sk-stale-cipher")],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE platform_api_keys SET encrypted_key = ?1, is_active = 1 WHERE platform_id = 'p-cipher'",
+            rusqlite::params![crate::crypto::encrypt("sk-real")],
+        )
+        .unwrap();
+        drop(conn);
+
+        let resolved = resolve_target(
+            &db,
+            &TakeoverTarget {
+                kind: "platform".into(),
+                ref_id: Some("p-cipher".into()),
+                model: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(resolved.token, "sk-real");
+        assert!(!resolved.token.starts_with("ENC:"));
+    }
 }

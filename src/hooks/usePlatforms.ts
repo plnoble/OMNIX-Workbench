@@ -5,9 +5,19 @@
  * fetchingModels, activeModels, platform/model form state and modals
  */
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import { platformApi, modelApi } from "@/lib/tauri-api";
 import type { ModelPlatform, PlatformModel, ModelTestState, ProviderType, HealthCheckDetail } from "@/types";
+
+/** Model rows belong to one platform. A slower A response must not overwrite B. */
+export function platformModelsResponseIsCurrent(
+  requestPlatformId: string,
+  requestSeq: number,
+  currentPlatformId: string,
+  currentSeq: number,
+): boolean {
+  return requestPlatformId === currentPlatformId && requestSeq === currentSeq;
+}
 
 
 interface PlatformFormState {
@@ -57,6 +67,7 @@ export interface UsePlatformsReturn {
   fetchingModels: boolean;
   activeModels: PlatformModel[];
   batchTesting: Record<string, boolean>;
+  platformModelsError: string | null;
   showPlatformModal: boolean;
   editingPlatform: ModelPlatform | null;
   platformForm: PlatformFormState;
@@ -94,6 +105,9 @@ export function usePlatforms(): UsePlatformsReturn {
   const [fetchingModels, setFetchingModels] = useState(false);
   const [activeModels, setActiveModels] = useState<PlatformModel[]>([]);
   const [batchTesting, setBatchTesting] = useState<Record<string, boolean>>({});
+  const [platformModelsError, setPlatformModelsError] = useState<string | null>(null);
+  const selectedPlatformIdRef = useRef("");
+  const modelsRequestSeqRef = useRef(0);
 
   // Platform modal state
   const [showPlatformModal, setShowPlatformModal] = useState(false);
@@ -130,12 +144,19 @@ export function usePlatforms(): UsePlatformsReturn {
   }, [selectedPlatformId]);
 
   const selectPlatform = useCallback(async (id: string) => {
+    selectedPlatformIdRef.current = id;
+    const seq = ++modelsRequestSeqRef.current;
     setSelectedPlatformId(id);
+    setPlatformModels([]);
+    setPlatformModelsError(null);
     try {
       const models = await modelApi.listByPlatform(id);
+      if (!platformModelsResponseIsCurrent(id, seq, selectedPlatformIdRef.current, modelsRequestSeqRef.current)) return;
       setPlatformModels(models);
     } catch (e) {
+      if (!platformModelsResponseIsCurrent(id, seq, selectedPlatformIdRef.current, modelsRequestSeqRef.current)) return;
       console.error("[usePlatforms] Failed to load models for platform:", id, e);
+      setPlatformModelsError(String(e));
     }
   }, []);
 
@@ -162,7 +183,7 @@ export function usePlatforms(): UsePlatformsReturn {
       api_type: platformForm.api_type,
       api_key: platformForm.api_key,
       api_address: platformForm.api_address,
-      is_enabled: true,
+      is_enabled: editingPlatform?.is_enabled ?? true,
       // 新建平台用默认路由：权重 1、优先级 0。编辑现有平台时保留原值——
       // 这个表单不含路由字段，用默认值覆盖会把用户拖出来的顺序冲掉。
       weight: editingPlatform?.weight ?? 1,
@@ -171,20 +192,8 @@ export function usePlatforms(): UsePlatformsReturn {
 
     await platformApi.save(newPlatform);
 
-    // Auto-add API key to platform_api_keys table if provided
-    // (handles the case where user types a key in the simple input for new platforms)
-    if (platformForm.api_key.trim() && platformForm.api_type !== "ollama") {
-      try {
-        const { apiKeyApi } = await import("@/lib/tauri-api");
-        // Check if this platform already has keys
-        const existing = await apiKeyApi.list(id);
-        if (existing.length === 0) {
-          await apiKeyApi.add(id, platformForm.api_key.trim(), "主 Key");
-        }
-      } catch (e) {
-        console.error("[usePlatforms] Failed to auto-add API key:", e);
-      }
-    }
+    // The backend saves the platform and its initial encrypted key atomically.
+    // On failure the form stays open with its input intact for a retry.
 
     setShowPlatformModal(false);
     setEditingPlatform(null);
@@ -201,20 +210,30 @@ export function usePlatforms(): UsePlatformsReturn {
 
   const fetchRemoteModels = useCallback(async () => {
     if (!selectedPlatformId) return;
+    const seq = ++modelsRequestSeqRef.current;
+    const platformId = selectedPlatformId;
     setFetchingModels(true);
+    setPlatformModelsError(null);
     try {
-      const imported = await platformApi.fetchRemoteModels(selectedPlatformId);
+      const imported = await platformApi.fetchRemoteModels(platformId);
+      if (!platformModelsResponseIsCurrent(platformId, seq, selectedPlatformIdRef.current, modelsRequestSeqRef.current)) return;
       setPlatformModels(imported);
       await loadActiveModels();
+    } catch (e) {
+      if (!platformModelsResponseIsCurrent(platformId, seq, selectedPlatformIdRef.current, modelsRequestSeqRef.current)) return;
+      setPlatformModelsError(String(e));
+      throw e;
     } finally {
       setFetchingModels(false);
     }
   }, [selectedPlatformId, loadActiveModels]);
 
   const batchTestModels = useCallback(async (platformId: string) => {
+    const seq = modelsRequestSeqRef.current;
     setBatchTesting((prev) => ({ ...prev, [platformId]: true }));
     try {
       const updated = await modelApi.batchCheck(platformId);
+      if (!platformModelsResponseIsCurrent(platformId, seq, selectedPlatformIdRef.current, modelsRequestSeqRef.current)) return;
       setPlatformModels(updated);
       // Sync testing state from model status values
       const newTestingState: Record<string, ModelTestState> = {};
@@ -229,6 +248,9 @@ export function usePlatforms(): UsePlatformsReturn {
       setModelTestingState((prev) => ({ ...prev, ...newTestingState }));
     } catch (e) {
       console.error("[usePlatforms] Batch test failed:", e);
+      if (platformModelsResponseIsCurrent(platformId, seq, selectedPlatformIdRef.current, modelsRequestSeqRef.current)) {
+        setPlatformModelsError(String(e));
+      }
       const { toast } = await import("@/components/ui/sonner");
       toast.error("健康检测失败：" + String(e));
     } finally {
@@ -340,7 +362,7 @@ export function usePlatforms(): UsePlatformsReturn {
 
   return {
     platforms, selectedPlatformId, platformModels, modelTestingState,
-    fetchingModels, activeModels, batchTesting,
+    fetchingModels, activeModels, batchTesting, platformModelsError,
     showPlatformModal, editingPlatform, platformForm,
     showModelModal, modelForm,
     loadPlatforms, selectPlatform, togglePlatform, savePlatform,

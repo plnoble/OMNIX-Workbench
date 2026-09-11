@@ -125,11 +125,18 @@ pub fn run() {
     }
 
     match commands::migrate_legacy_plaintext_keys(&db) {
-        Ok(0) => {}
-        Ok(n) => println!("[OMNIX] 已把 {n} 个明文 API Key 迁入加密存储并清空旧列"),
+        Ok(0) => {
+            // 没有需要迁移的项：清掉上次失败告警，并记下完成态，避免和「未完成」混在一起。
+            let _ = db.set_setting("key_migration_status", "none");
+        }
+        Ok(n) => {
+            println!("[OMNIX] 已把 {n} 个明文 API Key 迁入加密存储并清空旧列");
+            let _ = db.set_setting("key_migration_status", &format!("moved:{n}"));
+        }
         Err(e) => {
-            eprintln!("[OMNIX] 明文 Key 迁移失败（不影响启动）：{e}");
-            let msg = format!("平台明文 API Key 迁移失败：{e}");
+            eprintln!("[OMNIX] 明文 Key 迁移未完成（不影响启动）：{e}");
+            let _ = db.set_setting("key_migration_status", "incomplete");
+            let msg = format!("平台明文 API Key 迁移未完成：{e}");
             migration_error = Some(match migration_error {
                 Some(prev) => format!("{prev}；{msg}"),
                 None => msg,
