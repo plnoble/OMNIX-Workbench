@@ -1021,12 +1021,9 @@ async fn collect_print_output(
         let status = {
             let mut slot = child_slot
                 .lock()
-                .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "print child slot lock was poisoned"))?;
+                .map_err(|_| std::io::Error::other("print child slot lock was poisoned"))?;
             let Some(child) = slot.as_mut() else {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "print child handle vanished",
-                ));
+                return Err(std::io::Error::other("print child handle vanished"));
             };
             let status = child.try_wait()?;
             if status.is_some() {
