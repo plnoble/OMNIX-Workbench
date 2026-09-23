@@ -91,7 +91,8 @@ pub fn load_runtime_model_options(
         | AgentId::OpenCode
         | AgentId::CopilotCli
         | AgentId::Grok
-        | AgentId::Antigravity => &[],
+        | AgentId::Antigravity
+        | AgentId::Dsh => &[],
     };
     options.extend(builtins.iter().map(|model_name| RuntimeModelOption {
         id: format!("builtin:{model_name}"),
@@ -110,6 +111,13 @@ pub fn load_runtime_model_options(
         },
         is_default: false,
     }));
+
+    // ACP / print-one-shot agents authenticate themselves. Listing OMNIX
+    // gateway models here only fills the Work dropdown with disabled rows.
+    if agent.is_acp() || agent.is_print_one_shot() {
+        options[0].is_default = true;
+        return Ok(options);
+    }
 
     let conn = db.get_connection().map_err(|error| error.to_string())?;
     let mut statement = conn
@@ -218,7 +226,7 @@ fn resolve_default_model_selection(
     // ACP agents authenticate and choose their model through their own account.
     // OMNIX must never substitute a gateway binding or the global default model
     // for them — those are unusable and would fail validation, blocking start.
-    if agent.is_acp() {
+    if agent.is_acp() || agent.is_print_one_shot() {
         return Ok(ModelSelection::AgentDefault);
     }
     let resolved = resolve_model_selection(None, load_agent_binding(db, agent)?);
@@ -343,7 +351,11 @@ pub fn runtime_get_agent_catalog(
                         format!("{name} 结构化运行适配器")
                     }
                     AdapterKind::PrintOneShot => {
-                        format!("{name} · 单轮 print 适配器（纯文本回答，无工具调用过程）")
+                        if agent == AgentId::Dsh {
+                            format!("{name} · 单轮 headless（每轮独立任务，模型与密钥在 DSH 本机配置）")
+                        } else {
+                            format!("{name} · 单轮 print 适配器（纯文本回答，无工具调用过程）")
+                        }
                     }
                 },
             }
@@ -364,6 +376,7 @@ fn agent_id_wire_str(agent: AgentId) -> &'static str {
         AgentId::CopilotCli => "copilot_cli",
         AgentId::Grok => "grok",
         AgentId::Antigravity => "antigravity",
+        AgentId::Dsh => "dsh",
     }
 }
 
@@ -411,8 +424,9 @@ pub async fn runtime_get_model_options(
     agent_manager: State<'_, Arc<crate::agent::AgentManager>>,
 ) -> Result<Vec<RuntimeModelOption>, String> {
     let mut options = load_runtime_model_options(&db, agent)?;
-    // Print-mode agents enumerate their own models through the CLI.
-    if agent.is_print_one_shot() {
+    // Antigravity enumerates its own models through `agy models`. DSH keeps
+    // model choice in its own profile, so we do not probe `dsh models`.
+    if agent == AgentId::Antigravity {
         let executable = agent_manager
             .find_agent_path(agent.display_name())
             .unwrap_or_else(|| "agy".to_string());
@@ -759,6 +773,53 @@ mod tests {
     }
 
     #[test]
+    fn self_auth_agents_do_not_list_omnix_gateway_models() {
+        let db_path = std::env::temp_dir().join(format!(
+            "omnix_runtime_self_auth_{}.sqlite",
+            chrono::Utc::now().timestamp_micros()
+        ));
+        let db = DbManager::new_runtime_test(db_path.clone());
+        let conn = db.get_connection().expect("db connection");
+        conn.execute_batch(
+            "CREATE TABLE model_platforms (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL, api_type TEXT NOT NULL,
+                api_key TEXT NOT NULL DEFAULT '', api_address TEXT NOT NULL DEFAULT '',
+                is_enabled INTEGER NOT NULL DEFAULT 1
+            );
+            CREATE TABLE platform_models (
+                id TEXT PRIMARY KEY, platform_id TEXT NOT NULL, model_name TEXT NOT NULL,
+                is_enabled INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'success'
+            );
+            INSERT INTO model_platforms (id, name, api_type) VALUES
+                ('chat', 'Chat Provider', 'openai-compatible');
+            INSERT INTO platform_models (id, platform_id, model_name, status) VALUES
+                ('chat:gpt', 'chat', 'gpt-chat-only', 'success');",
+        )
+        .expect("gateway fixture");
+        drop(conn);
+
+        for agent in [
+            AgentId::GeminiCli,
+            AgentId::Dsh,
+            AgentId::Antigravity,
+            AgentId::Grok,
+        ] {
+            let models = load_runtime_model_options(&db, agent).expect("model options");
+            assert!(
+                models
+                    .iter()
+                    .all(|model| !matches!(model.selection, ModelSelection::Omnix { .. })),
+                "{agent:?} must not list OMNIX gateway models"
+            );
+            assert_eq!(models[0].selection, ModelSelection::AgentDefault);
+            assert!(models[0].is_default);
+        }
+
+        drop(db);
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
     fn bound_codex_model_is_marked_as_default_option() {
         let db_path = std::env::temp_dir().join(format!(
             "omnix_runtime_default_{}.sqlite",
@@ -855,13 +916,15 @@ mod tests {
                 model_name: "glm-4".into(),
             }
         );
-        // ...but ACP agents must keep AgentDefault so start doesn't fail on an
-        // unusable gateway model.
+        // ...but ACP / print-one-shot agents must keep AgentDefault so start
+        // doesn't fail on an unusable gateway model.
         for agent in [
             AgentId::GeminiCli,
             AgentId::QwenCode,
             AgentId::OpenCode,
             AgentId::CopilotCli,
+            AgentId::Antigravity,
+            AgentId::Dsh,
         ] {
             assert_eq!(
                 resolve_default_model_selection(&db, agent).expect("acp default"),

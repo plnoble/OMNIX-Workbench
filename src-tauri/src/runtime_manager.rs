@@ -4,10 +4,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use crate::proc::NoWindow;
 use tokio::process::{Child, ChildStdin, Command};
-use tokio::sync::{broadcast, Mutex as AsyncMutex, RwLock};
+use tokio::sync::{broadcast, watch, Mutex as AsyncMutex, RwLock};
 
 use serde_json::Value;
 
@@ -78,14 +78,25 @@ pub struct OutgoingUserMessage<'a> {
     pub metadata: serde_json::Value,
 }
 
-/// A print-one-shot session (Antigravity). There is no long-lived child: the
-/// session is just the launch recipe plus the conversation id to resume, and
-/// each turn spawns `agy … --print <prompt>` and reads its answer.
+/// A print-one-shot session (Antigravity, DSH). There is no long-lived child:
+/// the session is the launch recipe plus the conversation id to resume, and
+/// each turn spawns its own CLI process and reads its answer. The in-flight
+/// turn's child is parked in `child` so `stop_session` can kill a hung turn.
 struct PrintSession {
     config: AgentSessionConfig,
     launch: crate::runtime::LaunchSpec,
     /// Assigned by the CLI on the first turn, then reused to continue.
     conversation_id: RwLock<Option<String>>,
+    /// The current turn's CLI child, present only while the turn runs. Plain
+    /// `Mutex` with synchronous operations only (`try_wait` / `start_kill`);
+    /// never held across an await (AGENTS.md 坑点 2).
+    child: Mutex<Option<Child>>,
+    /// Set by `stop_session` — the in-flight turn watches it and abandons the
+    /// turn as cancelled instead of reporting the kill as a CLI failure.
+    stop_requested: watch::Sender<bool>,
+    /// One turn at a time: the kill target parked in `child` is only
+    /// unambiguous while no second turn can start behind the stop button.
+    turn_in_flight: AtomicBool,
 }
 
 pub struct RuntimeManager {
@@ -187,15 +198,23 @@ impl RuntimeManager {
         // CLI here with no `--print` would drop it into its interactive TUI and
         // hang on piped stdio.
         if config.agent.is_print_one_shot() {
-            let seeded = resume_external_id
-                .clone()
-                .or_else(|| crate::runtime::read_antigravity_conversation_id(&config.workspace_path));
+            let seeded = resume_external_id.clone().or_else(|| {
+                if config.agent == crate::runtime::AgentId::Antigravity {
+                    crate::runtime::read_antigravity_conversation_id(&config.workspace_path)
+                } else {
+                    None
+                }
+            });
+            let (stop_requested, _) = watch::channel(false);
             self.print_sessions.write().await.insert(
                 session_id.to_string(),
                 Arc::new(PrintSession {
                     config: config.clone(),
                     launch,
                     conversation_id: RwLock::new(seeded),
+                    child: Mutex::new(None),
+                    stop_requested,
+                    turn_in_flight: AtomicBool::new(false),
                 }),
             );
             update_agent_session_status(&self.db, session_id, AgentSessionStatus::Running, None)?;
@@ -423,6 +442,26 @@ impl RuntimeManager {
         print: Arc<PrintSession>,
         message: OutgoingUserMessage<'_>,
     ) -> Result<(), String> {
+        // One CLI process per session at a time: `stop_session` kills the child
+        // parked in `print.child`, and that target is only unambiguous when a
+        // second turn cannot race in behind the stop button.
+        if print.turn_in_flight.swap(true, Ordering::SeqCst) {
+            return Err(format!(
+                "上一轮 {} 任务尚未结束；请等待完成或先停止本会话",
+                print.config.agent.display_name()
+            ));
+        }
+        let result = self.run_print_turn(session_id, &print, message).await;
+        print.turn_in_flight.store(false, Ordering::SeqCst);
+        result
+    }
+
+    async fn run_print_turn(
+        &self,
+        session_id: &str,
+        print: &PrintSession,
+        message: OutgoingUserMessage<'_>,
+    ) -> Result<(), String> {
         if !message.images.is_empty() {
             return Err(format!(
                 "{} 的单轮 print 模式不支持图片输入",
@@ -438,9 +477,18 @@ impl RuntimeManager {
         };
         record_user_message(&self.db, session_id, message.display_text, message.metadata)?;
         update_agent_session_status(&self.db, session_id, AgentSessionStatus::Running, None)?;
+        let mut stop_watch = print.stop_requested.subscribe();
+        // Stop already fired (e.g. between the send lookup and here): don't
+        // even spawn. `finish_stopped_print_turn` re-asserts Cancelled because
+        // the Running write above may land after the stop when the two race.
+        if *stop_watch.borrow() {
+            self.finish_stopped_print_turn(session_id, print).await;
+            return Ok(());
+        }
 
         let existing_id = print.conversation_id.read().await.clone();
         let args = crate::runtime::build_print_turn_args(
+            print.config.agent,
             &print.launch.args,
             &prompt,
             existing_id.as_deref(),
@@ -453,7 +501,7 @@ impl RuntimeManager {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        let output = command.output().await.map_err(|error| {
+        let mut child = command.spawn().map_err(|error| {
             let message = format!("无法运行 {}: {error}", print.config.agent.display_name());
             let _ = update_agent_session_status(
                 &self.db,
@@ -463,8 +511,45 @@ impl RuntimeManager {
             );
             message
         })?;
+        let stdout_pipe = child.stdout.take();
+        let stderr_pipe = child.stderr.take();
+        // Park the child for `stop_session` — a hung print turn must die with
+        // the stop button, not outlive it.
+        *print
+            .child
+            .lock()
+            .map_err(|_| "print child lock was poisoned".to_string())? = Some(child);
+        // A stop that raced in between the spawn and parking the child must
+        // not orphan the process we just spawned.
+        if *stop_watch.borrow() {
+            self.finish_stopped_print_turn(session_id, print).await;
+            return Ok(());
+        }
+        let collected = tokio::select! {
+            biased;
+            // `stop_session` fired: kill the child, drop the partial output,
+            // and keep the Cancelled status it already wrote. Without this arm
+            // a killed CLI would surface as 「本轮执行失败」— or worse, with a
+            // grandchild still holding the pipe write end, the send would hang
+            // forever.
+            _ = stop_watch.changed() => {
+                self.finish_stopped_print_turn(session_id, print).await;
+                return Ok(());
+            }
+            result = collect_print_output(&print.child, stdout_pipe, stderr_pipe) => result,
+        };
+        let (stdout_bytes, stderr_bytes, status) = collected.map_err(|error| {
+            let message = format!("读取 {} 输出失败：{error}", print.config.agent.display_name());
+            let _ = update_agent_session_status(
+                &self.db,
+                session_id,
+                AgentSessionStatus::Failed,
+                Some(&message),
+            );
+            message
+        })?;
 
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stderr = String::from_utf8_lossy(&stderr_bytes).trim().to_string();
         if !stderr.is_empty() {
             persist_and_publish(
                 &self.db,
@@ -487,10 +572,10 @@ impl RuntimeManager {
         // failed when the process failed OR the output is error-shaped OR it came
         // back empty — otherwise the error text would be stored as the agent's
         // own reply, and a blank turn would look like a real (empty) answer.
-        let answer = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let failure_detail = if !output.status.success() {
+        let answer = String::from_utf8_lossy(&stdout_bytes).trim().to_string();
+        let failure_detail = if !status.success() {
             Some(if stderr.is_empty() {
-                format!("退出码 {:?}", output.status.code())
+                format!("退出码 {:?}", status.code())
             } else {
                 stderr.clone()
             })
@@ -521,7 +606,7 @@ impl RuntimeManager {
 
         // First turn assigns the conversation id; capture it so follow-ups
         // continue the same conversation instead of starting a new one.
-        if existing_id.is_none() {
+        if existing_id.is_none() && print.config.agent == crate::runtime::AgentId::Antigravity {
             if let Some(found) = crate::runtime::read_antigravity_conversation_id(&print.launch.cwd) {
                 *print.conversation_id.write().await = Some(found.clone());
                 // Surfacing it as an event is how the other adapters record the
@@ -561,6 +646,41 @@ impl RuntimeManager {
         .await;
         // Turn finished; the session stays usable for the next prompt.
         update_agent_session_status(&self.db, session_id, AgentSessionStatus::Running, None)
+    }
+
+    /// Wrap up a print turn that `stop_session` interrupted: reap the (already
+    /// killed) child, leave a note in the transcript, and re-assert Cancelled —
+    /// the turn's own `Running` write can land after the stop when the two
+    /// race, and the final word must be Cancelled either way.
+    async fn finish_stopped_print_turn(&self, session_id: &str, print: &PrintSession) {
+        let child = print.child.lock().ok().and_then(|mut slot| slot.take());
+        if let Some(mut child) = child {
+            // `stop_session` usually beat us to the kill; killing an
+            // already-dead child is a harmless best effort.
+            terminate_print_tree(&mut child);
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), child.wait()).await;
+        }
+        let _ = update_agent_session_status(
+            &self.db,
+            session_id,
+            AgentSessionStatus::Cancelled,
+            None,
+        );
+        persist_and_publish(
+            &self.db,
+            session_id,
+            &RuntimeEvent {
+                kind: RuntimeEventKind::RawLog,
+                text: Some("任务已由用户终止".into()),
+                external_session_id: None,
+                external_turn_id: None,
+                item_id: None,
+                request_id: None,
+                metadata: serde_json::json!({}),
+            },
+            &self.events,
+        )
+        .await;
     }
 
     /// Sends a user message to the running agent.
@@ -760,7 +880,16 @@ impl RuntimeManager {
 
     pub async fn stop_session(&self, session_id: &str) -> Result<(), String> {
         update_agent_session_status(&self.db, session_id, AgentSessionStatus::Stopping, None)?;
-        self.print_sessions.write().await.remove(session_id);
+        let print = self.print_sessions.write().await.remove(session_id);
+        if let Some(print) = print {
+            // A print turn blocks its send until the CLI exits, so a hung CLI
+            // used to leave the composer disabled forever — the stop button only
+            // flipped the status. Flag the stop first (that covers a turn
+            // racing in right now: it checks the flag before and after parking
+            // its child), then kill whatever child is parked.
+            let _ = print.stop_requested.send_replace(true);
+            kill_print_child_in_slot(&print.child);
+        }
         let active = self.active.write().await.remove(session_id);
         if let Some(active) = active {
             // ACP defines a graceful `session/cancel`; send it best-effort before
@@ -821,6 +950,94 @@ impl RuntimeManager {
             .get(session_id)
             .cloned()
             .ok_or_else(|| format!("Agent session is not running: {session_id}"))
+    }
+}
+
+/// Terminate a print turn's CLI process tree. `start_kill` alone only reaches
+/// the direct child — on Windows the `.cmd` shims wrap the real CLI in
+/// `cmd.exe`, and killing the wrapper orphans the CLI (which also keeps the
+/// inherited pipe handles open, so any reader of those pipes never sees EOF).
+/// `taskkill /T` walks the tree of a LIVE process, so it must run FIRST —
+/// once the wrapper is dead its children are orphaned and unreachable.
+/// `start_kill` afterwards is the belt-and-braces (and the non-Windows path).
+fn terminate_print_tree(child: &mut Child) {
+    #[cfg(windows)]
+    if let Some(pid) = child.id() {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .no_window()
+            .status();
+    }
+    let _ = child.start_kill();
+}
+
+/// Kill the in-flight print turn's child, if there is one. Returns whether a
+/// child was parked at all.
+fn kill_print_child_in_slot(child_slot: &Mutex<Option<Child>>) -> bool {
+    let Ok(mut slot) = child_slot.lock() else {
+        return false;
+    };
+    match slot.as_mut() {
+        None => false,
+        Some(child) => {
+            terminate_print_tree(child);
+            true
+        }
+    }
+}
+
+/// Read the turn's pipes to end, then reap the child through `child_slot`.
+///
+/// The child stays parked in the slot until it is reaped so `stop_session`
+/// keeps a working kill handle for the whole turn — which is also why the
+/// status is reaped by polling `try_wait` instead of holding the lock across
+/// an async `wait`.
+async fn collect_print_output(
+    child_slot: &Mutex<Option<Child>>,
+    mut stdout_pipe: Option<tokio::process::ChildStdout>,
+    mut stderr_pipe: Option<tokio::process::ChildStderr>,
+) -> std::io::Result<(Vec<u8>, Vec<u8>, std::process::ExitStatus)> {
+    let mut stdout_bytes = Vec::new();
+    let mut stderr_bytes = Vec::new();
+    let read_stdout = async {
+        match stdout_pipe.as_mut() {
+            Some(pipe) => pipe.read_to_end(&mut stdout_bytes).await.map(|_| ()),
+            None => Ok(()),
+        }
+    };
+    let read_stderr = async {
+        match stderr_pipe.as_mut() {
+            Some(pipe) => pipe.read_to_end(&mut stderr_bytes).await.map(|_| ()),
+            None => Ok(()),
+        }
+    };
+    let (stdout_result, stderr_result) = tokio::join!(read_stdout, read_stderr);
+    stdout_result?;
+    stderr_result?;
+    loop {
+        let status = {
+            let mut slot = child_slot
+                .lock()
+                .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "print child slot lock was poisoned"))?;
+            let Some(child) = slot.as_mut() else {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "print child handle vanished",
+                ));
+            };
+            let status = child.try_wait()?;
+            if status.is_some() {
+                *slot = None;
+            }
+            status
+        };
+        if let Some(status) = status {
+            return Ok((stdout_bytes, stderr_bytes, status));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 }
 
@@ -1962,6 +2179,87 @@ mod tests {
                     .as_deref()
                     .is_some_and(|text| text.contains("意外退出"))
         }));
+
+        drop(manager);
+        drop(db);
+        let _ = std::fs::remove_file(script_path);
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    /// N08: a hung print turn used to block its send forever — stopping only
+    /// removed the session from the map and never killed the CLI child, so the
+    /// composer stayed disabled until the app was restarted. Stopping must
+    /// kill the child and let the blocked send settle.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn stopping_a_print_session_kills_the_hung_turn() {
+        let suffix = chrono::Utc::now().timestamp_micros();
+        let db_path = std::env::temp_dir().join(format!("omnix_print_stop_{suffix}.sqlite"));
+        let script_path = std::env::temp_dir().join(format!("omnix_hung_dsh_{suffix}.cmd"));
+        // `ping` stands in for a dsh headless turn that never comes back; all
+        // output is redirected so killing the script EOFs both pipes. Long
+        // enough that natural completion can never rescue a broken stop.
+        std::fs::write(&script_path, "@echo off\r\nping -n 300 127.0.0.1 > nul 2>&1\r\n")
+            .expect("hung dsh script");
+
+        let db = Arc::new(DbManager::new_runtime_test(db_path.clone()));
+        let conn = db.get_connection().expect("db connection");
+        conn.execute(
+            "INSERT INTO conversations (id, title, workspace_path, active_agent) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["conv-print-stop", "PrintStop", "D:/work/project", "DeepSeek Harness"],
+        )
+        .expect("conversation seed");
+        drop(conn);
+
+        let manager = Arc::new(RuntimeManager::new(Arc::clone(&db)));
+        let session = manager
+            .start_session(AgentSessionConfig {
+                conversation_id: "conv-print-stop".into(),
+                agent: AgentId::Dsh,
+                executable_path: script_path.to_string_lossy().into_owned(),
+                workspace_path: std::env::temp_dir().to_string_lossy().into_owned(),
+                model: ModelSelection::AgentDefault,
+                permission: PermissionPolicy::AskOnRisk,
+                work_mode: WorkMode::Direct,
+            })
+            .await
+            .expect("start print session");
+        assert_eq!(session.status, AgentSessionStatus::Running);
+
+        let sender = {
+            let manager = Arc::clone(&manager);
+            let session_id = session.id.clone();
+            tokio::spawn(async move { manager.send_message(&session_id, "hang the turn").await })
+        };
+        // Give the turn a beat to spawn its CLI child before stopping.
+        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+
+        manager
+            .stop_session(&session.id)
+            .await
+            .expect("stop print session");
+
+        // Before N08 this stayed pending for as long as the CLI lived; now
+        // the killed child must settle the send within seconds.
+        tokio::time::timeout(std::time::Duration::from_secs(5), sender)
+            .await
+            .expect("stopped print turn must not block its send")
+            .expect("send task joined")
+            .expect("stopped turn resolves Ok");
+
+        let stopped = manager.get_session(&session.id).expect("reload session");
+        assert_eq!(stopped.status, AgentSessionStatus::Cancelled);
+        let events = manager.list_events(&session.id).expect("list events");
+        assert!(events.iter().any(|event| {
+            event.kind == RuntimeEventKind::RawLog
+                && event.text.as_deref() == Some("任务已由用户终止")
+        }));
+        assert!(
+            !events
+                .iter()
+                .any(|event| event.kind == RuntimeEventKind::AssistantMessage),
+            "a killed turn must not be recorded as an agent answer"
+        );
 
         drop(manager);
         drop(db);

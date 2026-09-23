@@ -46,6 +46,7 @@ import { cn } from "@/lib/utils";
 import { knowledgeApi, promptGuardApi, runtimeApi, searchApi, shellApi, workspaceApi, notesApi, sddApi, teamRunApi, upstreamAccountApi, conversationApi, type UpstreamAccountOption } from "@/lib/tauri-api";
 import type { ConversationInfo } from "@/types";
 import { getRuntimeAgentId, isAcpAgent } from "@/lib/agentRegistry";
+import { previewRequestIsCurrent } from "@/hooks/usePreview";
 import type {
   ChatImageAttachment,
   EmbeddingModelInfo,
@@ -220,6 +221,13 @@ export function ChatTab({ surface, onSuggestTeam }: ChatTabProps) {
   const [dropActive, setDropActive] = useState(false);
   const [runtimeModels, setRuntimeModels] = useState<RuntimeModelOption[]>([]);
   const [selectedModelId, setSelectedModelId] = useState("agent_default");
+  const modelRequestSeqRef = useRef(0);
+  const upstreamRequestSeqRef = useRef(0);
+  const runtimeAgentId = getRuntimeAgentId(activeAgent);
+  const runtimeAgentIdRef = useRef(runtimeAgentId);
+  runtimeAgentIdRef.current = runtimeAgentId;
+  const activeAgentRef = useRef(activeAgent);
+  activeAgentRef.current = activeAgent;
   const [fullAccessConfirmed, setFullAccessConfirmed] = useState(false);
   const [webSearchEnabled, setWebSearchEnabled] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
@@ -243,7 +251,15 @@ export function ChatTab({ surface, onSuggestTeam }: ChatTabProps) {
   // F1: per-agent upstream account switcher (OAuth + api-key), switchable mid-chat.
   const [upstreamAccounts, setUpstreamAccounts] = useState<UpstreamAccountOption[]>([]);
   const loadUpstreamAccounts = useCallback(() => {
-    upstreamAccountApi.list(activeAgent).then(setUpstreamAccounts).catch(() => setUpstreamAccounts([]));
+    const agent = activeAgent;
+    const seq = ++upstreamRequestSeqRef.current;
+    upstreamAccountApi.list(agent).then((accounts) => {
+      if (!previewRequestIsCurrent(agent, seq, activeAgentRef.current, upstreamRequestSeqRef.current)) return;
+      setUpstreamAccounts(accounts);
+    }).catch(() => {
+      if (!previewRequestIsCurrent(agent, seq, activeAgentRef.current, upstreamRequestSeqRef.current)) return;
+      setUpstreamAccounts([]);
+    });
   }, [activeAgent]);
   useEffect(() => { loadUpstreamAccounts(); }, [loadUpstreamAccounts]);
   const activeUpstream = upstreamAccounts.find((a) => a.is_active);
@@ -276,7 +292,6 @@ export function ChatTab({ surface, onSuggestTeam }: ChatTabProps) {
     setRefPickerOpen(false);
   };
 
-  const runtimeAgentId = getRuntimeAgentId(activeAgent);
   const selectedModel = runtimeModels.find((model) => model.id === selectedModelId)
     ?? runtimeModels.find((model) => model.is_default && model.compatibility.selectable)
     ?? runtimeModels.find((model) => model.compatibility.selectable);
@@ -392,7 +407,10 @@ export function ChatTab({ surface, onSuggestTeam }: ChatTabProps) {
       setRuntimeModels([]);
       return;
     }
-    runtimeApi.getModelOptions(runtimeAgentId).then((models) => {
+    const agent = runtimeAgentId;
+    const seq = ++modelRequestSeqRef.current;
+    runtimeApi.getModelOptions(agent).then((models) => {
+      if (!previewRequestIsCurrent(agent, seq, runtimeAgentIdRef.current ?? "", modelRequestSeqRef.current)) return;
       setRuntimeModels(models);
       // 先认用户上次为这个 Agent 选的模型。
       //
@@ -400,7 +418,7 @@ export function ChatTab({ surface, onSuggestTeam }: ChatTabProps) {
       // state 随之清零。以前这里无条件回落到 `is_default`，于是「去模型页看一眼
       // 再回来」就把你选的模型换成了 Agent 官方默认，而且不吭一声。
       // 记住的模型如果已经没了或变成不可选（供应商停用/熔断），才退回默认。
-      const remembered = localStorage.getItem(modelMemoryKey(runtimeAgentId));
+      const remembered = localStorage.getItem(modelMemoryKey(agent));
       const rememberedOption = remembered
         ? models.find((model) => model.id === remembered && model.compatibility.selectable)
         : undefined;
@@ -410,6 +428,7 @@ export function ChatTab({ surface, onSuggestTeam }: ChatTabProps) {
         ?? models.find((model) => model.compatibility.selectable);
       setSelectedModelId(preferred?.id || "");
     }).catch((error) => {
+      if (!previewRequestIsCurrent(agent, seq, runtimeAgentIdRef.current ?? "", modelRequestSeqRef.current)) return;
       setRuntimeModels([]);
       toast.error("无法读取 Agent 模型兼容目录", { description: String(error) });
     });

@@ -17,6 +17,9 @@ pub enum AgentId {
     CopilotCli,
     Grok,
     Antigravity,
+    /// DeepSeek Harness (`dsh`). Models and keys live in DSH's own profile;
+    /// OMNIX only boots the headless profile and does not store a second copy.
+    Dsh,
 }
 
 impl AgentId {
@@ -26,7 +29,7 @@ impl AgentId {
     /// A new variant MUST be added here too — `all_lists_every_agent` covers this
     /// with an exhaustive match, so forgetting fails the build rather than
     /// silently shipping an agent the runtime reports as 待适配.
-    pub const ALL: [AgentId; 8] = [
+    pub const ALL: [AgentId; 9] = [
         AgentId::ClaudeCode,
         AgentId::Codex,
         AgentId::GeminiCli,
@@ -35,6 +38,7 @@ impl AgentId {
         AgentId::CopilotCli,
         AgentId::Grok,
         AgentId::Antigravity,
+        AgentId::Dsh,
     ];
 
     pub fn display_name(self) -> &'static str {
@@ -47,13 +51,14 @@ impl AgentId {
             Self::CopilotCli => "GitHub Copilot CLI",
             Self::Grok => "Grok Build",
             Self::Antigravity => "Google Antigravity",
+            Self::Dsh => "DeepSeek Harness",
         }
     }
 
     /// Whether the agent is driven by spawning one process per turn (print mode)
     /// instead of a long-lived stdio session.
     pub fn is_print_one_shot(self) -> bool {
-        matches!(self, Self::Antigravity)
+        matches!(self, Self::Antigravity | Self::Dsh)
     }
 
     /// Whether this agent is driven over the universal ACP adapter.
@@ -174,14 +179,15 @@ pub fn evaluate_model_compatibility(
         // grok.com sign-in). They do not route through the OMNIX gateway, so
         // OMNIX-managed provider models are not selectable for them — the session
         // runs on the agent's own default.
-        // Antigravity is the same story: it serves its own Gemini models through
-        // the user's Google sign-in and has no gateway path.
+        // Antigravity / DSH are the same story: they serve their own models
+        // through their own sign-in (Google / DSH profile) and have no gateway path.
         AgentId::GeminiCli
         | AgentId::QwenCode
         | AgentId::OpenCode
         | AgentId::CopilotCli
         | AgentId::Grok
-        | AgentId::Antigravity => {
+        | AgentId::Antigravity
+        | AgentId::Dsh => {
             let _ = provider_type;
             ModelCompatibility {
                 level: ModelCompatibilityLevel::Unsupported,
@@ -267,8 +273,9 @@ pub enum AdapterKind {
     ClaudeStreamJson,
     CodexAppServer,
     Acp,
-    /// One process per turn: the CLI is invoked with `-p <prompt>`, prints a
-    /// plain-text answer and exits (Antigravity's `agy`). There is no long-lived
+    /// One process per turn: the CLI is invoked with a prompt, prints a
+    /// plain-text answer and exits (`agy --print`, `dsh --profile headless`).
+    /// There is no long-lived
     /// child to write to, and no structured tool-call events to stream.
     PrintOneShot,
 }
@@ -379,6 +386,20 @@ pub fn agent_definition(agent: AgentId) -> AgentDefinition {
             runtime_adapter: AdapterKind::PrintOneShot,
             supports_structured_events: false,
             supports_resume: true,
+        },
+        AgentId::Dsh => AgentDefinition {
+            id: agent,
+            display_name: agent.display_name(),
+            executable_names: vec!["dsh", "dsh.cmd"],
+            // Installed by DSH Desktop / the official `dsh` CLI, not npm.
+            managed_package: None,
+            // `dsh --profile headless` answers one task and exits. There is no
+            // reliable session-id capture from that profile (unlike Antigravity's
+            // last_conversations.json), so each turn is independent. Streaming
+            // tool events / true resume live on `dsh web` — a later adapter.
+            runtime_adapter: AdapterKind::PrintOneShot,
+            supports_structured_events: false,
+            supports_resume: false,
         },
     }
 }
@@ -1122,6 +1143,7 @@ pub(crate) fn agent_id_str(agent: AgentId) -> &'static str {
         AgentId::CopilotCli => "copilot_cli",
         AgentId::Grok => "grok",
         AgentId::Antigravity => "antigravity",
+        AgentId::Dsh => "dsh",
     }
 }
 
@@ -1135,6 +1157,7 @@ fn parse_agent_id(value: &str) -> Result<AgentId, String> {
         "copilot_cli" => Ok(AgentId::CopilotCli),
         "grok" => Ok(AgentId::Grok),
         "antigravity" => Ok(AgentId::Antigravity),
+        "dsh" => Ok(AgentId::Dsh),
         other => Err(format!("unknown Agent id: {other}")),
     }
 }
@@ -1756,6 +1779,12 @@ pub fn build_launch_spec(config: &AgentSessionConfig) -> Result<LaunchSpec, Stri
                 }
             }
         }
+        // DeepSeek Harness: boot the headless profile. Models and keys stay in
+        // DSH's own config; OMNIX does not inject a second credential store or
+        // a `--model` override.
+        AgentId::Dsh => {
+            args.extend(["--profile".into(), "headless".into()]);
+        }
     }
 
     Ok(LaunchSpec {
@@ -1768,24 +1797,28 @@ pub fn build_launch_spec(config: &AgentSessionConfig) -> Result<LaunchSpec, Stri
 }
 
 /// Build the argv for one print-mode turn: the standing session flags plus this
-/// turn's prompt, and `--conversation <id>` once Antigravity has assigned one so
-/// follow-up turns continue the same conversation instead of starting over.
+/// turn's prompt. Antigravity continues with `--conversation <id>` once it has
+/// assigned one. DSH headless has no captured session id, so follow-ups stay
+/// independent one-shots (positional prompt only).
 ///
-/// `--print-timeout` is pinned so a wedged turn fails instead of hanging for the
-/// CLI's 5-minute default.
+/// `--print-timeout` is Antigravity-only: DSH's headless profile takes the prompt
+/// as a positional argument and does not speak that flag.
 pub fn build_print_turn_args(
+    agent: AgentId,
     base_args: &[String],
     prompt: &str,
     conversation_id: Option<&str>,
 ) -> Vec<String> {
     let mut args = base_args.to_vec();
-    if let Some(id) = conversation_id.map(str::trim).filter(|id| !id.is_empty()) {
-        args.push("--conversation".into());
-        args.push(id.to_string());
+    if agent != AgentId::Dsh {
+        if let Some(id) = conversation_id.map(str::trim).filter(|id| !id.is_empty()) {
+            args.push("--conversation".into());
+            args.push(id.to_string());
+        }
+        args.push("--print-timeout".into());
+        args.push("4m".into());
+        args.push("--print".into());
     }
-    args.push("--print-timeout".into());
-    args.push("4m".into());
-    args.push("--print".into());
     args.push(prompt.to_string());
     args
 }
@@ -1824,12 +1857,10 @@ pub fn build_resume_launch_spec(
         spec.args.push("--resume".into());
         spec.args.push(external_session_id.into());
     }
-    // Print-one-shot agents resume by conversation id on each turn's argv; keep
-    // it on the spec so the driver picks it up without another lookup.
-    if config.agent.is_print_one_shot() {
-        spec.args.push("--conversation".into());
-        spec.args.push(external_session_id.into());
-    }
+    // Print-one-shot agents that actually resume (Antigravity) do so on each
+    // turn's argv via `build_print_turn_args`. Do not also pin the id on the
+    // standing spec — that would duplicate the flag when the driver already
+    // has it in `PrintSession.conversation_id`. DSH has no captured id.
     Ok(spec)
 }
 
@@ -2519,7 +2550,7 @@ mod tests {
     fn print_turn_args_carry_prompt_and_resume_conversation() {
         let base = vec!["--add-dir".to_string(), "D:/work".to_string()];
 
-        let first = build_print_turn_args(&base, "hello", None);
+        let first = build_print_turn_args(AgentId::Antigravity, &base, "hello", None);
         assert!(!first.iter().any(|arg| arg == "--conversation"));
         assert_eq!(
             first.last().map(String::as_str),
@@ -2530,15 +2561,74 @@ mod tests {
         // A wedged turn must fail rather than hang on the CLI's 5-minute default.
         assert!(first.iter().any(|arg| arg == "--print-timeout"));
 
-        let second = build_print_turn_args(&base, "again", Some("uuid-1"));
+        let second = build_print_turn_args(AgentId::Antigravity, &base, "again", Some("uuid-1"));
         assert!(second
             .windows(2)
             .any(|pair| pair == ["--conversation", "uuid-1"]));
         assert_eq!(second.last().map(String::as_str), Some("again"));
 
         // Blank/whitespace ids are treated as "no id yet", never passed through.
-        let blank = build_print_turn_args(&base, "x", Some("   "));
+        let blank = build_print_turn_args(AgentId::Antigravity, &base, "x", Some("   "));
         assert!(!blank.iter().any(|arg| arg == "--conversation"));
+    }
+
+    fn dsh_config() -> AgentSessionConfig {
+        AgentSessionConfig {
+            conversation_id: "conv-dsh".into(),
+            agent: AgentId::Dsh,
+            executable_path: "dsh.cmd".into(),
+            workspace_path: "D:/work/project".into(),
+            model: ModelSelection::AgentDefault,
+            permission: PermissionPolicy::AskOnRisk,
+            work_mode: WorkMode::Direct,
+        }
+    }
+
+    /// DSH boots the headless profile. Keys stay in DSH's own config — OMNIX
+    /// must not inject a gateway env or a second credential store.
+    #[test]
+    fn dsh_launches_headless_profile_without_omnix_gateway() {
+        let spec = build_launch_spec(&dsh_config()).expect("dsh spec");
+        assert_eq!(spec.adapter, "print_one_shot");
+        assert!(spec.args.windows(2).any(|pair| pair == ["--profile", "headless"]));
+        assert!(spec.env.is_empty(), "DSH must not inherit OMNIX gateway env");
+        assert!(!spec.args.iter().any(|arg| arg == "--print"));
+        assert!(!spec.args.iter().any(|arg| arg.contains("ANTHROPIC")));
+        assert!(!spec.args.iter().any(|arg| arg == "--model"));
+
+        let with_model = build_launch_spec(&AgentSessionConfig {
+            model: ModelSelection::Builtin {
+                model_name: "deepseek-chat".into(),
+            },
+            ..dsh_config()
+        })
+        .expect("dsh model spec");
+        assert!(
+            !with_model.args.iter().any(|arg| arg == "--model"),
+            "DSH model choice stays in its own profile"
+        );
+    }
+
+    #[test]
+    fn dsh_print_turn_is_independent_one_shot() {
+        let base = vec!["--profile".to_string(), "headless".to_string()];
+        let first = build_print_turn_args(AgentId::Dsh, &base, "run the tests", None);
+        assert_eq!(
+            first,
+            vec!["--profile", "headless", "run the tests"]
+        );
+        assert!(!first.iter().any(|arg| arg == "--print"));
+        assert!(!first.iter().any(|arg| arg == "--print-timeout"));
+        assert!(!first.iter().any(|arg| arg == "--conversation"));
+
+        let second = build_print_turn_args(AgentId::Dsh, &base, "continue", Some("sess-1"));
+        assert_eq!(
+            second,
+            vec!["--profile", "headless", "continue"],
+            "DSH must not invent --resume without a captured session id"
+        );
+        assert!(!second.iter().any(|arg| arg == "--resume"));
+        assert!(!second.iter().any(|arg| arg == "--conversation"));
     }
 
     /// Antigravity ships no structured events and is not an ACP agent — the UI
@@ -2559,6 +2649,21 @@ mod tests {
         );
     }
 
+    #[test]
+    fn dsh_declares_print_one_shot_capabilities() {
+        let definition = agent_definition(AgentId::Dsh);
+        assert_eq!(definition.runtime_adapter, AdapterKind::PrintOneShot);
+        assert!(!definition.supports_structured_events);
+        assert!(!definition.supports_resume, "headless has no captured session id");
+        assert!(definition.managed_package.is_none(), "installed by DSH Desktop / official CLI");
+        assert_eq!(definition.executable_names, vec!["dsh", "dsh.cmd"]);
+        assert!(AgentId::Dsh.is_print_one_shot());
+        assert!(!AgentId::Dsh.is_acp());
+        assert_eq!(agent_id_str(AgentId::Dsh), "dsh");
+        assert_eq!(parse_agent_id("dsh").expect("parses"), AgentId::Dsh);
+        assert_eq!(AgentId::Dsh.display_name(), "DeepSeek Harness");
+    }
+
     /// Position of each agent in `AgentId::ALL`. The match is exhaustive, so a new
     /// `AgentId` variant fails to compile here until it is given an index — and the
     /// index has to be a real slot in `ALL`, which `all_lists_every_agent` checks.
@@ -2572,6 +2677,7 @@ mod tests {
             AgentId::CopilotCli => 5,
             AgentId::Grok => 6,
             AgentId::Antigravity => 7,
+            AgentId::Dsh => 8,
         }
     }
 
@@ -2629,6 +2735,8 @@ mod tests {
         }
         assert!(!AgentId::ClaudeCode.is_acp());
         assert!(!AgentId::Codex.is_acp());
+        assert!(!AgentId::Antigravity.is_acp());
+        assert!(!AgentId::Dsh.is_acp());
     }
 
     #[test]

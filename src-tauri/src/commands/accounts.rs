@@ -195,7 +195,27 @@ pub fn list_agent_upstream_accounts(
                 // CLI 自己持有令牌，OMNIX 换不了也不需要换——它始终是生效的那个。
                 is_active: true,
             });
+        }
     }
+
+    // DeepSeek Harness keeps models and keys in `$DSH_HOME` (default `~/.dsh`).
+    // OMNIX only detects that the CLI-owned store exists; it never copies the
+    // file into `agent_accounts` / `platform_api_keys`.
+    if agent_name.eq_ignore_ascii_case("DeepSeek Harness")
+        || agent_name.eq_ignore_ascii_case("dsh")
+    {
+        let configured = std::fs::metadata(crate::agent::dsh_credentials_file())
+            .is_ok_and(|meta| meta.len() > 0);
+        if configured {
+            out.push(UpstreamAccountOption {
+                account_ref: "cli:dsh".into(),
+                kind: "cli".into(),
+                label: "DSH 本机配置（CLI 自管）".into(),
+                provider: Some("DeepSeek Harness".into()),
+                expired: false,
+                is_active: true,
+            });
+        }
     }
 
     // This agent's api-key accounts.

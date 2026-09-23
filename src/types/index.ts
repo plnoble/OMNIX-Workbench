@@ -272,7 +272,8 @@ export type RuntimeAgentId =
   | "open_code"
   | "copilot_cli"
   | "grok"
-  | "antigravity";
+  | "antigravity"
+  | "dsh";
 
 export type RuntimeModelSelection =
   | { kind: "agent_default" }

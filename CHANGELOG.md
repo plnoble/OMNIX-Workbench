@@ -12,6 +12,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > 这份文件此前停在 0.4.0，而应用已经发到 0.28.0；更新器的说明里却写着「详见
 > CHANGELOG」，指向一份对不上的文件。补齐用的是真实提交记录，没有事后追写。
 
+## [0.38.0] - 2026-09-23
+
+接入 DeepSeek Harness（DSH）作为第 9 个 Agent，并修完软件审核发现的 N01–N05、N08。
+
+- **DSH 接入（新）**：单轮 headless 适配器（`dsh --profile headless`）。模型与密钥全部留在
+  DSH 本机配置（`~/.dsh`），OMNIX 不代装、不另存一份、不经网关转发；安装入口改为官方 CLI
+  指引而非假按钮。
+- **N01**：DSH headless 无可捕获的 session id，续聊如实降级为每轮独立（`supports_resume=false`），
+  不再凭空构造 `--resume`。
+- **N02/N03**：DSH / Qwen Code 不再显示会报错的「安装」按钮；运行目录按适配器如实标注
+  （单轮 headless 不再显示为「结构化协议已接入」）。
+- **N04**：ACP / print 单轮 Agent 自管凭据，模型下拉不再塞进本来就选不了的 OMNIX 网关模型。
+- **N05**：ChatTab 的模型目录与上游账号列表加请求序号守卫，切 Agent 时的过期回包不再串台。
+- **N08**：print 轮次的「停止」现在真的停——先 `taskkill /T` 杀整棵 CLI 进程树（`.cmd` 垫片
+  下只杀 `cmd.exe` 会孤儿化真 CLI 并占住管道句柄），再 `start_kill` 兜底。挂死的轮次不再把
+  输入区锁到重启；被停轮次如实记 Cancelled 并在转录留「任务已由用户终止」，不伪造回答。
+- **测试**：proxy 测试夹具补上 `is_enabled` 列（0.37.0 基线里就红的一个测试）。
+
+本版由 CI 打包发布。
+
 ## [0.37.0] - 2026-09-10
 
 按 2026-09-10 软件审核把平台密钥、检查点回退和任务现场归属做完。

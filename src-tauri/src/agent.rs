@@ -50,6 +50,7 @@ pub(crate) const CLI_AGENTS: &[(&str, &str)] = &[
     ("Google Antigravity", "agy"),
     ("OpenCode", "opencode"),
     ("Grok Build", "grok"),
+    ("DeepSeek Harness", "dsh"),
 ];
 
 pub(crate) fn agent_slug(agent_name: &str) -> &'static str {
@@ -62,6 +63,7 @@ pub(crate) fn agent_slug(agent_name: &str) -> &'static str {
         "GitHub Copilot CLI" => "github-copilot-cli",
         "Google Antigravity" => "antigravity",
         "Grok Build" => "grok-build",
+        "DeepSeek Harness" => "dsh",
         _ => "custom-agent",
     }
 }
@@ -143,6 +145,16 @@ pub struct AgentUpdateInfo {
 /// pins users to the oldest release in the line. `0.2` is the same `>=0.2.0 <0.3.0`
 /// range with no shell metacharacters, and resolves identically under sh and cmd.exe.
 pub const GROK_NPM_SPEC: &str = "@xai-official/grok@0.2";
+
+/// DSH keeps its own models and keys under `$DSH_HOME` (default `~/.dsh`).
+/// OMNIX only detects that this store exists; it never copies the contents.
+pub fn dsh_credentials_file() -> PathBuf {
+    let home = std::env::var_os("DSH_HOME")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".dsh")))
+        .unwrap_or_else(|| PathBuf::from(".dsh"));
+    home.join(".credentials.yaml")
+}
 
 /// OMNIX 在别的 AI 应用的 `mcpServers` 里用的键名。稳定不变——改了会在用户配置里
 /// 留下一个孤儿条目，而我们再也认不出它是自己写的。
@@ -552,6 +564,13 @@ impl AgentManager {
             return Err("Qwen Code managed installation is not supported yet; OMNIX will not create a mock CLI".into());
         }
 
+        if agent_name == "DeepSeek Harness" {
+            return Err(
+                "DeepSeek Harness 由 DSH Desktop / 官方 dsh CLI 安装，OMNIX 不代装，也不另存一份密钥。请安装 DSH 后确保 `dsh` 在 PATH 上。"
+                    .into(),
+            );
+        }
+
         if agent_name == "Google Antigravity" {
             let mut cmd = if cfg!(windows) {
                 let mut c = Command::new("powershell");
@@ -809,6 +828,11 @@ impl AgentManager {
             let cmd_file = bin_dir.join(format!("{}.cmd", bin_name));
             let _ = fs::remove_file(&bin_file);
             let _ = fs::remove_file(&cmd_file);
+        } else if agent_name == "DeepSeek Harness" {
+            return Err(
+                "DeepSeek Harness 由 DSH Desktop 管理，OMNIX 不会卸载本机 dsh CLI"
+                    .into(),
+            );
         } else if agent_name == "Google Antigravity" {
             if let Some(local_dir) = dirs::data_local_dir() {
                 let agy_dir = local_dir.join("agy");
@@ -1539,6 +1563,17 @@ mod tests {
             Some("@qwen-code/qwen-code")
         );
         assert_eq!(npm_package_for_agent("Google Antigravity"), None);
+        assert_eq!(npm_package_for_agent("DeepSeek Harness"), None);
+    }
+
+    #[test]
+    fn dsh_credentials_file_is_named_credentials_yaml() {
+        assert_eq!(
+            dsh_credentials_file()
+                .file_name()
+                .and_then(|name| name.to_str()),
+            Some(".credentials.yaml")
+        );
     }
 
     /// Guards the per-agent context-file injection. Runs in CI: it only touches

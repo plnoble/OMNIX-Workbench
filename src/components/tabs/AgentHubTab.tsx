@@ -41,6 +41,11 @@ const BUILTIN_MODELS: Record<string, string[]> = {
 
 const FEATURED_AGENTS = ["Claude Code", "Codex", "Gemini CLI", "OpenCode"];
 const DEFAULT_BINDING_VALUE = "__agent_default__";
+/** OMNIX will not fetch or install these CLIs. The hub must not show a fake 安装. */
+const EXTERNAL_INSTALL_HINTS: Record<string, string> = {
+  "DeepSeek Harness": "请安装 DSH Desktop / 官方 dsh CLI，并确保 `dsh` 在 PATH 上。OMNIX 不代装，也不另存密钥。",
+  "Qwen Code": "请自行安装官方 `qwen` CLI。OMNIX 暂不提供托管安装。",
+};
 
 function getBindingValue(binding?: AgentPlatformBinding) {
   if (!binding || binding.binding_kind === "default") return DEFAULT_BINDING_VALUE;
@@ -241,6 +246,10 @@ export function AgentHubTab({ onStartWork, onOpenAuthCenter }: AgentHubTabProps)
   const builtinModelOptions = BUILTIN_MODELS[selected?.name ?? ""] ?? [];
 
   const runAgentAction = async (agentName: string, action: "install" | "update") => {
+    if (action === "install" && EXTERNAL_INSTALL_HINTS[agentName]) {
+      toast.info(EXTERNAL_INSTALL_HINTS[agentName]);
+      return;
+    }
     setBusyAgent(agentName);
     try {
       if (action === "install") {
@@ -370,7 +379,7 @@ export function AgentHubTab({ onStartWork, onOpenAuthCenter }: AgentHubTabProps)
               <div className="mt-2 text-sm text-muted-foreground">
                 {agent.installed
                   ? `${agent.runtime?.installation_source === "managed" ? "OMNIX 托管" : "系统安装"} · ${agent.detected?.version || "版本未知"}`
-                  : "需要安装对应 CLI 后才能启动"}
+                  : EXTERNAL_INSTALL_HINTS[agent.name] ?? "需要安装对应 CLI 后才能启动"}
               </div>
               {updates[agent.name]?.has_update && (
                 <div className="mt-1 text-xs text-warning">
@@ -385,6 +394,11 @@ export function AgentHubTab({ onStartWork, onOpenAuthCenter }: AgentHubTabProps)
                   卡片本身即入口——点卡片在右侧看详情/绑模型/配账号。 */}
               <div className="mt-4 flex flex-wrap gap-2">
                 {!agent.installed ? (
+                  EXTERNAL_INSTALL_HINTS[agent.name] ? (
+                    <span className="text-xs leading-5 text-muted-foreground">
+                      OMNIX 不代装
+                    </span>
+                  ) : (
                   <Button
                     size="sm"
                     type="button"
@@ -401,6 +415,7 @@ export function AgentHubTab({ onStartWork, onOpenAuthCenter }: AgentHubTabProps)
                     )}
                     安装
                   </Button>
+                  )
                 ) : (
                   <>
                     <Button
@@ -469,7 +484,19 @@ export function AgentHubTab({ onStartWork, onOpenAuthCenter }: AgentHubTabProps)
               <InfoRow label="状态" value={selected.installed ? "已检测到本地 CLI" : "未检测到本地 CLI"} ok={selected.installed} />
               <InfoRow label="版本" value={selected.detected?.version || "未知"} />
               <InfoRow label="来源" value={selected.runtime?.installation_source === "managed" ? "OMNIX 托管安装" : selected.installed ? "系统安装" : "未安装"} />
-              <InfoRow label="运行适配" value={selected.runtime?.runtime_status === "supported" ? "结构化协议已接入" : "待适配，不会显示为可运行"} ok={selected.runtime?.runtime_status === "supported"} />
+              <InfoRow
+                label="运行适配"
+                value={
+                  selected.runtime?.runtime_status !== "supported"
+                    ? "待适配，不会显示为可运行"
+                    : selected.runtime?.adapter === "print_one_shot"
+                      ? (selected.name === "DeepSeek Harness"
+                        ? "单轮 headless（每轮独立任务）"
+                        : "单轮 print（纯文本回答）")
+                      : "结构化协议已接入"
+                }
+                ok={selected.runtime?.runtime_status === "supported"}
+              />
               <InfoRow label="路径" value={selected.detected?.path || "未找到"} />
 
               <div className="rounded-md border border-border bg-background/50 p-4">
@@ -544,6 +571,8 @@ export function AgentHubTab({ onStartWork, onOpenAuthCenter }: AgentHubTabProps)
                   <p className="mt-1.5 text-xs leading-5 text-muted-foreground">
                     {selected.name === "Grok Build"
                       ? "Grok Build 暂不支持从这里下发模型（其 CLI 不接受标准 ACP 配置协议，实测返回 Method not found）——会话运行在你 Grok 账号的默认模型上；模型选择通道接入中。"
+                      : selected.name === "DeepSeek Harness"
+                        ? "DeepSeek Harness 使用 DSH 本机配置里的模型和密钥，OMNIX 不另存一份、也不经网关转发。请在 DSH Desktop 或 `dsh` 配置里选择模型。"
                       : selectedIsAcp
                         ? "ACP Agent（Gemini/Qwen/OpenCode/Copilot）：下次会话经 set_config_option 下发，可填 Agent 未在列表里声明的模型。留空＝用 Agent 默认。"
                         : "Claude Code / Codex：作为自带模型（--model）绑定。留空并保存＝清除绑定，回到 Agent 默认。"}
@@ -554,10 +583,16 @@ export function AgentHubTab({ onStartWork, onOpenAuthCenter }: AgentHubTabProps)
               {/* 情境化动作：与宫格卡片同一逻辑（检测由顶部「刷新」统一负责）。 */}
               <div className="flex gap-2">
                 {!selected.installed ? (
+                  EXTERNAL_INSTALL_HINTS[selected.name] ? (
+                    <p className="text-sm leading-6 text-muted-foreground">
+                      {EXTERNAL_INSTALL_HINTS[selected.name]}
+                    </p>
+                  ) : (
                   <Button className="flex-1" onClick={() => runAgentAction(selected.name, "install")} disabled={busyAgent === selected.name}>
                     {busyAgent === selected.name ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
                     安装
                   </Button>
+                  )
                 ) : (
                   <>
                     <Button
@@ -593,19 +628,27 @@ export function AgentHubTab({ onStartWork, onOpenAuthCenter }: AgentHubTabProps)
                   </Button>
                 </div>
                 <p className="mb-3 text-xs text-muted-foreground">
-                  {selected.name} 这次会话用哪一份额度。订阅在「认证中心」登录，API Key 在这里新增。
+                  {selected.name === "DeepSeek Harness"
+                    ? "DeepSeek Harness 使用 DSH 本机配置（$DSH_HOME / ~/.dsh）里的模型和密钥，OMNIX 不另存一份。"
+                    : `${selected.name} 这次会话用哪一份额度。订阅在「认证中心」登录，API Key 在这里新增。`}
                 </p>
 
                 <div className="space-y-2">
                   {upstreams.length === 0 ? (
                     <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-                      <span>还没有可用的上游。</span>
-                      {onOpenAuthCenter && (
+                      <span>
+                        {selected.name === "DeepSeek Harness"
+                          ? "还没检测到 DSH 本机凭据。请在 DSH Desktop 或 `dsh` 里完成登录后再刷新。"
+                          : "还没有可用的上游。"}
+                      </span>
+                      {selected.name !== "DeepSeek Harness" && onOpenAuthCenter && (
                         <Button size="sm" variant="outline" className="h-7" onClick={onOpenAuthCenter}>
                           <LogIn className="h-3 w-3" /> 去登录订阅
                         </Button>
                       )}
-                      <span>或在下方新增一个 API Key 账号。</span>
+                      {selected.name !== "DeepSeek Harness" && (
+                        <span>或在下方新增一个 API Key 账号。</span>
+                      )}
                     </div>
                   ) : upstreams.map((option) => (
                     <div

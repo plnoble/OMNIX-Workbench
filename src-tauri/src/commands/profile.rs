@@ -163,6 +163,9 @@ fn display_agent(agent_id: &str) -> String {
         "qwen_code" => "Qwen Code",
         "opencode" => "OpenCode",
         "copilot_cli" => "GitHub Copilot CLI",
+        "grok" => "Grok Build",
+        "antigravity" => "Google Antigravity",
+        "dsh" => "DeepSeek Harness",
         other => other,
     }
     .to_string()

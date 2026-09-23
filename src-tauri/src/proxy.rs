@@ -1241,7 +1241,8 @@ mod tests {
             CREATE TABLE platform_api_keys (
                 id TEXT PRIMARY KEY, platform_id TEXT NOT NULL, encrypted_key TEXT NOT NULL,
                 label TEXT DEFAULT '', is_active INTEGER DEFAULT 0,
-                created_at TEXT DEFAULT (datetime('now'))
+                created_at TEXT DEFAULT (datetime('now')),
+                is_enabled INTEGER NOT NULL DEFAULT 1
             );
             INSERT INTO conversations (id, title, workspace_path, active_agent)
                 VALUES ('conv-gateway', 'Gateway', 'D:/work/project', 'Claude Code');

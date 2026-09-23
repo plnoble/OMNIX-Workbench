@@ -27,6 +27,7 @@ export const AGENT_NAMES = [
   "Google Antigravity",
   "OpenCode",
   "Grok Build",
+  "DeepSeek Harness",
 ] as const;
 
 /** Supported LLM provider types with display labels */
