@@ -403,6 +403,7 @@ pub fn run() {
             commands::runtime_list_conversation_sessions,
             commands::install_agent_cli,
             commands::check_agent_updates,
+            commands::refresh_agent_versions,
             commands::get_profile_stats,
             commands::oauth_start,
             commands::oauth_complete,

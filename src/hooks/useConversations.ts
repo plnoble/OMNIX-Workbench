@@ -284,6 +284,8 @@ export interface UseConversationsReturn {
 
   loadConversations: () => Promise<void>;
   detectAgents: () => Promise<void>;
+  /** 逐个重探已安装 agent 的版本（后端事件驱动，卡片逐个翻新）。 */
+  refreshAgentVersions: () => Promise<void>;
   selectConversation: (id: string) => Promise<void>;
   newConversation: () => void;
   saveWorkspaceChat: () => Promise<void>;
@@ -532,6 +534,37 @@ export function useConversations(
     } catch (e) {
       console.error("[useConversations] Failed to detect agents:", e);
     }
+  }, []);
+
+  /// 「刷新」走的通道：后端逐个重探已安装 agent 的版本（DSH 最先），每探完
+  /// 一个发 agent-version-probed，卡片逐个翻新——不再整排干等一个串行循环。
+  const refreshAgentVersions = useCallback(async () => {
+    try {
+      const list = await agentApi.refreshVersions();
+      setDetectedAgents(list);
+    } catch (e) {
+      console.error("[useConversations] Failed to refresh agent versions:", e);
+    }
+  }, []);
+
+  // 启动时 DSH 的后台探测、刷新时的逐个探测都发 agent-version-probed；
+  // store 就地补版本号，卡片不用等整轮结束。
+  useEffect(() => {
+    const unlistenProbed = listen<{ name: string; version: string }>(
+      "agent-version-probed",
+      (event) => {
+        setDetectedAgents((current) =>
+          current.map((agent) =>
+            agent.name === event.payload.name
+              ? { ...agent, version: event.payload.version }
+              : agent,
+          ),
+        );
+      },
+    );
+    return () => {
+      unlistenProbed.then((fn) => fn());
+    };
   }, []);
 
   // ── Conversation CRUD ──────────────────────────────
@@ -1246,7 +1279,7 @@ export function useConversations(
     setChatInput, setChatWorkspace, setActiveAgent, selectAgent,
     setCollabStdin,
     setIsWorkspaceModalOpen, setWorkspaceFormPath,
-    loadConversations, detectAgents, selectConversation,
+    loadConversations, detectAgents, refreshAgentVersions, selectConversation,
     newConversation, saveWorkspaceChat, deleteConversation,
     archiveConversation, unarchiveConversation, loadArchivedConversations,
     sendMessage, respondToApproval, stopAgentSession,

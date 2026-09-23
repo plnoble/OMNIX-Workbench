@@ -2,12 +2,56 @@ use crate::agent::{AgentManager, DetectedAgent};
 use crate::input_validation;
 use crate::proc::NoWindow;
 use std::sync::Arc;
-use tauri::State;
+use tauri::{Emitter, State};
 
 #[tauri::command]
-pub fn detect_installed_agents(
+pub async fn detect_installed_agents(
+    app: tauri::AppHandle,
     agent_manager: State<'_, Arc<AgentManager>>,
 ) -> Result<Vec<DetectedAgent>, String> {
+    let list = agent_manager.detect_agents();
+    // 主力 agent 优先：启动检测只判在场（零进程），但后台补一次 DSH 的
+    // 版本探测，让它的卡片开软件即就绪。
+    agent_manager.spawn_startup_dsh_probe(app);
+    Ok(list)
+}
+
+/// 逐个重探已安装 agent 的版本（DSH 最先）。
+///
+/// 每探完一个就发 `agent-version-probed`（前端卡片逐个从「检测中」翻出来，
+/// 不再整排干等一个串行循环）；探测失败发空版本，卡片照常翻出、缓存不动。
+/// 开头先发 `agent-version-sweep { total }` 告知本轮规模。返回探测后的完整
+/// 检测列表（含缓存版本）。
+#[tauri::command]
+pub async fn refresh_agent_versions(
+    app: tauri::AppHandle,
+    agent_manager: State<'_, Arc<AgentManager>>,
+) -> Result<Vec<DetectedAgent>, String> {
+    let targets = agent_manager.installed_probe_targets();
+    let _ = app.emit(
+        "agent-version-sweep",
+        crate::agent::VersionSweepStarted {
+            total: targets.len(),
+        },
+    );
+    for (name, path) in &targets {
+        let version = crate::agent::probe_cli_version(
+            path,
+            crate::agent::AGENT_VERSION_PROBE_TIMEOUT,
+        )
+        .await
+        .unwrap_or_default();
+        if !version.is_empty() {
+            agent_manager.remember_cli_version(name, &version);
+        }
+        let _ = app.emit(
+            "agent-version-probed",
+            crate::agent::CliVersionProbed {
+                name: name.clone(),
+                version,
+            },
+        );
+    }
     Ok(agent_manager.detect_agents())
 }
 
@@ -28,8 +72,9 @@ pub async fn install_agent_cli(
 pub async fn check_agent_updates(
     agent_manager: State<'_, Arc<AgentManager>>,
 ) -> Result<Vec<crate::agent::AgentUpdateInfo>, String> {
+    let detected = agent_manager.detect_agents();
     let mut handles = Vec::new();
-    for (name, version, package) in agents_worth_checking(agent_manager.detect_agents()) {
+    for (name, version, package) in agents_worth_checking(detected.clone()) {
         handles.push(tokio::task::spawn_blocking(move || {
             let latest = npm_latest_version(package);
             update_info(name, version, package, latest)
@@ -37,6 +82,21 @@ pub async fn check_agent_updates(
     }
 
     let mut results = Vec::new();
+    // DeepSeek Harness 不在 npm 上：最新版本问官方发布服务的公开端点
+    // （DSH Desktop 自身的更新检查用的同一端点）。查不到 → has_update=false，
+    // 和 npm 的规矩一致：查不到不等于有新版。
+    if let Some(dsh) = detected
+        .iter()
+        .find(|agent| agent.name == "DeepSeek Harness" && agent.status == "installed")
+    {
+        let latest = dsh_desktop_latest_version().await;
+        results.push(update_info(
+            dsh.name.clone(),
+            dsh.version.clone(),
+            "DSH Desktop",
+            latest,
+        ));
+    }
     for handle in handles {
         if let Ok(info) = handle.await {
             results.push(info);
@@ -104,6 +164,31 @@ fn npm_latest_version(package: &str) -> Option<String> {
     } else {
         Some(version)
     }
+}
+
+/// DSH Desktop 官方端点的最新稳定版本，或 `None`（离线、超时、端点异常）。
+async fn dsh_desktop_latest_version() -> Option<String> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .ok()?;
+    let body = client
+        .get(crate::agent::DSH_DESKTOP_VERSION_ENDPOINT)
+        .send()
+        .await
+        .ok()?
+        .json::<serde_json::Value>()
+        .await
+        .ok()?;
+    parse_dsh_version_response(&body)
+}
+
+/// 解析官方版本端点的响应体（`{"version":"2.0.13","channel":"stable"}`）。
+/// 抽出来是为了能测——网络本身测不了。非 semver 形状一律 `None`，拒绝把
+/// 错误页或维护公告当成版本号。
+fn parse_dsh_version_response(body: &serde_json::Value) -> Option<String> {
+    crate::agent::extract_semver(body.get("version")?.as_str()?)
 }
 
 #[tauri::command]
@@ -214,6 +299,36 @@ mod tests {
             );
             assert_eq!(info.has_update, expected, "{raw} vs {latest}");
             assert_eq!(info.current, expected_current, "{raw} 的版本号没提干净");
+        }
+    }
+
+    /// DSH 官方端点的正常形状能取出版本号。
+    #[test]
+    fn dsh_version_endpoint_payload_parses() {
+        let ok = serde_json::json!({"version": "2.0.13", "channel": "stable"});
+        assert_eq!(
+            super::parse_dsh_version_response(&ok).as_deref(),
+            Some("2.0.13")
+        );
+    }
+
+    /// 端点返回垃圾（错误页被 JSON 化、维护公告、字段缺失）时绝不能当成
+    /// 「最新版本」，否则整排 agent 会挂上假「有更新」。
+    #[test]
+    fn dsh_version_endpoint_junk_never_claims_a_version() {
+        for junk in [
+            serde_json::json!({}),
+            serde_json::json!({"channel": "stable"}),
+            serde_json::json!({"version": ""}),
+            serde_json::json!({"version": "维护中，请稍后再试"}),
+            serde_json::json!("just a string"),
+            serde_json::Value::Null,
+        ] {
+            assert_eq!(
+                super::parse_dsh_version_response(&junk),
+                None,
+                "{junk} 不该被当成版本号"
+            );
         }
     }
 }

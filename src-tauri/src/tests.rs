@@ -380,6 +380,10 @@ mod loopback_client_wiring {
         ("commands/remote_dev.rs", 1),
         // 联网搜索与 fetch_url，均先过 `guard_public_url`（只放行公网）。
         ("commands/search.rs", 3),
+        // DSH Desktop 官方安装器下载，地址是编译期常量（dshdesktop.cn）。
+        ("agent.rs", 1),
+        // DSH Desktop 官方版本端点，地址是编译期常量（dshdesktop.cn）。
+        ("commands/agents.rs", 1),
     ];
 
     /// 数一个文件里「没有 `.no_proxy()` 兜底」的 Client 构造处。

@@ -387,6 +387,17 @@ impl DbManager {
             )",
             [],
         )?;
+        // CLI 版本探测缓存：`--version` 要把 CLI 拉起来（DSH 是整个 Electron
+        // 二进制），启动路径只读这里不启进程；「刷新」才真正重探并回写。
+        // 纯派生数据，刻意不进备份。
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS agent_cli_versions (
+                agent_name TEXT PRIMARY KEY,
+                version TEXT NOT NULL,
+                probed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )?;
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_agent_sessions_conversation ON agent_sessions(conversation_id, created_at)",
             [],

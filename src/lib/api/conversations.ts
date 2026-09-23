@@ -132,6 +132,8 @@ export const runtimeApi = {
 
 export const agentApi = {
   detectInstalled: () => invoke<DetectedAgent[]>("detect_installed_agents"),
+  /** 逐个重探已安装 agent 的版本（DSH 最先），事件驱动、卡片逐个翻新。 */
+  refreshVersions: () => invoke<DetectedAgent[]>("refresh_agent_versions"),
   install: (agentName: string) => invoke("install_agent_cli", { agentName }),
   update: (agentName: string) => invoke("repair_installed_agent", { agentName }),
   checkUpdates: () => invoke<AgentUpdateInfo[]>("check_agent_updates"),

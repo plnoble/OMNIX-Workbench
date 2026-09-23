@@ -146,6 +146,99 @@ pub struct AgentUpdateInfo {
 /// range with no shell metacharacters, and resolves identically under sh and cmd.exe.
 pub const GROK_NPM_SPEC: &str = "@xai-official/grok@0.2";
 
+/// DSH Desktop 官方发布服务的公开端点。DSH Desktop 自己的更新检查用的就是
+/// 这两个端点（`dshdesktop.cn`），不是我们猜的。
+///
+/// 版本端点返回 `{"version":"2.0.13","channel":"stable"}`；下载端点 302 到
+/// CDN 上的 NSIS 安装器（约 150MB，`Nullsoft Install System v3.12`，可见向导）。
+pub(crate) const DSH_DESKTOP_VERSION_ENDPOINT: &str =
+    "https://www.dshdesktop.cn/api/desktop/version";
+const DSH_DESKTOP_DOWNLOAD_ENDPOINT: &str = "https://www.dshdesktop.cn/api/downloads/windows?fromweb=1";
+
+/// 单次 `--version` 探测的上限。DSH 的探测要把整个 Electron 二进制按 Node
+/// 模式拉起来、冷启动以秒计；没有这个上限，一个挂住的 CLI 会把整排检测卡死。
+pub(crate) const AGENT_VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// `agent-version-probed` 事件负载：单个 agent 的版本探完了。
+/// 探测失败时 `version` 为空串——卡片照常从「检测中」翻出来，缓存不动。
+#[derive(Debug, Clone, Serialize)]
+pub struct CliVersionProbed {
+    pub name: String,
+    pub version: String,
+}
+
+/// `agent-version-sweep` 事件负载：一轮全量探测开始，共几个 agent。
+#[derive(Debug, Clone, Serialize)]
+pub struct VersionSweepStarted {
+    pub total: usize,
+}
+
+/// 探测结果的取值规则：stdout 优先，退而求 stderr，全空 → `None`。
+/// 全空绝不能编个版本出来——旧版会回填 `"0.1.0"`，卡片显示一个不存在的版本。
+fn version_from_output(stdout: &str, stderr: &str) -> Option<String> {
+    let stdout = stdout.trim();
+    if !stdout.is_empty() {
+        return Some(stdout.to_string());
+    }
+    let stderr = stderr.trim();
+    if !stderr.is_empty() {
+        return Some(stderr.to_string());
+    }
+    None
+}
+
+/// 跑一次 `<cli> --version` 拿版本，带超时、kill_on_drop、无窗口。
+/// 超时/启动失败/输出全空都返回 `None`，由调用方决定缓存怎么处理。
+pub(crate) async fn probe_cli_version(exe_path: &str, timeout: Duration) -> Option<String> {
+    let mut cmd = Command::new(exe_path);
+    cmd.arg("--version")
+        .no_window()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let child = cmd.spawn().ok()?;
+    let output = tokio::time::timeout(timeout, child.wait_with_output())
+        .await
+        .ok()?
+        .ok()?;
+    version_from_output(
+        &String::from_utf8_lossy(&output.stdout),
+        &String::from_utf8_lossy(&output.stderr),
+    )
+}
+
+/// 全量探测的顺序：DSH 排最前——主力 agent 的卡片最先从「检测中」翻出来。
+/// 其余保持传入顺序（稳定排序）。
+fn order_probe_targets(mut targets: Vec<(String, String)>) -> Vec<(String, String)> {
+    targets.sort_by_key(|(name, _)| name != "DeepSeek Harness");
+    targets
+}
+
+/// 读取缓存的 CLI 版本（不启任何进程）。
+pub(crate) fn cached_cli_version(db: &DbManager, agent: &str) -> Option<String> {
+    let conn = db.get_connection().ok()?;
+    conn.query_row(
+        "SELECT version FROM agent_cli_versions WHERE agent_name = ?1",
+        params![agent],
+        |row| row.get(0),
+    )
+    .ok()
+}
+
+/// 回写探测到的版本。失败只吞掉：缓存写不进去不该让探测流程报错。
+pub(crate) fn save_cached_cli_version(db: &DbManager, agent: &str, version: &str) {
+    if let Ok(conn) = db.get_connection() {
+        let _ = conn.execute(
+            "INSERT INTO agent_cli_versions (agent_name, version, probed_at)
+             VALUES (?1, ?2, CURRENT_TIMESTAMP)
+             ON CONFLICT(agent_name)
+             DO UPDATE SET version = excluded.version, probed_at = CURRENT_TIMESTAMP",
+            params![agent, version],
+        );
+    }
+}
+
 /// DSH keeps its own models and keys under `$DSH_HOME` (default `~/.dsh`).
 /// OMNIX only detects that this store exists; it never copies the contents.
 pub fn dsh_credentials_file() -> PathBuf {
@@ -154,6 +247,58 @@ pub fn dsh_credentials_file() -> PathBuf {
         .or_else(|| dirs::home_dir().map(|home| home.join(".dsh")))
         .unwrap_or_else(|| PathBuf::from(".dsh"));
     home.join(".credentials.yaml")
+}
+
+/// 下载官方稳定版 DSH Desktop 安装器到临时目录，并做最小完整性校验（MZ 头）。
+///
+/// 150MB 级的文件：下载逐块写盘、不常驻内存；15 分钟上限给慢链路留余量。
+/// reqwest 默认跟随下载入口的 302 到 CDN。
+async fn download_dsh_installer() -> Result<PathBuf, String> {
+    const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(900);
+    let path = tokio::time::timeout(DOWNLOAD_TIMEOUT, async {
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(30))
+            .build()
+            .map_err(|e| format!("构建下载客户端失败: {e}"))?;
+        let mut response = client
+            .get(DSH_DESKTOP_DOWNLOAD_ENDPOINT)
+            .send()
+            .await
+            .map_err(|e| format!("请求 DSH 安装器失败: {e}"))?;
+        if !response.status().is_success() {
+            return Err(format!("DSH 下载入口返回 HTTP {}", response.status()));
+        }
+        let path = std::env::temp_dir().join("OMNIX-DSH-Desktop-Setup.exe");
+        let mut file = tokio::fs::File::create(&path)
+            .await
+            .map_err(|e| format!("创建临时文件失败: {e}"))?;
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|e| format!("下载中断: {e}"))?
+        {
+            file.write_all(&chunk)
+                .await
+                .map_err(|e| format!("写入临时文件失败: {e}"))?;
+        }
+        Ok(path)
+    })
+    .await
+    .map_err(|_| format!("下载超过 {} 分钟未完成，已中止", DOWNLOAD_TIMEOUT.as_secs() / 60))??;
+
+    // MZ 头校验：下载入口被网络代理劫持成 HTML 错误页时，别把网页当安装器去跑。
+    let mut magic = [0u8; 2];
+    let mut file = tokio::fs::File::open(&path)
+        .await
+        .map_err(|e| format!("打开下载文件失败: {e}"))?;
+    file.read_exact(&mut magic)
+        .await
+        .map_err(|e| format!("读取下载文件失败: {e}"))?;
+    if &magic != b"MZ" {
+        let _ = fs::remove_file(&path);
+        return Err("下载内容不是有效的 Windows 安装程序（可能被网络代理拦截）".into());
+    }
+    Ok(path)
 }
 
 /// OMNIX 在别的 AI 应用的 `mcpServers` 里用的键名。稳定不变——改了会在用户配置里
@@ -299,6 +444,9 @@ pub fn semver_is_older(current: &str, latest: &str) -> bool {
 
 pub struct AgentManager {
     db: Arc<DbManager>,
+    /// 启动 DSH 后台探测的去重闸：detect 每次都会请求探测，
+    /// 同一时刻只允许一个在跑（Electron 冷启动不便宜）。
+    dsh_probe_in_flight: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Where the injected lessons are written, relative to the workspace.
@@ -382,6 +530,7 @@ impl AgentManager {
     pub fn new(db: Arc<DbManager>) -> Self {
         Self {
             db,
+            dsh_probe_in_flight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -441,27 +590,20 @@ impl AgentManager {
     }
 
     // --- 1. Agent Detection logic ---
+    /// 检测每个 agent 的在场状态与缓存版本。
+    ///
+    /// 这里**不启动任何进程**——启动路径每次打开软件都会走一遍，9 个 CLI
+    /// 逐个跑 `--version`（DSH 是整个 Electron 二进制）既慢又吵。版本号读
+    /// `agent_cli_versions` 缓存；要新鲜版本走 `refresh_agent_versions`
+    /// （智能体页「刷新」）或启动时的 DSH 后台探测。
     pub fn detect_agents(&self) -> Vec<DetectedAgent> {
         let mut list = Vec::new();
-
-        let sandbox_dir_str = self
-            .db
-            .get_setting("sandbox_dir")
-            .unwrap_or(None)
-            .unwrap_or_else(|| "~/.omnix/agents".to_string());
-        let sandbox_dir = resolve_sandbox_path(&sandbox_dir_str);
-
-        // Setup local sandbox search paths
-        let mut local_bin_dir = sandbox_dir;
-        local_bin_dir.push("node_modules");
-        local_bin_dir.push(".bin");
 
         for (display_name, _) in CLI_AGENTS {
             let found_path = self.find_agent_path(display_name);
 
             if let Some(path) = found_path {
-                // Quick command execution to query version
-                let version = self.query_agent_version(&path);
+                let version = cached_cli_version(&self.db, display_name).unwrap_or_default();
                 list.push(DetectedAgent {
                     name: display_name.to_string(),
                     path,
@@ -481,29 +623,51 @@ impl AgentManager {
         list
     }
 
-    fn query_agent_version(&self, exe_path: &str) -> String {
-        // Run <path> --version
-        let output = std::process::Command::new(exe_path)
-            .arg("--version")
-            .no_window()
-            .output();
+    /// 已安装 agent 的 (名字, 可执行路径)，探测顺序 DSH 最先。
+    pub(crate) fn installed_probe_targets(&self) -> Vec<(String, String)> {
+        order_probe_targets(
+            self.detect_agents()
+                .into_iter()
+                .filter(|agent| agent.status == "installed")
+                .map(|agent| (agent.name, agent.path))
+                .collect(),
+        )
+    }
 
-        match output {
-            Ok(out) => {
-                let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if !stdout.is_empty() {
-                    stdout
-                } else {
-                    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-                    if !stderr.is_empty() {
-                        stderr
-                    } else {
-                        "0.1.0".to_string()
-                    }
-                }
-            }
-            Err(_) => "Unknown".to_string(),
+    /// 缓存的对外写入口（命令层用）：探测到版本后回写。
+    pub(crate) fn remember_cli_version(&self, agent: &str, version: &str) {
+        save_cached_cli_version(&self.db, agent, version);
+    }
+
+    /// 启动路径的「DSH 优先」：应用一打开，后台探一次 DSH 的版本（写缓存、
+    /// 发 `agent-version-probed`），其他 agent 的版本读缓存——用户点「刷新」
+    /// 才真正重探。未安装 DSH 时什么都不做。
+    pub(crate) fn spawn_startup_dsh_probe(&self, app: tauri::AppHandle) {
+        use std::sync::atomic::Ordering;
+        use tauri::Emitter;
+
+        if self.dsh_probe_in_flight.swap(true, Ordering::SeqCst) {
+            return; // 已经有一个在跑：缓存和事件它都会补上
         }
+        let Some(path) = self.find_agent_path("DeepSeek Harness") else {
+            self.dsh_probe_in_flight.store(false, Ordering::SeqCst);
+            return;
+        };
+        let db = Arc::clone(&self.db);
+        let in_flight = Arc::clone(&self.dsh_probe_in_flight);
+        tauri::async_runtime::spawn(async move {
+            if let Some(version) = probe_cli_version(&path, AGENT_VERSION_PROBE_TIMEOUT).await {
+                save_cached_cli_version(&db, "DeepSeek Harness", &version);
+                let _ = app.emit(
+                    "agent-version-probed",
+                    CliVersionProbed {
+                        name: "DeepSeek Harness".into(),
+                        version,
+                    },
+                );
+            }
+            in_flight.store(false, Ordering::SeqCst);
+        });
     }
 
     // --- 2. Headless Configuration Bootstrap (TOS Bypass) ---
@@ -565,10 +729,11 @@ impl AgentManager {
         }
 
         if agent_name == "DeepSeek Harness" {
-            return Err(
-                "DeepSeek Harness 由 DSH Desktop / 官方 dsh CLI 安装，OMNIX 不代装，也不另存一份密钥。请安装 DSH 后确保 `dsh` 在 PATH 上。"
-                    .into(),
-            );
+            // DSH Desktop 不是 npm 包，而是带安装向导的桌面应用。「代装」＝走官方
+            // 下载入口把安装器拉下来，由用户在向导里确认安装位置和 UAC——OMNIX
+            // 不往托管目录塞副本，密钥也始终留在 ~/.dsh。重新运行安装器即升级，
+            // 所以「更新」按钮走的也是这条路。
+            return self.install_dsh_desktop().await;
         }
 
         if agent_name == "Google Antigravity" {
@@ -722,6 +887,38 @@ impl AgentManager {
         } else {
             Err(format!(
                 "Npm install failed with status exit code {:?}",
+                status.code()
+            ))
+        }
+    }
+
+    /// 装的是 DSH Desktop 本体：官方安装器是可见的 NSIS 向导，安装位置和 UAC
+    /// 由用户在向导里确认；OMNIX 只负责把安装器下载下来、等它跑完、清理临时文件。
+    async fn install_dsh_desktop(&self) -> Result<(), String> {
+        let installer_path = download_dsh_installer().await?;
+        let mut cmd = Command::new(&installer_path);
+        // 同 npm/Antigravity 安装器：stdin 置空防交互挂死，kill_on_drop 让超时
+        // 能真正带走进程。
+        cmd.stdin(Stdio::null()).kill_on_drop(true);
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("DSH 安装器启动失败: {e}"))?;
+        let status = tokio::time::timeout(Self::INSTALL_TIMEOUT, child.wait())
+            .await
+            .map_err(|_| {
+                format!(
+                    "DSH 安装器超过 {} 分钟仍未结束，已中止。重新点安装即可重试（NSIS 覆盖安装即更新）",
+                    Self::INSTALL_TIMEOUT.as_secs() / 60
+                )
+            })?
+            .map_err(|e| format!("DSH 安装器运行错误: {e}"))?;
+        // 150MB 级的临时文件不留着占盘。
+        let _ = fs::remove_file(&installer_path);
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "DSH 安装器提前退出（用户取消或安装失败），退出代码 {:?}",
                 status.code()
             ))
         }
@@ -1020,6 +1217,30 @@ impl AgentManager {
                     .to_string_lossy()
                     .to_string(),
             );
+        }
+
+        // DSH Desktop installs no CLI itself: `dsh` is a shim the desktop app
+        // regenerates under its userData directory (host-commands/<profile>/bin),
+        // and it only lands on PATH for processes the app spawns. Probing the
+        // canonical location lets OMNIX find a CLI that exists but isn't
+        // PATH-visible — the shim carries absolute paths, so running it works
+        // regardless of who launched OMNIX.
+        if bin_name == "dsh" {
+            if let Some(roaming) = dirs::data_dir() {
+                let host_commands = roaming.join("DSH Desktop").join("host-commands");
+                if let Ok(profiles) = fs::read_dir(&host_commands) {
+                    // desktop 是常规桌面 profile，优先；其余（如 headless）兜底。
+                    let mut candidates: Vec<PathBuf> =
+                        profiles.flatten().map(|entry| entry.path()).collect();
+                    candidates.sort_by_key(|p| p.file_name().map(|n| n != "desktop"));
+                    for profile in candidates {
+                        let shim = profile.join("bin").join("dsh.cmd");
+                        if shim.exists() {
+                            return Some(shim.to_string_lossy().to_string());
+                        }
+                    }
+                }
+            }
         }
 
         let managed_root = db
@@ -1574,6 +1795,102 @@ mod tests {
                 .and_then(|name| name.to_str()),
             Some(".credentials.yaml")
         );
+    }
+
+    /// 全量探测的顺序：DSH 最先，其余保持原相对顺序。
+    #[test]
+    fn version_probe_order_puts_the_primary_agent_first() {
+        let ordered = order_probe_targets(vec![
+            ("Claude Code".into(), "a".into()),
+            ("DeepSeek Harness".into(), "b".into()),
+            ("Codex".into(), "c".into()),
+        ]);
+        assert_eq!(ordered[0].0, "DeepSeek Harness");
+        assert_eq!(ordered[1].0, "Claude Code");
+        assert_eq!(ordered[2].0, "Codex");
+    }
+
+    /// stdout 优先、stderr 兜底、全空是 None——绝不编造版本号。
+    #[test]
+    fn version_from_output_prefers_stdout_then_stderr_and_rejects_empty() {
+        assert_eq!(
+            version_from_output(" 1.2.3\n", ""),
+            Some("1.2.3".to_string())
+        );
+        assert_eq!(
+            version_from_output("", " 2.0.0-rc.1\n"),
+            Some("2.0.0-rc.1".to_string())
+        );
+        assert_eq!(version_from_output("  \n\t", "  "), None);
+    }
+
+    /// 版本缓存读写：能回读、能覆盖、agent 之间不串行。
+    #[test]
+    fn cached_cli_version_roundtrips_and_overwrites() {
+        let timestamp = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let db_path = std::env::temp_dir().join(format!("omnix_cli_version_{timestamp}.db"));
+        let _ = fs::remove_file(&db_path);
+        let db = DbManager::new_with_path(db_path.clone());
+
+        assert_eq!(cached_cli_version(&db, "Codex"), None);
+        save_cached_cli_version(&db, "Codex", "0.9.1");
+        assert_eq!(cached_cli_version(&db, "Codex").as_deref(), Some("0.9.1"));
+        // 覆盖而不是并存
+        save_cached_cli_version(&db, "Codex", "0.10.0");
+        assert_eq!(cached_cli_version(&db, "Codex").as_deref(), Some("0.10.0"));
+        // agent 之间互不干扰
+        save_cached_cli_version(&db, "DeepSeek Harness", "0.1.1-rc.2");
+        assert_eq!(cached_cli_version(&db, "Codex").as_deref(), Some("0.10.0"));
+
+        let _ = fs::remove_file(&db_path);
+    }
+
+    /// 探测真的能从一个假 CLI 里拿到版本号（.cmd shim 走的就是这条路）。
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn probe_cli_version_reads_the_version_from_a_fake_cli() {
+        let timestamp = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let script_path =
+            std::env::temp_dir().join(format!("omnix_fake_version_{timestamp}.cmd"));
+        fs::write(&script_path, "@echo off\r\necho 1.2.3-fake\r\n").expect("fake CLI script");
+
+        let version = probe_cli_version(&script_path.to_string_lossy(), Duration::from_secs(10))
+            .await;
+        assert_eq!(version.as_deref(), Some("1.2.3-fake"));
+
+        let _ = fs::remove_file(&script_path);
+    }
+
+    /// 挂住的 CLI 必须被超时掐掉——否则整排检测跟着它卡死（这就是本改动要修的）。
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_hung_cli_probe_times_out_instead_of_stalling_the_sweep() {
+        let timestamp = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let script_path = std::env::temp_dir().join(format!("omnix_fake_hang_{timestamp}.cmd"));
+        fs::write(
+            &script_path,
+            // ping 停 4 秒 > 300ms 超时；就算孙进程漏杀也很快自然退出。
+            "@echo off\r\nping -n 5 127.0.0.1 >nul\r\n",
+        )
+        .expect("fake hung CLI script");
+
+        let version = probe_cli_version(
+            &script_path.to_string_lossy(),
+            Duration::from_millis(300),
+        )
+        .await;
+        assert_eq!(version, None);
+
+        let _ = fs::remove_file(&script_path);
     }
 
     /// Guards the per-agent context-file injection. Runs in CI: it only touches

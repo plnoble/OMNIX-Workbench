@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { useAccountsStore, useConversationsStore, usePlatformsStore } from "@/store/AppStore";
 import {
   Bot,
@@ -43,8 +44,13 @@ const FEATURED_AGENTS = ["Claude Code", "Codex", "Gemini CLI", "OpenCode"];
 const DEFAULT_BINDING_VALUE = "__agent_default__";
 /** OMNIX will not fetch or install these CLIs. The hub must not show a fake 安装. */
 const EXTERNAL_INSTALL_HINTS: Record<string, string> = {
-  "DeepSeek Harness": "请安装 DSH Desktop / 官方 dsh CLI，并确保 `dsh` 在 PATH 上。OMNIX 不代装，也不另存密钥。",
   "Qwen Code": "请自行安装官方 `qwen` CLI。OMNIX 暂不提供托管安装。",
+};
+
+/** 安装器跑完后还需要用户配合做一步的 agent：成功 toast 里带上这一句。 */
+const POST_INSTALL_NOTES: Record<string, string> = {
+  "DeepSeek Harness":
+    "如仍未检测到 dsh：启动一次 DSH Desktop（它会生成 dsh 命令），再点刷新",
 };
 
 function getBindingValue(binding?: AgentPlatformBinding) {
@@ -76,7 +82,8 @@ export function AgentHubTab({ onStartWork, onOpenAuthCenter }: AgentHubTabProps)
   const { accounts } = accountsStore;
   const { activeModels } = platforms;
   const onSwitchAgent = convs.selectAgent;
-  const onRefreshAgents = convs.detectAgents;
+  // 「刷新」走逐 agent 重探通道（后端事件驱动），不再是「等全部探完一次性返回」。
+  const onRefreshVersions = convs.refreshAgentVersions;
   const onAddAccount = () => accountsStore.openAccountModal();
   const onEditAccount = (acc: AgentAccount) => accountsStore.openAccountModal(acc);
   const onDeleteAccount = accountsStore.deleteAccount;
@@ -98,16 +105,36 @@ export function AgentHubTab({ onStartWork, onOpenAuthCenter }: AgentHubTabProps)
   // handshake) so its picker isn't empty before the first session.
   const [grokModels, setGrokModels] = useState<GrokModel[]>([]);
   const [grokModelsBusy, setGrokModelsBusy] = useState(false);
+  /** 刷新进度：后端先发本轮总数，再逐个发探测结果；未探到的已安装卡片
+   * 显示「检测中」。用户不再需要靠猜判断「是卡住了还是在跑」。 */
+  const [sweep, setSweep] = useState<{ total: number; probed: string[] } | null>(null);
+
+  useEffect(() => {
+    const unlistenSweep = listen<{ total: number }>("agent-version-sweep", (event) => {
+      setSweep({ total: event.payload.total, probed: [] });
+    });
+    const unlistenProbed = listen<{ name: string }>("agent-version-probed", (event) => {
+      setSweep((current) =>
+        current && !current.probed.includes(event.payload.name)
+          ? { ...current, probed: [...current.probed, event.payload.name] }
+          : current,
+      );
+    });
+    return () => {
+      unlistenSweep.then((fn) => fn());
+      unlistenProbed.then((fn) => fn());
+    };
+  }, []);
 
   useEffect(() => {
     agentBindingApi.getAll().then(setBindings).catch(() => setBindings([]));
   }, []);
 
-  /** 「刷新」= 重新检测 + 检查更新 + 运行适配状态，一个动作看全现状。 */
+  /** 「刷新」= 重探版本（逐个、带进度）+ 检查更新 + 运行适配状态，一个动作看全现状。 */
   const refreshAll = useCallback(async () => {
     setRefreshing(true);
     try {
-      await onRefreshAgents();
+      await onRefreshVersions();
       const [catalog, updateList] = await Promise.all([
         runtimeApi.getAgentCatalog().catch(() => [] as RuntimeAgentCatalogEntry[]),
         agentApi.checkUpdates().catch(() => [] as AgentUpdateInfo[]),
@@ -117,9 +144,10 @@ export function AgentHubTab({ onStartWork, onOpenAuthCenter }: AgentHubTabProps)
     } catch (error) {
       toast.error(`刷新失败：${error}`);
     } finally {
+      setSweep(null);
       setRefreshing(false);
     }
-  }, [onRefreshAgents]);
+  }, [onRefreshVersions]);
 
   useEffect(() => {
     void refreshAll();
@@ -255,7 +283,9 @@ export function AgentHubTab({ onStartWork, onOpenAuthCenter }: AgentHubTabProps)
       if (action === "install") {
         toast.info(`正在安装 ${agentName}…`);
         await agentApi.install(agentName);
-        toast.success(`${agentName} 安装完成`);
+        toast.success(`${agentName} 安装完成`, {
+          description: POST_INSTALL_NOTES[agentName],
+        });
       } else {
         await agentApi.update(agentName);
         toast.success(`${agentName} 已更新`);
@@ -315,7 +345,7 @@ export function AgentHubTab({ onStartWork, onOpenAuthCenter }: AgentHubTabProps)
           <div className="flex gap-2">
             <Button variant="outline" onClick={() => void refreshAll()} disabled={refreshing || !!busyAgent}>
               {refreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-              刷新
+              刷新{sweep ? ` ${sweep.probed.length}/${sweep.total}` : ""}
             </Button>
             <Button
               variant="outline"
@@ -378,7 +408,14 @@ export function AgentHubTab({ onStartWork, onOpenAuthCenter }: AgentHubTabProps)
               </div>
               <div className="mt-2 text-sm text-muted-foreground">
                 {agent.installed
-                  ? `${agent.runtime?.installation_source === "managed" ? "OMNIX 托管" : "系统安装"} · ${agent.detected?.version || "版本未知"}`
+                  ? sweep && !sweep.probed.includes(agent.name)
+                    ? (
+                    <span className="inline-flex items-center gap-1.5">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      检测中…
+                    </span>
+                    )
+                    : `${agent.runtime?.installation_source === "managed" ? "OMNIX 托管" : "系统安装"} · ${agent.detected?.version || "版本未知"}`
                   : EXTERNAL_INSTALL_HINTS[agent.name] ?? "需要安装对应 CLI 后才能启动"}
               </div>
               {updates[agent.name]?.has_update && (
